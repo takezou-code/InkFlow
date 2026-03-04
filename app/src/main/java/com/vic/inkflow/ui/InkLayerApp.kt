@@ -21,7 +21,12 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.gestures.animateScrollBy
-import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculateCentroidSize
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberScrollState
@@ -286,6 +291,17 @@ private fun rememberFlowingBrandBrush(isDarkTheme: Boolean): Brush {
     )
 }
 
+/**
+ * Draws the animated flowing gradient as an isolated composable so its
+ * recompositions (driven by the infinite animation) are scoped here only
+ * and never propagate up to DocumentLibraryScreen.
+ */
+@Composable
+private fun AnimatedGradientBackground(isDarkTheme: Boolean, modifier: Modifier = Modifier) {
+    val brush = rememberFlowingBrandBrush(isDarkTheme)
+    Box(modifier = modifier.background(brush))
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DocumentLibraryScreen(
@@ -301,6 +317,30 @@ fun DocumentLibraryScreen(
     val documents by docViewModel.documents.collectAsState()
     val scope = rememberCoroutineScope()
     var showFabMenu by remember { mutableStateOf(false) }
+    var showNewDocSizeDialog by remember { mutableStateOf(false) }
+
+    if (showNewDocSizeDialog) {
+        NewDocPaperSizeDialog(
+            onDismiss = { showNewDocSizeDialog = false },
+            onCreate = { widthPt, heightPt ->
+                showNewDocSizeDialog = false
+                scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                    val newUri = PdfManager.createBlankPdf(context, widthPt, heightPt)
+                    if (newUri != null) {
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                            docViewModel.recordOpened(newUri.toString(), "未命名筆記")
+                            val encodedUri = URLEncoder.encode(newUri.toString(), StandardCharsets.UTF_8.toString())
+                            navController.navigate("editor/$encodedUri")
+                        }
+                    } else {
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                            android.widget.Toast.makeText(context, "無法建立空白筆記", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            }
+        )
+    }
 
     // Migrate stale display names saved before the ContentResolver fix
     LaunchedEffect(Unit) {
@@ -334,24 +374,23 @@ fun DocumentLibraryScreen(
         }
     )
 
-    // Vibrant brand gradient used only for the FAB / logo (vivid purple)
-    val brandGradient = androidx.compose.ui.graphics.Brush.linearGradient(
-        listOf(androidx.compose.ui.graphics.Color(0xFF6366F1), androidx.compose.ui.graphics.Color(0xFFA855F7))
-    )
-    // Full-screen flowing background gradient (dark or light palette)
-    val flowingBgBrush = rememberFlowingBrandBrush(isDarkTheme)
-    // Vivid flowing gradient for accent elements (FAB, logo)
-    val flowingBrandBrush = rememberFlowingBrandBrush(isDarkTheme = false)
-        .let { brandGradient }   // always vivid for accents
+    // Vivid brand gradient for the FAB / logo (never animated — static)
+    val brandGradient = remember {
+        androidx.compose.ui.graphics.Brush.linearGradient(
+            listOf(androidx.compose.ui.graphics.Color(0xFF6366F1), androidx.compose.ui.graphics.Color(0xFFA855F7))
+        )
+    }
 
     var selectedNavIndex by remember { mutableStateOf(0) }
 
+    // Outer Box does NOT read any animated State, so it never recomposes at 60 fps.
+    // The animated gradient is drawn by the isolated AnimatedGradientBackground child.
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(flowingBgBrush)
             .statusBarsPadding()
     ) {
+        AnimatedGradientBackground(isDarkTheme, Modifier.fillMaxSize())
 
     Row(modifier = Modifier.fillMaxSize()) {
         // Navigation Rail — transparent so the full-screen gradient shows through
@@ -410,7 +449,10 @@ fun DocumentLibraryScreen(
 
         // Main content with TopAppBar + search
         var searchQuery by remember { mutableStateOf("") }
-        val filteredDocs = documents.filter { it.displayName.contains(searchQuery, ignoreCase = true) }
+        // Memoize: only recompute when documents list or search query actually changes.
+        val filteredDocs = remember(documents, searchQuery) {
+            documents.filter { it.displayName.contains(searchQuery, ignoreCase = true) }
+        }
 
         Scaffold(
             modifier = Modifier.fillMaxSize(),
@@ -447,7 +489,7 @@ fun DocumentLibraryScreen(
                     Box(
                         modifier = Modifier
                             .graphicsLayer { scaleX = fabScale; scaleY = fabScale }
-                            .background(flowingBrandBrush, shape = RoundedCornerShape(16.dp))
+                            .background(brandGradient, shape = RoundedCornerShape(16.dp))
                             .clickable(interactionSource = fabInteractionSource, indication = null) { showFabMenu = true }
                             .padding(horizontal = 20.dp, vertical = 14.dp)
                     ) {
@@ -474,20 +516,7 @@ fun DocumentLibraryScreen(
                             leadingIcon = { Icon(Icons.Filled.Add, contentDescription = null) },
                             onClick = {
                                 showFabMenu = false
-                                scope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                                    val newUri = PdfManager.createBlankPdf(context)
-                                    if (newUri != null) {
-                                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                            docViewModel.recordOpened(newUri.toString(), "未命名筆記")
-                                            val encodedUri = URLEncoder.encode(newUri.toString(), StandardCharsets.UTF_8.toString())
-                                            navController.navigate("editor/$encodedUri")
-                                        }
-                                    } else {
-                                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                            android.widget.Toast.makeText(context, "無法建立空白筆記", android.widget.Toast.LENGTH_SHORT).show()
-                                        }
-                                    }
-                                }
+                                showNewDocSizeDialog = true
                             }
                         )
                     }
@@ -560,7 +589,7 @@ fun DocumentLibraryScreen(
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        items(filteredDocs.size) { index ->
+                        items(filteredDocs.size, key = { filteredDocs[it].uri }) { index ->
                             val doc = filteredDocs[index]
                             var visible by remember { mutableStateOf(false) }
                             LaunchedEffect(Unit) {
@@ -992,7 +1021,6 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
     if (showPaperSettingsDialog) {
         PaperStyleDialog(
             currentStyle = paperStyle,
-            hasExistingStrokes = strokes.isNotEmpty(),
             onDismiss = { showPaperSettingsDialog = false },
             onConfirm = { newStyle ->
                 viewModel.setPaperStyle(newStyle)
@@ -1093,7 +1121,13 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                     viewModel.setActivePage(index)
                 },
                 onAddPage = { afterIndex ->
-                    scope.launch { pdfViewModel.insertBlankPage(context, afterIndex) }
+                    scope.launch {
+                        pdfViewModel.insertBlankPage(
+                            context, afterIndex,
+                            pageWidthPt = paperStyle.widthPt,
+                            pageHeightPt = paperStyle.heightPt
+                        )
+                    }
                 },
                 onDeletePage = { index ->
                     // DB 清理與 PDF 刪除平行執行，縮短總等待時間
@@ -1108,8 +1142,7 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                     pdfViewModel.deletePage(index)
                 },
                 listState = sidebarListState,
-                modifier = if (isFullscreen) Modifier.fillMaxHeight().weight(1f) else Modifier.fillMaxHeight(),
-                pageAspectRatio = pageAspectRatio
+                modifier = if (isFullscreen) Modifier.fillMaxHeight().weight(1f) else Modifier.fillMaxHeight()
             )
 
             if (!isFullscreen) {
@@ -1219,8 +1252,7 @@ private fun Sidebar(
     onAddPage: (afterIndex: Int) -> Unit,
     onDeletePage: (Int) -> Unit,
     listState: LazyListState = rememberLazyListState(),
-    modifier: Modifier = Modifier,
-    pageAspectRatio: Float = 1f / 1.414f
+    modifier: Modifier = Modifier
 ) {
     // Index of the page pending delete confirmation; null = no dialog shown
     var deleteConfirmIndex by remember { mutableStateOf<Int?>(null) }
@@ -1321,7 +1353,7 @@ private fun Sidebar(
                                 imageAnnotations = images,
                                 textAnnotations = texts,
                                 isSelected = index == currentPageIndex,
-                                boxModifier = Modifier.fillMaxWidth().aspectRatio(pageAspectRatio)
+                                boxModifier = Modifier.fillMaxWidth().aspectRatio(pdfViewModel.getPageAspectRatio(index))
                             )
                         }
                     }
@@ -1370,7 +1402,7 @@ private fun Sidebar(
                                     imageAnnotations = images,
                                     textAnnotations = texts,
                                     isSelected = index == currentPageIndex,
-                                    boxModifier = Modifier.width(100.dp).aspectRatio(pageAspectRatio)
+                                    boxModifier = Modifier.width(100.dp).aspectRatio(pdfViewModel.getPageAspectRatio(index))
                                 )
                             } else {
                                 PageIcon(
@@ -1756,24 +1788,62 @@ private fun Workspace(
                 containerHeight = size.height
             }
             .pointerInput(minScale) {
-                detectTransformGestures {
-                    centroid, pan, zoom, _ ->
-                        val oldScale = scale
-                        val newScale = (scale * zoom).coerceIn(minScale, 5f)
-                        if (newScale <= minScale) {
-                            // At minimum zoom, snap page to centre so the full page is always visible
-                            offsetX = 0f
-                            offsetY = 0f
-                        } else {
-                            // Correct pivot-based zoom: graphicsLayer scales around the Surface's
-                            // centre, which sits at (containerWidth/2, containerHeight/2) in Box
-                            // coordinates. Adjusting centroid by that pivot keeps the pinch
-                            // focal point locked under the fingers.
-                            val r = newScale / oldScale
-                            offsetX = offsetX * r + (centroid.x - containerWidth / 2f) * (1 - r) + pan.x
-                            offsetY = offsetY * r + (centroid.y - containerHeight / 2f) * (1 - r) + pan.y
+                // Only respond to 2+ simultaneous pointers (pinch / two-finger pan).
+                // A single pointer means the user is drawing — pan must NOT fire.
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+
+                    // Wait until 2+ pointers are down, or the touch ends.
+                    while (true) {
+                        val evt = awaitPointerEvent()
+                        val pressed = evt.changes.count { it.pressed }
+                        if (pressed == 0) return@awaitEachGesture  // lifted before 2nd finger
+                        if (pressed >= 2) break                    // multi-touch confirmed
+                    }
+
+                    // Multi-touch active — handle pan + zoom with touch-slop guard.
+                    val touchSlop = viewConfiguration.touchSlop
+                    var accZoom = 1f
+                    var accPan = androidx.compose.ui.geometry.Offset.Zero
+                    var pastTouchSlop = false
+
+                    while (true) {
+                        val evt = awaitPointerEvent()
+                        if (evt.changes.any { it.isConsumed }) break
+                        if (evt.changes.none { it.pressed }) break
+
+                        val zoomChange = evt.calculateZoom()
+                        val panChange  = evt.calculatePan()
+
+                        if (!pastTouchSlop) {
+                            accZoom *= zoomChange
+                            accPan  += panChange
+                            val centroidSize = evt.calculateCentroidSize(useCurrent = false)
+                            val zoomMotion = kotlin.math.abs(1 - accZoom) * centroidSize
+                            val panMotion  = accPan.getDistance()
+                            if (zoomMotion > touchSlop || panMotion > touchSlop) {
+                                pastTouchSlop = true
+                                accZoom = 1f
+                                accPan  = androidx.compose.ui.geometry.Offset.Zero
+                            }
                         }
-                        scale = newScale
+
+                        if (pastTouchSlop) {
+                            val centroid = evt.calculateCentroid(useCurrent = false)
+                            val oldScale = scale
+                            val newScale = (scale * zoomChange).coerceIn(minScale, 5f)
+                            if (newScale <= minScale) {
+                                offsetX = 0f
+                                offsetY = 0f
+                            } else {
+                                val r = newScale / oldScale
+                                offsetX = offsetX * r + (centroid.x - containerWidth / 2f) * (1 - r) + panChange.x
+                                offsetY = offsetY * r + (centroid.y - containerHeight / 2f) * (1 - r) + panChange.y
+                            }
+                            scale = newScale
+                            evt.changes.forEach { it.consume() }
+                        }
+                    }
                 }
             },
         contentAlignment = Alignment.Center
@@ -2225,92 +2295,32 @@ fun TabletEditorTopBar(
 @Composable
 private fun PaperStyleDialog(
     currentStyle: PaperStyle,
-    hasExistingStrokes: Boolean,
     onDismiss: () -> Unit,
     onConfirm: (PaperStyle) -> Unit
 ) {
-    var selectedWidth by remember { mutableFloatStateOf(currentStyle.widthPt) }
-    var selectedHeight by remember { mutableFloatStateOf(currentStyle.heightPt) }
     var selectedBackground by remember { mutableStateOf(currentStyle.background) }
-    var showSizeWarning by remember { mutableStateOf(false) }
-
-    // Secondary confirmation when a size change would shift existing strokes
-    if (showSizeWarning) {
-        androidx.compose.material3.AlertDialog(
-            onDismissRequest = { showSizeWarning = false },
-            title = { Text("確認切換紙張大小") },
-            text = { Text("切換紙張大小後，本頁現有筆劃的位置將會偏移，此操作無法還原。\n確定要繼續嗎？") },
-            confirmButton = {
-                androidx.compose.material3.TextButton(onClick = {
-                    showSizeWarning = false
-                    onConfirm(PaperStyle(selectedWidth, selectedHeight, selectedBackground))
-                }) { Text("繼續") }
-            },
-            dismissButton = {
-                androidx.compose.material3.TextButton(onClick = { showSizeWarning = false }) { Text("取消") }
-            }
-        )
-    }
 
     androidx.compose.material3.AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("紙張樣式設定") },
+        title = { Text("頁面背景樣式") },
         text = {
-            Column(
-                modifier = Modifier.verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                // ── Paper size ────────────────────────────────────────────────────────────────────
-                Text("\u7d19\u5f35\u5927\u5c0f", style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary)
-                val paperPresets = remember {
-                    listOf(
-                        Triple("A3",     842f,  1191f),
-                        Triple("A4",     595f,   842f),
-                        Triple("A5",     420f,   595f),
-                        Triple("B5",     499f,   709f),
-                        Triple("Letter", 612f,   792f),
-                    )
-                }
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    paperPresets.forEach { (label, w, h) ->
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            val isPortrait  = selectedWidth == w && selectedHeight == h
-                            val isLandscape = selectedWidth == h && selectedHeight == w
-                            FilterChip(
-                                selected = isPortrait,
-                                onClick = { selectedWidth = w; selectedHeight = h },
-                                label = { Text("$label \u76f4\u5411") },
-                                leadingIcon = if (isPortrait) {
-                                    { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
-                                } else null
-                            )
-                            FilterChip(
-                                selected = isLandscape,
-                                onClick = { selectedWidth = h; selectedHeight = w },
-                                label = { Text("$label \u6a6b\u5411") },
-                                leadingIcon = if (isLandscape) {
-                                    { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
-                                } else null
-                            )
-                        }
-                    }
-                }
-                // ── Page background ──────────────────────────────────────────────────────────
-                Text("\u9801\u9762\u80cc\u666f", style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary)
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("選擇頁面的背景格線樣式",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                val bgOptions = listOf(
+                    PageBackground.BLANK        to "空白",
+                    PageBackground.RULED        to "橫線",
+                    PageBackground.NARROW_RULED to "密行",
+                    PageBackground.WIDE_RULED   to "寬行",
+                    PageBackground.GRID         to "方格",
+                    PageBackground.DOT_GRID     to "點格",
+                )
                 Row(
                     modifier = Modifier.horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    val bgOptions = listOf(
-                        PageBackground.BLANK        to "\u7a7a\u767d",
-                        PageBackground.RULED        to "\u6a6b\u7dda",
-                        PageBackground.NARROW_RULED to "\u5bc6\u884c",
-                        PageBackground.WIDE_RULED   to "\u5bec\u884c",
-                        PageBackground.GRID         to "\u65b9\u683c",
-                        PageBackground.DOT_GRID     to "\u9ede\u683c",
-                    )
                     bgOptions.forEach { (bg, label) ->
                         FilterChip(
                             selected = selectedBackground == bg,
@@ -2326,13 +2336,71 @@ private fun PaperStyleDialog(
         },
         confirmButton = {
             androidx.compose.material3.TextButton(onClick = {
-                val sizeChanged = selectedWidth != currentStyle.widthPt || selectedHeight != currentStyle.heightPt
-                if (sizeChanged && hasExistingStrokes) {
-                    showSizeWarning = true
-                } else {
-                    onConfirm(PaperStyle(selectedWidth, selectedHeight, selectedBackground))
-                }
+                onConfirm(currentStyle.copy(background = selectedBackground))
             }) { Text("確認") }
+        },
+        dismissButton = {
+            androidx.compose.material3.TextButton(onClick = onDismiss) { Text("取消") }
+        }
+    )
+}
+
+@Composable
+private fun NewDocPaperSizeDialog(
+    onDismiss: () -> Unit,
+    onCreate: (widthPt: Float, heightPt: Float) -> Unit
+) {
+    var selectedWidth by remember { mutableFloatStateOf(595f) }
+    var selectedHeight by remember { mutableFloatStateOf(842f) }
+
+    val paperPresets = remember {
+        listOf(
+            Triple("A3",     842f,  1191f),
+            Triple("A4",     595f,   842f),
+            Triple("A5",     420f,   595f),
+            Triple("B5",     499f,   709f),
+            Triple("Letter", 612f,   792f),
+        )
+    }
+
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("選擇紙張大小") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("設定新空白筆記的紙張大小（建立後無法更改）",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+                paperPresets.forEach { (label, w, h) ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        val isPortrait  = selectedWidth == w && selectedHeight == h
+                        val isLandscape = selectedWidth == h && selectedHeight == w
+                        FilterChip(
+                            selected = isPortrait,
+                            onClick = { selectedWidth = w; selectedHeight = h },
+                            label = { Text("$label 直向") },
+                            leadingIcon = if (isPortrait) {
+                                { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                            } else null
+                        )
+                        FilterChip(
+                            selected = isLandscape,
+                            onClick = { selectedWidth = h; selectedHeight = w },
+                            label = { Text("$label 橫向") },
+                            leadingIcon = if (isLandscape) {
+                                { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                            } else null
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            androidx.compose.material3.TextButton(onClick = {
+                onCreate(selectedWidth, selectedHeight)
+            }) { Text("建立") }
         },
         dismissButton = {
             androidx.compose.material3.TextButton(onClick = onDismiss) { Text("取消") }

@@ -90,6 +90,7 @@ fun InkCanvas(
     val committedStrokes by viewModel.currentStrokes.collectAsState()
     val selectedStrokes by viewModel.selectedStrokes.collectAsState()
     val lassoMoveOffset by viewModel.lassoMoveOffset.collectAsState()
+    val commitPreview by viewModel.commitPreview.collectAsState()
     val activeTool by viewModel.selectedTool.collectAsState()
     val selectedColor by viewModel.selectedColor.collectAsState()
     val strokeWidth by viewModel.strokeWidth.collectAsState()
@@ -846,6 +847,19 @@ fun InkCanvas(
                         activePath.close()
                         viewModel.selectStrokesInLasso(currentPathPoints.map { Offset(it.x, it.y) })
                     }
+                    Tool.ERASER -> {
+                        // Fire one final erasure at end of the gesture so that:
+                        //  (a) pure taps (no drag) can erase a stroke under the finger, and
+                        //  (b) the tail end of a drag that ran asynchronously is not missed.
+                        // For a tap, activePath only has moveTo (zero-length); add a tiny
+                        // degenerate segment so stroked(20f) in IntersectionUtils produces a
+                        // non-empty circle at the touch point via the ROUND stroke-cap.
+                        if (currentPathPoints.size == 1) {
+                            val pt = currentPathPoints.first()
+                            activePath.lineTo(pt.x + 0.01f, pt.y)
+                        }
+                        viewModel.deleteStrokesIntersecting(activePath)
+                    }
                     else -> { }
                 }
                 activePath.reset()
@@ -932,15 +946,34 @@ fun InkCanvas(
                 }
             }
 
+            // Committed strokes from DB.
+            // While a commitPreview is active (DB write in flight after a move), skip the
+            // preview strokes from the DB layer and draw them separately below so the user
+            // sees them at the new position immediately (no flash-back to old position).
+            val preview = commitPreview
+            val previewIds = preview?.first?.map { it.stroke.id }?.toHashSet() ?: emptySet()
             drawIntoCanvas { cvs ->
                 cvs.save()
                 cvs.scale(sx, sy)
                 committedStrokes.forEach { swp ->
+                    if (swp.stroke.id in previewIds) return@forEach
                     if (swp.stroke.shapeType != null) {
                         drawShapeOnCanvas(cvs, swp.stroke, swp.points)
                     } else {
                         drawPathOnCanvas(cvs, swp.points.toComposePath(),
                             Color(swp.stroke.color), swp.stroke.strokeWidth, swp.stroke.isHighlighter)
+                    }
+                }
+                // Preview layer: moved strokes at their committed (new) position.
+                if (preview != null) {
+                    cvs.translate(preview.second.x, preview.second.y)
+                    preview.first.forEach { swp ->
+                        if (swp.stroke.shapeType != null) {
+                            drawShapeOnCanvas(cvs, swp.stroke, swp.points)
+                        } else {
+                            drawPathOnCanvas(cvs, swp.points.toComposePath(),
+                                Color(swp.stroke.color), swp.stroke.strokeWidth, swp.stroke.isHighlighter)
+                        }
                     }
                 }
                 cvs.restore()

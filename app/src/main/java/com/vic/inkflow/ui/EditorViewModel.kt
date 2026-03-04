@@ -83,16 +83,18 @@ class EditorViewModel(
     fun initializePaperSize(w: Float, h: Float) {
         if (w > 0f && h > 0f) {
             _paperStyle.value = _paperStyle.value.copy(widthPt = w, heightPt = h)
-            canvasW = w
-            canvasH = h
+            // NOTE: canvasW/canvasH are NOT updated here. They store the actual pixel
+            // dimensions of the InkCanvas composable (set by setCanvasSize/onSizeChanged).
+            // Overwriting them with PDF point values (e.g. 595) would break the
+            // canvas-pixel ↔ model-space normalisation that every tool relies on.
         }
     }
 
     /** Updates the paper style (size + background template). */
     fun setPaperStyle(style: PaperStyle) {
         _paperStyle.value = style
-        canvasW = style.widthPt
-        canvasH = style.heightPt
+        // NOTE: canvasW/canvasH remain as the actual pixel size from setCanvasSize.
+        // modelWidth/modelHeight (derived from _paperStyle) change automatically.
         viewModelScope.launch(Dispatchers.IO) {
             settingsRepository.setPaperStyle(documentUri, style)
         }
@@ -168,8 +170,12 @@ class EditorViewModel(
                     heightPt = prefs.paperHeightPt ?: _paperStyle.value.heightPt
                 )
                 _paperStyle.value = restoredStyle
-                canvasW = restoredStyle.widthPt
-                canvasH = restoredStyle.heightPt
+                // NOTE: canvasW/canvasH must NOT be updated here.
+                // They store the actual pixel dimensions of the InkCanvas widget,
+                // reported by setCanvasSize() via onSizeChanged during layout.
+                // restoredStyle.widthPt/heightPt are in PDF points (e.g. 595×842),
+                // NOT screen pixels; writing them here would overwrite the correct
+                // canvas size and cause strokes to appear magnified / offset.
             }
         }
     }
@@ -317,9 +323,14 @@ class EditorViewModel(
     fun deleteStrokesIntersecting(toolPath: Path) {
         val cW = canvasW
         val cH = canvasH
+        // Copy the path on the calling (Main) thread before scheduling the coroutine.
+        // android.graphics.Path is NOT thread-safe: copying it inside Dispatchers.Default
+        // while Main is still calling quadraticBezierTo on the same backing native path is
+        // a data race that can corrupt the copy and cause missed erasures.
+        val pathCopy = android.graphics.Path(toolPath.asAndroidPath())
         viewModelScope.launch(Dispatchers.Default) {
             // Scale eraser path from canvas-pixel space to model space before comparing.
-            val scaledEraserPath = android.graphics.Path(toolPath.asAndroidPath()).also { p ->
+            val scaledEraserPath = pathCopy.also { p ->
                 val m = android.graphics.Matrix().apply { setScale(modelWidth / cW, modelHeight / cH) }
                 p.transform(m)
             }
@@ -616,7 +627,7 @@ class EditorViewModel(
                 is DrawCommand.MoveStrokes -> {
                     command.originals.forEach { swp ->
                         val shiftedPoints = swp.points.map { pt ->
-                            PointEntity(strokeId = swp.stroke.id, x = pt.x + command.delta.x, y = pt.y + command.delta.y)
+                            PointEntity(strokeId = swp.stroke.id, x = pt.x + command.delta.x, y = pt.y + command.delta.y, width = pt.width)
                         }
                         val shiftedStroke = swp.stroke.copy(
                             boundsLeft   = swp.stroke.boundsLeft   + command.delta.x,
@@ -674,6 +685,15 @@ class EditorViewModel(
     private val _lassoMoveOffset = MutableStateFlow(Offset.Zero)
     val lassoMoveOffset: StateFlow<Offset> = _lassoMoveOffset.asStateFlow()
 
+    /**
+     * Holds (originalStrokes, totalDelta) during the window between [commitMovedStrokes] being
+     * called and Room emitting the updated rows.  The canvas draws these strokes at
+     * (original + delta) in the commit layer so there is no flicker back to the pre-move
+     * position.  Cleared to null after the DB transaction finishes.
+     */
+    private val _commitPreview = MutableStateFlow<Pair<List<StrokeWithPoints>, Offset>?>(null)
+    val commitPreview: StateFlow<Pair<List<StrokeWithPoints>, Offset>?> = _commitPreview.asStateFlow()
+
     // Guard extraction workflow from accidental re-entry (e.g., rapid double taps).
     private val extractionMutex = Mutex()
 
@@ -703,14 +723,23 @@ class EditorViewModel(
     fun commitMovedStrokes() {
         val strokes = _selectedStrokes.value
         val delta = _lassoMoveOffset.value
-        // Reset visual state immediately on Main thread
+        // Clear selection state IMMEDIATELY so the next gesture is never misinterpreted
+        // as another move (stuck-in-move-mode regression).
         _lassoMoveOffset.value = Offset.Zero
         _selectedStrokes.value = emptyList()
         if (strokes.isEmpty() || (delta.x == 0f && delta.y == 0f)) return
+
+        // Show a commit preview so the strokes stay visible at their new position while the
+        // DB write is in flight (prevents the "flash back to original position" artifact).
+        _commitPreview.value = strokes to delta
+
         viewModelScope.launch(Dispatchers.IO) {
             strokes.forEach { swp ->
                 val shiftedPoints = swp.points.map { pt ->
-                    PointEntity(strokeId = swp.stroke.id, x = pt.x + delta.x, y = pt.y + delta.y)
+                    // Preserve pt.width — EnvelopeUtils.generateEnvelopePath uses it to build
+                    // the filled variable-width envelope; omitting it (defaulting to 0f)
+                    // produces a degenerate zero-area path that is invisible with Fill style.
+                    PointEntity(strokeId = swp.stroke.id, x = pt.x + delta.x, y = pt.y + delta.y, width = pt.width)
                 }
                 val shiftedStroke = swp.stroke.copy(
                     boundsLeft   = swp.stroke.boundsLeft   + delta.x,
@@ -725,7 +754,12 @@ class EditorViewModel(
                 }
             }
             val command = DrawCommand.MoveStrokes(strokes, delta)
-            withContext(Dispatchers.Main) { pushUndo(command) }
+            withContext(Dispatchers.Main) {
+                // DB committed — clear the preview; Room's Flow should emit the updated rows
+                // at about the same time, producing a seamless transition.
+                _commitPreview.value = null
+                pushUndo(command)
+            }
         }
     }
 
@@ -733,6 +767,7 @@ class EditorViewModel(
         _selectedStrokes.value = emptyList()
         _lassoPolygon.value = emptyList()
         _lassoMoveOffset.value = Offset.Zero
+        _commitPreview.value = null
     }
 
     suspend fun extractRegionToNewPage(
@@ -888,7 +923,12 @@ class EditorViewModel(
             croppedBitmap.recycle()
 
             // Trim transparent borders so placement/aspect matches the actually selected region.
-            val trimmedBitmap = trimTransparentEdges(maskedBitmap)
+            var trimOffsetX = 0f
+            var trimOffsetY = 0f
+            val trimmedBitmap = trimTransparentEdges(maskedBitmap) { ox, oy ->
+                trimOffsetX = ox / renderScale
+                trimOffsetY = oy / renderScale
+            }
             if (trimmedBitmap !== maskedBitmap) maskedBitmap.recycle()
 
             // ── Step 4: Save PNG ──────────────────────────────────────────────────
@@ -900,25 +940,20 @@ class EditorViewModel(
             }
             trimmedBitmap.recycle()
 
-            // ── Step 5: Place image on new page (preserve exact aspect ratio) ─────
-            val finalSourceModelW = trimmedPixelW / renderScale
-            val finalSourceModelH = trimmedPixelH / renderScale
+            // ── Step 5: Place image on new page — centred horizontally, near top
+            val finalW = trimmedPixelW / renderScale
+            val finalH = trimmedPixelH / renderScale
 
-            val pad    = 20f
-            val availW = modelWidth - 2 * pad
-            val availH = modelHeight - 2 * pad
-            val placementScale = minOf(availW / finalSourceModelW, availH / finalSourceModelH)
-            val finalW  = finalSourceModelW * placementScale
-            val finalH  = finalSourceModelH * placementScale
-            val shiftX  = pad + (availW - finalW) / 2f   // horizontally centred
-            val shiftY  = pad                             // pinned to top of page
+            val topMarginPt = 24f   // ~8.5 mm from top edge (PDF points)
+            val newModelX = ((modelWidth - finalW) / 2f).coerceAtLeast(0f)
+            val newModelY = topMarginPt
 
             val newImage = ImageAnnotationEntity(
                 id          = java.util.UUID.randomUUID().toString(),
                 documentUri = documentUri,
                 pageIndex   = targetPageIndex,
-                modelX      = shiftX,
-                modelY      = shiftY,
+                modelX      = newModelX,
+                modelY      = newModelY,
                 modelWidth  = finalW,
                 modelHeight = finalH,
                 uri         = android.net.Uri.fromFile(file).toString()
@@ -993,7 +1028,7 @@ class EditorViewModel(
     }
 
     /** Crop transparent margins from ARGB bitmap; returns same instance if no trimming is needed. */
-    private fun trimTransparentEdges(src: android.graphics.Bitmap): android.graphics.Bitmap {
+    private fun trimTransparentEdges(src: android.graphics.Bitmap, onTrimOffsets: (Float, Float) -> Unit = { _, _ -> }): android.graphics.Bitmap {
         val w = src.width
         val h = src.height
         if (w <= 0 || h <= 0) return src
@@ -1022,6 +1057,7 @@ class EditorViewModel(
         }
 
         if (maxX < minX || maxY < minY) return src
+        onTrimOffsets(minX.toFloat(), minY.toFloat())
 
         val outW = (maxX - minX + 1).coerceAtLeast(1)
         val outH = (maxY - minY + 1).coerceAtLeast(1)

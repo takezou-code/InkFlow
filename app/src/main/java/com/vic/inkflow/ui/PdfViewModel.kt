@@ -77,6 +77,8 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
     // may race, so we need a thread-safe map.
     private val thumbnailFlowCache = java.util.concurrent.ConcurrentHashMap<Int, MutableStateFlow<Bitmap?>>()
     private val bitmapFlowCache = java.util.concurrent.ConcurrentHashMap<Int, MutableStateFlow<Bitmap?>>()
+    /** Stores each page's (widthPt, heightPt) as reported by PdfRenderer. Updated on every open. */
+    private val pageSizesMap = java.util.concurrent.ConcurrentHashMap<Int, Pair<Float, Float>>()
 
     init {
         val maxMemory = (Runtime.getRuntime().maxMemory() / 1024).toInt()
@@ -89,6 +91,31 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         thumbnailCache = object : LruCache<Int, Bitmap>(maxMemory / 20) {
             override fun sizeOf(key: Int, value: Bitmap): Int = value.byteCount / 1024
         }
+    }
+
+    /** Returns the aspect ratio (width/height) for [index], or A4 portrait ratio as fallback. */
+    fun getPageAspectRatio(index: Int): Float {
+        val size = pageSizesMap[index] ?: return 595f / 842f
+        return if (size.second > 0f) size.first / size.second else 595f / 842f
+    }
+
+    /**
+     * Reads all page dimensions from [renderer] and caches them in [pageSizesMap].
+     * Must be called while [renderMutex] is held so no concurrent page opens conflict.
+     */
+    private fun readAndCachePageSizes(renderer: PdfRenderer) {
+        val newSizes = mutableMapOf<Int, Pair<Float, Float>>()
+        for (i in 0 until renderer.pageCount) {
+            try {
+                renderer.openPage(i).use { page ->
+                    val w = page.width.toFloat()
+                    val h = page.height.toFloat()
+                    if (w > 0f && h > 0f) newSizes[i] = Pair(w, h)
+                }
+            } catch (_: Exception) { }
+        }
+        pageSizesMap.clear()
+        pageSizesMap.putAll(newSizes)
     }
 
     fun openPdf(uri: Uri) {
@@ -111,11 +138,11 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                 renderMutex.withLock {
                     parcelFileDescriptor = fd
                     pdfRenderer = renderer
+                    readAndCachePageSizes(renderer)
                 }
                 _pageCount.value = renderer.pageCount
-                // Read first page dimensions to expose the document's native model space.
-                val firstSize = PdfManager.readFirstPageSize(getApplication(), uri)
-                if (firstSize != null) _firstPageSize.value = firstSize
+                // Use cached first-page size derived from readAndCachePageSizes above.
+                pageSizesMap[0]?.let { _firstPageSize.value = it }
             } catch (e: Exception) {
                 android.util.Log.e("PdfViewModel", "Failed to open PDF: $uri", e)
             }
@@ -149,7 +176,12 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
      *  - 存檔完成後重新開啟 Renderer，更新 _thumbnailVersion 觸發縮圖刷新。
      *  - 失敗時回滾樂觀更新。
      */
-    fun insertBlankPage(context: Context, afterIndex: Int) {
+    fun insertBlankPage(
+        context: Context,
+        afterIndex: Int,
+        pageWidthPt: Float = com.tom_roush.pdfbox.pdmodel.common.PDRectangle.A4.width,
+        pageHeightPt: Float = com.tom_roush.pdfbox.pdmodel.common.PDRectangle.A4.height
+    ) {
         val fileUri = _currentPdfUri.value ?: return
         if (fileUri.scheme != "file") {
             android.util.Log.w("PdfViewModel", "insertBlankPage: only file:// URIs supported")
@@ -171,7 +203,7 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch(Dispatchers.IO) {
             renderMutex.withLock { closeRendererOnly() }
-            val ok = com.vic.inkflow.util.PdfManager.insertBlankPage(fileUri, afterIndex)
+            val ok = com.vic.inkflow.util.PdfManager.insertBlankPage(fileUri, afterIndex, pageWidthPt, pageHeightPt)
             if (!ok) {
                 // 回滾樂觀更新
                 _pageCount.value = currentCount
@@ -195,6 +227,7 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                 renderMutex.withLock {
                     parcelFileDescriptor = fd
                     pdfRenderer = renderer
+                    readAndCachePageSizes(renderer)
                 }
                 // Clear stale null-flows created while the renderer was unavailable,
                 // so the next recomposition triggers fresh renderPage calls.
@@ -248,6 +281,7 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                     renderMutex.withLock {
                         parcelFileDescriptor = fd
                         pdfRenderer = renderer
+                        readAndCachePageSizes(renderer)
                     }
                     _pageCount.value = renderer.pageCount
                     _thumbnailVersion.value++
@@ -275,6 +309,7 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                 renderMutex.withLock {
                     parcelFileDescriptor = fd
                     pdfRenderer = renderer
+                    readAndCachePageSizes(renderer)
                 }
                 _pageCount.value = renderer.pageCount  // 以實際值確認
                 _thumbnailVersion.value++   // 通知側邊欄重新抓取所有縮圖

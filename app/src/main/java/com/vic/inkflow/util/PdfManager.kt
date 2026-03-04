@@ -60,12 +60,16 @@ object PdfManager {
     // ─── 新功能：建立空白 PDF ─────────────────────────────────────────────────
 
     /** 建立一個單頁 A4 空白 PDF，存到 App 私有目錄，回傳 file:// Uri。失敗回傳 null。 */
-    suspend fun createBlankPdf(context: Context): Uri? =
+    suspend fun createBlankPdf(
+        context: Context,
+        pageWidthPt: Float = PDRectangle.A4.width,
+        pageHeightPt: Float = PDRectangle.A4.height
+    ): Uri? =
         withContext(Dispatchers.IO) {
             try {
                 val dest = File(pdfDir(context), "${UUID.randomUUID()}.pdf")
                 PDDocument().use { doc ->
-                    doc.addPage(PDPage(PDRectangle.A4))
+                    doc.addPage(PDPage(PDRectangle(pageWidthPt, pageHeightPt)))
                     doc.save(dest)
                 }
                 Uri.fromFile(dest)
@@ -79,7 +83,8 @@ object PdfManager {
 
     /** 在 file:// URI 的 PDF 中，於 [afterIndex] 頁之後插入一頁空白頁。
      *  頁面尺寸由 [pageWidthPt] 和 [pageHeightPt] 決定（預設為 A4 直向）。
-     *  afterIndex = -1 或超過末頁時，直接追加到最後。 */
+     *  afterIndex = -1 或超過末頁時，直接追加到最後。
+     *  採用「寫入暫存檔 → 原子重命名」策略，確保操作失敗時原始 PDF 不受損。 */
     suspend fun insertBlankPage(
         fileUri: Uri,
         afterIndex: Int,
@@ -101,7 +106,20 @@ object PdfManager {
                     } else {
                         doc.addPage(newPage)
                     }
-                    doc.save(file)
+                    // Atomic write: save to a temp file first, then rename over the original.
+                    // This prevents file corruption if the process is killed mid-write.
+                    val tmpFile = File(file.parent, "${file.nameWithoutExtension}.tmp_${System.currentTimeMillis()}.pdf")
+                    try {
+                        doc.save(tmpFile)
+                        if (!tmpFile.renameTo(file)) {
+                            // renameTo can fail across mount points; fall back to copy+delete
+                            tmpFile.copyTo(file, overwrite = true)
+                            tmpFile.delete()
+                        }
+                    } catch (e: Exception) {
+                        tmpFile.delete()
+                        throw e
+                    }
                 }
                 true
             } catch (e: Exception) {
@@ -114,7 +132,8 @@ object PdfManager {
     @Deprecated("Use insertBlankPage(fileUri, afterIndex) instead", ReplaceWith("insertBlankPage(fileUri, Int.MAX_VALUE)"))
     suspend fun appendBlankPage(fileUri: Uri): Boolean = insertBlankPage(fileUri, Int.MAX_VALUE)
 
-    /** 刪除 file:// URI PDF 中第 [pageIndex] 頁。若僅剩一頁則拒絕刪除並回傳 false。 */
+    /** 刪除 file:// URI PDF 中第 [pageIndex] 頁。若僅剩一頁則拒絕刪除並回傳 false。
+     *  採用「寫入暫存檔 → 原子重命名」策略，確保操作失敗時原始 PDF 不受損。 */
     suspend fun deletePage(fileUri: Uri, pageIndex: Int): Boolean =
         withContext(Dispatchers.IO) {
             if (fileUri.scheme != "file") {
@@ -129,7 +148,20 @@ object PdfManager {
                         return@withContext false
                     }
                     doc.removePage(pageIndex)
-                    doc.save(file)
+                    // Atomic write: save to a temp file first, then rename over the original.
+                    // This prevents file corruption if the process is killed mid-write.
+                    val tmpFile = File(file.parent, "${file.nameWithoutExtension}.tmp_${System.currentTimeMillis()}.pdf")
+                    try {
+                        doc.save(tmpFile)
+                        if (!tmpFile.renameTo(file)) {
+                            // renameTo can fail across mount points; fall back to copy+delete
+                            tmpFile.copyTo(file, overwrite = true)
+                            tmpFile.delete()
+                        }
+                    } catch (e: Exception) {
+                        tmpFile.delete()
+                        throw e
+                    }
                 }
                 true
             } catch (e: Exception) {
@@ -166,19 +198,26 @@ object PdfManager {
      * Must be called on the IO thread.
      */
     fun readFirstPageSize(context: Context, uri: Uri): Pair<Float, Float>? {
+        val pfd = openPdfFileDescriptor(context, uri) ?: return null
         return try {
-            val pfd = openPdfFileDescriptor(context, uri) ?: return null
             val renderer = PdfRenderer(pfd)
-            val page = renderer.openPage(0)
-            val w = page.width.toFloat()
-            val h = page.height.toFloat()
-            page.close()
-            renderer.close()
-            pfd.close()
-            if (w > 0f && h > 0f) Pair(w, h) else null
+            try {
+                val page = renderer.openPage(0)
+                try {
+                    val w = page.width.toFloat()
+                    val h = page.height.toFloat()
+                    if (w > 0f && h > 0f) Pair(w, h) else null
+                } finally {
+                    page.close()
+                }
+            } finally {
+                renderer.close()
+            }
         } catch (e: Exception) {
             Log.e(TAG, "readFirstPageSize failed for $uri", e)
             null
+        } finally {
+            pfd.close()
         }
     }
 

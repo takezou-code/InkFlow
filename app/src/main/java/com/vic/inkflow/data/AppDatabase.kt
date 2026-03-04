@@ -140,7 +140,10 @@ abstract class AppDatabase : RoomDatabase() {
                     "ink_layer_database"
                 )
                 .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13)
-                .fallbackToDestructiveMigration()
+                // Only allow destructive migration on downgrade (e.g. user reverts to an
+                // older APK). Unknown *upgrade* paths surface as a hard crash rather than
+                // silently wiping all user data.
+                .fallbackToDestructiveMigrationOnDowngrade(dropAllTables = true)
                 .build()
                 INSTANCE = instance
                 instance

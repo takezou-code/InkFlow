@@ -21,6 +21,9 @@ class DocumentViewModel(private val documentDao: DocumentDao, private val stroke
     val documents: StateFlow<List<DocumentEntity>> = documentDao.getAllDocuments()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    // Guard so fixStaleNames runs at most once per ViewModel lifetime (survives config changes).
+    private var staleNamesMigrated = false
+
     fun recordOpened(uri: String, displayName: String) {
         viewModelScope.launch {
             documentDao.upsert(DocumentEntity(uri = uri, displayName = displayName))
@@ -48,6 +51,8 @@ class DocumentViewModel(private val documentDao: DocumentDao, private val stroke
 
     /** Re-resolve display names that were saved as raw URI segments (e.g. "document:1000000062"). */
     fun fixStaleNames(context: Context) {
+        if (staleNamesMigrated) return
+        staleNamesMigrated = true
         viewModelScope.launch(Dispatchers.IO) {
             val stalePattern = Regex("^[a-z]+:\\d+$", RegexOption.IGNORE_CASE)
             val snapshot = documents.value
