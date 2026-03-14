@@ -9,6 +9,7 @@ sealed class DrawCommand {
     data class AddStroke(val stroke: StrokeWithPoints) : DrawCommand()
     data class RemoveStrokes(val strokes: List<StrokeWithPoints>) : DrawCommand()
     data class MoveStrokes(val originals: List<StrokeWithPoints>, val delta: Offset) : DrawCommand()
+    data class ResizeStrokes(val originals: List<StrokeWithPoints>, val updated: List<StrokeWithPoints>) : DrawCommand()
     data class AddTextAnnotation(val annotation: TextAnnotationEntity) : DrawCommand()
     data class RemoveTextAnnotation(val annotation: TextAnnotationEntity) : DrawCommand()
     data class MoveTextAnnotation(val original: TextAnnotationEntity, val updated: TextAnnotationEntity) : DrawCommand()

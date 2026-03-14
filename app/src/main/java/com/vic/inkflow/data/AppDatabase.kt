@@ -15,11 +15,12 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 // v10: Added highlighterColorArgb column to document_preferences.
 // v12: Added pageBackground column to document_preferences.
 // v13: Added paperWidthPt / paperHeightPt columns to document_preferences.
+// v14: Added per-tool pen/highlighter stroke width columns to document_preferences.
 @Database(
     entities = [StrokeEntity::class, PointEntity::class, DocumentEntity::class,
                 TextAnnotationEntity::class, ImageAnnotationEntity::class,
                 DocumentPreferenceEntity::class],
-    version = 13
+    version = 14
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun strokeDao(): StrokeDao
@@ -132,6 +133,19 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE document_preferences ADD COLUMN penStrokeWidth REAL")
+                db.execSQL("ALTER TABLE document_preferences ADD COLUMN highlighterStrokeWidth REAL")
+                db.execSQL(
+                    "UPDATE document_preferences SET penStrokeWidth = COALESCE(strokeWidth, 4.0) WHERE penStrokeWidth IS NULL"
+                )
+                db.execSQL(
+                    "UPDATE document_preferences SET highlighterStrokeWidth = CASE WHEN strokeWidth IS NULL OR strokeWidth < 8.0 THEN 8.0 ELSE strokeWidth END WHERE highlighterStrokeWidth IS NULL"
+                )
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -139,7 +153,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "ink_layer_database"
                 )
-                .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13)
+                .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14)
                 // Only allow destructive migration on downgrade (e.g. user reverts to an
                 // older APK). Unknown *upgrade* paths surface as a hard crash rather than
                 // silently wiping all user data.

@@ -1,5 +1,6 @@
 package com.vic.inkflow.ui
 
+import android.util.Log
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -18,6 +19,7 @@ import com.vic.inkflow.data.TextAnnotationEntity
 import com.vic.inkflow.util.IntersectionUtils
 import com.vic.inkflow.util.EnvelopeUtils
 import com.vic.inkflow.util.StrokePoint
+import com.vic.inkflow.util.StrokeTransformUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -65,6 +67,8 @@ class EditorViewModel(
         /** Default model coordinate space (A4 portrait PDF points). */
         const val MODEL_W = 595f
         const val MODEL_H = 842f
+        private const val DEFAULT_PEN_STROKE_WIDTH = 4f
+        private const val DEFAULT_HIGHLIGHTER_STROKE_WIDTH = 8f
     }
 
     // ── Paper Style ──────────────────────────────────────────────────────────────
@@ -125,6 +129,8 @@ class EditorViewModel(
     // Per-tool color memory (updated on init and whenever the user picks a color)
     private var penColor: Color = Color.Black
     private var highlighterColor: Color = Color(0xFFFFC700)
+    private var penStrokeWidth: Float = DEFAULT_PEN_STROKE_WIDTH
+    private var highlighterStrokeWidth: Float = DEFAULT_HIGHLIGHTER_STROKE_WIDTH
 
     private val _recentColors = MutableStateFlow(
         listOf(
@@ -136,7 +142,7 @@ class EditorViewModel(
     )
     val recentColors: StateFlow<List<Color>> = _recentColors.asStateFlow()
 
-    private val _strokeWidth = MutableStateFlow(5f)
+    private val _strokeWidth = MutableStateFlow(DEFAULT_PEN_STROKE_WIDTH)
     val strokeWidth: StateFlow<Float> = _strokeWidth.asStateFlow()
 
     private val _inputMode = MutableStateFlow(InputMode.FREE)
@@ -159,8 +165,10 @@ class EditorViewModel(
                 _selectedTool.value = prefs.tool
                 penColor = Color(prefs.colorArgb)
                 highlighterColor = Color(prefs.highlighterColorArgb)
+                penStrokeWidth = prefs.penStrokeWidth
+                highlighterStrokeWidth = prefs.highlighterStrokeWidth
                 _selectedColor.value = if (prefs.tool == Tool.HIGHLIGHTER) highlighterColor else penColor
-                _strokeWidth.value = prefs.strokeWidth
+                _strokeWidth.value = strokeWidthFor(prefs.tool)
                 _selectedShapeSubType.value = prefs.shapeSubType
                 _inputMode.value = prefs.inputMode
                 _recentColors.value = prefs.recentColors.map { Color(it) }
@@ -202,8 +210,19 @@ class EditorViewModel(
     private val _pageIndex = MutableStateFlow(0)
     val pageIndex: StateFlow<Int> = _pageIndex.asStateFlow()
 
-    val currentStrokes: StateFlow<List<StrokeWithPoints>> = pageIndex.flatMapLatest { index ->
-        strokeDao.getStrokesForPage(documentUri, index)
+    private val _pendingStrokes = MutableStateFlow<Map<String, StrokeWithPoints>>(emptyMap())
+
+    val currentStrokes: StateFlow<List<StrokeWithPoints>> = kotlinx.coroutines.flow.combine(
+        pageIndex.flatMapLatest { index -> strokeDao.getStrokesForPage(documentUri, index) },
+        _pendingStrokes
+    ) { dbStrokes, pending ->
+        val dbIds = dbStrokes.map { it.stroke.id }.toSet()
+        val resolvedIds = pending.keys.intersect(dbIds)
+        if (resolvedIds.isNotEmpty()) {
+            _pendingStrokes.value = _pendingStrokes.value - resolvedIds
+        }
+        val unresolved = pending.filterKeys { it !in dbIds }.values
+        dbStrokes + unresolved
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val currentTextAnnotations: StateFlow<List<TextAnnotationEntity>> = pageIndex.flatMapLatest { index ->
@@ -234,8 +253,14 @@ class EditorViewModel(
     fun onToolSelected(tool: Tool) {
         _selectedTool.value = tool
         when (tool) {
-            Tool.PEN -> _selectedColor.value = penColor
-            Tool.HIGHLIGHTER -> _selectedColor.value = highlighterColor
+            Tool.PEN -> {
+                _selectedColor.value = penColor
+                _strokeWidth.value = penStrokeWidth
+            }
+            Tool.HIGHLIGHTER -> {
+                _selectedColor.value = highlighterColor
+                _strokeWidth.value = highlighterStrokeWidth
+            }
             else -> {}
         }
         viewModelScope.launch(Dispatchers.IO) {
@@ -268,74 +293,88 @@ class EditorViewModel(
 
     fun onStrokeWidthChanged(width: Float) {
         _strokeWidth.value = width
-        viewModelScope.launch(Dispatchers.IO) {
-            settingsRepository.setStrokeWidth(documentUri, width)
+        when (_selectedTool.value) {
+            Tool.HIGHLIGHTER -> highlighterStrokeWidth = width
+            Tool.PEN -> penStrokeWidth = width
+            else -> return
         }
+        viewModelScope.launch(Dispatchers.IO) {
+            settingsRepository.setStrokeWidth(documentUri, _selectedTool.value, width)
+        }
+    }
+
+    private fun strokeWidthFor(tool: Tool): Float = when (tool) {
+        Tool.HIGHLIGHTER -> highlighterStrokeWidth
+        Tool.PEN -> penStrokeWidth
+        else -> penStrokeWidth
     }
 
     fun saveStroke(points: List<StrokePoint>, color: Color, tool: Tool = Tool.PEN, baseWidth: Float = 5f) {
         if (points.size < 2) return
-        // Capture canvas dimensions on the calling (Main) thread before switching to IO.
         val cW = canvasW
         val cH = canvasH
+        val strokeId = UUID.randomUUID().toString()
+
+        // Normalize immediately on the caller thread so the just-finished stroke can move
+        // from the active layer to the pending layer without a visible gap on stylus lift.
+        val scaleX = modelWidth / cW
+        val scaleY = modelHeight / cH
+        val normalizedPoints = points.map {
+            StrokePoint(it.x * scaleX, it.y * scaleY, it.width * scaleX)
+        }
+        val path = EnvelopeUtils.generateEnvelopePath(normalizedPoints)
+        val bounds = path.getBounds()
+        val strokeEntity = StrokeEntity(
+            id = strokeId,
+            documentUri = documentUri,
+            pageIndex = pageIndex.value,
+            color = color.toArgb(),
+            // Store the user-selected base width (normalized to model space) so PDF export
+            // uses the correct line thickness rather than the velocity-derived per-point width.
+            strokeWidth = baseWidth * scaleX,
+            boundsLeft = bounds.left,
+            boundsTop = bounds.top,
+            boundsRight = bounds.right,
+            boundsBottom = bounds.bottom,
+            isHighlighter = tool == Tool.HIGHLIGHTER
+        )
+        val pointEntities = normalizedPoints.map {
+            PointEntity(strokeId = strokeId, x = it.x, y = it.y, width = it.width)
+        }
+        val pendingStroke = StrokeWithPoints(strokeEntity, pointEntities)
+        _pendingStrokes.value = _pendingStrokes.value + (strokeId to pendingStroke)
 
         viewModelScope.launch(Dispatchers.IO) {
-            val strokeId = UUID.randomUUID().toString()
-
-            // Normalise from canvas-pixel space to model space.
-            val scaleX = modelWidth / cW
-            val scaleY = modelHeight / cH
-            
-            // Map points to model space and construct path for bounds
-            val normalizedPoints = points.map { 
-                StrokePoint(it.x * scaleX, it.y * scaleY, it.width * scaleX) 
+            try {
+                db.withTransaction {
+                    strokeDao.insertStroke(strokeEntity)
+                    strokeDao.insertPoints(pointEntities)
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    _pendingStrokes.value = _pendingStrokes.value - strokeId
+                }
+                Log.e("EditorViewModel", "Failed to persist stroke $strokeId", e)
+                return@launch
             }
 
-            val path = EnvelopeUtils.generateEnvelopePath(normalizedPoints)
-            val bounds = path.getBounds()
-
-            val strokeEntity = StrokeEntity(
-                id = strokeId,
-                documentUri = documentUri,
-                pageIndex = pageIndex.value,
-                color = color.toArgb(),
-                // Store the user-selected base width (normalised to model space) so PDF export
-                // uses the correct line thickness rather than the velocity-derived per-point width.
-                strokeWidth = baseWidth * scaleX,
-                boundsLeft = bounds.left,
-                boundsTop = bounds.top,
-                boundsRight = bounds.right,
-                boundsBottom = bounds.bottom,
-                isHighlighter = tool == Tool.HIGHLIGHTER
-            )
-            val pointEntities = normalizedPoints.map { PointEntity(strokeId = strokeId, x = it.x, y = it.y, width = it.width) }
-
-            db.withTransaction {
-                strokeDao.insertStroke(strokeEntity)
-                strokeDao.insertPoints(pointEntities)
-            }
-
-            val command = DrawCommand.AddStroke(StrokeWithPoints(strokeEntity, pointEntities))
+            val command = DrawCommand.AddStroke(pendingStroke)
             withContext(Dispatchers.Main) { pushUndo(command) }
         }
     }
 
-    fun deleteStrokesIntersecting(toolPath: Path) {
+    fun deleteStrokesIntersecting(eraserPointsCanvas: List<Offset>) {
         val cW = canvasW
         val cH = canvasH
-        // Copy the path on the calling (Main) thread before scheduling the coroutine.
-        // android.graphics.Path is NOT thread-safe: copying it inside Dispatchers.Default
-        // while Main is still calling quadraticBezierTo on the same backing native path is
-        // a data race that can corrupt the copy and cause missed erasures.
-        val pathCopy = android.graphics.Path(toolPath.asAndroidPath())
+        // Pass the snapshot of eraser points to the coroutine
+        val pointsCopy = eraserPointsCanvas.toList()
         viewModelScope.launch(Dispatchers.Default) {
-            // Scale eraser path from canvas-pixel space to model space before comparing.
-            val scaledEraserPath = pathCopy.also { p ->
-                val m = android.graphics.Matrix().apply { setScale(modelWidth / cW, modelHeight / cH) }
-                p.transform(m)
-            }
+            // Scale eraser points from canvas-pixel space to model space before comparing.
+            val scaleX = modelWidth / cW
+            val scaleY = modelHeight / cH
+            val modelEraserPoints = pointsCopy.map { Offset(it.x * scaleX, it.y * scaleY) }
             val intersectingStrokes = IntersectionUtils.findIntersectingStrokes(
-                eraserPath = scaledEraserPath,
+                eraserPoints = modelEraserPoints,
                 strokes = currentStrokes.value
             )
             if (intersectingStrokes.isNotEmpty()) {
@@ -346,7 +385,19 @@ class EditorViewModel(
                 withContext(Dispatchers.Main) { pushUndo(command) }
             }
             // Also erase text and image annotations whose model coords fall within the eraser bounds.
-            val eraserBounds = android.graphics.RectF().also { scaledEraserPath.computeBounds(it, true) }
+            var eMinX = Float.POSITIVE_INFINITY
+            var eMinY = Float.POSITIVE_INFINITY
+            var eMaxX = Float.NEGATIVE_INFINITY
+            var eMaxY = Float.NEGATIVE_INFINITY
+            for (p in modelEraserPoints) {
+                if (p.x < eMinX) eMinX = p.x
+                if (p.x > eMaxX) eMaxX = p.x
+                if (p.y < eMinY) eMinY = p.y
+                if (p.y > eMaxY) eMaxY = p.y
+            }
+            // 10f is eraser radius
+            val eraserBounds = android.graphics.RectF(eMinX - 10f, eMinY - 10f, eMaxX + 10f, eMaxY + 10f)
+
             val hitTexts = currentTextAnnotations.value.filter { ann ->
                 // Estimate the bounding box of the text in model space.
                 // isStamp = oversized emoji: treat as a square of fontSize × fontSize.
@@ -578,6 +629,15 @@ class EditorViewModel(
                         }
                     }
                 }
+                is DrawCommand.ResizeStrokes -> {
+                    command.originals.forEach { swp ->
+                        db.withTransaction {
+                            strokeDao.deletePointsForStroke(swp.stroke.id)
+                            strokeDao.insertStroke(swp.stroke)
+                            strokeDao.insertPoints(swp.points)
+                        }
+                    }
+                }
                 is DrawCommand.AddTextAnnotation -> {
                     textAnnotationDao.deleteById(command.annotation.id)
                 }
@@ -642,6 +702,15 @@ class EditorViewModel(
                         }
                     }
                 }
+                is DrawCommand.ResizeStrokes -> {
+                    command.updated.forEach { swp ->
+                        db.withTransaction {
+                            strokeDao.deletePointsForStroke(swp.stroke.id)
+                            strokeDao.insertStroke(swp.stroke)
+                            strokeDao.insertPoints(swp.points)
+                        }
+                    }
+                }
                 is DrawCommand.AddTextAnnotation -> {
                     textAnnotationDao.insert(command.annotation)
                 }
@@ -679,23 +748,69 @@ class EditorViewModel(
     private val _selectedStrokes = MutableStateFlow<List<StrokeWithPoints>>(emptyList())
     val selectedStrokes: StateFlow<List<StrokeWithPoints>> = _selectedStrokes.asStateFlow()
 
+    private val _selectedStrokePreview = MutableStateFlow<List<StrokeWithPoints>>(emptyList())
+    val selectedStrokePreview: StateFlow<List<StrokeWithPoints>> = _selectedStrokePreview.asStateFlow()
+
     private val _lassoPolygon = MutableStateFlow<List<Offset>>(emptyList())
     val lassoPolygon: StateFlow<List<Offset>> = _lassoPolygon.asStateFlow()
 
     private val _lassoMoveOffset = MutableStateFlow(Offset.Zero)
     val lassoMoveOffset: StateFlow<Offset> = _lassoMoveOffset.asStateFlow()
 
+    private val _selectedStrokeScale = MutableStateFlow(1f)
+    val selectedStrokeScale: StateFlow<Float> = _selectedStrokeScale.asStateFlow()
+
+    private val _selectedStrokePreviewBounds = MutableStateFlow<androidx.compose.ui.geometry.Rect?>(null)
+    val selectedStrokePreviewBounds: StateFlow<androidx.compose.ui.geometry.Rect?> = _selectedStrokePreviewBounds.asStateFlow()
+
+    private val _selectedStrokeResizeAnchor = MutableStateFlow<Offset?>(null)
+    val selectedStrokeResizeAnchor: StateFlow<Offset?> = _selectedStrokeResizeAnchor.asStateFlow()
+
     /**
-     * Holds (originalStrokes, totalDelta) during the window between [commitMovedStrokes] being
-     * called and Room emitting the updated rows.  The canvas draws these strokes at
-     * (original + delta) in the commit layer so there is no flicker back to the pre-move
-     * position.  Cleared to null after the DB transaction finishes.
+     * Holds the fully transformed stroke snapshots during the window between a selection commit
+     * and Room emitting the updated rows. The canvas draws these transformed strokes directly so
+     * there is no flicker back to the pre-transform position.
      */
-    private val _commitPreview = MutableStateFlow<Pair<List<StrokeWithPoints>, Offset>?>(null)
-    val commitPreview: StateFlow<Pair<List<StrokeWithPoints>, Offset>?> = _commitPreview.asStateFlow()
+    private val _commitPreview = MutableStateFlow<List<StrokeWithPoints>?>(null)
+    val commitPreview: StateFlow<List<StrokeWithPoints>?> = _commitPreview.asStateFlow()
 
     // Guard extraction workflow from accidental re-entry (e.g., rapid double taps).
     private val extractionMutex = Mutex()
+
+    private fun canvasToModel(offset: Offset): Offset = Offset(
+        x = offset.x * modelWidth / canvasW,
+        y = offset.y * modelHeight / canvasH
+    )
+
+    private suspend fun replaceStrokeSnapshots(strokes: List<StrokeWithPoints>) {
+        strokes.forEach { swp ->
+            db.withTransaction {
+                strokeDao.deletePointsForStroke(swp.stroke.id)
+                strokeDao.insertStroke(swp.stroke)
+                strokeDao.insertPoints(swp.points)
+            }
+        }
+    }
+
+    private fun refreshSelectedStrokePreview() {
+        val originals = _selectedStrokes.value
+        if (originals.isEmpty()) {
+            _selectedStrokePreview.value = emptyList()
+            _selectedStrokePreviewBounds.value = null
+            return
+        }
+        val anchor = _selectedStrokeResizeAnchor.value ?: StrokeTransformUtils
+            .computeSelectionBounds(originals)
+            ?.center ?: Offset.Zero
+        val preview = StrokeTransformUtils.transformStrokes(
+            strokes = originals,
+            translation = _lassoMoveOffset.value,
+            scale = _selectedStrokeScale.value,
+            anchor = anchor
+        )
+        _selectedStrokePreview.value = preview
+        _selectedStrokePreviewBounds.value = StrokeTransformUtils.computeSelectionBounds(preview)
+    }
 
     fun selectStrokesInLasso(polygon: List<Offset>) {
         val cW = canvasW
@@ -710,7 +825,14 @@ class EditorViewModel(
         _lassoPolygon.value = normalizedPolygon
         viewModelScope.launch(Dispatchers.Default) {
             val selected = IntersectionUtils.findStrokesInLasso(normalizedPolygon, currentStrokes.value)
-            withContext(Dispatchers.Main) { _selectedStrokes.value = selected }
+            withContext(Dispatchers.Main) {
+                _selectedStrokes.value = selected
+                _lassoMoveOffset.value = Offset.Zero
+                _selectedStrokeScale.value = 1f
+                _selectedStrokeResizeAnchor.value = null
+                _selectedStrokePreview.value = selected
+                _selectedStrokePreviewBounds.value = StrokeTransformUtils.computeSelectionBounds(selected)
+            }
         }
     }
 
@@ -718,53 +840,66 @@ class EditorViewModel(
         // Normalise drag delta to model space so it lines up with stored stroke coordinates.
         val normalizedDelta = Offset(delta.x * modelWidth / canvasW, delta.y * modelHeight / canvasH)
         _lassoMoveOffset.value = _lassoMoveOffset.value + normalizedDelta
+        refreshSelectedStrokePreview()
+    }
+
+    fun beginSelectedStrokeResize(anchorCanvas: Offset) {
+        _selectedStrokeResizeAnchor.value = canvasToModel(anchorCanvas)
+        _selectedStrokeScale.value = 1f
+        refreshSelectedStrokePreview()
+    }
+
+    fun previewSelectedStrokeScale(scale: Float) {
+        _selectedStrokeScale.value = StrokeTransformUtils.clampUniformScale(scale)
+        refreshSelectedStrokePreview()
     }
 
     fun commitMovedStrokes() {
         val strokes = _selectedStrokes.value
         val delta = _lassoMoveOffset.value
+        val movedStrokes = _selectedStrokePreview.value.ifEmpty {
+            StrokeTransformUtils.transformStrokes(strokes, translation = delta)
+        }
         // Clear selection state IMMEDIATELY so the next gesture is never misinterpreted
         // as another move (stuck-in-move-mode regression).
-        _lassoMoveOffset.value = Offset.Zero
-        _selectedStrokes.value = emptyList()
+        clearSelection()
         if (strokes.isEmpty() || (delta.x == 0f && delta.y == 0f)) return
 
-        // Show a commit preview so the strokes stay visible at their new position while the
-        // DB write is in flight (prevents the "flash back to original position" artifact).
-        _commitPreview.value = strokes to delta
+        _commitPreview.value = movedStrokes
 
         viewModelScope.launch(Dispatchers.IO) {
-            strokes.forEach { swp ->
-                val shiftedPoints = swp.points.map { pt ->
-                    // Preserve pt.width — EnvelopeUtils.generateEnvelopePath uses it to build
-                    // the filled variable-width envelope; omitting it (defaulting to 0f)
-                    // produces a degenerate zero-area path that is invisible with Fill style.
-                    PointEntity(strokeId = swp.stroke.id, x = pt.x + delta.x, y = pt.y + delta.y, width = pt.width)
-                }
-                val shiftedStroke = swp.stroke.copy(
-                    boundsLeft   = swp.stroke.boundsLeft   + delta.x,
-                    boundsTop    = swp.stroke.boundsTop    + delta.y,
-                    boundsRight  = swp.stroke.boundsRight  + delta.x,
-                    boundsBottom = swp.stroke.boundsBottom + delta.y
-                )
-                db.withTransaction {
-                    strokeDao.deletePointsForStroke(swp.stroke.id)
-                    strokeDao.insertStroke(shiftedStroke)
-                    strokeDao.insertPoints(shiftedPoints)
-                }
-            }
+            replaceStrokeSnapshots(movedStrokes)
             val command = DrawCommand.MoveStrokes(strokes, delta)
             withContext(Dispatchers.Main) {
-                // DB committed — clear the preview; Room's Flow should emit the updated rows
-                // at about the same time, producing a seamless transition.
                 _commitPreview.value = null
                 pushUndo(command)
             }
         }
     }
 
+    fun commitResizedStrokes() {
+        val originals = _selectedStrokes.value
+        val updated = _selectedStrokePreview.value.ifEmpty { originals }
+        val scale = _selectedStrokeScale.value
+        clearSelection()
+        if (originals.isEmpty() || kotlin.math.abs(scale - 1f) < 0.001f) return
+
+        _commitPreview.value = updated
+        viewModelScope.launch(Dispatchers.IO) {
+            replaceStrokeSnapshots(updated)
+            withContext(Dispatchers.Main) {
+                _commitPreview.value = null
+                pushUndo(DrawCommand.ResizeStrokes(originals, updated))
+            }
+        }
+    }
+
     fun clearSelection() {
         _selectedStrokes.value = emptyList()
+        _selectedStrokePreview.value = emptyList()
+        _selectedStrokePreviewBounds.value = null
+        _selectedStrokeScale.value = 1f
+        _selectedStrokeResizeAnchor.value = null
         _lassoPolygon.value = emptyList()
         _lassoMoveOffset.value = Offset.Zero
         _commitPreview.value = null

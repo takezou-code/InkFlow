@@ -1,6 +1,9 @@
 package com.vic.inkflow.ui
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Color
+import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.lifecycle.ViewModel
@@ -10,19 +13,58 @@ import com.vic.inkflow.data.AppDatabase
 import com.vic.inkflow.data.DocumentDao
 import com.vic.inkflow.data.DocumentEntity
 import com.vic.inkflow.data.StrokeDao
+import com.vic.inkflow.util.PdfManager
+import com.vic.inkflow.util.ThumbnailCacheManager
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import java.io.File
+import java.util.concurrent.ConcurrentHashMap
+
+private data class DocumentThumbnailEntry(
+    val cacheKey: String,
+    val flow: MutableStateFlow<Bitmap?>
+)
 
 class DocumentViewModel(private val documentDao: DocumentDao, private val strokeDao: StrokeDao, private val db: AppDatabase) : ViewModel() {
 
     val documents: StateFlow<List<DocumentEntity>> = documentDao.getAllDocuments()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    private val thumbnailEntries = ConcurrentHashMap<String, DocumentThumbnailEntry>()
+    private val thumbnailJobs = ConcurrentHashMap<String, Job>()
+    private val thumbnailLoadSemaphore = Semaphore(permits = 2)
+
     // Guard so fixStaleNames runs at most once per ViewModel lifetime (survives config changes).
     private var staleNamesMigrated = false
+
+    fun getDocumentThumbnail(context: Context, documentUri: String): StateFlow<Bitmap?> {
+        val appContext = context.applicationContext
+        val cacheKey = buildThumbnailCacheKey(documentUri)
+        val entry = thumbnailEntries.compute(documentUri) { _, current ->
+            if (current?.cacheKey == cacheKey) {
+                current
+            } else {
+                current?.let { ThumbnailCacheManager.remove(it.cacheKey) }
+                DocumentThumbnailEntry(
+                    cacheKey = cacheKey,
+                    flow = MutableStateFlow(ThumbnailCacheManager.get(cacheKey))
+                )
+            }
+        } ?: DocumentThumbnailEntry(cacheKey, MutableStateFlow(ThumbnailCacheManager.get(cacheKey)))
+
+        if (entry.flow.value == null) {
+            ensureThumbnailLoaded(appContext, documentUri, entry)
+        }
+        return entry.flow.asStateFlow()
+    }
 
     fun recordOpened(uri: String, displayName: String) {
         viewModelScope.launch {
@@ -32,6 +74,7 @@ class DocumentViewModel(private val documentDao: DocumentDao, private val stroke
 
     fun delete(uri: String) {
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            invalidateThumbnail(uri)
             // Delete all strokes and annotations belonging to this document first.
             strokeDao.deleteStrokesForDocument(uri)
             db.textAnnotationDao().deleteForDocument(uri)
@@ -85,6 +128,82 @@ class DocumentViewModel(private val documentDao: DocumentDao, private val stroke
     fun rename(uri: String, newName: String) {
         viewModelScope.launch(Dispatchers.IO) {
             documentDao.renameDocument(uri, newName.trim().ifEmpty { "未命名筆記" })
+        }
+    }
+
+    private fun ensureThumbnailLoaded(
+        context: Context,
+        documentUri: String,
+        entry: DocumentThumbnailEntry
+    ) {
+        val currentJob = thumbnailJobs[documentUri]
+        if (currentJob?.isActive == true) return
+
+        thumbnailJobs[documentUri] = viewModelScope.launch(Dispatchers.IO) {
+            thumbnailLoadSemaphore.withPermit {
+                try {
+                    val latestEntry = thumbnailEntries[documentUri]
+                    if (latestEntry == null || latestEntry.cacheKey != entry.cacheKey || latestEntry.flow.value != null) {
+                        return@withPermit
+                    }
+
+                    val bitmap = renderThumbnailBitmap(context, documentUri)
+                    if (bitmap != null) {
+                        ThumbnailCacheManager.put(entry.cacheKey, bitmap)
+                    }
+                    latestEntry.flow.value = bitmap
+                } finally {
+                    thumbnailJobs.remove(documentUri)
+                }
+            }
+        }
+    }
+
+    private fun renderThumbnailBitmap(context: Context, documentUri: String): Bitmap? {
+        val uri = Uri.parse(documentUri)
+        val pfd = PdfManager.openPdfFileDescriptor(context, uri) ?: return null
+        var renderer: PdfRenderer? = null
+        var page: PdfRenderer.Page? = null
+        return try {
+            renderer = PdfRenderer(pfd)
+            if (renderer.pageCount == 0) return null
+            page = renderer.openPage(0)
+            val bitmapWidth = (page.width * 0.35f).toInt().coerceAtLeast(1)
+            val bitmapHeight = (page.height * 0.35f).toInt().coerceAtLeast(1)
+            Bitmap.createBitmap(bitmapWidth, bitmapHeight, Bitmap.Config.ARGB_8888).also { bitmap ->
+                bitmap.eraseColor(Color.WHITE)
+                page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+            }
+        } catch (_: Exception) {
+            null
+        } finally {
+            try {
+                page?.close()
+            } catch (_: Exception) { }
+            try {
+                renderer?.close()
+            } catch (_: Exception) { }
+            try {
+                pfd.close()
+            } catch (_: Exception) { }
+        }
+    }
+
+    private fun buildThumbnailCacheKey(documentUri: String): String {
+        val parsed = Uri.parse(documentUri)
+        val fileVersion = if (parsed.scheme == "file") {
+            runCatching { File(parsed.path!!).lastModified() }.getOrDefault(0L)
+        } else {
+            0L
+        }
+        return "$documentUri#$fileVersion"
+    }
+
+    private fun invalidateThumbnail(documentUri: String) {
+        thumbnailJobs.remove(documentUri)?.cancel()
+        thumbnailEntries.remove(documentUri)?.let { entry ->
+            ThumbnailCacheManager.remove(entry.cacheKey)
+            entry.flow.value = null
         }
     }
 }

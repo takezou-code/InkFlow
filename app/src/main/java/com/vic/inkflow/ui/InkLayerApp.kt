@@ -1,25 +1,42 @@
 package com.vic.inkflow.ui
 
+import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -28,10 +45,11 @@ import androidx.compose.foundation.gestures.calculateCentroidSize
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -41,95 +59,107 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Article
+import androidx.compose.material.icons.automirrored.filled.NoteAdd
 import androidx.compose.material.icons.automirrored.filled.Redo
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Apps
+import androidx.compose.material.icons.filled.Article
+import androidx.compose.material.icons.filled.BackHand
 import androidx.compose.material.icons.filled.Bookmark
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.outlined.DarkMode
-import androidx.compose.material.icons.outlined.LightMode
-import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Apps
+import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.CropSquare
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Title
 import androidx.compose.material.icons.filled.TouchApp
-import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.filled.Create
-import androidx.compose.material.icons.filled.BackHand
-import androidx.compose.material.icons.filled.Block
-import androidx.compose.material.icons.filled.Description
-import androidx.compose.material.icons.filled.NoteAdd
+import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.FileUpload
+import androidx.compose.material.icons.outlined.LightMode
 import androidx.compose.material.icons.rounded.Brush
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Gesture
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LargeTopAppBar
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Slider
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.VerticalDivider
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Article
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.layout.statusBarsPadding
-import com.vic.inkflow.ui.theme.InkFlowTheme
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.graphics.RectangleShape
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
@@ -138,51 +168,35 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
-import android.graphics.BitmapFactory
 import com.vic.inkflow.data.AppDatabase
+import com.vic.inkflow.data.DocumentEntity
 import com.vic.inkflow.data.ImageAnnotationEntity
 import com.vic.inkflow.data.StrokeWithPoints
 import com.vic.inkflow.data.TextAnnotationEntity
+import com.vic.inkflow.ui.theme.BrandIndigo
+import com.vic.inkflow.ui.theme.BrandPurple
+import com.vic.inkflow.ui.theme.InkFlowTheme
+import com.vic.inkflow.ui.theme.PaperDark
+import com.vic.inkflow.ui.theme.PaperLight
+import com.vic.inkflow.ui.theme.Slate50
+import com.vic.inkflow.ui.theme.Slate100
+import com.vic.inkflow.ui.theme.Slate900
+import com.vic.inkflow.ui.theme.ToolbarGlassDark
+import com.vic.inkflow.ui.theme.ToolbarGlassLight
+import com.vic.inkflow.ui.theme.WorkspaceDeskDark
+import com.vic.inkflow.ui.theme.WorkspaceDeskLight
 import com.vic.inkflow.util.PdfManager
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.sin
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.net.URLEncoder
-import java.nio.charset.StandardCharsets
-import androidx.compose.animation.Crossfade
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.spring
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
-import androidx.compose.foundation.layout.BoxScope
-import androidx.compose.runtime.mutableStateMapOf
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.StrokeJoin
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
-import androidx.compose.ui.graphics.nativeCanvas
-import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.unit.IntSize
-import kotlin.math.atan2
-import kotlin.math.cos
-import kotlin.math.sin
 
 
 // --- 1. App Navigation ---
@@ -248,17 +262,17 @@ fun InkLayerApp(db: AppDatabase) {
 @Composable
 private fun rememberFlowingBrandBrush(isDarkTheme: Boolean): Brush {
     val palette = if (isDarkTheme) listOf(
-        Color(0xFF08061C),   // near-black purple (base)
-        Color(0xFF130D42),   // muted dark purple
-        Color(0xFF07101E),   // deep navy
-        Color(0xFF1A0E52),   // muted indigo
-        Color(0xFF0C051E),   // dark violet (return to base)
+        Slate900,
+        WorkspaceDeskDark,
+        BrandIndigo.copy(alpha = 0.32f),
+        BrandPurple.copy(alpha = 0.28f),
+        Slate900,
     ) else listOf(
-        Color(0xFFE8EEFF),   // indigo 100
-        Color(0xFFD9E2FF),   // indigo 200
-        Color(0xFFF3F0FF),   // violet 50
-        Color(0xFFD9EEFF),   // blue 100
-        Color(0xFFE2EEFF),   // light blue 100
+        Color(0xFFEAF0FF),
+        Slate50,
+        Color(0xFFF8F3FF),
+        Color(0xFFEAF6FF),
+        Slate100,
     )
     val n = palette.size
 
@@ -297,9 +311,18 @@ private fun rememberFlowingBrandBrush(isDarkTheme: Boolean): Brush {
  * and never propagate up to DocumentLibraryScreen.
  */
 @Composable
-private fun AnimatedGradientBackground(isDarkTheme: Boolean, modifier: Modifier = Modifier) {
-    val brush = rememberFlowingBrandBrush(isDarkTheme)
-    Box(modifier = modifier.background(brush))
+private fun AnimatedGradientBackground(isDarkTheme: Boolean, isIdle: Boolean = false, modifier: Modifier = Modifier) {
+    // When idle, skip the InfiniteTransition entirely so it stops driving recompositions.
+    if (isIdle) {
+        val staticBrush = remember(isDarkTheme) {
+            if (isDarkTheme) Brush.linearGradient(listOf(Slate900, WorkspaceDeskDark))
+            else Brush.linearGradient(listOf(Color(0xFFEAF0FF), Slate50))
+        }
+        Box(modifier = modifier.background(staticBrush))
+    } else {
+        val brush = rememberFlowingBrandBrush(isDarkTheme)
+        Box(modifier = modifier.background(brush))
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -382,17 +405,42 @@ fun DocumentLibraryScreen(
     }
 
     var selectedNavIndex by remember { mutableStateOf(0) }
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+    val normalizedQuery = searchQuery.trim()
+    val filteredDocs = remember(documents, normalizedQuery) {
+        if (normalizedQuery.isEmpty()) documents
+        else documents.filter { it.displayName.contains(normalizedQuery, ignoreCase = true) }
+    }
+
+    // Idle-pause: freeze the background animation after 3 s of inactivity to save battery.
+    var isIdle by remember { mutableStateOf(false) }
+    var lastTouchTime by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(lastTouchTime) {
+        delay(3_000L)
+        isIdle = true
+    }
 
     // Outer Box does NOT read any animated State, so it never recomposes at 60 fps.
     // The animated gradient is drawn by the isolated AnimatedGradientBackground child.
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .pointerInput(Unit) {
+                // Any touch anywhere on the screen resets the idle timer.
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    isIdle = false
+                    lastTouchTime = System.currentTimeMillis()
+                }
+            }
+    ) {
+        AnimatedGradientBackground(isDarkTheme, isIdle = isIdle, Modifier.fillMaxSize())
+
+    Row(
+        modifier = Modifier
+            .fillMaxSize()
             .statusBarsPadding()
     ) {
-        AnimatedGradientBackground(isDarkTheme, Modifier.fillMaxSize())
-
-    Row(modifier = Modifier.fillMaxSize()) {
         // Navigation Rail — transparent so the full-screen gradient shows through
         androidx.compose.material3.NavigationRail(
             modifier = Modifier.fillMaxHeight(),
@@ -447,154 +495,109 @@ fun DocumentLibraryScreen(
             Spacer(Modifier.height(8.dp))
         }
 
-        // Main content with TopAppBar + search
-        var searchQuery by remember { mutableStateOf("") }
-        // Memoize: only recompute when documents list or search query actually changes.
-        val filteredDocs = remember(documents, searchQuery) {
-            documents.filter { it.displayName.contains(searchQuery, ignoreCase = true) }
-        }
-
         Scaffold(
             modifier = Modifier.fillMaxSize(),
             containerColor = Color.Transparent,
             contentColor = MaterialTheme.colorScheme.onBackground,
             topBar = {
-                androidx.compose.material3.TopAppBar(
-                    title = {
-                        androidx.compose.material3.OutlinedTextField(
-                            value = searchQuery,
-                            onValueChange = { searchQuery = it },
-                            placeholder = { Text("搜尋筆記...") },
-                            singleLine = true,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(end = 8.dp),
-                            shape = CircleShape
-                        )
-                    },
-                    colors = androidx.compose.material3.TopAppBarDefaults.topAppBarColors(
-                        containerColor = Color.Transparent
-                    )
+                LibraryHeroPanel(
+                    searchQuery = searchQuery,
+                    onSearchQueryChange = { searchQuery = it },
+                    totalDocuments = documents.size,
+                    visibleDocuments = filteredDocs.size,
+                    isDarkTheme = isDarkTheme
                 )
             },
             floatingActionButton = {
-                Box {
-                    val fabInteractionSource = remember { MutableInteractionSource() }
-                    val isFabPressed by fabInteractionSource.collectIsPressedAsState()
-                    val fabScale by animateFloatAsState(
-                        targetValue = if (isFabPressed) 0.92f else 1f,
-                        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),
-                        label = "FabScale"
-                    )
-                    Box(
-                        modifier = Modifier
-                            .graphicsLayer { scaleX = fabScale; scaleY = fabScale }
-                            .background(brandGradient, shape = RoundedCornerShape(16.dp))
-                            .clickable(interactionSource = fabInteractionSource, indication = null) { showFabMenu = true }
-                            .padding(horizontal = 20.dp, vertical = 14.dp)
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Add, contentDescription = null, tint = androidx.compose.ui.graphics.Color.White)
-                            Spacer(Modifier.width(8.dp))
-                            Text("新增筆記", color = androidx.compose.ui.graphics.Color.White, style = MaterialTheme.typography.labelLarge)
-                        }
+                DocumentLibraryFab(
+                    brandGradient = brandGradient,
+                    showFabMenu = showFabMenu,
+                    onToggleMenu = { showFabMenu = !showFabMenu },
+                    onDismissMenu = { showFabMenu = false },
+                    onOpenPdf = {
+                        showFabMenu = false
+                        pdfLauncher.launch(arrayOf("application/pdf"))
+                    },
+                    onCreateBlank = {
+                        showFabMenu = false
+                        showNewDocSizeDialog = true
                     }
-                    androidx.compose.material3.DropdownMenu(
-                        expanded = showFabMenu,
-                        onDismissRequest = { showFabMenu = false }
-                    ) {
-                        androidx.compose.material3.DropdownMenuItem(
-                            text = { Text("開啟 PDF") },
-                            leadingIcon = { Icon(Icons.Default.Description, contentDescription = null) },
-                            onClick = {
-                                showFabMenu = false
-                                pdfLauncher.launch(arrayOf("application/pdf"))
-                            }
-                        )
-                        androidx.compose.material3.DropdownMenuItem(
-                            text = { Text("空白筆記") },
-                            leadingIcon = { Icon(Icons.Filled.Add, contentDescription = null) },
-                            onClick = {
-                                showFabMenu = false
-                                showNewDocSizeDialog = true
-                            }
-                        )
-                    }
-                }
+                )
             }
         ) { innerPadding ->
-            Box(modifier = Modifier.padding(innerPadding).fillMaxSize()) {
-                if (filteredDocs.isEmpty()) {
-                    // Empty state
-                    val emptyStateFloat by rememberInfiniteTransition(label = "EmptyIconFloat")
-                        .animateFloat(
-                            initialValue = 0f,
-                            targetValue = -14f,
-                            animationSpec = infiniteRepeatable(
-                                animation = tween(durationMillis = 2000, easing = androidx.compose.animation.core.FastOutSlowInEasing),
-                                repeatMode = RepeatMode.Reverse
-                            ),
-                            label = "EmptyFloatY"
-                        )
-                    val emptyStateAlpha by rememberInfiniteTransition(label = "EmptyIconPulse")
-                        .animateFloat(
-                            initialValue = 0.3f,
-                            targetValue = 0.6f,
-                            animationSpec = infiniteRepeatable(
-                                animation = tween(durationMillis = 2000, easing = androidx.compose.animation.core.FastOutSlowInEasing),
-                                repeatMode = RepeatMode.Reverse
-                            ),
-                            label = "EmptyAlpha"
-                        )
-                    var emptyVisible by remember { mutableStateOf(false) }
-                    LaunchedEffect(Unit) { delay(80); emptyVisible = true }
-                    androidx.compose.animation.AnimatedVisibility(
-                        visible = emptyVisible,
-                        enter = fadeIn(tween(500)) + scaleIn(tween(500, easing = androidx.compose.animation.core.FastOutSlowInEasing), initialScale = 0.85f)
+            Column(
+                modifier = Modifier
+                    .padding(innerPadding)
+                    .fillMaxSize()
+                    .padding(horizontal = 18.dp)
+            ) {
+                AnimatedVisibility(
+                    visible = normalizedQuery.isNotEmpty(),
+                    enter = fadeIn(tween(220)) + expandVertically(tween(240)),
+                    exit = fadeOut(tween(180)) + shrinkVertically(tween(200))
+                ) {
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 4.dp, bottom = 12.dp),
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
+                        shape = RoundedCornerShape(18.dp),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
                     ) {
-                        Column(
-                            modifier = Modifier.fillMaxSize(),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Icon(
-                                imageVector = Icons.Outlined.FileUpload,
-                                contentDescription = null,
-                                modifier = Modifier
-                                    .size(80.dp)
-                                    .graphicsLayer { translationY = emptyStateFloat },
-                                tint = MaterialTheme.colorScheme.primary.copy(alpha = emptyStateAlpha)
-                            )
-                            Spacer(Modifier.height(16.dp))
-                            Text(
-                                if (searchQuery.isEmpty()) "靈感畫布已準備就緒" else "找不到符合的筆記",
-                                style = MaterialTheme.typography.headlineSmall.copy(
-                                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
-                                ),
-                                color = MaterialTheme.colorScheme.onBackground
-                            )
-                            Spacer(Modifier.height(8.dp))
-                            Text(
-                                if (searchQuery.isEmpty()) "點擊右下角按鈕開啟第一份 PDF 筆記" else "試試其他搜尋關鍵字",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                            )
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(
+                                    text = "搜尋結果",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    text = "\"$normalizedQuery\" 對應 ${filteredDocs.size} 份筆記",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            TextButton(onClick = { searchQuery = "" }) {
+                                Text("清除搜尋")
+                            }
                         }
                     }
+                }
+
+                Box(modifier = Modifier.fillMaxSize()) {
+                if (filteredDocs.isEmpty()) {
+                    LibraryEmptyState(
+                        modifier = Modifier.fillMaxSize(),
+                        brandGradient = brandGradient,
+                        isSearchActive = normalizedQuery.isNotEmpty(),
+                        searchQuery = normalizedQuery,
+                        onClearSearch = { searchQuery = "" },
+                        onOpenPdf = { pdfLauncher.launch(arrayOf("application/pdf")) },
+                        onCreateBlank = { showNewDocSizeDialog = true }
+                    )
                 } else {
                     androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
                         columns = androidx.compose.foundation.lazy.grid.GridCells.Adaptive(minSize = 180.dp),
                         modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(16.dp),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                        contentPadding = PaddingValues(top = 6.dp, bottom = 120.dp),
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
                         items(filteredDocs.size, key = { filteredDocs[it].uri }) { index ->
                             val doc = filteredDocs[index]
-                            var visible by remember { mutableStateOf(false) }
-                            LaunchedEffect(Unit) {
-                                delay(index * 50L)
-                                visible = true
+                            val coverBitmap by docViewModel.getDocumentThumbnail(context, doc.uri).collectAsState()
+                            var visible by remember(doc.uri) { mutableStateOf(index >= 6) }
+                            LaunchedEffect(doc.uri) {
+                                if (index < 6) {
+                                    delay(index * 40L)
+                                    visible = true
+                                }
                             }
                             androidx.compose.animation.AnimatedVisibility(
                                 visible = visible,
@@ -605,6 +608,7 @@ fun DocumentLibraryScreen(
                             ) {
                                 DocumentCard(
                                     document = doc,
+                                    coverBitmap = coverBitmap,
                                     onClick = {
                                         val encodedUri = URLEncoder.encode(doc.uri, StandardCharsets.UTF_8.toString())
                                         navController.navigate("editor/$encodedUri")
@@ -617,20 +621,360 @@ fun DocumentLibraryScreen(
                     }
                 }
             }
+            }
         }
     }   // close inner Row
     }   // close outer Box (background + gradient overlay)
 }
 
 @Composable
+private fun LibraryHeroPanel(
+    searchQuery: String,
+    onSearchQueryChange: (String) -> Unit,
+    totalDocuments: Int,
+    visibleDocuments: Int,
+    isDarkTheme: Boolean
+) {
+    val heroSurfaceColor = if (isDarkTheme) {
+        ToolbarGlassDark.copy(alpha = 0.92f)
+    } else {
+        MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.96f)
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 18.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Surface(
+            color = heroSurfaceColor,
+            shape = RoundedCornerShape(30.dp),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.38f)),
+            shadowElevation = 10.dp
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 18.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = "InkFlow Studio",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "把今天的 PDF、草圖與註記集中在同一個工作台",
+                            style = MaterialTheme.typography.headlineSmall
+                        )
+                        Text(
+                            text = if (searchQuery.isBlank()) {
+                                "首頁現在更像創作桌面：搜尋、開檔與新建入口都集中在這裡。"
+                            } else {
+                                "你正在檢視 \"${searchQuery.trim()}\" 的搜尋結果。"
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(22.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(totalDocuments.toString(), style = MaterialTheme.typography.titleLarge)
+                            Text("筆記庫", style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                }
+
+                androidx.compose.material3.OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = onSearchQueryChange,
+                    singleLine = true,
+                    leadingIcon = {
+                        Icon(Icons.Default.Search, contentDescription = null)
+                    },
+                    trailingIcon = {
+                        AnimatedVisibility(visible = searchQuery.isNotBlank()) {
+                            IconButton(onClick = { onSearchQueryChange("") }) {
+                                Icon(Icons.Default.Close, contentDescription = "清除搜尋")
+                            }
+                        }
+                    },
+                    placeholder = { Text("搜尋標題、文件名稱或近期開啟的筆記") },
+                    shape = RoundedCornerShape(24.dp),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    LibraryStatPill(
+                        title = "目前顯示",
+                        value = "$visibleDocuments 份"
+                    )
+                    LibraryStatPill(
+                        title = if (searchQuery.isBlank()) "狀態" else "搜尋模式",
+                        value = if (searchQuery.isBlank()) "工作台待命" else "已套用關鍵字"
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LibraryStatPill(title: String, value: String) {
+    Surface(
+        shape = RoundedCornerShape(18.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.92f)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(title, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(value, style = MaterialTheme.typography.labelLarge)
+        }
+    }
+}
+
+@Composable
+private fun DocumentLibraryFab(
+    brandGradient: Brush,
+    showFabMenu: Boolean,
+    onToggleMenu: () -> Unit,
+    onDismissMenu: () -> Unit,
+    onOpenPdf: () -> Unit,
+    onCreateBlank: () -> Unit
+) {
+    Box {
+        val fabInteractionSource = remember { MutableInteractionSource() }
+        val isFabPressed by fabInteractionSource.collectIsPressedAsState()
+        val fabScale by animateFloatAsState(
+            targetValue = if (isFabPressed) 0.95f else 1f,
+            animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),
+            label = "FabScale"
+        )
+
+        Box(
+            modifier = Modifier
+                .graphicsLayer { scaleX = fabScale; scaleY = fabScale }
+                .clip(RoundedCornerShape(24.dp))
+                .background(brandGradient)
+                .border(1.dp, Color.White.copy(alpha = 0.22f), RoundedCornerShape(24.dp))
+                .clickable(interactionSource = fabInteractionSource, indication = null, onClick = onToggleMenu)
+                .padding(horizontal = 18.dp, vertical = 14.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .background(Color.White.copy(alpha = 0.18f), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = null, tint = Color.White)
+                }
+                Column {
+                    Text("新增筆記", color = Color.White, style = MaterialTheme.typography.labelLarge)
+                    Text("空白頁或匯入 PDF", color = Color.White.copy(alpha = 0.82f), style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        }
+
+        androidx.compose.material3.DropdownMenu(
+            expanded = showFabMenu,
+            onDismissRequest = onDismissMenu
+        ) {
+            androidx.compose.material3.DropdownMenuItem(
+                text = { Text("開啟 PDF") },
+                leadingIcon = { Icon(Icons.Default.Description, contentDescription = null) },
+                onClick = onOpenPdf
+            )
+            androidx.compose.material3.DropdownMenuItem(
+                text = { Text("空白筆記") },
+                leadingIcon = { Icon(Icons.Filled.Add, contentDescription = null) },
+                onClick = onCreateBlank
+            )
+        }
+    }
+}
+
+@Composable
+private fun LibraryEmptyState(
+    modifier: Modifier = Modifier,
+    brandGradient: Brush,
+    isSearchActive: Boolean,
+    searchQuery: String,
+    onClearSearch: () -> Unit,
+    onOpenPdf: () -> Unit,
+    onCreateBlank: () -> Unit
+) {
+    val emptyStateFloat by rememberInfiniteTransition(label = "EmptyIconFloat")
+        .animateFloat(
+            initialValue = 0f,
+            targetValue = -14f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 2200, easing = androidx.compose.animation.core.FastOutSlowInEasing),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "EmptyFloatY"
+        )
+    val emptyStateAlpha by rememberInfiniteTransition(label = "EmptyIconPulse")
+        .animateFloat(
+            initialValue = 0.28f,
+            targetValue = 0.58f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 2200, easing = androidx.compose.animation.core.FastOutSlowInEasing),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "EmptyAlpha"
+        )
+    var emptyVisible by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { delay(90); emptyVisible = true }
+
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        AnimatedVisibility(
+            visible = emptyVisible,
+            enter = fadeIn(tween(500)) + scaleIn(tween(500, easing = androidx.compose.animation.core.FastOutSlowInEasing), initialScale = 0.88f)
+        ) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 560.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.96f),
+                shape = RoundedCornerShape(30.dp),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),
+                shadowElevation = 10.dp
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 28.dp, vertical = 30.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(92.dp)
+                            .graphicsLayer { translationY = emptyStateFloat }
+                            .clip(CircleShape)
+                            .background(brandGradient),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = if (isSearchActive) Icons.Default.Search else Icons.AutoMirrored.Filled.NoteAdd,
+                            contentDescription = null,
+                            modifier = Modifier.size(38.dp),
+                            tint = Color.White.copy(alpha = emptyStateAlpha + 0.34f)
+                        )
+                    }
+
+                    Text(
+                        text = if (isSearchActive) "沒有找到符合 \"$searchQuery\" 的筆記" else "靈感工作台已經就位",
+                        style = MaterialTheme.typography.headlineSmall,
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
+                    Text(
+                        text = if (isSearchActive) {
+                            "可以清除搜尋條件，或直接建立新的草稿頁，把這組想法先存下來。"
+                        } else {
+                            "從這裡開啟第一份 PDF，或直接建立一張空白頁，開始你的註記流程。"
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (isSearchActive) {
+                            Surface(
+                                shape = RoundedCornerShape(20.dp),
+                                color = MaterialTheme.colorScheme.primaryContainer,
+                                modifier = Modifier.clickable(onClick = onClearSearch)
+                            ) {
+                                Text(
+                                    text = "清除搜尋",
+                                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp),
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                            }
+                        } else {
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(20.dp))
+                                    .background(brandGradient)
+                                    .clickable(onClick = onOpenPdf)
+                            ) {
+                                Text(
+                                    text = "開啟 PDF",
+                                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp),
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = Color.White
+                                )
+                            }
+                        }
+
+                        Surface(
+                            shape = RoundedCornerShape(20.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            modifier = Modifier.clickable(onClick = onCreateBlank)
+                        ) {
+                            Text(
+                                text = "建立空白筆記",
+                                modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp),
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun DocumentCard(
-    document: com.vic.inkflow.data.DocumentEntity,
+    document: DocumentEntity,
+    coverBitmap: Bitmap?,
     onClick: () -> Unit,
     onDelete: () -> Unit,
     onRename: (String) -> Unit = {}
 ) {
     var showRenameDialog by remember { mutableStateOf(false) }
+    var showDeleteDialog by remember { mutableStateOf(false) }
     var renameInput by remember(document.displayName) { mutableStateOf(document.displayName) }
+    val isDarkSurface = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    val cardShellColor = if (isDarkSurface) {
+        MaterialTheme.colorScheme.surface.copy(alpha = 0.84f)
+    } else {
+        MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.98f)
+    }
+    val cardCoverColor = if (isDarkSurface) PaperDark else PaperLight
 
     if (showRenameDialog) {
         androidx.compose.material3.AlertDialog(
@@ -661,10 +1005,36 @@ private fun DocumentCard(
             }
         )
     }
+
+    if (showDeleteDialog) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showDeleteDialog = false },
+            title = { Text("刪除筆記本") },
+            text = {
+                Text("確定要刪除「${document.displayName}」嗎？此操作會一併移除筆跡與標註，且無法復原。")
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton(
+                    onClick = {
+                        showDeleteDialog = false
+                        onDelete()
+                    }
+                ) {
+                    Text("刪除", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { showDeleteDialog = false }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+
     val brandGradient = androidx.compose.ui.graphics.Brush.linearGradient(
         listOf(
-            androidx.compose.ui.graphics.Color(0xFF6366F1).copy(alpha = 0.10f),
-            androidx.compose.ui.graphics.Color(0xFFA855F7).copy(alpha = 0.10f)
+            BrandIndigo.copy(alpha = 0.12f),
+            BrandPurple.copy(alpha = 0.10f)
         )
     )
     val cardInteractionSource = remember { MutableInteractionSource() }
@@ -680,155 +1050,13 @@ private fun DocumentCard(
             .format(java.util.Date(document.lastOpenedAt))
     }
 
-    // Load first-page thumbnail with strokes overlay
-    val context = LocalContext.current
-    var coverBitmap by remember(document.uri, document.lastOpenedAt) { mutableStateOf<android.graphics.Bitmap?>(null) }
-    LaunchedEffect(document.uri, document.lastOpenedAt) {
-        val cacheKey = "${document.uri}_${document.lastOpenedAt}"
-        val cached = com.vic.inkflow.util.ThumbnailCacheManager.get(cacheKey)
-        if (cached != null) {
-            coverBitmap = cached
-            return@LaunchedEffect
-        }
-        val bmp = withContext(Dispatchers.IO) {
-            try {
-                val uri = android.net.Uri.parse(document.uri)
-                val pfd = PdfManager.openPdfFileDescriptor(context, uri) ?: return@withContext null
-                val renderer = android.graphics.pdf.PdfRenderer(pfd)
-                val page = renderer.openPage(0)
-                val pdfPageW = page.width.toFloat()
-                val pdfPageH = page.height.toFloat()
-                val bmpW = (pdfPageW * 0.5f).toInt().coerceAtLeast(1)
-                val bmpH = (pdfPageH * 0.5f).toInt().coerceAtLeast(1)
-                val bitmap = android.graphics.Bitmap.createBitmap(bmpW, bmpH, android.graphics.Bitmap.Config.ARGB_8888)
-                bitmap.eraseColor(android.graphics.Color.WHITE)
-                try {
-                    page.render(bitmap, null, null, android.graphics.pdf.PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                } finally {
-                    page.close()
-                }
-                renderer.close()
-                pfd.close()
-
-                // Overlay page 0: images (below strokes) → strokes → text (top)
-                val db = AppDatabase.getDatabase(context)
-                val strokes = db.strokeDao().getStrokesForPage(document.uri, 0).first()
-                val imageAnns = db.imageAnnotationDao().getForPage(document.uri, 0).first()
-                val textAnns  = db.textAnnotationDao().getForPage(document.uri, 0).first()
-                val canvas = android.graphics.Canvas(bitmap)
-                // Use the actual PDF page dimensions as model space (matches EditorViewModel.modelWidth/Height)
-                val sx = bmpW.toFloat() / pdfPageW
-                val sy = bmpH.toFloat() / pdfPageH
-
-                // --- Image annotations (below strokes) ---
-                imageAnns.forEach { ann ->
-                    try {
-                        val imgBmp = context.contentResolver.openInputStream(android.net.Uri.parse(ann.uri))?.use { stream ->
-                            android.graphics.BitmapFactory.decodeStream(stream)
-                        }
-                        if (imgBmp != null) {
-                            val dst = android.graphics.RectF(
-                                ann.modelX * sx, ann.modelY * sy,
-                                (ann.modelX + ann.modelWidth) * sx, (ann.modelY + ann.modelHeight) * sy
-                            )
-                            canvas.drawBitmap(imgBmp, null, dst, null)
-                        }
-                    } catch (_: Exception) { }
-                }
-
-                // --- Strokes (above images) ---
-                if (strokes.isNotEmpty()) {
-                    val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-                        style = android.graphics.Paint.Style.STROKE
-                        strokeCap = android.graphics.Paint.Cap.ROUND
-                        strokeJoin = android.graphics.Paint.Join.ROUND
-                    }
-                    strokes.forEach { swp ->
-                        val stroke = swp.stroke
-                        paint.color = stroke.color
-                        paint.strokeWidth = stroke.strokeWidth * sx
-                        paint.alpha = if (stroke.isHighlighter) (255 * 0.4f).toInt() else 255
-                        if (stroke.isHighlighter) {
-                            paint.xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.MULTIPLY)
-                            paint.strokeWidth = stroke.strokeWidth * sx * 3f
-                        } else {
-                            paint.xfermode = null
-                        }
-                        when (stroke.shapeType) {
-                            "RECT" -> canvas.drawRect(
-                                stroke.boundsLeft * sx, stroke.boundsTop * sy,
-                                stroke.boundsRight * sx, stroke.boundsBottom * sy, paint
-                            )
-                            "CIRCLE" -> canvas.drawOval(
-                                android.graphics.RectF(
-                                    stroke.boundsLeft * sx, stroke.boundsTop * sy,
-                                    stroke.boundsRight * sx, stroke.boundsBottom * sy
-                                ), paint
-                            )
-                            "LINE" -> if (swp.points.size >= 2) {
-                                val p0 = swp.points.first(); val p1 = swp.points.last()
-                                canvas.drawLine(p0.x * sx, p0.y * sy, p1.x * sx, p1.y * sy, paint)
-                            }
-                            "ARROW" -> if (swp.points.size >= 2) {
-                                val p0 = swp.points.first(); val p1 = swp.points.last()
-                                canvas.drawLine(p0.x * sx, p0.y * sy, p1.x * sx, p1.y * sy, paint)
-                                val headSize = paint.strokeWidth * 5f + 10f
-                                val angle = Math.atan2((p1.y - p0.y).toDouble(), (p1.x - p0.x).toDouble())
-                                val la = angle + Math.PI * 0.75; val ra = angle - Math.PI * 0.75
-                                canvas.drawLine(p1.x * sx, p1.y * sy,
-                                    p1.x * sx + (headSize * Math.cos(la)).toFloat(),
-                                    p1.y * sy + (headSize * Math.sin(la)).toFloat(), paint)
-                                canvas.drawLine(p1.x * sx, p1.y * sy,
-                                    p1.x * sx + (headSize * Math.cos(ra)).toFloat(),
-                                    p1.y * sy + (headSize * Math.sin(ra)).toFloat(), paint)
-                            }
-                            null -> {
-                                val pts = swp.points
-                                if (pts.size >= 2) {
-                                    val path = android.graphics.Path()
-                                    path.moveTo(pts.first().x * sx, pts.first().y * sy)
-                                    for (i in 1 until pts.size) {
-                                        val p1 = pts[i - 1]; val p2 = pts[i]
-                                        path.quadTo(
-                                            p1.x * sx, p1.y * sy,
-                                            (p1.x + p2.x) / 2f * sx, (p1.y + p2.y) / 2f * sy
-                                        )
-                                    }
-                                    pts.lastOrNull()?.let { path.lineTo(it.x * sx, it.y * sy) }
-                                    canvas.drawPath(path, paint)
-                                }
-                            }
-                        }
-                        paint.xfermode = null
-                    }
-                }
-
-                // --- Text annotations (on top of everything) ---
-                if (textAnns.isNotEmpty()) {
-                    val textPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-                        typeface = android.graphics.Typeface.DEFAULT_BOLD
-                    }
-                    textAnns.forEach { ann ->
-                        textPaint.textSize = ann.fontSize * sy
-                        textPaint.color = ann.colorArgb
-                        canvas.drawText(ann.text, ann.modelX * sx, ann.modelY * sy, textPaint)
-                    }
-                }
-
-                if (bitmap != null) {
-                    com.vic.inkflow.util.ThumbnailCacheManager.put(cacheKey, bitmap)
-                }
-                bitmap
-            } catch (_: Exception) { null }
-        }
-        if (bmp != null) coverBitmap = bmp
-    }
-
     androidx.compose.material3.Card(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth().aspectRatio(0.85f).graphicsLayer { scaleX = cardScale; scaleY = cardScale },
-        shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
-        elevation = androidx.compose.material3.CardDefaults.cardElevation(defaultElevation = 2.dp),
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(24.dp),
+        colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = cardShellColor),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
+        elevation = androidx.compose.material3.CardDefaults.cardElevation(defaultElevation = 6.dp),
         interactionSource = cardInteractionSource
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -837,9 +1065,16 @@ private fun DocumentCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(0.6f)
-                    .background(brandGradient),
+                    .background(cardCoverColor),
                 contentAlignment = Alignment.Center
             ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(12.dp)
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(brandGradient)
+                )
                 Crossfade(
                     targetState = coverBitmap,
                     animationSpec = tween(400),
@@ -849,39 +1084,26 @@ private fun DocumentCard(
                         Image(
                             bitmap = bitmap.asImageBitmap(),
                             contentDescription = null,
-                            modifier = Modifier.fillMaxSize(),
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(12.dp)
+                                .clip(RoundedCornerShape(18.dp)),
                             contentScale = ContentScale.Crop
                         )
                     } else {
-                        // Shimmer skeleton while loading
-                        val shimmerOffsetX by rememberInfiniteTransition(label = "CardShimmer")
-                            .animateFloat(
-                                initialValue = -1f,
-                                targetValue = 2f,
-                                animationSpec = infiniteRepeatable(tween(1200, easing = LinearEasing)),
-                                label = "ShimmerX"
-                            )
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .background(
-                                    Brush.linearGradient(
-                                        colors = listOf(
-                                            Color.Transparent,
-                                            Color.White.copy(alpha = 0.25f),
-                                            Color.Transparent
-                                        ),
-                                        start = Offset(shimmerOffsetX * 400f, 0f),
-                                        end = Offset((shimmerOffsetX + 0.5f) * 400f, 200f)
-                                    )
-                                ),
+                                .padding(12.dp)
+                                .clip(RoundedCornerShape(18.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f)),
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
                                 Icons.Outlined.FileUpload,
                                 contentDescription = null,
                                 modifier = Modifier.size(48.dp),
-                                tint = androidx.compose.ui.graphics.Color(0xFF6366F1).copy(alpha = 0.6f)
+                                tint = BrandIndigo.copy(alpha = 0.6f)
                             )
                         }
                     }
@@ -901,7 +1123,7 @@ private fun DocumentCard(
                 ) {
                     Text(
                         text = document.displayName,
-                        style = MaterialTheme.typography.bodyMedium,
+                        style = MaterialTheme.typography.titleSmall,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f)
@@ -926,15 +1148,18 @@ private fun DocumentCard(
                             androidx.compose.material3.DropdownMenuItem(
                                 text = { Text("刪除") },
                                 leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
-                                onClick = { showMenu = false; onDelete() }
+                                onClick = {
+                                    showMenu = false
+                                    showDeleteDialog = true
+                                }
                             )
                         }
                     }
                 }
                 Text(
                     text = dateStr,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
@@ -1008,6 +1233,25 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
         pdfViewModel.openPdf(uri)
     }
     val pageCount by pdfViewModel.pageCount.collectAsState()
+    val isPageOperationInProgress by pdfViewModel.isPageOperationInProgress.collectAsState()
+
+    val insertPdfLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { selectedUri ->
+        if (selectedUri == null) return@rememberLauncherForActivityResult
+        runCatching {
+            context.contentResolver.takePersistableUriPermission(
+                selectedUri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+        }
+        pdfViewModel.insertPdfPages(
+            context = context,
+            documentUri = uri.toString(),
+            sourceUri = selectedUri,
+            afterIndex = currentPageIndex
+        )
+    }
 
     // When the PDF first loads, initialize the EditorViewModel's model space to match the first page.
     val firstPageSize by pdfViewModel.firstPageSize.collectAsState()
@@ -1015,16 +1259,23 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
         firstPageSize?.let { (w, h) -> viewModel.initializePaperSize(w, h) }
     }
 
-    // Paper style dialog state
-    var showPaperSettingsDialog by remember { mutableStateOf(false) }
+    // Document settings dialog state
+    var showDocumentSettingsDialog by remember { mutableStateOf(false) }
     val paperStyle by viewModel.paperStyle.collectAsState()
-    if (showPaperSettingsDialog) {
-        PaperStyleDialog(
+    if (showDocumentSettingsDialog) {
+        DocumentSettingsDialog(
+            documentTitle = documentTitle,
+            pageCount = pageCount,
+            currentPageIndex = currentPageIndex,
+            isPageOperationInProgress = isPageOperationInProgress,
             currentStyle = paperStyle,
-            onDismiss = { showPaperSettingsDialog = false },
-            onConfirm = { newStyle ->
+            onDismiss = { showDocumentSettingsDialog = false },
+            onConfirmStyle = { newStyle ->
                 viewModel.setPaperStyle(newStyle)
-                showPaperSettingsDialog = false
+            },
+            onInsertPdf = {
+                showDocumentSettingsDialog = false
+                insertPdfLauncher.launch(arrayOf("application/pdf"))
             }
         )
     }
@@ -1068,7 +1319,7 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                     )
                 }
             },
-            onPaperSettings = { showPaperSettingsDialog = true }
+            onDocumentSettings = { showDocumentSettingsDialog = true }
         )
 
         AnimatedVisibility(
@@ -1123,7 +1374,9 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                 onAddPage = { afterIndex ->
                     scope.launch {
                         pdfViewModel.insertBlankPage(
-                            context, afterIndex,
+                            context,
+                            uri.toString(),
+                            afterIndex,
                             pageWidthPt = paperStyle.widthPt,
                             pageHeightPt = paperStyle.heightPt
                         )
@@ -1202,7 +1455,7 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
 
                                                 // Insert blank page right after source page.
                                                 val newPageIndex = sourcePageIndex + 1
-                                                pdfViewModel.insertBlankPage(context, sourcePageIndex)
+                                                pdfViewModel.insertBlankPage(context, uri.toString(), sourcePageIndex)
 
                                                 // Extract source region and place it onto the new page.
                                                 viewModel.extractRegionToNewPage(
@@ -1281,16 +1534,24 @@ private fun Sidebar(
         )
     }
     val animatedWidth by animateDpAsState(
-        targetValue = if (sidebarMode == SidebarMode.COLLAPSED) 64.dp else 200.dp,
+        targetValue = if (sidebarMode == SidebarMode.COLLAPSED) 68.dp else 204.dp,
         animationSpec = tween(300),
         label = "SidebarWidthAnimation"
     )
 
+    val isDarkSurface = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    val sidebarColor = if (isDarkSurface) {
+        ToolbarGlassDark.copy(alpha = 0.94f)
+    } else {
+        MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.94f)
+    }
+
     Surface(
         modifier = if (sidebarMode == SidebarMode.FULLSCREEN) modifier else modifier.width(animatedWidth),
-        color = MaterialTheme.colorScheme.surfaceContainerLowest,
+        color = sidebarColor,
         contentColor = MaterialTheme.colorScheme.onSurface,
-        shadowElevation = 4.dp
+        shadowElevation = 6.dp,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
     ) {
         if (sidebarMode == SidebarMode.FULLSCREEN) {
             // Fullscreen: 4-column page grid with back button
@@ -1402,7 +1663,7 @@ private fun Sidebar(
                                     imageAnnotations = images,
                                     textAnnotations = texts,
                                     isSelected = index == currentPageIndex,
-                                    boxModifier = Modifier.width(100.dp).aspectRatio(pdfViewModel.getPageAspectRatio(index))
+                                    boxModifier = Modifier.width(88.dp).aspectRatio(pdfViewModel.getPageAspectRatio(index))
                                 )
                             } else {
                                 PageIcon(
@@ -1427,7 +1688,7 @@ private fun Sidebar(
                         enabled = !isPageOperationInProgress,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 8.dp, vertical = 6.dp)
+                            .padding(horizontal = 6.dp, vertical = 5.dp)
                     ) {
                         Icon(
                             Icons.Default.Add,
@@ -1451,9 +1712,11 @@ private fun PageThumbnail(
     imageAnnotations: List<ImageAnnotationEntity>,
     textAnnotations: List<TextAnnotationEntity>,
     isSelected: Boolean,
-    boxModifier: Modifier = Modifier.width(100.dp).aspectRatio(1f / 1.414f)
+    boxModifier: Modifier = Modifier.width(88.dp).aspectRatio(1f / 1.414f)
 ) {
     val context = LocalContext.current
+    val isDarkSurface = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    val paperColor = if (isDarkSurface) PaperDark else PaperLight
     // Cache decoded bitmaps keyed by URI string
     val loadedImages = remember { mutableStateMapOf<String, android.graphics.Bitmap?>() }
     LaunchedEffect(imageAnnotations) {
@@ -1485,19 +1748,19 @@ private fun PageThumbnail(
             label = "ThumbBorderColor"
         )
         val thumbScale by animateFloatAsState(
-            targetValue = if (isSelected) 1.04f else 1f,
+            targetValue = if (isSelected) 1.06f else 1f,
             animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),
             label = "ThumbScale"
         )
         Box(
             modifier = boxModifier
                 .graphicsLayer { scaleX = thumbScale; scaleY = thumbScale }
-                .clip(MaterialTheme.shapes.small)
-                .background(MaterialTheme.colorScheme.surface, shape = MaterialTheme.shapes.small)
+                .clip(RoundedCornerShape(18.dp))
+                .background(paperColor, shape = RoundedCornerShape(18.dp))
                 .border(
                     width = animatedBorderWidth,
                     color = animatedBorderColor,
-                    shape = MaterialTheme.shapes.small
+                    shape = RoundedCornerShape(18.dp)
                 )
         ) {
             if (bitmap != null) {
@@ -1652,15 +1915,15 @@ private fun thumbnailDrawArrowHead(
 private fun PageIcon(pageIndex: Int, isSelected: Boolean) {
     Box(
         modifier = Modifier
-            .size(40.dp)
+            .size(44.dp)
             .background(
-                if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
-                shape = MaterialTheme.shapes.small
+                if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
+                shape = RoundedCornerShape(14.dp)
             )
-            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, shape = MaterialTheme.shapes.small),
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.75f), shape = RoundedCornerShape(14.dp)),
         contentAlignment = Alignment.Center
     ) {
-        Text("${pageIndex + 1}", style = MaterialTheme.typography.labelSmall)
+        Text("${pageIndex + 1}", style = MaterialTheme.typography.labelMedium)
     }
 }
 
@@ -1679,9 +1942,10 @@ private fun SidebarFloatingControls(
         animationSpec = tween(500),
         label = "ControlsAlpha"
     )
+    val isDarkSurface = MaterialTheme.colorScheme.background.luminance() < 0.5f
     // Animate container colour on dark/light switch
     val btnContainerColor by animateColorAsState(
-        targetValue = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+        targetValue = if (isDarkSurface) ToolbarGlassDark.copy(alpha = 0.94f) else ToolbarGlassLight.copy(alpha = 0.92f),
         animationSpec = tween(400),
         label = "FloatingBtnColor"
     )
@@ -1751,6 +2015,23 @@ private fun Workspace(
     var scale by rememberSaveable { mutableFloatStateOf(1f) }
     var offsetX by rememberSaveable { mutableFloatStateOf(0f) }
     var offsetY by rememberSaveable { mutableFloatStateOf(0f) }
+    val isDarkSurface = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    val lightWorkspaceSurface = MaterialTheme.colorScheme.surfaceContainerLow
+    val deskBrush = remember(isDarkSurface, lightWorkspaceSurface) {
+        Brush.linearGradient(
+            colors = if (isDarkSurface) {
+                listOf(WorkspaceDeskDark, Slate900, BrandIndigo.copy(alpha = 0.10f))
+            } else {
+                listOf(WorkspaceDeskLight, Slate50, lightWorkspaceSurface)
+            }
+        )
+    }
+    val paperColor = if (isDarkSurface) PaperDark else PaperLight
+    val stageColor = if (isDarkSurface) {
+        MaterialTheme.colorScheme.surface.copy(alpha = 0.30f)
+    } else {
+        MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.76f)
+    }
 
     // Track container dimensions (pixels) to compute the fit-to-page minimum scale
     var containerWidth by remember { mutableIntStateOf(0) }
@@ -1782,26 +2063,31 @@ private fun Workspace(
     Box(
         modifier = modifier
             .clip(RectangleShape)
-            .background(MaterialTheme.colorScheme.surfaceContainerLowest)
+            .background(deskBrush)
             .onSizeChanged { size ->
                 containerWidth = size.width
                 containerHeight = size.height
             }
             .pointerInput(minScale) {
-                // Only respond to 2+ simultaneous pointers (pinch / two-finger pan).
-                // A single pointer means the user is drawing — pan must NOT fire.
+                // Pan / zoom handler for the Workspace background Box.
+                //
+                // Routing contract (agreed with InkCanvas.pointerInput):
+                //   FREE          — InkCanvas does NOT consume Touch events → all single-finger
+                //                   touch contacts bubble here for pan.  Stylus is consumed by
+                //                   InkCanvas for drawing.
+                //   PALM_REJECTION — InkCanvas does NOT consume finger-zone contacts → single
+                //                   finger pans here.  Stylus consumed for drawing.  Palm dropped.
+                //   STYLUS_ONLY   — InkCanvas does NOT consume any Touch (finger/palm) → all
+                //                   touch contacts bubble here for single-finger pan.
+                //
+                // For 2+ simultaneous pointers this handler handles pinch-zoom + two-finger pan
+                // regardless of mode (InkCanvas always passes multi-touch through in FREE /
+                // STYLUS_ONLY, and passes finger-only multi-touch through in PALM_REJECTION).
                 awaitEachGesture {
-                    awaitFirstDown(requireUnconsumed = false)
+                    // requireUnconsumed = false: picks up events not consumed by children (InkCanvas).
+                    val firstDown = awaitFirstDown(requireUnconsumed = false)
+                    if (firstDown.isConsumed) return@awaitEachGesture  // InkCanvas claimed it (stylus draw)
 
-                    // Wait until 2+ pointers are down, or the touch ends.
-                    while (true) {
-                        val evt = awaitPointerEvent()
-                        val pressed = evt.changes.count { it.pressed }
-                        if (pressed == 0) return@awaitEachGesture  // lifted before 2nd finger
-                        if (pressed >= 2) break                    // multi-touch confirmed
-                    }
-
-                    // Multi-touch active — handle pan + zoom with touch-slop guard.
                     val touchSlop = viewConfiguration.touchSlop
                     var accZoom = 1f
                     var accPan = androidx.compose.ui.geometry.Offset.Zero
@@ -1809,6 +2095,8 @@ private fun Workspace(
 
                     while (true) {
                         val evt = awaitPointerEvent()
+                        // If any change was consumed by a child (shouldn't happen after firstDown
+                        // check, but be safe) stop handling.
                         if (evt.changes.any { it.isConsumed }) break
                         if (evt.changes.none { it.pressed }) break
 
@@ -1828,9 +2116,15 @@ private fun Workspace(
                             }
                         }
 
+                        // If InkCanvas claimed the gesture on this frame, bail out before
+                        // applying any offset change from the same motion sample.
+                        if (evt.changes.any { it.isConsumed }) break
+
                         if (pastTouchSlop) {
                             val centroid = evt.calculateCentroid(useCurrent = false)
                             val oldScale = scale
+                            // Single-finger pan: zoom = 1 so scale is unchanged.
+                            // Multi-finger pinch: zoom != 1 so scale changes.
                             val newScale = (scale * zoomChange).coerceIn(minScale, 5f)
                             if (newScale <= minScale) {
                                 offsetX = 0f
@@ -1848,9 +2142,21 @@ private fun Workspace(
             },
         contentAlignment = Alignment.Center
     ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 20.dp, vertical = 18.dp)
+                .clip(RoundedCornerShape(32.dp))
+                .background(stageColor)
+                .border(
+                    width = 1.dp,
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
+                    shape = RoundedCornerShape(32.dp)
+                )
+        )
         Surface(
             modifier = Modifier
-                .fillMaxSize(0.9f)
+                .fillMaxSize(0.86f)
                 .aspectRatio(pageAspectRatio, matchHeightConstraintsFirst = true)
                 .graphicsLayer(
                     scaleX = scale,
@@ -1858,8 +2164,10 @@ private fun Workspace(
                     translationX = offsetX,
                     translationY = offsetY
                 ),
-            shadowElevation = 8.dp,
-            color = Color.White
+            shape = RoundedCornerShape(10.dp),
+            shadowElevation = 18.dp,
+            color = paperColor,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.32f))
         ) {
             // PDF static layer (bottom) — crossfade between page bitmaps
             Crossfade(
@@ -1954,16 +2262,53 @@ fun TabletEditorTopBar(
     onToggleStrokeWidthSlider: () -> Unit = {},
     onHideStrokeWidthSlider: () -> Unit = {},
     onExport: () -> Unit = {},
-    onPaperSettings: () -> Unit = {}
+    onDocumentSettings: () -> Unit = {}
 ) {
     val activeTool by viewModel.selectedTool.collectAsState()
     val selectedColor by viewModel.selectedColor.collectAsState()
     val recentColors by viewModel.recentColors.collectAsState()
+    val selectedShapeSubType by viewModel.selectedShapeSubType.collectAsState()
+    val selectedLassoSubType by viewModel.selectedLassoSubType.collectAsState()
+    val canUndo by viewModel.canUndo.collectAsState()
+    val canRedo by viewModel.canRedo.collectAsState()
+    val inputMode by viewModel.inputMode.collectAsState()
+    val strokeWidth by viewModel.strokeWidth.collectAsState()
     val toolColors = listOf(Color.Black, Color(0xFF_FFC700), Color(0xFF_F44336), Color(0xFF_4CAF50))
     val shownRecentColors = recentColors.filterNot { it in toolColors }.take(8)
     var showColorPicker by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
+    val isDarkSurface = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    val shellColor = if (isDarkSurface) ToolbarGlassDark else ToolbarGlassLight
+    val clusterColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = if (isDarkSurface) 0.78f else 0.94f)
+    val borderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.58f)
+    val toolButtonSize = 36.dp
+    val utilityButtonSize = 38.dp
 
+    val drawingTools = listOf(Tool.PEN, Tool.HIGHLIGHTER, Tool.ERASER, Tool.LASSO)
+    val drawingActiveIdx = drawingTools.indexOf(activeTool).let { if (it < 0) -1 else it }
+    val drawingHighlightOffset by animateDpAsState(
+        targetValue = if (drawingActiveIdx >= 0) toolButtonSize * drawingActiveIdx else 0.dp,
+        animationSpec = tween(durationMillis = 200),
+        label = "DrawingToolHighlight"
+    )
+
+    val annotationTools = listOf(Tool.SHAPE, Tool.TEXT, Tool.IMAGE, Tool.STAMP)
+    val annotationActiveIdx = annotationTools.indexOf(activeTool).let { if (it < 0) -1 else it }
+    val annotationHighlightOffset by animateDpAsState(
+        targetValue = if (annotationActiveIdx >= 0) toolButtonSize * annotationActiveIdx else 0.dp,
+        animationSpec = tween(durationMillis = 200),
+        label = "AnnotationToolHighlight"
+    )
+
+    val undoScale by animateFloatAsState(
+        targetValue = if (canUndo) 1f else 0.84f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
+        label = "UndoScale"
+    )
+    val redoScale by animateFloatAsState(
+        targetValue = if (canRedo) 1f else 0.84f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
+        label = "RedoScale"
+    )
     if (showColorPicker) {
         ColorPickerDialog(
             onColorSelected = { viewModel.onColorSelected(it) },
@@ -1973,319 +2318,394 @@ fun TabletEditorTopBar(
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surface,
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
         contentColor = MaterialTheme.colorScheme.onSurface,
-        shadowElevation = 4.dp
+        shadowElevation = 8.dp,
+        border = BorderStroke(1.dp, borderColor)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(56.dp)
-                .padding(horizontal = 8.dp),
+                .height(68.dp)
+                .padding(horizontal = 10.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            // Left Zone
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onBack) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to Library")
-                }
-                Text(
-                    text = documentTitle,
-                    style = MaterialTheme.typography.titleMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.widthIn(max = 200.dp)
-                )
-            }
-
-            // Center Zone
-            Row(
-                modifier = Modifier
-                    .weight(1f)
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = clusterColor,
+                border = BorderStroke(1.dp, borderColor)
             ) {
-                val toolButtonSize = 40.dp
-                val selectedShapeSubType by viewModel.selectedShapeSubType.collectAsState()
-
-                // --- Drawing tools (PEN / HIGHLIGHTER / ERASER / LASSO) ---
-                val drawingTools = listOf(Tool.PEN, Tool.HIGHLIGHTER, Tool.ERASER, Tool.LASSO)
-                val drawingActiveIdx = drawingTools.indexOf(activeTool).let { if (it < 0) -1 else it }
-                val drawingHighlightOffset by animateDpAsState(
-                    targetValue = if (drawingActiveIdx >= 0) toolButtonSize * drawingActiveIdx else 0.dp,
-                    animationSpec = tween(durationMillis = 200),
-                    label = "DrawingToolHighlight"
-                )
-                Box {
-                    if (drawingActiveIdx >= 0) {
-                        Box(
-                            modifier = Modifier
-                                .offset(x = drawingHighlightOffset)
-                                .size(toolButtonSize)
-                                .background(MaterialTheme.colorScheme.primaryContainer, shape = MaterialTheme.shapes.small)
-                        )
-                    }
-                    Row {
-                        EditorIconButton(
-                            onClick = {
-                                if (activeTool == Tool.PEN) onToggleStrokeWidthSlider()
-                                else { viewModel.onToolSelected(Tool.PEN); onHideStrokeWidthSlider() }
-                            },
-                            isActive = activeTool == Tool.PEN,
-                            icon = Icons.Default.Create,
-                            contentDescription = "Pen Tool"
-                        )
-                        EditorIconButton(
-                            onClick = {
-                                if (activeTool == Tool.HIGHLIGHTER) onToggleStrokeWidthSlider()
-                                else { viewModel.onToolSelected(Tool.HIGHLIGHTER); onHideStrokeWidthSlider() }
-                            },
-                            isActive = activeTool == Tool.HIGHLIGHTER,
-                            icon = Icons.Rounded.Brush,
-                            contentDescription = "Highlighter Tool"
-                        )
-                        EditorIconButton(
-                            onClick = { viewModel.onToolSelected(Tool.ERASER); onHideStrokeWidthSlider() },
-                            isActive = activeTool == Tool.ERASER,
-                            icon = Icons.Rounded.Delete,
-                            contentDescription = "Eraser Tool"
-                        )
-                        EditorIconButton(
-                            onClick = { viewModel.onToolSelected(Tool.LASSO); onHideStrokeWidthSlider() },
-                            isActive = activeTool == Tool.LASSO,
-                            icon = Icons.Rounded.Gesture,
-                            contentDescription = "Lasso Select Tool"
-                        )
-                    }
-                }
-
-                // Lasso sub-type pills (visible only when LASSO is active)
-                AnimatedVisibility(
-                    visible = activeTool == Tool.LASSO,
-                    enter = fadeIn(tween(200)) + androidx.compose.animation.expandHorizontally(tween(250, easing = androidx.compose.animation.core.FastOutSlowInEasing)),
-                    exit = fadeOut(tween(180)) + androidx.compose.animation.shrinkHorizontally(tween(200))
+                Row(
+                    modifier = Modifier.padding(start = 2.dp, end = 10.dp, top = 4.dp, bottom = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    val selectedLassoSubType by viewModel.selectedLassoSubType.collectAsState()
-                    Row(
-                        modifier = Modifier
-                            .padding(horizontal = 4.dp)
-                            .background(MaterialTheme.colorScheme.surfaceVariant, shape = MaterialTheme.shapes.medium)
-                            .padding(horizontal = 4.dp, vertical = 2.dp),
-                        horizontalArrangement = Arrangement.spacedBy(2.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        LassoSubType.entries.forEach { subType ->
-                            val isSelected = selectedLassoSubType == subType
-                            TextButton(
-                                onClick = { viewModel.onLassoSubTypeSelected(subType) },
-                                modifier = Modifier.height(32.dp),
-                                colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
-                                    containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
-                                    contentColor   = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
-                                )
-                            ) {
-                                Text(
-                                    text = when (subType) {
-                                        LassoSubType.FREEFORM -> "隨機圖形"
-                                        LassoSubType.RECT     -> "方形"
-                                    },
-                                    style = MaterialTheme.typography.labelMedium
-                                )
-                            }
-                        }
+                    IconButton(onClick = onBack, modifier = Modifier.size(utilityButtonSize)) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to Library")
                     }
-                }
-
-                VerticalDivider(Modifier.height(28.dp).padding(horizontal = 6.dp))
-
-                // --- Annotation tools (SHAPE / TEXT / STAMP) ---
-                val annotationTools = listOf(Tool.SHAPE, Tool.TEXT, Tool.IMAGE, Tool.STAMP)
-                val annotActiveIdx = annotationTools.indexOf(activeTool).let { if (it < 0) -1 else it }
-                val annotHighlightOffset by animateDpAsState(
-                    targetValue = if (annotActiveIdx >= 0) toolButtonSize * annotActiveIdx else 0.dp,
-                    animationSpec = tween(durationMillis = 200),
-                    label = "AnnotToolHighlight"
-                )
-                Box {
-                    if (annotActiveIdx >= 0) {
-                        Box(
-                            modifier = Modifier
-                                .offset(x = annotHighlightOffset)
-                                .size(toolButtonSize)
-                                .background(MaterialTheme.colorScheme.primaryContainer, shape = MaterialTheme.shapes.small)
+                    Column(modifier = Modifier.widthIn(max = 156.dp)) {
+                        Text(
+                            text = documentTitle,
+                            style = MaterialTheme.typography.titleSmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
-                    }
-                    Row {
-                        EditorIconButton(
-                            onClick = { viewModel.onToolSelected(Tool.SHAPE); onHideStrokeWidthSlider() },
-                            isActive = activeTool == Tool.SHAPE,
-                            icon = Icons.Default.CropSquare,
-                            contentDescription = "Shape Tool"
-                        )
-                        EditorIconButton(
-                            onClick = { viewModel.onToolSelected(Tool.TEXT); onHideStrokeWidthSlider() },
-                            isActive = activeTool == Tool.TEXT,
-                            icon = Icons.Default.Title,
-                            contentDescription = "Text Tool"
-                        )
-                        EditorIconButton(
-                            onClick = { viewModel.onToolSelected(Tool.IMAGE); onHideStrokeWidthSlider() },
-                            isActive = activeTool == Tool.IMAGE,
-                            icon = Icons.Default.Image,
-                            contentDescription = "Image Tool"
-                        )
-                        EditorIconButton(
-                            onClick = { viewModel.onToolSelected(Tool.STAMP); onHideStrokeWidthSlider() },
-                            isActive = activeTool == Tool.STAMP,
-                            icon = Icons.Default.Star,
-                            contentDescription = "Stamp Tool"
+                        Text(
+                            text = "InkFlow Studio",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary
                         )
                     }
                 }
-
-                // Shape sub-type pills (visible only when SHAPE is active)
-                AnimatedVisibility(
-                    visible = activeTool == Tool.SHAPE,
-                    enter = fadeIn(tween(200)) + androidx.compose.animation.expandHorizontally(tween(250, easing = androidx.compose.animation.core.FastOutSlowInEasing)),
-                    exit = fadeOut(tween(180)) + androidx.compose.animation.shrinkHorizontally(tween(200))
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .padding(horizontal = 4.dp)
-                            .background(MaterialTheme.colorScheme.surfaceVariant, shape = MaterialTheme.shapes.medium)
-                            .padding(horizontal = 4.dp, vertical = 2.dp),
-                        horizontalArrangement = Arrangement.spacedBy(2.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        ShapeSubType.entries.forEach { subType ->
-                            val isSelected = selectedShapeSubType == subType
-                            TextButton(
-                                onClick = { viewModel.onShapeSubTypeSelected(subType) },
-                                modifier = Modifier.height(32.dp),
-                                colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
-                                    containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
-                                    contentColor   = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
-                                )
-                            ) {
-                                Text(
-                                    text = when (subType) {
-                                        ShapeSubType.RECT   -> "□"
-                                        ShapeSubType.CIRCLE -> "○"
-                                        ShapeSubType.LINE   -> "—"
-                                        ShapeSubType.ARROW  -> "→"
-                                    },
-                                    style = MaterialTheme.typography.labelMedium
-                                )
-                            }
-                        }
-                    }
-                }
-
-                VerticalDivider(Modifier.height(28.dp).padding(horizontal = 6.dp))
-
-                // Recent colors (persisted)
-                shownRecentColors.forEach { color ->
-                    ColorChip(color = color, isSelected = selectedColor == color) {
-                        viewModel.onColorSelected(color)
-                    }
-                }
-                if (shownRecentColors.isNotEmpty()) {
-                    VerticalDivider(Modifier.height(28.dp).padding(horizontal = 6.dp))
-                }
-
-                // Color chips
-                toolColors.forEach { color ->
-                    ColorChip(color = color, isSelected = selectedColor == color) {
-                        viewModel.onColorSelected(color)
-                    }
-                }
-
-                // Rainbow gradient circle → opens ColorPickerDialog
-                Box(
-                    modifier = Modifier
-                        .size(40.dp)
-                        .padding(4.dp)
-                        .clip(CircleShape)
-                        .background(
-                            Brush.sweepGradient(
-                                listOf(
-                                    Color.Red, Color.Yellow, Color.Green,
-                                    Color.Cyan, Color.Blue, Color.Magenta, Color.Red
-                                )
-                            )
-                        )
-                        .clickable { showColorPicker = true }
-                )
             }
 
-            // Right Zone
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                val canUndo by viewModel.canUndo.collectAsState()
-                val canRedo by viewModel.canRedo.collectAsState()
-
-                val undoScale by animateFloatAsState(
-                    targetValue = if (canUndo) 1f else 0.8f,
-                    animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
-                    label = "UndoScale"
-                )
-                val redoScale by animateFloatAsState(
-                    targetValue = if (canRedo) 1f else 0.8f,
-                    animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
-                    label = "RedoScale"
-                )
-
-                IconButton(
-                    onClick = { viewModel.undo() },
-                    enabled = canUndo,
-                    modifier = Modifier.graphicsLayer { scaleX = undoScale; scaleY = undoScale }
+            Surface(
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(24.dp),
+                color = shellColor,
+                border = BorderStroke(1.dp, borderColor),
+                shadowElevation = 4.dp
+            ) {
+                Row(
+                    modifier = Modifier
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "Undo")
-                }
-                IconButton(
-                    onClick = { viewModel.redo() },
-                    enabled = canRedo,
-                    modifier = Modifier.graphicsLayer { scaleX = redoScale; scaleY = redoScale }
-                ) {
-                    Icon(Icons.AutoMirrored.Filled.Redo, contentDescription = "Redo")
-                }
-                IconButton(onClick = onExport) {
-                    Icon(Icons.Outlined.FileUpload, contentDescription = "Export PDF")
-                }
-
-                // Paper style settings button
-                val paperStyle by viewModel.paperStyle.collectAsState()
-                IconButton(onClick = onPaperSettings) {
-                    Icon(
-                        imageVector = Icons.Default.Article,
-                        contentDescription = "Paper Settings",
-                        tint = if (paperStyle.background != PageBackground.BLANK)
-                            MaterialTheme.colorScheme.primary
-                        else
-                            MaterialTheme.colorScheme.onSurface
-                    )
-                }
-
-                val inputMode by viewModel.inputMode.collectAsState()
-                IconButton(onClick = { viewModel.cycleInputMode() }) {
-                    Icon(
-                        imageVector = when (inputMode) {
-                            InputMode.FREE -> Icons.Filled.TouchApp
-                            InputMode.PALM_REJECTION -> Icons.Filled.BackHand
-                            InputMode.STYLUS_ONLY -> Icons.Filled.Create
-                        },
-                        contentDescription = when (inputMode) {
-                            InputMode.FREE -> "Free (no filter)"
-                            InputMode.PALM_REJECTION -> "Palm Rejection"
-                            InputMode.STYLUS_ONLY -> "Stylus Only"
-                        },
-                        tint = when (inputMode) {
-                            InputMode.FREE -> MaterialTheme.colorScheme.onSurface
-                            InputMode.PALM_REJECTION -> MaterialTheme.colorScheme.tertiary
-                            InputMode.STYLUS_ONLY -> MaterialTheme.colorScheme.primary
+                    Box(
+                        modifier = Modifier
+                            .background(clusterColor, RoundedCornerShape(20.dp))
+                            .padding(horizontal = 3.dp, vertical = 3.dp)
+                    ) {
+                        if (drawingActiveIdx >= 0) {
+                            Box(
+                                modifier = Modifier
+                                    .offset(x = drawingHighlightOffset)
+                                    .size(toolButtonSize)
+                                    .background(
+                                        Brush.linearGradient(
+                                            listOf(
+                                                MaterialTheme.colorScheme.primaryContainer,
+                                                BrandPurple.copy(alpha = 0.82f)
+                                            )
+                                        ),
+                                        RoundedCornerShape(16.dp)
+                                    )
+                            )
                         }
-                    )
+                        Row {
+                            EditorIconButton(
+                                onClick = {
+                                    if (activeTool == Tool.PEN) onToggleStrokeWidthSlider()
+                                    else {
+                                        viewModel.onToolSelected(Tool.PEN)
+                                        onHideStrokeWidthSlider()
+                                    }
+                                },
+                                isActive = activeTool == Tool.PEN,
+                                icon = Icons.Default.Create,
+                                contentDescription = "Pen Tool"
+                            )
+                            EditorIconButton(
+                                onClick = {
+                                    if (activeTool == Tool.HIGHLIGHTER) onToggleStrokeWidthSlider()
+                                    else {
+                                        viewModel.onToolSelected(Tool.HIGHLIGHTER)
+                                        onHideStrokeWidthSlider()
+                                    }
+                                },
+                                isActive = activeTool == Tool.HIGHLIGHTER,
+                                icon = Icons.Rounded.Brush,
+                                contentDescription = "Highlighter Tool"
+                            )
+                            EditorIconButton(
+                                onClick = {
+                                    viewModel.onToolSelected(Tool.ERASER)
+                                    onHideStrokeWidthSlider()
+                                },
+                                isActive = activeTool == Tool.ERASER,
+                                icon = Icons.Rounded.Delete,
+                                contentDescription = "Eraser Tool"
+                            )
+                            EditorIconButton(
+                                onClick = {
+                                    viewModel.onToolSelected(Tool.LASSO)
+                                    onHideStrokeWidthSlider()
+                                },
+                                isActive = activeTool == Tool.LASSO,
+                                icon = Icons.Rounded.Gesture,
+                                contentDescription = "Lasso Select Tool"
+                            )
+                        }
+                    }
+
+                    AnimatedVisibility(
+                        visible = activeTool == Tool.LASSO,
+                        enter = fadeIn(tween(200)) + androidx.compose.animation.expandHorizontally(tween(250, easing = androidx.compose.animation.core.FastOutSlowInEasing)),
+                        exit = fadeOut(tween(180)) + androidx.compose.animation.shrinkHorizontally(tween(200))
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .padding(start = 8.dp)
+                                .background(clusterColor, RoundedCornerShape(18.dp))
+                                .padding(horizontal = 4.dp, vertical = 2.dp),
+                            horizontalArrangement = Arrangement.spacedBy(2.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            LassoSubType.entries.forEach { subType ->
+                                val isSelected = selectedLassoSubType == subType
+                                TextButton(
+                                    onClick = { viewModel.onLassoSubTypeSelected(subType) },
+                                    modifier = Modifier.height(32.dp),
+                                    colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
+                                        containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+                                        contentColor = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
+                                    )
+                                ) {
+                                    Text(
+                                        text = when (subType) {
+                                            LassoSubType.FREEFORM -> "自由圈選"
+                                            LassoSubType.RECT -> "矩形圈選"
+                                        },
+                                        style = MaterialTheme.typography.labelMedium
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    VerticalDivider(Modifier.height(24.dp).padding(horizontal = 8.dp))
+
+                    Box(
+                        modifier = Modifier
+                            .background(clusterColor, RoundedCornerShape(20.dp))
+                            .padding(horizontal = 3.dp, vertical = 3.dp)
+                    ) {
+                        if (annotationActiveIdx >= 0) {
+                            Box(
+                                modifier = Modifier
+                                    .offset(x = annotationHighlightOffset)
+                                    .size(toolButtonSize)
+                                    .background(
+                                        Brush.linearGradient(
+                                            listOf(
+                                                MaterialTheme.colorScheme.primaryContainer,
+                                                BrandIndigo.copy(alpha = 0.78f)
+                                            )
+                                        ),
+                                        RoundedCornerShape(16.dp)
+                                    )
+                            )
+                        }
+                        Row {
+                            EditorIconButton(
+                                onClick = {
+                                    viewModel.onToolSelected(Tool.SHAPE)
+                                    onHideStrokeWidthSlider()
+                                },
+                                isActive = activeTool == Tool.SHAPE,
+                                icon = Icons.Default.CropSquare,
+                                contentDescription = "Shape Tool"
+                            )
+                            EditorIconButton(
+                                onClick = {
+                                    viewModel.onToolSelected(Tool.TEXT)
+                                    onHideStrokeWidthSlider()
+                                },
+                                isActive = activeTool == Tool.TEXT,
+                                icon = Icons.Default.Title,
+                                contentDescription = "Text Tool"
+                            )
+                            EditorIconButton(
+                                onClick = {
+                                    viewModel.onToolSelected(Tool.IMAGE)
+                                    onHideStrokeWidthSlider()
+                                },
+                                isActive = activeTool == Tool.IMAGE,
+                                icon = Icons.Default.Image,
+                                contentDescription = "Image Tool"
+                            )
+                            EditorIconButton(
+                                onClick = {
+                                    viewModel.onToolSelected(Tool.STAMP)
+                                    onHideStrokeWidthSlider()
+                                },
+                                isActive = activeTool == Tool.STAMP,
+                                icon = Icons.Default.Star,
+                                contentDescription = "Stamp Tool"
+                            )
+                        }
+                    }
+
+                    AnimatedVisibility(
+                        visible = activeTool == Tool.SHAPE,
+                        enter = fadeIn(tween(200)) + androidx.compose.animation.expandHorizontally(tween(250, easing = androidx.compose.animation.core.FastOutSlowInEasing)),
+                        exit = fadeOut(tween(180)) + androidx.compose.animation.shrinkHorizontally(tween(200))
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .padding(start = 8.dp)
+                                .background(clusterColor, RoundedCornerShape(18.dp))
+                                .padding(horizontal = 4.dp, vertical = 2.dp),
+                            horizontalArrangement = Arrangement.spacedBy(2.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            ShapeSubType.entries.forEach { subType ->
+                                val isSelected = selectedShapeSubType == subType
+                                TextButton(
+                                    onClick = { viewModel.onShapeSubTypeSelected(subType) },
+                                    modifier = Modifier.height(32.dp),
+                                    colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
+                                        containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+                                        contentColor = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
+                                    )
+                                ) {
+                                    Text(
+                                        text = when (subType) {
+                                            ShapeSubType.RECT -> "方框"
+                                            ShapeSubType.CIRCLE -> "圓形"
+                                            ShapeSubType.LINE -> "直線"
+                                            ShapeSubType.ARROW -> "箭頭"
+                                        },
+                                        style = MaterialTheme.typography.labelMedium
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    VerticalDivider(Modifier.height(24.dp).padding(horizontal = 8.dp))
+
+                    Row(
+                        modifier = Modifier
+                            .background(clusterColor, CircleShape)
+                            .padding(horizontal = 6.dp, vertical = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        shownRecentColors.forEach { color ->
+                            ColorChip(color = color, isSelected = selectedColor == color) {
+                                viewModel.onColorSelected(color)
+                            }
+                        }
+                        if (shownRecentColors.isNotEmpty()) {
+                            Spacer(Modifier.width(4.dp))
+                        }
+                        toolColors.forEach { color ->
+                            ColorChip(color = color, isSelected = selectedColor == color) {
+                                viewModel.onColorSelected(color)
+                            }
+                        }
+                        Box(
+                            modifier = Modifier
+                                .size(34.dp)
+                                .padding(3.dp)
+                                .clip(CircleShape)
+                                .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f), CircleShape)
+                                .background(
+                                    Brush.sweepGradient(
+                                        listOf(
+                                            Color.Red,
+                                            Color.Yellow,
+                                            Color.Green,
+                                            Color.Cyan,
+                                            Color.Blue,
+                                            Color.Magenta,
+                                            Color.Red
+                                        )
+                                    )
+                                )
+                                .clickable { showColorPicker = true }
+                        )
+                    }
+
+                    AnimatedVisibility(
+                        visible = showStrokeWidthSlider && (activeTool == Tool.PEN || activeTool == Tool.HIGHLIGHTER),
+                        enter = fadeIn(tween(180)) + androidx.compose.animation.expandHorizontally(tween(220)),
+                        exit = fadeOut(tween(150)) + androidx.compose.animation.shrinkHorizontally(tween(180))
+                    ) {
+                        Surface(
+                            modifier = Modifier.padding(start = 8.dp),
+                            shape = RoundedCornerShape(16.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                        ) {
+                            Text(
+                                text = "線寬 ${strokeWidth.toInt()} px",
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                style = MaterialTheme.typography.labelMedium
+                            )
+                        }
+                    }
+                }
+            }
+
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = shellColor,
+                border = BorderStroke(1.dp, borderColor)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(
+                        onClick = { viewModel.undo() },
+                        enabled = canUndo,
+                        modifier = Modifier
+                            .size(utilityButtonSize)
+                            .graphicsLayer { scaleX = undoScale; scaleY = undoScale }
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "Undo")
+                    }
+                    IconButton(
+                        onClick = { viewModel.redo() },
+                        enabled = canRedo,
+                        modifier = Modifier
+                            .size(utilityButtonSize)
+                            .graphicsLayer { scaleX = redoScale; scaleY = redoScale }
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.Redo, contentDescription = "Redo")
+                    }
+                    Box(
+                        modifier = Modifier
+                            .padding(horizontal = 4.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primaryContainer)
+                    ) {
+                        IconButton(onClick = onExport, modifier = Modifier.size(utilityButtonSize)) {
+                            Icon(
+                                Icons.Outlined.FileUpload,
+                                contentDescription = "Export PDF",
+                                tint = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                        }
+                    }
+                    IconButton(onClick = onDocumentSettings, modifier = Modifier.size(utilityButtonSize)) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.Article,
+                            contentDescription = "Document Settings",
+                            tint = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                    IconButton(onClick = { viewModel.cycleInputMode() }, modifier = Modifier.size(utilityButtonSize)) {
+                        Icon(
+                            imageVector = when (inputMode) {
+                                InputMode.FREE -> Icons.Filled.TouchApp
+                                InputMode.PALM_REJECTION -> Icons.Filled.BackHand
+                                InputMode.STYLUS_ONLY -> Icons.Filled.Create
+                            },
+                            contentDescription = when (inputMode) {
+                                InputMode.FREE -> "Free (no filter)"
+                                InputMode.PALM_REJECTION -> "Palm Rejection"
+                                InputMode.STYLUS_ONLY -> "Stylus Only"
+                            },
+                            tint = when (inputMode) {
+                                InputMode.FREE -> MaterialTheme.colorScheme.onSurface
+                                InputMode.PALM_REJECTION -> MaterialTheme.colorScheme.tertiary
+                                InputMode.STYLUS_ONLY -> MaterialTheme.colorScheme.primary
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -2293,30 +2713,69 @@ fun TabletEditorTopBar(
 }
 
 @Composable
-private fun PaperStyleDialog(
+private fun DocumentSettingsDialog(
+    documentTitle: String,
+    pageCount: Int,
+    currentPageIndex: Int,
     currentStyle: PaperStyle,
+    isPageOperationInProgress: Boolean,
     onDismiss: () -> Unit,
-    onConfirm: (PaperStyle) -> Unit
+    onConfirmStyle: (PaperStyle) -> Unit,
+    onInsertPdf: () -> Unit
 ) {
     var selectedBackground by remember { mutableStateOf(currentStyle.background) }
 
     androidx.compose.material3.AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("頁面背景樣式") },
+        title = { Text("文件設定中心", style = MaterialTheme.typography.titleLarge) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("選擇頁面的背景格線樣式",
+                Text(
+                    text = "在這裡調整目前文件的顯示設定，或把另一份 PDF 插入目前頁後方。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                val bgOptions = listOf(
-                    PageBackground.BLANK        to "空白",
-                    PageBackground.RULED        to "橫線",
-                    PageBackground.NARROW_RULED to "密行",
-                    PageBackground.WIDE_RULED   to "寬行",
-                    PageBackground.GRID         to "方格",
-                    PageBackground.DOT_GRID     to "點格",
+
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    shape = RoundedCornerShape(20.dp)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text("文件資訊", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            text = documentTitle,
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "共 $pageCount 頁，目前第 ${currentPageIndex + 1} 頁",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                Text(
+                    text = "頁面背景樣式",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+
+                val bgOptions = listOf(
+                    PageBackground.BLANK to "空白",
+                    PageBackground.RULED to "橫線",
+                    PageBackground.NARROW_RULED to "密行",
+                    PageBackground.WIDE_RULED to "寬行",
+                    PageBackground.GRID to "方格",
+                    PageBackground.DOT_GRID to "點格",
+                )
+
                 Row(
                     modifier = Modifier.horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -2332,11 +2791,50 @@ private fun PaperStyleDialog(
                         )
                     }
                 }
+
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    shape = RoundedCornerShape(20.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text("插入 PDF", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                text = if (isPageOperationInProgress) {
+                                    "正在更新頁面，完成前暫時無法再插入。"
+                                } else {
+                                    "從檔案挑選 PDF，插入到目前第 ${currentPageIndex + 1} 頁後方。"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        TextButton(
+                            onClick = onInsertPdf,
+                            enabled = !isPageOperationInProgress,
+                            colors = ButtonDefaults.textButtonColors(
+                                contentColor = MaterialTheme.colorScheme.primary
+                            )
+                        ) {
+                            Text(if (isPageOperationInProgress) "匯入中" else "選擇 PDF")
+                        }
+                    }
+                }
             }
         },
         confirmButton = {
             androidx.compose.material3.TextButton(onClick = {
-                onConfirm(currentStyle.copy(background = selectedBackground))
+                onConfirmStyle(currentStyle.copy(background = selectedBackground))
+                onDismiss()
             }) { Text("確認") }
         },
         dismissButton = {
@@ -2355,27 +2853,28 @@ private fun NewDocPaperSizeDialog(
 
     val paperPresets = remember {
         listOf(
-            Triple("A3",     842f,  1191f),
-            Triple("A4",     595f,   842f),
-            Triple("A5",     420f,   595f),
-            Triple("B5",     499f,   709f),
-            Triple("Letter", 612f,   792f),
+            Triple("A3", 842f, 1191f),
+            Triple("A4", 595f, 842f),
+            Triple("A5", 420f, 595f),
+            Triple("B5", 499f, 709f),
+            Triple("Letter", 612f, 792f),
         )
     }
 
     androidx.compose.material3.AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("選擇紙張大小") },
+        title = { Text("選擇紙張大小", style = MaterialTheme.typography.titleLarge) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("設定新空白筆記的紙張大小（建立後無法更改）",
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    text = "設定新空白筆記的紙張大小（建立後無法更改）",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(bottom = 8.dp)
                 )
                 paperPresets.forEach { (label, w, h) ->
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        val isPortrait  = selectedWidth == w && selectedHeight == h
+                        val isPortrait = selectedWidth == w && selectedHeight == h
                         val isLandscape = selectedWidth == h && selectedHeight == w
                         FilterChip(
                             selected = isPortrait,
@@ -2411,20 +2910,24 @@ private fun NewDocPaperSizeDialog(
 // 新增: 顏色選擇的 Chip 元件，帶有選擇狀態
 @Composable
 private fun ColorChip(color: Color, isSelected: Boolean, onClick: () -> Unit) {
-    val animatedBorder by animateDpAsState(if (isSelected) 2.5.dp else 0.dp, label = "ColorChipBorder")
+    val animatedBorder by animateDpAsState(if (isSelected) 2.dp else 1.dp, label = "ColorChipBorder")
     val chipScale by animateFloatAsState(
-        targetValue = if (isSelected) 1.22f else 1f,
+        targetValue = if (isSelected) 1.1f else 1f,
         animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),
         label = "ColorChipScale"
     )
+    val ringColor by animateColorAsState(
+        targetValue = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
+        label = "ColorChipRing"
+    )
     Box(
         Modifier
-            .size(40.dp)
+            .size(34.dp)
             .graphicsLayer { scaleX = chipScale; scaleY = chipScale }
-            .padding(4.dp)
+            .padding(3.dp)
             .clip(CircleShape)
             .background(color)
-            .border(animatedBorder, MaterialTheme.colorScheme.primary, CircleShape)
+            .border(animatedBorder, ringColor, CircleShape)
             .clickable(onClick = onClick)
     )
 }
@@ -2434,11 +2937,16 @@ private fun StrokeWidthSlider(viewModel: EditorViewModel) {
     val strokeWidth by viewModel.strokeWidth.collectAsState()
     val activeTool by viewModel.selectedTool.collectAsState()
     val range = if (activeTool == Tool.HIGHLIGHTER) 5f..40f else 1f..20f
-    Surface(modifier = Modifier.fillMaxWidth(), tonalElevation = 1.dp) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        tonalElevation = 1.dp,
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+    ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(36.dp)
+                .height(42.dp)
                 .padding(horizontal = 16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -2474,17 +2982,40 @@ private fun EditorIconButton(
         label = "EditorButtonTint"
     )
     val iconScale by animateFloatAsState(
-        targetValue = if (isActive) 1.18f else 1f,
+        targetValue = if (isActive) 1.14f else 1f,
         animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),
         label = "EditorIconScale"
     )
+    val iconOffsetY by animateDpAsState(
+        targetValue = if (isActive) (-1).dp else 0.dp,
+        animationSpec = tween(180),
+        label = "EditorIconOffsetY"
+    )
+    val indicatorAlpha by animateFloatAsState(
+        targetValue = if (isActive) 1f else 0f,
+        animationSpec = tween(180),
+        label = "EditorIconIndicatorAlpha"
+    )
 
-    IconButton(onClick = onClick, modifier = Modifier.size(40.dp)) {
-        Icon(
-            icon,
-            contentDescription = contentDescription,
-            tint = animatedTintColor,
-            modifier = Modifier.graphicsLayer { scaleX = iconScale; scaleY = iconScale }
+    Box(modifier = Modifier.size(36.dp), contentAlignment = Alignment.Center) {
+        IconButton(onClick = onClick, modifier = Modifier.size(36.dp)) {
+            Icon(
+                icon,
+                contentDescription = contentDescription,
+                tint = animatedTintColor,
+                modifier = Modifier
+                    .offset(y = iconOffsetY)
+                    .graphicsLayer { scaleX = iconScale; scaleY = iconScale }
+            )
+        }
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 3.dp)
+                .width(14.dp)
+                .height(3.dp)
+                .graphicsLayer { alpha = indicatorAlpha }
+                .background(MaterialTheme.colorScheme.onPrimaryContainer, RoundedCornerShape(999.dp))
         )
     }
 }

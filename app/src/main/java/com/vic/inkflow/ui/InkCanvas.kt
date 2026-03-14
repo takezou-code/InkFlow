@@ -79,7 +79,16 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.atan2
 import kotlin.math.cos
+import kotlin.math.hypot
 import kotlin.math.sin
+
+private const val ENABLE_PALM_DEBUG_LOGS = false
+
+private fun palmDebugLog(message: String) {
+    if (ENABLE_PALM_DEBUG_LOGS) {
+        Log.d("PALM_LOG", message)
+    }
+}
 
 @OptIn(ExperimentalComposeUiApi::class, ExperimentalLayoutApi::class)
 @Composable
@@ -88,8 +97,8 @@ fun InkCanvas(
     viewModel: EditorViewModel
 ) {
     val committedStrokes by viewModel.currentStrokes.collectAsState()
-    val selectedStrokes by viewModel.selectedStrokes.collectAsState()
-    val lassoMoveOffset by viewModel.lassoMoveOffset.collectAsState()
+    val selectedStrokePreview by viewModel.selectedStrokePreview.collectAsState()
+    val selectedStrokePreviewBounds by viewModel.selectedStrokePreviewBounds.collectAsState()
     val commitPreview by viewModel.commitPreview.collectAsState()
     val activeTool by viewModel.selectedTool.collectAsState()
     val selectedColor by viewModel.selectedColor.collectAsState()
@@ -142,6 +151,7 @@ fun InkCanvas(
     // Latest snapshot of image annotations for use inside pointer-input coroutines
     val imageAnnotationsRef    = rememberUpdatedState(imageAnnotations)
     val selectedImageIdRef     = rememberUpdatedState(selectedImageAnnotationId)
+    val selectedStrokePreviewBoundsRef = rememberUpdatedState(selectedStrokePreviewBounds)
 
     // Image bitmap cache: uri-string → decoded Bitmap (null = load failed / placeholder)
     val loadedImages = remember { mutableStateMapOf<String, android.graphics.Bitmap?>() }
@@ -316,7 +326,7 @@ fun InkCanvas(
                 MotionEvent.TOOL_TYPE_STYLUS -> "STYLUS"
                 else -> "OTHER(${motionEvent.getToolType(0)})"
             }
-            Log.d("PALM_LOG", "RAW $actionName cnt=${motionEvent.pointerCount} " +
+            palmDebugLog("RAW $actionName cnt=${motionEvent.pointerCount} " +
                 "tool0=$tool0 major0=${"%,.2f".format(motionEvent.getTouchMajor(0))} " +
                 "id0=${motionEvent.getPointerId(0)}")
             when (motionEvent.actionMasked) {
@@ -348,16 +358,17 @@ fun InkCanvas(
         }
         .pointerInput(activeTool, inputMode) {
             awaitEachGesture {
-                Log.d("PALM_LOG", "GESTURE start — awaiting first down")
+                palmDebugLog("GESTURE start - awaiting first down")
                 val firstContactDown = awaitFirstDown(requireUnconsumed = false)
-                Log.d("PALM_LOG", "GESTURE firstDown id=${firstContactDown.id.value} " +
+                palmDebugLog("GESTURE firstDown id=${firstContactDown.id.value} " +
                     "type=${firstContactDown.type} pressed=${firstContactDown.pressed} " +
                     "major=${pointerTouchMajors[firstContactDown.id.value.toInt()]}")
                 val firstEvent = awaitPointerEvent()
-                Log.d("PALM_LOG", "GESTURE firstEvent changes=${firstEvent.changes.size}: " +
+                palmDebugLog("GESTURE firstEvent changes=${firstEvent.changes.size}: " +
                     firstEvent.changes.joinToString { c ->
                         "id=${c.id.value} pressed=${c.pressed} prev=${c.previousPressed}"
                     })
+                var downEvent = firstEvent
 
                 // Resolve which pointer to track for drawing.
                 // PALM_REJECTION + multi-touch: locate the stylus among all contacts
@@ -393,7 +404,7 @@ fun InkCanvas(
                         outer@ while (true) {
                             val evt = awaitPointerEvent()
                             val genuineLift = evt.changes.any { it.previousPressed && !it.pressed }
-                            Log.d("PALM_LOG", "GESTURE while-loop changes=${evt.changes.size} " +
+                            palmDebugLog("GESTURE while-loop changes=${evt.changes.size} " +
                                 "allUp=${evt.changes.all { !it.pressed }} genuineLift=$genuineLift: " +
                                 evt.changes.joinToString { c ->
                                     "id=${c.id.value} pressed=${c.pressed} prev=${c.previousPressed} " +
@@ -405,16 +416,17 @@ fun InkCanvas(
                                 if (!change.pressed || change.previousPressed) continue  // only newly-pressed pointers
                                 val major =
                                     pointerTouchMajors[change.id.value.toInt()] ?: Float.MAX_VALUE
-                                Log.d("PALM_LOG", "GESTURE while-loop candidate id=${change.id.value} major=$major")
+                                palmDebugLog("GESTURE while-loop candidate id=${change.id.value} major=$major")
                                 if (!PalmRejectionFilter.shouldReject(major, 1f, 1, density) &&
                                     !PalmRejectionFilter.isFinger(major, density)
                                 ) {
+                                    downEvent = evt
                                     stylusDown = change
                                     break@outer
                                 }
                             }
                         }
-                        Log.d("PALM_LOG", "GESTURE while-loop exited stylusDown=$stylusDown")
+                        palmDebugLog("GESTURE while-loop exited stylusDown=$stylusDown")
                         stylusDown ?: return@awaitEachGesture
                     } else {
                         firstContactDown
@@ -425,7 +437,7 @@ fun InkCanvas(
                 // Also detect if the DOWN+UP sequence completed before awaitPointerEvent() ran
                 // (touch lifetime < one frame). When true, skip awaitDragOrCancellation and treat
                 // the gesture as an instantaneous tap rather than a cancelled gesture.
-                val alreadyReleased = firstEvent.changes.any { it.id == down.id && !it.pressed }
+                val alreadyReleased = downEvent.changes.any { it.id == down.id && !it.pressed }
                 val touchMajorPx   = pointerTouchMajors[down.id.value.toInt()] ?: lastTouchMajorPx
                 val touchMinorPx   = lastTouchMinorPx
                 val toolMajorPx    = lastToolMajorPx
@@ -449,37 +461,38 @@ fun InkCanvas(
                     posY             = down.position.y
                 )
 
-                // --- STYLUS ONLY: block all Touch-type input ---
+                // --- STYLUS_ONLY: any Touch-type contact → pass through for pan (Box handles) ---
                 if (inputMode == InputMode.STYLUS_ONLY && down.type == PointerType.Touch) {
                     return@awaitEachGesture
                 }
 
-                // --- PALM REJECTION: three-zone contact-size filter ---
-                // Zone 1 (palm / multi-finger): hard reject — no draw, no pan.
-                // Zone 2 (finger): pass through WITHOUT consuming — parent pan handler fires.
-                // Zone 3 (stylus, touchMajor ≤ 0.6): fall through to draw.
+                // --- Universal palm rejection: applies to ALL modes ---
+                // A palm-sized contact is silently dropped (no draw, no pan) in every mode.
+                if (down.type == PointerType.Touch &&
+                    PalmRejectionFilter.shouldReject(
+                        touchMajorPx = touchMajorPx,
+                        pressure = down.pressure,
+                        concurrentPointers = downEvent.changes.size,
+                        density = density
+                    )
+                ) {
+                    TouchEventLogger.logOutcome(
+                        sessionId       = sessionId,
+                        outcome         = "REJECTED_PALM",
+                        pointCount      = 0,
+                        maxPressure     = down.pressure,
+                        maxSizeWidthPx  = touchMajorPx,
+                        maxSizeHeightPx = touchMinorPx
+                    )
+                    return@awaitEachGesture
+                }
+
+                // --- PALM_REJECTION only: finger zone → pass through for single-finger pan ---
+                // FREE mode: finger (non-palm) falls through and draws — no zone filtering needed.
                 if (inputMode == InputMode.PALM_REJECTION && down.type == PointerType.Touch) {
-                    if (PalmRejectionFilter.shouldReject(
-                            touchMajorPx = touchMajorPx,
-                            pressure = down.pressure,
-                            concurrentPointers = firstEvent.changes.size,
-                            density = density
-                        )
-                    ) {
-                        // Palm or multi-pointer: drop silently
-                        TouchEventLogger.logOutcome(
-                            sessionId       = sessionId,
-                            outcome         = "REJECTED_ENTRY",
-                            pointCount      = 0,
-                            maxPressure     = down.pressure,
-                            maxSizeWidthPx  = touchMajorPx,
-                            maxSizeHeightPx = touchMinorPx
-                        )
-                        return@awaitEachGesture
-                    }
                     if (PalmRejectionFilter.isFinger(touchMajorPx, density)) {
-                        // Finger: do NOT consume — bubbles up to detectTransformGestures for pan.
-                        // Exception: Eraser must work with finger contacts too; let it fall through.
+                        // Finger: do NOT consume — bubbles up to Workspace Box for pan.
+                        // Exception: Eraser works with finger contacts; let it fall through.
                         if (activeTool != Tool.ERASER) {
                             TouchEventLogger.logOutcome(
                                 sessionId       = sessionId,
@@ -492,12 +505,17 @@ fun InkCanvas(
                             return@awaitEachGesture
                         }
                     }
-                    // Stylus (touchMajor ≤ STYLUS_TOUCH_MAJOR_THRESHOLD): fall through to draw
+                    // Stylus (small touchMajor): fall through to draw
                 }
 
+                // Claim accepted in-canvas gestures immediately so fast stylus motion cannot
+                // leak through to the workspace pan handler before we enter the tool branch.
+                downEvent.changes
+                    .filter { it.pressed }
+                    .forEach { it.consume() }
+                down.consume()
+
                 val startOffset = down.position
-                val isMoveMode = activeTool == Tool.LASSO && selectedStrokes.isNotEmpty()
-                if (activeTool == Tool.LASSO && !isMoveMode) viewModel.clearSelection()
 
                 // Text tool: selection, move, resize, or new text placement
                 if (activeTool == Tool.TEXT) {
@@ -664,17 +682,56 @@ fun InkCanvas(
                     return@awaitEachGesture
                 }
 
-                if (isMoveMode) {
-                    down.consume()
-                    var drag = awaitDragOrCancellation(down.id)
-                    while (drag != null && drag.pressed) {
-                        val delta = drag.positionChange()
-                        if (delta != Offset.Zero) viewModel.moveSelectedStrokes(delta)
-                        drag.consume()
-                        drag = awaitDragOrCancellation(drag.id)
+                if (activeTool == Tool.LASSO) {
+                    val selectionBounds = selectedStrokePreviewBoundsRef.value
+                    val cs = canvasPixelSizeState.value
+                    val sx = if (cs.width > 0f) cs.width / viewModel.modelWidth else 1f
+                    val sy = if (cs.height > 0f) cs.height / viewModel.modelHeight else 1f
+                    val selectionRect = selectionBounds?.let {
+                        Rect(it.left * sx, it.top * sy, it.right * sx, it.bottom * sy)
                     }
-                    viewModel.commitMovedStrokes()
-                    return@awaitEachGesture
+                    if (selectionRect != null && !selectionRect.isEmpty) {
+                        val hitHandle = strokeSelectionHandleRects(selectionRect)
+                            .firstOrNull { (_, handleRect) -> handleRect.contains(startOffset) }
+                        if (hitHandle != null) {
+                            down.consume()
+                            val handle = hitHandle.first
+                            val anchorCanvas = strokeSelectionResizeAnchor(selectionRect, handle)
+                            val initialHandle = strokeSelectionHandleCenter(selectionRect, handle)
+                            val baseDistance = hypot(
+                                (initialHandle.x - anchorCanvas.x).toDouble(),
+                                (initialHandle.y - anchorCanvas.y).toDouble()
+                            ).toFloat().coerceAtLeast(1f)
+                            viewModel.beginSelectedStrokeResize(anchorCanvas)
+                            var drag = awaitDragOrCancellation(down.id)
+                            while (drag != null && drag.pressed) {
+                                val currentDistance = hypot(
+                                    (drag.position.x - anchorCanvas.x).toDouble(),
+                                    (drag.position.y - anchorCanvas.y).toDouble()
+                                ).toFloat()
+                                viewModel.previewSelectedStrokeScale(currentDistance / baseDistance)
+                                drag.consume()
+                                drag = awaitDragOrCancellation(drag.id)
+                            }
+                            viewModel.commitResizedStrokes()
+                            return@awaitEachGesture
+                        }
+
+                        if (selectionRect.contains(startOffset)) {
+                            down.consume()
+                            var drag = awaitDragOrCancellation(down.id)
+                            while (drag != null && drag.pressed) {
+                                val delta = drag.positionChange()
+                                if (delta != Offset.Zero) viewModel.moveSelectedStrokes(delta)
+                                drag.consume()
+                                drag = awaitDragOrCancellation(drag.id)
+                            }
+                            viewModel.commitMovedStrokes()
+                            return@awaitEachGesture
+                        }
+
+                        viewModel.clearSelection()
+                    }
                 }
 
                 // Shape and Rectangular Lasso tool: drag to define bounding box
@@ -765,10 +822,10 @@ fun InkCanvas(
                             val w = if (activeTool == Tool.HIGHLIGHTER) {
                                 baseWidth // For highlighter, do NOT apply variable thickness
                             } else {
-                                val maxW = baseWidth * 1.2f   // 最粗：稍微放大即可，不需要誇張
-                                val minW = baseWidth * 0.3f   // 最細
-                                // 速度門檻 1.7f
-                                val vMapped = (velocity / 1.7f).coerceIn(0f, 1f)
+                                val maxW = baseWidth * 1.3f   // 最粗：稍微放大即可，不需要誇張
+                                val minW = baseWidth * 0.4f   // 最細
+                                // 降低速度門檻，讓普通的書寫速度也能輕易帶出筆尖般的細線條
+                                val vMapped = (velocity / 0.7f).coerceIn(0f, 1f)
                                 val targetW = minW + (maxW - minW) * (1f - vMapped)
                                 // 加重前一點的權重 (0.85f)，讓粗細過渡更平滑，消除竹節突變
                                 prevPt.width * 0.85f + targetW * 0.15f
@@ -800,7 +857,10 @@ fun InkCanvas(
                         activePathVersion++
                         drag.consume()
 
-                        if (activeTool == Tool.ERASER) viewModel.deleteStrokesIntersecting(activePath)
+                        if (activeTool == Tool.ERASER) {
+                            val points = currentPathPoints.map { Offset(it.x, it.y) }
+                            viewModel.deleteStrokesIntersecting(points)
+                        }
                         drag = awaitDragOrCancellation(drag.id)
                     }
                 } // end !alreadyReleased
@@ -851,14 +911,13 @@ fun InkCanvas(
                         // Fire one final erasure at end of the gesture so that:
                         //  (a) pure taps (no drag) can erase a stroke under the finger, and
                         //  (b) the tail end of a drag that ran asynchronously is not missed.
-                        // For a tap, activePath only has moveTo (zero-length); add a tiny
-                        // degenerate segment so stroked(20f) in IntersectionUtils produces a
-                        // non-empty circle at the touch point via the ROUND stroke-cap.
-                        if (currentPathPoints.size == 1) {
+                        val points = if (currentPathPoints.size == 1) {
                             val pt = currentPathPoints.first()
-                            activePath.lineTo(pt.x + 0.01f, pt.y)
+                            listOf(Offset(pt.x, pt.y), Offset(pt.x + 0.01f, pt.y))
+                        } else {
+                            currentPathPoints.map { Offset(it.x, it.y) }
                         }
-                        viewModel.deleteStrokesIntersecting(activePath)
+                        viewModel.deleteStrokesIntersecting(points)
                     }
                     else -> { }
                 }
@@ -951,7 +1010,7 @@ fun InkCanvas(
             // preview strokes from the DB layer and draw them separately below so the user
             // sees them at the new position immediately (no flash-back to old position).
             val preview = commitPreview
-            val previewIds = preview?.first?.map { it.stroke.id }?.toHashSet() ?: emptySet()
+            val previewIds = preview?.map { it.stroke.id }?.toHashSet() ?: emptySet()
             drawIntoCanvas { cvs ->
                 cvs.save()
                 cvs.scale(sx, sy)
@@ -966,8 +1025,7 @@ fun InkCanvas(
                 }
                 // Preview layer: moved strokes at their committed (new) position.
                 if (preview != null) {
-                    cvs.translate(preview.second.x, preview.second.y)
-                    preview.first.forEach { swp ->
+                    preview.forEach { swp ->
                         if (swp.stroke.shapeType != null) {
                             drawShapeOnCanvas(cvs, swp.stroke, swp.points)
                         } else {
@@ -979,31 +1037,52 @@ fun InkCanvas(
                 cvs.restore()
             }
 
-            // Selected strokes (highlighted, shifted by lasso delta)
-            val selectedPathData = selectedStrokes.map { swp ->
+            // Selected strokes (highlighted with current preview transform applied).
+            val selectedPathData = selectedStrokePreview.map { swp ->
                 Pair(swp, swp.points.toComposePath())
             }
             if (selectedPathData.isNotEmpty()) {
-                val delta = lassoMoveOffset
                 drawIntoCanvas { cvs ->
                     cvs.save()
                     cvs.scale(sx, sy)
-                    // The canvas is translated by delta (model-space units).
-                    // All drawing code uses original model coordinates — the translate
-                    // handles the visual offset for both freehand paths and shapes,
-                    // avoiding any double-delta issue.
-                    cvs.translate(delta.x, delta.y)
                     selectedPathData.forEach { (swp, path) ->
                         val stroke = swp.stroke
                         if (stroke.shapeType != null) {
-                            // Pass the original stroke bounds and actual points — the canvas
-                            // translate already accounts for the delta offset.
                             drawShapeOnCanvas(cvs, stroke, swp.points, tintColor = Color(0xFF6366F1))
                         } else {
                             drawPathOnCanvas(cvs, path, Color(0xFF6366F1), stroke.strokeWidth, stroke.isHighlighter)
                         }
                     }
                     cvs.restore()
+                }
+                val previewBounds = selectedStrokePreviewBounds
+                if (activeTool == Tool.LASSO && previewBounds != null) {
+                    val selectionRect = Rect(
+                        previewBounds.left * sx,
+                        previewBounds.top * sy,
+                        previewBounds.right * sx,
+                        previewBounds.bottom * sy
+                    )
+                    drawRect(
+                        color = Color(0xFF6366F1),
+                        topLeft = Offset(selectionRect.left, selectionRect.top),
+                        size = Size(selectionRect.width, selectionRect.height),
+                        style = Stroke(width = 2f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 6f)))
+                    )
+                    strokeSelectionHandleRects(selectionRect).forEach { (_, handleRect) ->
+                        drawRect(
+                            color = Color(0xFF6366F1),
+                            topLeft = Offset(handleRect.left, handleRect.top),
+                            size = Size(handleRect.width, handleRect.height)
+                        )
+                        drawLine(
+                            color = Color.White,
+                            start = Offset(handleRect.left + 5f, handleRect.bottom - 5f),
+                            end = Offset(handleRect.right - 5f, handleRect.top + 5f),
+                            strokeWidth = 1.5f,
+                            cap = StrokeCap.Round
+                        )
+                    }
                 }
             }
 
@@ -1190,6 +1269,36 @@ private fun imageResizeHandleRect(bottomRight: Offset): Rect {
     val h = 28f
     return Rect(bottomRight.x - h / 2f, bottomRight.y - h / 2f,
                 bottomRight.x + h / 2f, bottomRight.y + h / 2f)
+}
+
+private enum class StrokeSelectionHandle {
+    TOP_LEFT,
+    TOP_RIGHT,
+    BOTTOM_LEFT,
+    BOTTOM_RIGHT
+}
+
+private fun strokeSelectionHandleCenter(selectionRect: Rect, handle: StrokeSelectionHandle): Offset = when (handle) {
+    StrokeSelectionHandle.TOP_LEFT -> Offset(selectionRect.left, selectionRect.top)
+    StrokeSelectionHandle.TOP_RIGHT -> Offset(selectionRect.right, selectionRect.top)
+    StrokeSelectionHandle.BOTTOM_LEFT -> Offset(selectionRect.left, selectionRect.bottom)
+    StrokeSelectionHandle.BOTTOM_RIGHT -> Offset(selectionRect.right, selectionRect.bottom)
+}
+
+private fun strokeSelectionResizeAnchor(selectionRect: Rect, handle: StrokeSelectionHandle): Offset = when (handle) {
+    StrokeSelectionHandle.TOP_LEFT -> Offset(selectionRect.right, selectionRect.bottom)
+    StrokeSelectionHandle.TOP_RIGHT -> Offset(selectionRect.left, selectionRect.bottom)
+    StrokeSelectionHandle.BOTTOM_LEFT -> Offset(selectionRect.right, selectionRect.top)
+    StrokeSelectionHandle.BOTTOM_RIGHT -> Offset(selectionRect.left, selectionRect.top)
+}
+
+private fun strokeSelectionHandleRects(selectionRect: Rect): List<Pair<StrokeSelectionHandle, Rect>> = listOf(
+    StrokeSelectionHandle.TOP_LEFT,
+    StrokeSelectionHandle.TOP_RIGHT,
+    StrokeSelectionHandle.BOTTOM_LEFT,
+    StrokeSelectionHandle.BOTTOM_RIGHT
+).map { handle ->
+    handle to imageResizeHandleRect(strokeSelectionHandleCenter(selectionRect, handle))
 }
 
 // ---- Shape rendering helpers ----

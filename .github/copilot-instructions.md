@@ -207,4 +207,41 @@
 - 側邊欄展開/收合：`tween(300ms)`。
 - 深色/亮色切換：顏色漸變過渡（`animateColorAsState`）。
 - 首頁卡片初次載入：從下往上浮現的交錯 (Staggered) 動畫（`LaunchedEffect` + `delay(index * 50ms)`）。
-- 手勢：雙指縮放 (Pinch-to-Zoom) + 雙指平移作用於畫布；單指在畫布區 = 繪圖，在側邊欄 = 滾動。**禁止**混用。
+- 手勢：依輸入模式不同（見第 16 條），單指觸控可能用於平移或繪圖。雙指縮放 (Pinch-to-Zoom) + 雙指平移在**所有模式**下均作用於畫布。**禁止**在同一個手勢序列中同時觸發繪圖與平移。
+
+---
+
+## 16. 手勢路由規範 (Gesture Routing Contract)
+
+### 16.1 架構說明
+
+手勢由兩層 `pointerInput` 共同處理：
+- **InkCanvas layer**（`Surface` 內層）：負責繪圖、橡皮擦、套索。**不消費 (consume)** 的事件會向上冒泡至 Box layer。
+- **Workspace Box layer**（外層背景 `Box`）：負責平移 + 縮放。使用 `awaitFirstDown(requireUnconsumed = false)` 偵測，但若 `firstDown.isConsumed` 則立即放棄，以避免與繪圖衝突。
+
+### 16.2 每模式行為規範
+
+| 模式 | 接觸類型 | 位置 | InkCanvas 行為 | Box 行為 |
+|---|---|---|---|---|
+| **FREE** | 觸控筆（Stylus）/ 手指 | 紙上 | ✏️ 繪圖（consume） | 無動作 |
+| **FREE** | 手掌（palm-zone） | 紙上 | `return`（不 consume，drop silently） | 無動作（touchSlop 不會達到）|
+| **FREE** | 任意非手掌 Touch | 紙外 | 不觸及 InkCanvas | 🖐️ 單指平移 |
+| **FREE** | 雙指 | 紙上或紙外 | `return`（不 consume） | 🔍 縮放 + 平移 |
+| **PALM_REJECTION** | 觸控筆（Stylus） | 紙上 | ✏️ 繪圖（consume） | 無動作 |
+| **PALM_REJECTION** | 手指（finger-zone） | 紙上 | `return`（不 consume） | 🖐️ 單指平移 |
+| **PALM_REJECTION** | 手掌（palm-zone） | 紙上 | `return`（不 consume，drop silently） | 無動作（touchSlop 不會達到）|
+| **PALM_REJECTION** | 觸控筆 + 手掌（多指） | 紙上 | ✏️ 以觸控筆繪圖（consume） | 無動作 |
+| **PALM_REJECTION** | 雙手指（多指） | 紙上 | `return`（不 consume） | 🔍 縮放 + 平移 |
+| **PALM_REJECTION** | 任意 Touch | 紙外 | 不觸及 InkCanvas | 🖐️ 單指平移 / 🔍 縮放 |
+| **STYLUS_ONLY** | 觸控筆（Stylus） | 紙上 | ✏️ 繪圖（consume） | 無動作 |
+| **STYLUS_ONLY** | 手指 / 手掌（Touch） | 紙上 | `return`（不 consume） | 🖐️ 單指平移 |
+| **STYLUS_ONLY** | 任意 Touch | 紙外 | 不觸及 InkCanvas | 🖐️ 單指平移 |
+| **STYLUS_ONLY** | 雙指 | 紙上或紙外 | `return`（不 consume） | 🔍 縮放 + 平移 |
+
+> **共同規則**：手掌在任何模式下均為❓❓ 靜默丟棄，永不觸發繪圖或平移。
+
+### 16.3 實作守則
+
+- **InkCanvas**：`STYLUS_ONLY` 模式下，所有 `PointerType.Touch` 一律 `return@awaitEachGesture`（**不 consume**）。**手掌拒絕適用於全部模式**：`PalmRejectionFilter.shouldReject()` 在任何模式下均運行，命中則 `return`（不 consume）。`PALM_REJECTION` 模式額外過濾手指區（`isFinger() = true`），讓手指 `return`（不 consume）泡泡上平移。`FREE` 模式不區分觸控筆與手指，任何非手掌 Touch 均繪圖。
+- **Workspace Box**：使用 `awaitFirstDown(requireUnconsumed = false)` 偵測；若 `firstDown.isConsumed`（代表 InkCanvas 已認領此次繪圖事件）則 `return@awaitEachGesture`，不執行平移。其餘情況使用 touch-slop 防抖，同時處理單指平移（zoom=1）與雙指縮放（zoom≠1）。
+- **禁止**在 Box layer 中用指针數量（`changes.size >= 2`）作為啟動條件；這會讓未被 InkCanvas 消費的單指 Touch 永遠無法觸發平移。

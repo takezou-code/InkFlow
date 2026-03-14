@@ -30,32 +30,144 @@ object IntersectionUtils {
     }
 
     /**
-     * Eraser: Two-phase collision detection using AABB broad phase + path intersection.
+     * Calculates the shortest distance from a point (px, py) to a line segment (vx, vy)-(wx, wy).
      */
-    fun findIntersectingStrokes(eraserPath: Path, strokes: List<StrokeWithPoints>): List<StrokeWithPoints> {
-        val intersectingStrokes = mutableListOf<StrokeWithPoints>()
+    private fun distancePointToSegment(px: Float, py: Float, vx: Float, vy: Float, wx: Float, wy: Float): Float {
+        val l2 = (wx - vx) * (wx - vx) + (wy - vy) * (wy - vy)
+        if (l2 == 0f) return sqrt((px - vx) * (px - vx) + (py - vy) * (py - vy))
+        var t = ((px - vx) * (wx - vx) + (py - vy) * (wy - vy)) / l2
+        t = Math.max(0f, Math.min(1f, t))
+        val projX = vx + t * (wx - vx)
+        val projY = vy + t * (wy - vy)
+        return sqrt((px - projX) * (px - projX) + (py - projY) * (py - projY))
+    }
 
-        val strokedEraser = eraserPath.stroked(20f)
-        val eraserBounds = RectF()
-        strokedEraser.computeBounds(eraserBounds, true)
+    /**
+     * Calculates the shortest distance between two line segments (p1-p2 and p3-p4).
+     */
+    private fun distanceSegmentToSegment(
+        x1: Float, y1: Float, x2: Float, y2: Float,
+        x3: Float, y3: Float, x4: Float, y4: Float
+    ): Float {
+        val rx = x2 - x1
+        val ry = y2 - y1
+        val sx = x4 - x3
+        val sy = y4 - y3
+        val qx = x3 - x1
+        val qy = y3 - y1
+
+        val rCrossS = rx * sy - ry * sx
+        val qCrossR = qx * ry - qy * rx
+        val epsilon = 1e-6f
+
+        // Check for actual crossing intersection
+        if (kotlin.math.abs(rCrossS) > epsilon) {
+            val qCrossS = qx * sy - qy * sx
+            val t = qCrossS / rCrossS
+            val u = qCrossR / rCrossS
+            if (t in 0f..1f && u in 0f..1f) return 0f // They cross
+        }
+
+        // If they don't cross (or are parallel), the shortest distance must be
+        // from an endpoint of one segment to the other segment.
+        val d1 = distancePointToSegment(x1, y1, x3, y3, x4, y4)
+        val d2 = distancePointToSegment(x2, y2, x3, y3, x4, y4)
+        val d3 = distancePointToSegment(x3, y3, x1, y1, x2, y2)
+        val d4 = distancePointToSegment(x4, y4, x1, y1, x2, y2)
+
+        return minOf(d1, d2, d3, d4)
+    }
+
+    /**
+     * Eraser: Two-phase collision detection using AABB broad phase + segment-to-segment distance.
+     */
+    fun findIntersectingStrokes(eraserPoints: List<Offset>, strokes: List<StrokeWithPoints>, eraserRadius: Float = 10f): List<StrokeWithPoints> {
+        val intersectingStrokes = mutableListOf<StrokeWithPoints>()
+        if (eraserPoints.isEmpty()) return intersectingStrokes
+
+        // Combine AABB for all eraser points
+        var eMinX = Float.POSITIVE_INFINITY
+        var eMinY = Float.POSITIVE_INFINITY
+        var eMaxX = Float.NEGATIVE_INFINITY
+        var eMaxY = Float.NEGATIVE_INFINITY
+        for (p in eraserPoints) {
+            if (p.x < eMinX) eMinX = p.x
+            if (p.x > eMaxX) eMaxX = p.x
+            if (p.y < eMinY) eMinY = p.y
+            if (p.y > eMaxY) eMaxY = p.y
+        }
 
         for (strokeWithPoints in strokes) {
             val stroke = strokeWithPoints.stroke
-            val strokeBounds = RectF(stroke.boundsLeft, stroke.boundsTop, stroke.boundsRight, stroke.boundsBottom)
+            // Fast AABB check with combined bounds (+ eraser radius + stroke width / 2)
+            val R = eraserRadius + (stroke.strokeWidth / 2f)
+            if (stroke.boundsRight < eMinX - R || stroke.boundsLeft > eMaxX + R ||
+                stroke.boundsBottom < eMinY - R || stroke.boundsTop > eMaxY + R) {
+                continue
+            }
 
-            if (RectF.intersects(eraserBounds, strokeBounds)) {
-                val strokePath = if (strokeWithPoints.stroke.shapeType != null)
-                    strokeWithPoints.toShapePath()
-                else {
-                    val points = strokeWithPoints.points.map { StrokePoint(it.x, it.y, it.width) }
-                    EnvelopeUtils.generateEnvelopePath(points).asAndroidPath()
+            var hit = false
+            if (stroke.shapeType != null) {
+                // For shapes, generate its outline and use Path.op to handle interior/thickness
+                val strokePath = strokeWithPoints.toShapePath()
+                val eraserPath = Path().apply {
+                    moveTo(eraserPoints.first().x, eraserPoints.first().y)
+                    for (i in 1 until eraserPoints.size) {
+                        lineTo(eraserPoints[i].x, eraserPoints[i].y)
+                    }
                 }
                 val intersectionPath = Path()
-                intersectionPath.op(strokePath, strokedEraser, Path.Op.INTERSECT)
-
+                intersectionPath.op(strokePath, eraserPath.stroked(eraserRadius * 2f), Path.Op.INTERSECT)
                 if (!intersectionPath.isEmpty) {
-                    intersectingStrokes.add(strokeWithPoints)
+                    hit = true
                 }
+            } else {
+                // Freehand strokes: fast segment-to-segment distance
+                val strokePoints = strokeWithPoints.points
+                if (strokePoints.size <= 1) {
+                    // Stroke is just a dot
+                    val sx = strokePoints.firstOrNull()?.x ?: continue
+                    val sy = strokePoints.firstOrNull()?.y ?: continue
+                    var hitDot = false
+                    for (i in 0 until eraserPoints.size - 1) {
+                        val p1 = eraserPoints[i]
+                        val p2 = eraserPoints[i + 1]
+                        if (distancePointToSegment(sx, sy, p1.x, p1.y, p2.x, p2.y) <= R) {
+                            hitDot = true
+                            break
+                        }
+                    }
+                    hit = hitDot
+                } else {
+                    // Both stroke and eraser are paths
+                    for (i in 0 until strokePoints.size - 1) {
+                        val s1 = strokePoints[i]
+                        val s2 = strokePoints[i + 1]
+                        var dist = Float.MAX_VALUE
+                        
+                        if (eraserPoints.size == 1) {
+                            val ex = eraserPoints[0].x
+                            val ey = eraserPoints[0].y
+                            dist = distancePointToSegment(ex, ey, s1.x, s1.y, s2.x, s2.y)
+                        } else {
+                            for (j in 0 until eraserPoints.size - 1) {
+                                val e1 = eraserPoints[j]
+                                val e2 = eraserPoints[j + 1]
+                                val d = distanceSegmentToSegment(s1.x, s1.y, s2.x, s2.y, e1.x, e1.y, e2.x, e2.y)
+                                if (d < dist) dist = d
+                            }
+                        }
+                        
+                        if (dist <= R) {
+                            hit = true
+                            break
+                        }
+                    }
+                }
+            }
+
+            if (hit) {
+                intersectingStrokes.add(strokeWithPoints)
             }
         }
         return intersectingStrokes

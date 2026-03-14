@@ -9,6 +9,8 @@ import android.os.ParcelFileDescriptor
 import androidx.collection.LruCache
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.room.withTransaction
+import com.vic.inkflow.data.AppDatabase
 import com.vic.inkflow.util.PdfManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -21,6 +23,8 @@ import kotlinx.coroutines.sync.withLock
 import java.io.File
 
 class PdfViewModel(application: Application) : AndroidViewModel(application) {
+
+    private val db by lazy { AppDatabase.getDatabase(getApplication()) }
 
     private var pdfRenderer: PdfRenderer? = null
     private var parcelFileDescriptor: ParcelFileDescriptor? = null
@@ -178,6 +182,7 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun insertBlankPage(
         context: Context,
+        documentUri: String,
         afterIndex: Int,
         pageWidthPt: Float = com.tom_roush.pdfbox.pdmodel.common.PDRectangle.A4.width,
         pageHeightPt: Float = com.tom_roush.pdfbox.pdmodel.common.PDRectangle.A4.height
@@ -202,10 +207,26 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         // ────────────────────────────────────────────────────────────────────
 
         viewModelScope.launch(Dispatchers.IO) {
+            var dbShiftApplied = false
+            try {
+                db.withTransaction {
+                    db.strokeDao().shiftPageIndicesUp(documentUri, optimisticNewIndex, 1)
+                    db.textAnnotationDao().shiftPageIndicesUp(documentUri, optimisticNewIndex, 1)
+                    db.imageAnnotationDao().shiftPageIndicesUp(documentUri, optimisticNewIndex, 1)
+                }
+                dbShiftApplied = true
+
             renderMutex.withLock { closeRendererOnly() }
             val ok = com.vic.inkflow.util.PdfManager.insertBlankPage(fileUri, afterIndex, pageWidthPt, pageHeightPt)
             if (!ok) {
                 // 回滾樂觀更新
+                if (dbShiftApplied) {
+                    db.withTransaction {
+                        db.strokeDao().shiftPageIndicesDown(documentUri, optimisticNewIndex - 1)
+                        db.textAnnotationDao().shiftPageIndicesDown(documentUri, optimisticNewIndex - 1)
+                        db.imageAnnotationDao().shiftPageIndicesDown(documentUri, optimisticNewIndex - 1)
+                    }
+                }
                 _pageCount.value = currentCount
                 _lastInsertedPageIndex.value = null
                 _isPageOperationInProgress.value = false
@@ -237,8 +258,108 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                 _thumbnailVersion.value++   // 通知側邊欄重新抓取所有縮圖
             } catch (e: Exception) {
                 android.util.Log.e("PdfViewModel", "insertBlankPage reopen failed", e)
+                if (dbShiftApplied) {
+                    runCatching {
+                        db.withTransaction {
+                            db.strokeDao().shiftPageIndicesDown(documentUri, optimisticNewIndex - 1)
+                            db.textAnnotationDao().shiftPageIndicesDown(documentUri, optimisticNewIndex - 1)
+                            db.imageAnnotationDao().shiftPageIndicesDown(documentUri, optimisticNewIndex - 1)
+                        }
+                    }
+                }
                 _pageCount.value = currentCount  // 回滾
             } finally {
+                _isPageOperationInProgress.value = false
+            }
+            } catch (e: Exception) {
+                android.util.Log.e("PdfViewModel", "insertBlankPage failed before reopen", e)
+                _pageCount.value = currentCount
+                _lastInsertedPageIndex.value = null
+                _isPageOperationInProgress.value = false
+            }
+        }
+    }
+
+    fun insertPdfPages(
+        context: Context,
+        documentUri: String,
+        sourceUri: Uri,
+        afterIndex: Int
+    ) {
+        val targetFileUri = _currentPdfUri.value ?: return
+        if (targetFileUri.scheme != "file") {
+            android.util.Log.w("PdfViewModel", "insertPdfPages: only file:// target URIs supported")
+            return
+        }
+
+        _isPageOperationInProgress.value = true
+        viewModelScope.launch(Dispatchers.IO) {
+            val localSourceUri = PdfManager.copyPdfToAppDir(context, sourceUri)
+            if (localSourceUri == null) {
+                _isPageOperationInProgress.value = false
+                return@launch
+            }
+
+            val insertedPageCount = PdfManager.getPdfPageCount(localSourceUri)
+            if (insertedPageCount <= 0) {
+                _isPageOperationInProgress.value = false
+                return@launch
+            }
+
+            val currentCount = _pageCount.value
+            val insertionIndex = if (afterIndex >= currentCount - 1) currentCount else afterIndex + 1
+
+            _pageCount.value = currentCount + insertedPageCount
+            _lastInsertedPageIndex.value = insertionIndex
+
+            var dbShiftApplied = false
+            try {
+                db.withTransaction {
+                    db.strokeDao().shiftPageIndicesUp(documentUri, insertionIndex, insertedPageCount)
+                    db.textAnnotationDao().shiftPageIndicesUp(documentUri, insertionIndex, insertedPageCount)
+                    db.imageAnnotationDao().shiftPageIndicesUp(documentUri, insertionIndex, insertedPageCount)
+                }
+                dbShiftApplied = true
+
+                renderMutex.withLock { closeRendererOnly() }
+                val merged = PdfManager.insertPdfPages(targetFileUri, localSourceUri, afterIndex)
+                if (!merged) {
+                    if (dbShiftApplied) {
+                        db.withTransaction {
+                            repeat(insertedPageCount) {
+                                db.strokeDao().shiftPageIndicesDown(documentUri, insertionIndex - 1)
+                                db.textAnnotationDao().shiftPageIndicesDown(documentUri, insertionIndex - 1)
+                                db.imageAnnotationDao().shiftPageIndicesDown(documentUri, insertionIndex - 1)
+                            }
+                        }
+                    }
+                    _pageCount.value = currentCount
+                    _lastInsertedPageIndex.value = null
+                    reopenCurrentPdf(targetFileUri, fallbackPageCount = currentCount)
+                    return@launch
+                }
+
+                reopenCurrentPdf(targetFileUri, fallbackPageCount = currentCount + insertedPageCount)
+            } catch (e: Exception) {
+                android.util.Log.e("PdfViewModel", "insertPdfPages failed", e)
+                if (dbShiftApplied) {
+                    runCatching {
+                        db.withTransaction {
+                            repeat(insertedPageCount) {
+                                db.strokeDao().shiftPageIndicesDown(documentUri, insertionIndex - 1)
+                                db.textAnnotationDao().shiftPageIndicesDown(documentUri, insertionIndex - 1)
+                                db.imageAnnotationDao().shiftPageIndicesDown(documentUri, insertionIndex - 1)
+                            }
+                        }
+                    }
+                }
+                _pageCount.value = currentCount
+                _lastInsertedPageIndex.value = null
+                reopenCurrentPdf(targetFileUri, fallbackPageCount = currentCount)
+            } finally {
+                runCatching {
+                    localSourceUri.path?.let { File(it).delete() }
+                }
                 _isPageOperationInProgress.value = false
             }
         }
@@ -333,6 +454,34 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         thumbnailCache.evictAll()
         thumbnailFlowCache.clear()
         bitmapFlowCache.clear()
+    }
+
+    private suspend fun reopenCurrentPdf(fileUri: Uri, fallbackPageCount: Int) {
+        try {
+            val fd = ParcelFileDescriptor.open(
+                File(fileUri.path!!),
+                ParcelFileDescriptor.MODE_READ_ONLY
+            )
+            val renderer = try {
+                PdfRenderer(fd)
+            } catch (e: Exception) {
+                fd.close()
+                _pageCount.value = fallbackPageCount
+                return
+            }
+            renderMutex.withLock {
+                parcelFileDescriptor = fd
+                pdfRenderer = renderer
+                readAndCachePageSizes(renderer)
+            }
+            clearFlowCaches()
+            _pageCount.value = renderer.pageCount
+            pageSizesMap[0]?.let { _firstPageSize.value = it }
+            _thumbnailVersion.value++
+        } catch (e: Exception) {
+            android.util.Log.e("PdfViewModel", "reopenCurrentPdf failed", e)
+            _pageCount.value = fallbackPageCount
+        }
     }
 
     fun getPageBitmap(pageIndex: Int): StateFlow<Bitmap?> {

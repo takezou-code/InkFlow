@@ -2,6 +2,7 @@ package com.vic.inkflow.ui.theme
 
 import android.app.Activity
 import android.os.Build
+import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
@@ -15,32 +16,64 @@ import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 
 private val DarkColorScheme = darkColorScheme(
-    primary = Purple80,
-    secondary = PurpleGrey80,
-    tertiary = Pink80
+    primary = BrandIndigo,
+    onPrimary = Color.White,
+    primaryContainer = Slate700,
+    onPrimaryContainer = InkTextStrongDark,
+    secondary = BrandPurple,
+    onSecondary = Color.White,
+    secondaryContainer = Slate800,
+    onSecondaryContainer = InkTextStrongDark,
+    tertiary = BrandCyan,
+    onTertiary = Slate900,
+    background = Slate900,
+    onBackground = InkTextStrongDark,
+    surface = Slate850,
+    onSurface = InkTextStrongDark,
+    surfaceVariant = Slate800,
+    onSurfaceVariant = InkTextSoftDark,
+    surfaceContainerLowest = WorkspaceDeskDark,
+    surfaceContainerLow = Slate850,
+    surfaceContainer = Slate800,
+    surfaceContainerHigh = Slate700,
+    surfaceContainerHighest = Slate700,
+    outline = Slate500,
+    outlineVariant = Slate700,
+    error = Color(0xFFFF7A8A)
 )
 
 private val LightColorScheme = lightColorScheme(
-    primary = Purple40,
-    secondary = PurpleGrey40,
-    tertiary = Pink40
-
-    /* Other default colors to override
-    background = Color(0xFFFFFBFE),
-    surface = Color(0xFFFFFBFE),
+    primary = BrandIndigo,
     onPrimary = Color.White,
+    primaryContainer = Color(0xFFE0E7FF),
+    onPrimaryContainer = InkTextStrong,
+    secondary = BrandPurple,
     onSecondary = Color.White,
-    onTertiary = Color.White,
-    onBackground = Color(0xFF1C1B1F),
-    onSurface = Color(0xFF1C1B1F),
-    */
+    secondaryContainer = Color(0xFFF0E8FF),
+    onSecondaryContainer = InkTextStrong,
+    tertiary = BrandAmber,
+    onTertiary = InkTextStrong,
+    background = Slate50,
+    onBackground = InkTextStrong,
+    surface = Color(0xFFFBFCFE),
+    onSurface = InkTextStrong,
+    surfaceVariant = Slate100,
+    onSurfaceVariant = InkTextSoft,
+    surfaceContainerLowest = WorkspaceDeskLight,
+    surfaceContainerLow = Color(0xFFF5F8FC),
+    surfaceContainer = Slate100,
+    surfaceContainerHigh = Color(0xFFEEF3F9),
+    surfaceContainerHighest = Slate150,
+    outline = Slate300,
+    outlineVariant = Slate200,
+    error = Color(0xFFD94C62)
 )
 
 @Composable
 fun InkFlowTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     // Dynamic color is available on Android 12+
-    dynamicColor: Boolean = true,
+    dynamicColor: Boolean = false,
     content: @Composable () -> Unit
 ) {
     val colorScheme = when {

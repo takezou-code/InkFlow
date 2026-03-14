@@ -10,6 +10,8 @@ data class DocumentPreferenceEntity(
     val tool: String? = null,
     val colorArgb: Int? = null,
     val strokeWidth: Float? = null,
+    val penStrokeWidth: Float? = null,
+    val highlighterStrokeWidth: Float? = null,
     val shapeSubType: String? = null,
     /** Legacy boolean field — kept for migration reads only; new code writes [inputMode]. */
     val stylusOnlyMode: Boolean? = null,

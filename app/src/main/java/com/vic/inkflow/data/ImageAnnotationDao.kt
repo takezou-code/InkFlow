@@ -31,6 +31,9 @@ interface ImageAnnotationDao {
     @Query("UPDATE image_annotations SET pageIndex = pageIndex - 1 WHERE documentUri = :documentUri AND pageIndex > :deletedPageIndex")
     suspend fun shiftPageIndicesDown(documentUri: String, deletedPageIndex: Int)
 
+    @Query("UPDATE image_annotations SET pageIndex = pageIndex + :amount WHERE documentUri = :documentUri AND pageIndex >= :startingIndex")
+    suspend fun shiftPageIndicesUp(documentUri: String, startingIndex: Int, amount: Int)
+
     @Query("DELETE FROM image_annotations WHERE documentUri = :documentUri")
     suspend fun deleteForDocument(documentUri: String)
 }

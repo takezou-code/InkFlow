@@ -9,7 +9,8 @@ data class DrawingPreferences(
     val tool: Tool,
     val colorArgb: Int,
     val highlighterColorArgb: Int,
-    val strokeWidth: Float,
+    val penStrokeWidth: Float,
+    val highlighterStrokeWidth: Float,
     val shapeSubType: ShapeSubType,
     val inputMode: InputMode,
     val recentColors: List<Int>,
@@ -23,6 +24,8 @@ class EditorSettingsRepository(
     private val documentPreferenceDao: DocumentPreferenceDao
 ) {
     companion object {
+        private const val DEFAULT_PEN_STROKE_WIDTH = 4f
+        private const val DEFAULT_HIGHLIGHTER_STROKE_WIDTH = 8f
         private const val DEFAULT_HIGHLIGHTER_COLOR_ARGB = 0xFFFFC700.toInt()
         private val DEFAULT_RECENT_COLORS = listOf(
             0xFF000000.toInt(),
@@ -38,7 +41,8 @@ class EditorSettingsRepository(
             tool = local?.tool?.toToolOrNull() ?: Tool.PEN,
             colorArgb = local?.colorArgb ?: 0xFF000000.toInt(),
             highlighterColorArgb = local?.highlighterColorArgb ?: DEFAULT_HIGHLIGHTER_COLOR_ARGB,
-            strokeWidth = local?.strokeWidth ?: 5f,
+            penStrokeWidth = local?.penStrokeWidth ?: local?.strokeWidth ?: DEFAULT_PEN_STROKE_WIDTH,
+            highlighterStrokeWidth = local?.highlighterStrokeWidth ?: local?.strokeWidth ?: DEFAULT_HIGHLIGHTER_STROKE_WIDTH,
             shapeSubType = local?.shapeSubType?.toShapeSubTypeOrNull() ?: ShapeSubType.RECT,
             inputMode = local?.inputMode?.toInputModeOrNull()
                 ?: (if (local?.stylusOnlyMode == true) InputMode.STYLUS_ONLY else InputMode.FREE),
@@ -62,8 +66,14 @@ class EditorSettingsRepository(
         }
     }
 
-    suspend fun setStrokeWidth(documentUri: String, strokeWidth: Float) {
-        upsertDocument(documentUri) { copy(strokeWidth = strokeWidth) }
+    suspend fun setStrokeWidth(documentUri: String, tool: Tool, strokeWidth: Float) {
+        upsertDocument(documentUri) {
+            when (tool) {
+                Tool.HIGHLIGHTER -> copy(strokeWidth = strokeWidth, highlighterStrokeWidth = strokeWidth)
+                Tool.PEN -> copy(strokeWidth = strokeWidth, penStrokeWidth = strokeWidth)
+                else -> this
+            }
+        }
     }
 
     suspend fun setShapeSubType(documentUri: String, shapeSubType: ShapeSubType) {

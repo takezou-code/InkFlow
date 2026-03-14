@@ -128,6 +128,72 @@ object PdfManager {
             }
         }
 
+    /** Returns the number of pages in a PDF addressed by a file:// Uri. */
+    suspend fun getPdfPageCount(fileUri: Uri): Int =
+        withContext(Dispatchers.IO) {
+            if (fileUri.scheme != "file") {
+                Log.w(TAG, "getPdfPageCount: only file:// URIs are supported")
+                return@withContext 0
+            }
+            try {
+                val file = File(fileUri.path!!)
+                PDDocument.load(file).use { doc -> doc.numberOfPages }
+            } catch (e: Exception) {
+                Log.e(TAG, "getPdfPageCount failed", e)
+                0
+            }
+        }
+
+    /**
+     * Inserts all pages from [sourceFileUri] into [targetFileUri] after [afterIndex].
+     * Both URIs must be file:// and the target file is updated atomically via a temp file.
+     */
+    suspend fun insertPdfPages(
+        targetFileUri: Uri,
+        sourceFileUri: Uri,
+        afterIndex: Int
+    ): Boolean =
+        withContext(Dispatchers.IO) {
+            if (targetFileUri.scheme != "file" || sourceFileUri.scheme != "file") {
+                Log.w(TAG, "insertPdfPages: only file:// URIs are supported")
+                return@withContext false
+            }
+            try {
+                val targetFile = File(targetFileUri.path!!)
+                val sourceFile = File(sourceFileUri.path!!)
+                PDDocument.load(targetFile).use { targetDoc ->
+                    PDDocument.load(sourceFile).use { sourceDoc ->
+                        val importedPages = (0 until sourceDoc.numberOfPages).map { index ->
+                            targetDoc.importPage(sourceDoc.getPage(index))
+                        }
+                        val insertionIndex = (afterIndex + 1).coerceIn(0, targetDoc.numberOfPages - importedPages.size)
+                        if (importedPages.isNotEmpty() && insertionIndex < targetDoc.numberOfPages - importedPages.size) {
+                            val anchorPage = targetDoc.getPage(insertionIndex)
+                            importedPages.asReversed().forEach { importedPage ->
+                                targetDoc.pages.insertBefore(importedPage, anchorPage)
+                            }
+                        }
+
+                        val tmpFile = File(targetFile.parent, "${targetFile.nameWithoutExtension}.tmp_${System.currentTimeMillis()}.pdf")
+                        try {
+                            targetDoc.save(tmpFile)
+                            if (!tmpFile.renameTo(targetFile)) {
+                                tmpFile.copyTo(targetFile, overwrite = true)
+                                tmpFile.delete()
+                            }
+                        } catch (e: Exception) {
+                            tmpFile.delete()
+                            throw e
+                        }
+                    }
+                }
+                true
+            } catch (e: Exception) {
+                Log.e(TAG, "insertPdfPages failed", e)
+                false
+            }
+        }
+
     /** @deprecated Use insertBlankPage instead. */
     @Deprecated("Use insertBlankPage(fileUri, afterIndex) instead", ReplaceWith("insertBlankPage(fileUri, Int.MAX_VALUE)"))
     suspend fun appendBlankPage(fileUri: Uri): Boolean = insertBlankPage(fileUri, Int.MAX_VALUE)

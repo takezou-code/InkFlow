@@ -33,6 +33,9 @@ interface StrokeDao {
     @Query("UPDATE strokes SET pageIndex = pageIndex - 1 WHERE documentUri = :documentUri AND pageIndex > :deletedPageIndex")
     suspend fun shiftPageIndicesDown(documentUri: String, deletedPageIndex: Int)
 
+    @Query("UPDATE strokes SET pageIndex = pageIndex + :amount WHERE documentUri = :documentUri AND pageIndex >= :startingIndex")
+    suspend fun shiftPageIndicesUp(documentUri: String, startingIndex: Int, amount: Int)
+
     @Query("DELETE FROM strokes WHERE documentUri = :documentUri")
     suspend fun deleteStrokesForDocument(documentUri: String)
 
