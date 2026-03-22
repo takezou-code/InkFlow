@@ -16,11 +16,12 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 // v12: Added pageBackground column to document_preferences.
 // v13: Added paperWidthPt / paperHeightPt columns to document_preferences.
 // v14: Added per-tool pen/highlighter stroke width columns to document_preferences.
+// v15: Added bookmarks table.
 @Database(
     entities = [StrokeEntity::class, PointEntity::class, DocumentEntity::class,
                 TextAnnotationEntity::class, ImageAnnotationEntity::class,
-                DocumentPreferenceEntity::class],
-    version = 14
+                DocumentPreferenceEntity::class, BookmarkEntity::class],
+    version = 16
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun strokeDao(): StrokeDao
@@ -28,6 +29,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun textAnnotationDao(): TextAnnotationDao
     abstract fun imageAnnotationDao(): ImageAnnotationDao
     abstract fun documentPreferenceDao(): DocumentPreferenceDao
+    abstract fun bookmarkDao(): BookmarkDao
 
     companion object {
         @Volatile
@@ -146,6 +148,27 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS bookmarks (
+                        documentUri TEXT NOT NULL,
+                        pageIndex INTEGER NOT NULL,
+                        PRIMARY KEY(documentUri, pageIndex)
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
+        private val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE documents ADD COLUMN isFavorite INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE documents ADD COLUMN folderName TEXT DEFAULT NULL")
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -153,7 +176,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "ink_layer_database"
                 )
-                .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14)
+                .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16)
                 // Only allow destructive migration on downgrade (e.g. user reverts to an
                 // older APK). Unknown *upgrade* paths surface as a hard crash rather than
                 // silently wiping all user data.

@@ -24,6 +24,12 @@ interface DocumentDao {
     @Query("UPDATE documents SET displayName = :newName WHERE uri = :uri")
     suspend fun renameDocument(uri: String, newName: String)
 
+    @Query("UPDATE documents SET isFavorite = :isFavorite WHERE uri = :uri")
+    suspend fun updateFavoriteStatus(uri: String, isFavorite: Boolean)
+
+    @Query("UPDATE documents SET folderName = :folderName WHERE uri = :uri")
+    suspend fun updateFolder(uri: String, folderName: String?)
+
     @Query("SELECT lastPageIndex FROM documents WHERE uri = :uri")
     suspend fun getLastPageIndex(uri: String): Int?
 }

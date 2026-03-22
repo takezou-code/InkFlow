@@ -89,6 +89,20 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
     /** Call once after consuming lastDeletedPageIndex to reset the event. */
     fun consumeDeletedPageEvent() { _lastDeletedPageIndex.value = null }
 
+    fun getBookmarkedPages(documentUri: String): kotlinx.coroutines.flow.Flow<List<Int>> {
+        return db.bookmarkDao().getBookmarkedPages(documentUri)
+    }
+
+    fun toggleBookmark(documentUri: String, pageIndex: Int, isBookmarked: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (isBookmarked) {
+                db.bookmarkDao().insert(com.vic.inkflow.data.BookmarkEntity(documentUri, pageIndex))
+            } else {
+                db.bookmarkDao().deleteForPage(documentUri, pageIndex)
+            }
+        }
+    }
+
     // --- Caching ---
     // Bitmaps are intentionally NOT pooled or manually recycled: Compose animations
     // (Crossfade) may hold references to evicted bitmaps for a frame or two, so
@@ -232,6 +246,7 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                     db.strokeDao().shiftPageIndicesUp(documentUri, optimisticNewIndex, 1)
                     db.textAnnotationDao().shiftPageIndicesUp(documentUri, optimisticNewIndex, 1)
                     db.imageAnnotationDao().shiftPageIndicesUp(documentUri, optimisticNewIndex, 1)
+                    db.bookmarkDao().shiftPageIndicesUp(documentUri, optimisticNewIndex, 1)
                 }
                 dbShiftApplied = true
 
@@ -244,6 +259,7 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                             db.strokeDao().shiftPageIndicesDown(documentUri, optimisticNewIndex - 1)
                             db.textAnnotationDao().shiftPageIndicesDown(documentUri, optimisticNewIndex - 1)
                             db.imageAnnotationDao().shiftPageIndicesDown(documentUri, optimisticNewIndex - 1)
+                            db.bookmarkDao().shiftPageIndicesDown(documentUri, optimisticNewIndex - 1)
                         }
                     }
                     reopenCurrentPdf(fileUri, fallbackPageCount = currentCount)
@@ -261,6 +277,7 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                             db.strokeDao().shiftPageIndicesDown(documentUri, optimisticNewIndex - 1)
                             db.textAnnotationDao().shiftPageIndicesDown(documentUri, optimisticNewIndex - 1)
                             db.imageAnnotationDao().shiftPageIndicesDown(documentUri, optimisticNewIndex - 1)
+                            db.bookmarkDao().shiftPageIndicesDown(documentUri, optimisticNewIndex - 1)
                         }
                     }
                 }
@@ -306,6 +323,7 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                     db.strokeDao().shiftPageIndicesUp(documentUri, insertionIndex, insertedPageCount)
                     db.textAnnotationDao().shiftPageIndicesUp(documentUri, insertionIndex, insertedPageCount)
                     db.imageAnnotationDao().shiftPageIndicesUp(documentUri, insertionIndex, insertedPageCount)
+                    db.bookmarkDao().shiftPageIndicesUp(documentUri, insertionIndex, insertedPageCount)
                 }
                 dbShiftApplied = true
 
@@ -318,6 +336,7 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                                 db.strokeDao().shiftPageIndicesDown(documentUri, insertionIndex - 1)
                                 db.textAnnotationDao().shiftPageIndicesDown(documentUri, insertionIndex - 1)
                                 db.imageAnnotationDao().shiftPageIndicesDown(documentUri, insertionIndex - 1)
+                                db.bookmarkDao().shiftPageIndicesDown(documentUri, insertionIndex - 1)
                             }
                         }
                     }
@@ -336,6 +355,7 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                                 db.strokeDao().shiftPageIndicesDown(documentUri, insertionIndex - 1)
                                 db.textAnnotationDao().shiftPageIndicesDown(documentUri, insertionIndex - 1)
                                 db.imageAnnotationDao().shiftPageIndicesDown(documentUri, insertionIndex - 1)
+                                db.bookmarkDao().shiftPageIndicesDown(documentUri, insertionIndex - 1)
                             }
                         }
                     }
@@ -392,6 +412,13 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     // Update ImageAnnotationDao
                     with(db.imageAnnotationDao()) {
+                        moveToTempIndex(documentUri, fromIndex, -1)
+                        if (fromIndex < toIndex) shiftForMoveDown(documentUri, fromIndex, toIndex)
+                        else shiftForMoveUp(documentUri, fromIndex, toIndex)
+                        moveToTempIndex(documentUri, -1, toIndex)
+                    }
+                    // Update BookmarkDao
+                    with(db.bookmarkDao()) {
                         moveToTempIndex(documentUri, fromIndex, -1)
                         if (fromIndex < toIndex) shiftForMoveDown(documentUri, fromIndex, toIndex)
                         else shiftForMoveUp(documentUri, fromIndex, toIndex)

@@ -131,6 +131,12 @@ class DocumentViewModel(private val documentDao: DocumentDao, private val stroke
         }
     }
 
+    fun toggleFavorite(uri: String, isFavorite: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            documentDao.updateFavoriteStatus(uri, isFavorite)
+        }
+    }
+
     private fun ensureThumbnailLoaded(
         context: Context,
         documentUri: String,

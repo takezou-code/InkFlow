@@ -11,5 +11,9 @@ data class DocumentEntity(
     val displayName: String,
     val lastOpenedAt: Long = System.currentTimeMillis(),
     @ColumnInfo(defaultValue = "0")
-    val lastPageIndex: Int = 0
+    val lastPageIndex: Int = 0,
+    @ColumnInfo(defaultValue = "0")
+    val isFavorite: Boolean = false,
+    @ColumnInfo(defaultValue = "NULL")
+    val folderName: String? = null
 )

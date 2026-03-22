@@ -1,4 +1,7 @@
-package com.vic.inkflow.ui
+﻿package com.vic.inkflow.ui
+
+import com.vic.inkflow.util.reorderable
+import com.vic.inkflow.util.reorderableItem
 
 import android.content.Intent
 import android.graphics.Bitmap
@@ -101,11 +104,14 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Title
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.FileUpload
 import androidx.compose.material.icons.outlined.LightMode
+import androidx.compose.material.icons.outlined.BookmarkBorder
+import androidx.compose.material.icons.outlined.Bookmark
 import androidx.compose.material.icons.rounded.Brush
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Gesture
@@ -138,6 +144,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
@@ -311,18 +318,9 @@ private fun rememberFlowingBrandBrush(isDarkTheme: Boolean): Brush {
  * and never propagate up to DocumentLibraryScreen.
  */
 @Composable
-private fun AnimatedGradientBackground(isDarkTheme: Boolean, isIdle: Boolean = false, modifier: Modifier = Modifier) {
-    // When idle, skip the InfiniteTransition entirely so it stops driving recompositions.
-    if (isIdle) {
-        val staticBrush = remember(isDarkTheme) {
-            if (isDarkTheme) Brush.linearGradient(listOf(Slate900, WorkspaceDeskDark))
-            else Brush.linearGradient(listOf(Color(0xFFEAF0FF), Slate50))
-        }
-        Box(modifier = modifier.background(staticBrush))
-    } else {
-        val brush = rememberFlowingBrandBrush(isDarkTheme)
-        Box(modifier = modifier.background(brush))
-    }
+private fun AnimatedGradientBackground(isDarkTheme: Boolean, modifier: Modifier = Modifier) {
+    val brush = rememberFlowingBrandBrush(isDarkTheme)
+    Box(modifier = modifier.background(brush))
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -407,34 +405,25 @@ fun DocumentLibraryScreen(
     var selectedNavIndex by remember { mutableStateOf(0) }
     var searchQuery by rememberSaveable { mutableStateOf("") }
     val normalizedQuery = searchQuery.trim()
-    val filteredDocs = remember(documents, normalizedQuery) {
-        if (normalizedQuery.isEmpty()) documents
-        else documents.filter { it.displayName.contains(normalizedQuery, ignoreCase = true) }
+    val filteredDocs = remember(documents, normalizedQuery, selectedNavIndex) {
+        documents.filter { doc ->
+            val matchesQuery = normalizedQuery.isEmpty() || doc.displayName.contains(normalizedQuery, ignoreCase = true)
+            val matchesTab = when (selectedNavIndex) {
+                1 -> doc.folderName != null // Assuming Folders tab shows documents that have folder
+                2 -> doc.isFavorite
+                else -> true // Home
+            }
+            matchesQuery && matchesTab
+        }
     }
-
-    // Idle-pause: freeze the background animation after 3 s of inactivity to save battery.
-    var isIdle by remember { mutableStateOf(false) }
-    var lastTouchTime by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(lastTouchTime) {
-        delay(3_000L)
-        isIdle = true
-    }
+    var isGridView by rememberSaveable { mutableStateOf(true) }
 
     // Outer Box does NOT read any animated State, so it never recomposes at 60 fps.
     // The animated gradient is drawn by the isolated AnimatedGradientBackground child.
     Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .pointerInput(Unit) {
-                // Any touch anywhere on the screen resets the idle timer.
-                awaitEachGesture {
-                    awaitFirstDown(requireUnconsumed = false)
-                    isIdle = false
-                    lastTouchTime = System.currentTimeMillis()
-                }
-            }
+        modifier = Modifier.fillMaxSize()
     ) {
-        AnimatedGradientBackground(isDarkTheme, isIdle = isIdle, Modifier.fillMaxSize())
+        AnimatedGradientBackground(isDarkTheme, Modifier.fillMaxSize())
 
     Row(
         modifier = Modifier
@@ -477,7 +466,7 @@ fun DocumentLibraryScreen(
             NavigationRailItem(
                 selected = selectedNavIndex == 2,
                 onClick = { selectedNavIndex = 2 },
-                icon = { Icon(Icons.Default.Bookmark, contentDescription = "收藏") },
+                icon = { Icon(Icons.Default.Star, contentDescription = "收藏") },
                 label = { Text("收藏") }
             )
             Spacer(Modifier.weight(1f))
@@ -505,7 +494,9 @@ fun DocumentLibraryScreen(
                     onSearchQueryChange = { searchQuery = it },
                     totalDocuments = documents.size,
                     visibleDocuments = filteredDocs.size,
-                    isDarkTheme = isDarkTheme
+                    isDarkTheme = isDarkTheme,
+                    isGridView = isGridView,
+                    onToggleGridView = { isGridView = !isGridView }
                 )
             },
             floatingActionButton = {
@@ -582,40 +573,80 @@ fun DocumentLibraryScreen(
                         onCreateBlank = { showNewDocSizeDialog = true }
                     )
                 } else {
-                    androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
-                        columns = androidx.compose.foundation.lazy.grid.GridCells.Adaptive(minSize = 180.dp),
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(top = 6.dp, bottom = 120.dp),
-                        horizontalArrangement = Arrangement.spacedBy(14.dp),
-                        verticalArrangement = Arrangement.spacedBy(14.dp)
-                    ) {
-                        items(filteredDocs.size, key = { filteredDocs[it].uri }) { index ->
-                            val doc = filteredDocs[index]
-                            val coverBitmap by docViewModel.getDocumentThumbnail(context, doc.uri).collectAsState()
-                            var visible by remember(doc.uri) { mutableStateOf(index >= 6) }
-                            LaunchedEffect(doc.uri) {
-                                if (index < 6) {
-                                    delay(index * 40L)
-                                    visible = true
+                    if (isGridView) {
+                        androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
+                            columns = androidx.compose.foundation.lazy.grid.GridCells.Adaptive(minSize = 180.dp),
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(top = 6.dp, bottom = 120.dp),
+                            horizontalArrangement = Arrangement.spacedBy(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            items(filteredDocs.size, key = { filteredDocs[it].uri }) { index ->
+                                val doc = filteredDocs[index]
+                                val coverBitmap by docViewModel.getDocumentThumbnail(context, doc.uri).collectAsState()
+                                var visible by remember(doc.uri) { mutableStateOf(index >= 6) }
+                                LaunchedEffect(doc.uri) {
+                                    if (index < 6) {
+                                        delay(index * 40L)
+                                        visible = true
+                                    }
+                                }
+                                androidx.compose.animation.AnimatedVisibility(
+                                    visible = visible,
+                                    enter = slideInVertically(
+                                        initialOffsetY = { it / 2 },
+                                        animationSpec = tween(300)
+                                    ) + fadeIn(animationSpec = tween(300))
+                                ) {
+                                    DocumentCard(
+                                        document = doc,
+                                        coverBitmap = coverBitmap,
+                                        onClick = {
+                                            val encodedUri = URLEncoder.encode(doc.uri, StandardCharsets.UTF_8.toString())
+                                            navController.navigate("editor/$encodedUri")
+                                        },
+                                        onDelete = { docViewModel.delete(doc.uri) },
+                                        onFavoriteToggle = { isFav -> docViewModel.toggleFavorite(doc.uri, isFav) },
+                                        onRename = { newName -> docViewModel.rename(doc.uri, newName) }
+                                    )
                                 }
                             }
-                            androidx.compose.animation.AnimatedVisibility(
-                                visible = visible,
-                                enter = slideInVertically(
-                                    initialOffsetY = { it / 2 },
-                                    animationSpec = tween(300)
-                                ) + fadeIn(animationSpec = tween(300))
-                            ) {
-                                DocumentCard(
-                                    document = doc,
-                                    coverBitmap = coverBitmap,
-                                    onClick = {
-                                        val encodedUri = URLEncoder.encode(doc.uri, StandardCharsets.UTF_8.toString())
-                                        navController.navigate("editor/$encodedUri")
-                                    },
-                                    onDelete = { docViewModel.delete(doc.uri) },
-                                    onRename = { newName -> docViewModel.rename(doc.uri, newName) }
-                                )
+                        }
+                    } else {
+                        androidx.compose.foundation.lazy.LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(top = 6.dp, bottom = 120.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            items(filteredDocs.size, key = { filteredDocs[it].uri }) { index ->
+                                val doc = filteredDocs[index]
+                                val coverBitmap by docViewModel.getDocumentThumbnail(context, doc.uri).collectAsState()
+                                var visible by remember(doc.uri) { mutableStateOf(index >= 8) }
+                                LaunchedEffect(doc.uri) {
+                                    if (index < 8) {
+                                        delay(index * 30L)
+                                        visible = true
+                                    }
+                                }
+                                androidx.compose.animation.AnimatedVisibility(
+                                    visible = visible,
+                                    enter = slideInVertically(
+                                        initialOffsetY = { it / 2 },
+                                        animationSpec = tween(300)
+                                    ) + fadeIn(animationSpec = tween(300))
+                                ) {
+                                    DocumentListRow(
+                                        document = doc,
+                                        coverBitmap = coverBitmap,
+                                        onClick = {
+                                            val encodedUri = URLEncoder.encode(doc.uri, StandardCharsets.UTF_8.toString())
+                                            navController.navigate("editor/$encodedUri")
+                                        },
+                                        onDelete = { docViewModel.delete(doc.uri) },
+                                        onFavoriteToggle = { isFav -> docViewModel.toggleFavorite(doc.uri, isFav) },
+                                        onRename = { newName -> docViewModel.rename(doc.uri, newName) }
+                                    )
+                                }
                             }
                         }
                     }
@@ -633,7 +664,9 @@ private fun LibraryHeroPanel(
     onSearchQueryChange: (String) -> Unit,
     totalDocuments: Int,
     visibleDocuments: Int,
-    isDarkTheme: Boolean
+    isDarkTheme: Boolean,
+    isGridView: Boolean,
+    onToggleGridView: () -> Unit
 ) {
     val heroSurfaceColor = if (isDarkTheme) {
         ToolbarGlassDark.copy(alpha = 0.92f)
@@ -702,24 +735,40 @@ private fun LibraryHeroPanel(
                     }
                 }
 
-                androidx.compose.material3.OutlinedTextField(
-                    value = searchQuery,
-                    onValueChange = onSearchQueryChange,
-                    singleLine = true,
-                    leadingIcon = {
-                        Icon(Icons.Default.Search, contentDescription = null)
-                    },
-                    trailingIcon = {
-                        AnimatedVisibility(visible = searchQuery.isNotBlank()) {
-                            IconButton(onClick = { onSearchQueryChange("") }) {
-                                Icon(Icons.Default.Close, contentDescription = "清除搜尋")
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    androidx.compose.material3.OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = onSearchQueryChange,
+                        singleLine = true,
+                        leadingIcon = {
+                            Icon(Icons.Default.Search, contentDescription = null)
+                        },
+                        trailingIcon = {
+                            AnimatedVisibility(visible = searchQuery.isNotBlank()) {
+                                IconButton(onClick = { onSearchQueryChange("") }) {
+                                    Icon(Icons.Default.Close, contentDescription = "清除搜尋")
+                                }
                             }
-                        }
-                    },
-                    placeholder = { Text("搜尋標題、文件名稱或近期開啟的筆記") },
-                    shape = RoundedCornerShape(24.dp),
-                    modifier = Modifier.fillMaxWidth()
-                )
+                        },
+                        placeholder = { Text("搜尋標題、文件名稱或近期開啟的筆記") },
+                        shape = RoundedCornerShape(24.dp),
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(
+                        onClick = onToggleGridView,
+                        modifier = Modifier.background(MaterialTheme.colorScheme.surfaceVariant, CircleShape)
+                    ) {
+                        Icon(
+                            imageVector = if (isGridView) Icons.AutoMirrored.Filled.List else Icons.Default.Apps,
+                            contentDescription = "切換檢視",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
 
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -963,7 +1012,8 @@ private fun DocumentCard(
     coverBitmap: Bitmap?,
     onClick: () -> Unit,
     onDelete: () -> Unit,
-    onRename: (String) -> Unit = {}
+    onRename: (String) -> Unit = {},
+    onFavoriteToggle: (Boolean) -> Unit = {}
 ) {
     var showRenameDialog by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
@@ -1106,6 +1156,23 @@ private fun DocumentCard(
                                 tint = BrandIndigo.copy(alpha = 0.6f)
                             )
                         }
+                    }
+                }
+                
+                // Favorite Button
+                Box(
+                    modifier = Modifier.align(Alignment.TopEnd).padding(16.dp)
+                ) {
+                    androidx.compose.material3.IconButton(
+                        onClick = { onFavoriteToggle(!document.isFavorite) },
+                        modifier = Modifier.size(32.dp).background(Color.Black.copy(alpha = 0.3f), androidx.compose.foundation.shape.CircleShape)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Star,
+                            contentDescription = "Favorite",
+                            tint = if (document.isFavorite) Color.Yellow else Color.White,
+                            modifier = Modifier.size(20.dp)
+                        )
                     }
                 }
             }
@@ -1385,17 +1452,20 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                         )
                     }
                 },
-                onDeletePage = { index ->
-                    // DB 清理與 PDF 刪除平行執行，縮短總等待時間
+                onDeletePages = { indices ->
                     scope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                        db.strokeDao().clearPage(uri.toString(), index)
-                        db.strokeDao().shiftPageIndicesDown(uri.toString(), index)
-                        db.imageAnnotationDao().deleteForPage(uri.toString(), index)
-                        db.imageAnnotationDao().shiftPageIndicesDown(uri.toString(), index)
-                        db.textAnnotationDao().deleteForPage(uri.toString(), index)
-                        db.textAnnotationDao().shiftPageIndicesDown(uri.toString(), index)
+                        // 必須從大到小刪除，才不會影響前面頁面的 index
+                        val sortedIndices = indices.sortedDescending()
+                        sortedIndices.forEach { index ->
+                            db.strokeDao().clearPage(uri.toString(), index)
+                            db.strokeDao().shiftPageIndicesDown(uri.toString(), index)
+                            db.imageAnnotationDao().deleteForPage(uri.toString(), index)
+                            db.imageAnnotationDao().shiftPageIndicesDown(uri.toString(), index)
+                            db.textAnnotationDao().deleteForPage(uri.toString(), index)
+                            db.textAnnotationDao().shiftPageIndicesDown(uri.toString(), index)
+                        }
                     }
-                    pdfViewModel.deletePages(uri.toString(), listOf(index))
+                    pdfViewModel.deletePages(uri.toString(), indices)
                 },
                 listState = sidebarListState,
                 modifier = if (isFullscreen) Modifier.fillMaxHeight().weight(1f) else Modifier.fillMaxHeight()
@@ -1589,31 +1659,43 @@ private fun Sidebar(
     documentUri: String,
     onPageSelected: (Int) -> Unit,
     onAddPage: (afterIndex: Int) -> Unit,
-    onDeletePage: (Int) -> Unit,
+    onDeletePages: (List<Int>) -> Unit,
     listState: LazyListState = rememberLazyListState(),
     modifier: Modifier = Modifier
 ) {
-    // Index of the page pending delete confirmation; null = no dialog shown
-    var deleteConfirmIndex by remember { mutableStateOf<Int?>(null) }
+    var deleteConfirmIndices by remember { mutableStateOf<List<Int>>(emptyList()) }
+    var isSelectionMode by remember { mutableStateOf(false) }
+    var selectedPages by remember { mutableStateOf<Set<Int>>(emptySet()) }
+    var showOnlyBookmarked by remember { mutableStateOf(false) }
+    val bookmarkedPages by pdfViewModel.getBookmarkedPages(documentUri).collectAsState(initial = emptyList())
+    val visibleIndices = remember(pageCount, showOnlyBookmarked, bookmarkedPages, sidebarMode) {
+        if (showOnlyBookmarked && sidebarMode == SidebarMode.FULLSCREEN) {
+            (0 until pageCount).filter { it in bookmarkedPages }
+        } else {
+            (0 until pageCount).toList()
+        }
+    }
     val thumbnailVersion by pdfViewModel.thumbnailVersion.collectAsState()
     val isPageOperationInProgress by pdfViewModel.isPageOperationInProgress.collectAsState()
-    if (deleteConfirmIndex != null) {
-        val idx = deleteConfirmIndex!!
+    if (deleteConfirmIndices.isNotEmpty()) {
+        val indices = deleteConfirmIndices
         androidx.compose.material3.AlertDialog(
-            onDismissRequest = { deleteConfirmIndex = null },
+            onDismissRequest = { deleteConfirmIndices = emptyList() },
             title = { Text("刪除頁面") },
-            text = { Text("確定要刪除第 ${idx + 1} 頁？此操作無法復原。") },
+            text = { Text(if (indices.size == 1) "確定要刪除第 ${indices[0] + 1} 頁？此操作無法復原。" else "確定要刪除這 ${indices.size} 頁？此操作無法復原。") },
             confirmButton = {
                 androidx.compose.material3.TextButton(
                     onClick = {
-                        deleteConfirmIndex = null
-                        onDeletePage(idx)
+                        deleteConfirmIndices = emptyList()
+                        onDeletePages(indices)
+                        isSelectionMode = false
+                        selectedPages = emptySet()
                     },
                     enabled = !isPageOperationInProgress
                 ) { Text("刪除", color = MaterialTheme.colorScheme.error) }
             },
             dismissButton = {
-                androidx.compose.material3.TextButton(onClick = { deleteConfirmIndex = null }) {
+                androidx.compose.material3.TextButton(onClick = { deleteConfirmIndices = emptyList() }) {
                     Text("取消")
                 }
             }
@@ -1642,6 +1724,21 @@ private fun Sidebar(
         if (sidebarMode == SidebarMode.FULLSCREEN) {
             // Fullscreen: 4-column page grid with back button
             val gridState = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
+            var dragOrder by remember(visibleIndices, thumbnailVersion) { mutableStateOf(visibleIndices) }
+            val reorderState = com.vic.inkflow.util.rememberReorderableLazyGridState(
+                gridState = gridState,
+                onMove = { from, to ->
+                    val newOrder = dragOrder.toMutableList()
+                    val item = newOrder.removeAt(from)
+                    newOrder.add(to, item)
+                    dragOrder = newOrder
+                },
+                onDragEnd = { from, to ->
+                    if (!showOnlyBookmarked && !isSelectionMode) {
+                        pdfViewModel.movePage(documentUri, visibleIndices[from], visibleIndices[to])
+                    }
+                }
+            )
             LaunchedEffect(Unit) {
                 // Scroll so the current page is visible when the grid opens
                 val row = currentPageIndex / 4
@@ -1652,24 +1749,60 @@ private fun Sidebar(
                     modifier = Modifier.fillMaxWidth().height(48.dp).padding(horizontal = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    IconButton(onClick = { onModeChange(SidebarMode.NORMAL) }) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Exit grid view")
+                    if (isSelectionMode) {
+                        IconButton(onClick = { 
+                            isSelectionMode = false
+                            selectedPages = emptySet()
+                        }) {
+                            Icon(Icons.Default.Close, contentDescription = "Cancel Mode")
+                        }
+                        Text(
+                            text = "已選取 ${selectedPages.size} 頁",
+                            style = MaterialTheme.typography.titleSmall,
+                            modifier = Modifier.weight(1f)
+                        )
+                        androidx.compose.material3.TextButton(onClick = {
+                            if (selectedPages.size == pageCount) selectedPages = emptySet() else selectedPages = (0 until pageCount).toSet()
+                        }) {
+                            Text(if (selectedPages.size == pageCount) "取消全選" else "全選")
+                        }
+                        IconButton(onClick = {
+                            if (selectedPages.isNotEmpty() && !isPageOperationInProgress) {
+                                deleteConfirmIndices = selectedPages.toList()
+                            }
+                        }) {
+                            Icon(Icons.Default.Delete, contentDescription = "刪除選擇", tint = MaterialTheme.colorScheme.error)
+                        }
+                    } else {
+                        IconButton(onClick = { onModeChange(SidebarMode.NORMAL) }) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Exit grid view")
+                        }
+                        Text(
+                            text = "所有頁面",
+                            style = MaterialTheme.typography.titleSmall,
+                            modifier = Modifier.weight(1f)
+                        )
+                        androidx.compose.material3.FilterChip(
+                            selected = showOnlyBookmarked,
+                            onClick = { showOnlyBookmarked = !showOnlyBookmarked },
+                            label = { Text("書籤") },
+                            leadingIcon = { if (showOnlyBookmarked) Icon(Icons.Default.Star, null) else Icon(Icons.Outlined.BookmarkBorder, null) }
+                        )
+                        IconButton(onClick = { isSelectionMode = true }) {
+                            Icon(Icons.Default.Check, contentDescription = "Select Pages")
+                        }
                     }
-                    Text(
-                        text = "所有頁面",
-                        style = MaterialTheme.typography.titleSmall,
-                        modifier = Modifier.weight(1f)
-                    )
                 }
                 LazyVerticalGrid(
-                    columns = GridCells.Fixed(4),
+                    columns = GridCells.Adaptive(180.dp),
                     state = gridState,
                     contentPadding = PaddingValues(8.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier.fillMaxSize().reorderable(reorderState, enabled = !showOnlyBookmarked && !isSelectionMode && !isPageOperationInProgress)
                 ) {
-                    items(pageCount) { index ->
+                    items(count = dragOrder.size, key = { dragOrder[it] }) { it ->
+                        val index = dragOrder[it]
                         val thumbFlow = androidx.compose.runtime.remember(index, thumbnailVersion) {
                             pdfViewModel.getPageThumbnail(index)
                         }
@@ -1686,22 +1819,55 @@ private fun Sidebar(
                             db.textAnnotationDao().getForPage(documentUri, index)
                         }
                         val texts by textsFlow.collectAsState(initial = emptyList())
-                        Box(modifier = Modifier.combinedClickable(
-                            onClick = {
-                                onPageSelected(index)
-                                onModeChange(SidebarMode.NORMAL)
-                            },
-                            onLongClick = { if (pageCount > 1 && !isPageOperationInProgress) deleteConfirmIndex = index }
+                        val canDrag = !showOnlyBookmarked && !isSelectionMode && !isPageOperationInProgress
+                        Box(modifier = Modifier.reorderableItem(reorderState, it).then(
+                            if (canDrag) {
+                                Modifier.clickable {
+                                    onPageSelected(index)
+                                    onModeChange(SidebarMode.NORMAL)
+                                }
+                            } else {
+                                Modifier.combinedClickable(
+                                    onClick = {
+                                        if (isSelectionMode) {
+                                            if (index in selectedPages) selectedPages -= index else selectedPages += index
+                                        } else {
+                                            onPageSelected(index)
+                                            onModeChange(SidebarMode.NORMAL)
+                                        }
+                                    },
+                                    onLongClick = { 
+                                        if (!isSelectionMode && pageCount > 1 && !isPageOperationInProgress) {
+                                            isSelectionMode = true
+                                            selectedPages += index
+                                        }
+                                    }
+                                )
+                            }
                         )) {
-                            PageThumbnail(
-                                pageIndex = index,
-                                bitmap = thumb,
-                                strokes = strokes,
-                                imageAnnotations = images,
-                                textAnnotations = texts,
-                                isSelected = index == currentPageIndex,
-                                boxModifier = Modifier.fillMaxWidth().aspectRatio(pdfViewModel.getPageAspectRatio(index))
-                            )
+                            Box {
+                                PageThumbnail(
+                                    pageIndex = index,
+                                    bitmap = thumb,
+                                    strokes = strokes,
+                                    imageAnnotations = images,
+                                    textAnnotations = texts,
+                                    isSelected = isSelectionMode && index in selectedPages || (!isSelectionMode && index == currentPageIndex),
+                                    isBookmarked = index in bookmarkedPages,
+                                    onBookmarkToggle = { newState -> pdfViewModel.toggleBookmark(documentUri, index, newState) },
+                                    boxModifier = Modifier.fillMaxWidth().aspectRatio(pdfViewModel.getPageAspectRatio(index))
+                                        .let { if (isSelectionMode) it.padding(8.dp) else it }
+                                )
+                                if (isSelectionMode) {
+                                    androidx.compose.material3.Checkbox(
+                                        checked = index in selectedPages,
+                                        onCheckedChange = { chk ->
+                                            if (chk) selectedPages += index else selectedPages -= index
+                                        },
+                                        modifier = Modifier.align(Alignment.TopStart).padding(12.dp)
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -1737,7 +1903,7 @@ private fun Sidebar(
                                 .padding(vertical = 8.dp)
                                 .combinedClickable(
                                     onClick = { onPageSelected(index) },
-                                    onLongClick = { if (pageCount > 1 && !isPageOperationInProgress) deleteConfirmIndex = index }
+                                    onLongClick = { if (pageCount > 1 && !isPageOperationInProgress) deleteConfirmIndices = listOf(index) }
                                 ),
                             contentAlignment = Alignment.Center
                         ) {
@@ -1749,6 +1915,8 @@ private fun Sidebar(
                                     imageAnnotations = images,
                                     textAnnotations = texts,
                                     isSelected = index == currentPageIndex,
+                                    isBookmarked = index in bookmarkedPages,
+                                    onBookmarkToggle = { newState -> pdfViewModel.toggleBookmark(documentUri, index, newState) },
                                     boxModifier = Modifier.width(88.dp).aspectRatio(pdfViewModel.getPageAspectRatio(index))
                                 )
                             } else {
@@ -1769,20 +1937,57 @@ private fun Sidebar(
                             modifier = Modifier.fillMaxWidth().height(2.dp)
                         )
                     }
-                    androidx.compose.material3.TextButton(
-                        onClick = { onAddPage(currentPageIndex) },
-                        enabled = !isPageOperationInProgress,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 6.dp, vertical = 5.dp)
-                    ) {
-                        Icon(
-                            Icons.Default.Add,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Text("新增頁面", style = MaterialTheme.typography.labelMedium)
+                    var expanded by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+                    Box(modifier = Modifier.fillMaxWidth()) {
+                        androidx.compose.material3.TextButton(
+                            onClick = { expanded = true },
+                            enabled = !isPageOperationInProgress,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 6.dp, vertical = 5.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Add,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text("新增頁面", style = MaterialTheme.typography.labelMedium)
+                        }
+                        
+                        androidx.compose.material3.DropdownMenu(
+                            expanded = expanded,
+                            onDismissRequest = { expanded = false }
+                        ) {
+                            androidx.compose.material3.DropdownMenuItem(
+                                text = { Text("空白紙 (Blank)") },
+                                onClick = { 
+                                    expanded = false
+                                    onAddPage(currentPageIndex) 
+                                }
+                            )
+                            androidx.compose.material3.DropdownMenuItem(
+                                text = { Text("橫線紙 (Lined)") },
+                                onClick = { 
+                                    expanded = false
+                                    onAddPage(currentPageIndex) 
+                                }
+                            )
+                            androidx.compose.material3.DropdownMenuItem(
+                                text = { Text("網格紙 (Grid)") },
+                                onClick = { 
+                                    expanded = false
+                                    onAddPage(currentPageIndex) 
+                                }
+                            )
+                            androidx.compose.material3.DropdownMenuItem(
+                                text = { Text("點狀紙 (Dotted)") },
+                                onClick = { 
+                                    expanded = false
+                                    onAddPage(currentPageIndex) 
+                                }
+                            )
+                        }
                     }
                 }
             }
@@ -1798,6 +2003,8 @@ private fun PageThumbnail(
     imageAnnotations: List<ImageAnnotationEntity>,
     textAnnotations: List<TextAnnotationEntity>,
     isSelected: Boolean,
+    isBookmarked: Boolean = false,
+    onBookmarkToggle: ((Boolean) -> Unit)? = null,
     boxModifier: Modifier = Modifier.width(88.dp).aspectRatio(1f / 1.414f)
 ) {
     val context = LocalContext.current
@@ -1865,14 +2072,26 @@ private fun PageThumbnail(
                 )
             }
             // Unified ink + image + text overlay
-            androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
+            Spacer(modifier = Modifier.fillMaxSize().drawWithCache {
                 val modelW = 595f
                 val modelH = 842f
                 val sx = size.width / modelW
                 val sy = size.height / modelH
-
-                // --- Strokes (freehand + shapes) ---
-                strokes.forEach { swp ->
+                
+                val bmpWidth = size.width.toInt().coerceAtLeast(1)
+                val bmpHeight = size.height.toInt().coerceAtLeast(1)
+                val cachedImage = androidx.compose.ui.graphics.ImageBitmap(bmpWidth, bmpHeight, androidx.compose.ui.graphics.ImageBitmapConfig.Argb8888)
+                val cacheCanvas = androidx.compose.ui.graphics.Canvas(cachedImage)
+                
+                val drawScope = androidx.compose.ui.graphics.drawscope.CanvasDrawScope()
+                drawScope.draw(
+                    androidx.compose.ui.unit.Density(1f),
+                    androidx.compose.ui.unit.LayoutDirection.Ltr,
+                    cacheCanvas,
+                    size
+                ) {
+                    // --- Strokes (freehand + shapes) ---
+                    strokes.forEach { swp ->
                     val stroke = swp.stroke
                     val strokeColor = Color(stroke.color)
                     val alpha = if (stroke.isHighlighter) 0.4f else 1f
@@ -1955,25 +2174,43 @@ private fun PageThumbnail(
                 }
 
                 // --- Text annotations ---
-                if (textAnnotations.isNotEmpty()) {
-                    drawIntoCanvas { composeCanvas ->
-                        textAnnotations.forEach { ann ->
-                            val paint = android.graphics.Paint().apply {
-                                textSize    = ann.fontSize * sy
-                                color       = ann.colorArgb
-                                isAntiAlias = true
-                                typeface    = android.graphics.Typeface.DEFAULT_BOLD
+                    if (textAnnotations.isNotEmpty()) {
+                        drawIntoCanvas { composeCanvas ->
+                            textAnnotations.forEach { ann ->
+                                val paint = android.graphics.Paint().apply {
+                                    textSize    = ann.fontSize * sy
+                                    color       = ann.colorArgb
+                                    isAntiAlias = true
+                                    typeface    = android.graphics.Typeface.DEFAULT_BOLD
+                                }
+                                composeCanvas.nativeCanvas.drawText(
+                                    ann.text, ann.modelX * sx, ann.modelY * sy, paint
+                                )
                             }
-                            composeCanvas.nativeCanvas.drawText(
-                                ann.text, ann.modelX * sx, ann.modelY * sy, paint
-                            )
                         }
                     }
+                }
+                
+                onDrawBehind {
+                    drawImage(cachedImage)
+                }
+            })
+            if (onBookmarkToggle != null) {
+                androidx.compose.material3.IconButton(
+                    onClick = { onBookmarkToggle(!isBookmarked) },
+                    modifier = Modifier.align(Alignment.TopEnd).padding(4.dp).size(24.dp)
+                ) {
+                    Icon(
+                        imageVector = if (isBookmarked) Icons.Default.Star else Icons.Default.Star,
+                        contentDescription = "Toggle Bookmark",
+                        tint = if (isBookmarked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                        modifier = Modifier.size(16.dp)
+                    )
                 }
             }
         }
         Spacer(Modifier.height(4.dp))
-        Text("Page ${pageIndex + 1}", style = MaterialTheme.typography.labelSmall)
+        Text(if (isBookmarked) "🔖 Page ${pageIndex + 1}" else "Page ${pageIndex + 1}", style = MaterialTheme.typography.labelSmall)
     }
 }
 
@@ -3153,7 +3390,7 @@ fun AiWebPanel(
                 )
                 androidx.compose.material3.IconButton(onClick = onClose) {
                     androidx.compose.material3.Icon(
-                        imageVector = androidx.compose.material.icons.Icons.Default.Close,
+                        imageVector = Icons.Default.Close,
                         contentDescription = "Close"
                     )
                 }
@@ -3165,5 +3402,166 @@ fun AiWebPanel(
                 style = androidx.compose.material3.MaterialTheme.typography.bodyMedium
             )
         }
+    }
+}
+@Composable
+private fun DocumentListRow(
+    document: DocumentEntity,
+    coverBitmap: Bitmap?,
+    onClick: () -> Unit,
+    onDelete: () -> Unit,
+    onRename: (String) -> Unit = {},
+    onFavoriteToggle: (Boolean) -> Unit = {}
+) {
+    var showRenameDialog by remember { mutableStateOf(false) }
+    var showDeleteDialog by remember { mutableStateOf(false) }
+    var renameInput by remember(document.displayName) { mutableStateOf(document.displayName) }
+    val isDarkSurface = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    val rowShellColor = if (isDarkSurface) {
+        MaterialTheme.colorScheme.surface.copy(alpha = 0.84f)
+    } else {
+        Color.White
+    }
+
+    val dateStr = remember(document.lastOpenedAt) {
+        java.text.SimpleDateFormat("yyyy/MM/dd HH:mm", java.util.Locale.getDefault())
+            .format(java.util.Date(document.lastOpenedAt))
+    }
+
+    androidx.compose.material3.Surface(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth().height(88.dp),
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
+        color = rowShellColor,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
+        shadowElevation = 2.dp
+    ) {
+        Row(
+            modifier = Modifier.fillMaxSize().padding(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .aspectRatio(1f / 1.414f)
+                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+                    .background(Color.White)
+            ) {
+                if (coverBitmap != null) {
+                    androidx.compose.foundation.Image(
+                        bitmap = coverBitmap.asImageBitmap(),
+                        contentDescription = "Cover",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Default.Description,
+                        contentDescription = "PDF",
+                        tint = Color.LightGray,
+                        modifier = Modifier.align(Alignment.Center).size(32.dp)
+                    )
+                }
+            }
+
+            Spacer(Modifier.width(16.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = document.displayName,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = dateStr,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            IconButton(onClick = { onFavoriteToggle(!document.isFavorite) }) {
+                Icon(
+                    Icons.Default.Star,
+                    contentDescription = "Favorite",
+                    tint = if (document.isFavorite) Color.Yellow else Color.Gray,
+                )
+            }
+            
+            var showMenu by remember { mutableStateOf(false) }
+            Box {
+                IconButton(onClick = { showMenu = true }) {
+                    Icon(Icons.Default.MoreVert, contentDescription = "More")
+                }
+                androidx.compose.material3.DropdownMenu(
+                    expanded = showMenu,
+                    onDismissRequest = { showMenu = false }
+                ) {
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { Text("重新命名") },
+                        leadingIcon = { Icon(Icons.Default.Create, contentDescription = null) },
+                        onClick = {
+                            showMenu = false
+                            renameInput = document.displayName
+                            showRenameDialog = true
+                        }
+                    )
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { Text("刪除") },
+                        leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
+                        onClick = {
+                            showMenu = false
+                            showDeleteDialog = true
+                        }
+                    )
+                }
+            }
+        }
+    }
+
+    if (showRenameDialog) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showRenameDialog = false },
+            title = { Text("重新命名") },
+            text = {
+                androidx.compose.material3.OutlinedTextField(
+                    value = renameInput,
+                    onValueChange = { renameInput = it },
+                    singleLine = true
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (renameInput.isNotBlank()) onRename(renameInput.trim())
+                        showRenameDialog = false
+                    }
+                ) { Text("確認") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRenameDialog = false }) { Text("取消") }
+            }
+        )
+    }
+
+    if (showDeleteDialog) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showDeleteDialog = false },
+            title = { Text("刪除文件") },
+            text = { Text("確定要刪除「${document.displayName}」嗎？此操作無法還原。") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onDelete()
+                        showDeleteDialog = false
+                    },
+                    colors = androidx.compose.material3.ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                ) { Text("刪除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteDialog = false }) { Text("取消") }
+            }
+        )
     }
 }
