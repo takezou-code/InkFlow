@@ -159,7 +159,7 @@ class DocumentViewModel(private val documentDao: DocumentDao, private val stroke
         }
     }
 
-    private fun renderThumbnailBitmap(context: Context, documentUri: String): Bitmap? {
+    private suspend fun renderThumbnailBitmap(context: Context, documentUri: String): Bitmap? {
         val uri = Uri.parse(documentUri)
         val pfd = PdfManager.openPdfFileDescriptor(context, uri) ?: return null
         var renderer: PdfRenderer? = null
@@ -168,11 +168,87 @@ class DocumentViewModel(private val documentDao: DocumentDao, private val stroke
             renderer = PdfRenderer(pfd)
             if (renderer.pageCount == 0) return null
             page = renderer.openPage(0)
-            val bitmapWidth = (page.width * 0.35f).toInt().coerceAtLeast(1)
-            val bitmapHeight = (page.height * 0.35f).toInt().coerceAtLeast(1)
+            val scale = 0.35f
+            val bitmapWidth = (page.width * scale).toInt().coerceAtLeast(1)
+            val bitmapHeight = (page.height * scale).toInt().coerceAtLeast(1)
             Bitmap.createBitmap(bitmapWidth, bitmapHeight, Bitmap.Config.ARGB_8888).also { bitmap ->
                 bitmap.eraseColor(Color.WHITE)
                 page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+
+                val canvas = android.graphics.Canvas(bitmap)
+                canvas.scale(scale, scale)
+
+                // 1. Draw Images
+                val images = db.imageAnnotationDao().getForPageSync(documentUri, 0)
+                for (img in images) {
+                    val bmp = loadBitmapFromUri(context, img.uri)
+                    if (bmp != null) {
+                        canvas.drawBitmap(
+                            bmp, null,
+                            android.graphics.RectF(img.modelX, img.modelY, img.modelX + img.modelWidth, img.modelY + img.modelHeight),
+                            android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
+                        )
+                        bmp.recycle()
+                    }
+                }
+
+                // 2. Draw Strokes
+                val strokes = strokeDao.getStrokesForPageSync(documentUri, 0)
+                val strokePaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                    style = android.graphics.Paint.Style.STROKE
+                    strokeCap = android.graphics.Paint.Cap.ROUND
+                    strokeJoin = android.graphics.Paint.Join.ROUND
+                }
+                for (swp in strokes) {
+                    val isHL = swp.stroke.isHighlighter
+                    strokePaint.color = swp.stroke.color
+                    strokePaint.strokeWidth = swp.stroke.strokeWidth * (if (isHL) 3f else 1f)
+                    strokePaint.alpha = if (isHL) (255 * 0.4f).toInt() else 255
+                    strokePaint.xfermode = if (isHL) android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.MULTIPLY) else null
+
+                    if (swp.stroke.shapeType != null) {
+                        val r = android.graphics.RectF(swp.stroke.boundsLeft, swp.stroke.boundsTop, swp.stroke.boundsRight, swp.stroke.boundsBottom)
+                        when (swp.stroke.shapeType) {
+                            "RECT"  -> canvas.drawRect(r, strokePaint)
+                            "OVAL"  -> canvas.drawOval(r, strokePaint)
+                            "LINE", "ARROW" -> if (swp.points.size >= 2) {
+                                val p0 = swp.points.first(); val p1 = swp.points.last()
+                                canvas.drawLine(p0.x, p0.y, p1.x, p1.y, strokePaint)
+                            }
+                        }
+                    } else {
+                        val pts = swp.points
+                        if (pts.size >= 2) {
+                            val path = android.graphics.Path()
+                            path.moveTo(pts[0].x, pts[0].y)
+                            if (pts.size < 3) {
+                                for (i in 1 until pts.size) path.lineTo(pts[i].x, pts[i].y)
+                            } else {
+                                for (i in 1 until pts.size) {
+                                    val prev = pts[i - 1]; val curr = pts[i]
+                                    path.quadTo(prev.x, prev.y, (prev.x + curr.x) / 2f, (prev.y + curr.y) / 2f)
+                                }
+                                path.lineTo(pts.last().x, pts.last().y)
+                            }
+                            canvas.drawPath(path, strokePaint)
+                        }
+                    }
+                }
+
+                // 3. Draw Texts
+                val texts = db.textAnnotationDao().getForPageSync(documentUri, 0)
+                val textPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                    style = android.graphics.Paint.Style.FILL
+                }
+                for (txt in texts) {
+                    textPaint.textSize = txt.fontSize
+                    textPaint.color = txt.colorArgb
+                    var y = txt.modelY + txt.fontSize
+                    txt.text.split("\n").forEach { line ->
+                        canvas.drawText(line, txt.modelX, y, textPaint)
+                        y += txt.fontSize * 1.2f
+                    }
+                }
             }
         } catch (_: Exception) {
             null
@@ -187,6 +263,18 @@ class DocumentViewModel(private val documentDao: DocumentDao, private val stroke
                 pfd.close()
             } catch (_: Exception) { }
         }
+    }
+
+    private fun loadBitmapFromUri(context: Context, uri: String): Bitmap? {
+        return try {
+            val parsed = Uri.parse(uri)
+            if (parsed.scheme == "content") {
+                context.contentResolver.openInputStream(parsed)?.use { android.graphics.BitmapFactory.decodeStream(it) }
+            } else {
+                val path = if (parsed.scheme == "file") parsed.path ?: uri else uri
+                android.graphics.BitmapFactory.decodeFile(path)
+            }
+        } catch (_: Exception) { null }
     }
 
     private fun buildThumbnailCacheKey(documentUri: String): String {

@@ -508,11 +508,14 @@ class EditorViewModel(
         }
     }
 
-    fun commitTextAnnotationResize(id: String, newFontSizeModel: Float) {
+    fun commitTextAnnotationResize(id: String, newX: Float, newY: Float, newFontSizeModel: Float) {
         val old = currentTextAnnotations.value.firstOrNull { it.id == id } ?: return
         val clamped = newFontSizeModel.coerceAtLeast(4f)
-        if (old.fontSize == clamped) return
-        val updated = old.copy(fontSize = clamped)
+        val updated = old.copy(
+            modelX = newX,
+            modelY = newY,
+            fontSize = clamped
+        )
         viewModelScope.launch(Dispatchers.IO) {
             textAnnotationDao.update(updated)
             withContext(Dispatchers.Main) { pushUndo(DrawCommand.ResizeTextAnnotation(old, updated)) }
@@ -585,9 +588,11 @@ class EditorViewModel(
         }
     }
 
-    fun commitImageAnnotationResize(id: String, newModelWidth: Float, newModelHeight: Float) {
+    fun commitImageAnnotationResize(id: String, newX: Float, newY: Float, newModelWidth: Float, newModelHeight: Float) {
         val old = currentImageAnnotations.value.firstOrNull { it.id == id } ?: return
         val updated = old.copy(
+            modelX = newX,
+            modelY = newY,
             modelWidth  = newModelWidth.coerceAtLeast(30f),
             modelHeight = newModelHeight.coerceAtLeast(30f)
         )
@@ -857,13 +862,22 @@ class EditorViewModel(
     fun commitMovedStrokes() {
         val strokes = _selectedStrokes.value
         val delta = _lassoMoveOffset.value
+        if (strokes.isEmpty() || (delta.x == 0f && delta.y == 0f)) {
+            clearSelection()
+            return
+        }
+
         val movedStrokes = _selectedStrokePreview.value.ifEmpty {
             StrokeTransformUtils.transformStrokes(strokes, translation = delta)
         }
-        // Clear selection state IMMEDIATELY so the next gesture is never misinterpreted
-        // as another move (stuck-in-move-mode regression).
-        clearSelection()
-        if (strokes.isEmpty() || (delta.x == 0f && delta.y == 0f)) return
+
+        // Apply new DB state but keep the selection active for further edits.
+        _selectedStrokes.value = movedStrokes
+        _lassoMoveOffset.value = Offset.Zero
+        _selectedStrokeScale.value = 1f
+        _selectedStrokeResizeAnchor.value = null
+        _lassoPolygon.value = emptyList() // Clear the lasso rope, allow standard bounding box interaction
+        _selectedStrokePreviewBounds.value = StrokeTransformUtils.computeSelectionBounds(movedStrokes)
 
         _commitPreview.value = movedStrokes
 
@@ -871,7 +885,9 @@ class EditorViewModel(
             replaceStrokeSnapshots(movedStrokes)
             val command = DrawCommand.MoveStrokes(strokes, delta)
             withContext(Dispatchers.Main) {
-                _commitPreview.value = null
+                if (_commitPreview.value === movedStrokes) {
+                    _commitPreview.value = null
+                }
                 pushUndo(command)
             }
         }
@@ -879,16 +895,27 @@ class EditorViewModel(
 
     fun commitResizedStrokes() {
         val originals = _selectedStrokes.value
-        val updated = _selectedStrokePreview.value.ifEmpty { originals }
         val scale = _selectedStrokeScale.value
-        clearSelection()
-        if (originals.isEmpty() || kotlin.math.abs(scale - 1f) < 0.001f) return
+        if (originals.isEmpty() || kotlin.math.abs(scale - 1f) < 0.001f) {
+            clearSelection()
+            return
+        }
+
+        val updated = _selectedStrokePreview.value.ifEmpty { originals }
+
+        // Keep selection active
+        _selectedStrokes.value = updated
+        _selectedStrokeScale.value = 1f
+        _selectedStrokeResizeAnchor.value = null
+        _selectedStrokePreviewBounds.value = StrokeTransformUtils.computeSelectionBounds(updated)
 
         _commitPreview.value = updated
         viewModelScope.launch(Dispatchers.IO) {
             replaceStrokeSnapshots(updated)
             withContext(Dispatchers.Main) {
-                _commitPreview.value = null
+                if (_commitPreview.value === updated) {
+                    _commitPreview.value = null
+                }
                 pushUndo(DrawCommand.ResizeStrokes(originals, updated))
             }
         }
@@ -1100,6 +1127,166 @@ class EditorViewModel(
                 clearSelection()
                 onToolSelected(Tool.PEN)
             }
+            }
+        } finally {
+            extractionMutex.unlock()
+        }
+    }
+
+    suspend fun extractRegionToShareFile(
+        context: android.content.Context,
+        sourcePageIndex: Int,
+        pdfPageBitmap: android.graphics.Bitmap?
+    ): java.io.File? {
+        val polygon = _lassoPolygon.value
+        if (polygon.isEmpty()) return null
+
+        if (!extractionMutex.tryLock()) return null
+        return try {
+            withContext(Dispatchers.IO) {
+                val sourceStrokes = strokeDao.getStrokesForPage(documentUri, sourcePageIndex).first()
+                val sourceImageAnnotations = imageAnnotationDao.getForPage(documentUri, sourcePageIndex).first()
+                val sourceTextAnnotations = textAnnotationDao.getForPage(documentUri, sourcePageIndex).first()
+
+                val minX = polygon.minOf { it.x }
+                val minY = polygon.minOf { it.y }
+                val maxX = polygon.maxOf { it.x }
+                val maxY = polygon.maxOf { it.y }
+                if (maxX <= minX || maxY <= minY) return@withContext null
+
+                val cropW = maxX - minX
+                val cropH = maxY - minY
+
+                val renderScale = 2f
+                val fullW = (modelWidth * renderScale).toInt()
+                val fullH = (modelHeight * renderScale).toInt()
+                val fullBitmap = android.graphics.Bitmap.createBitmap(fullW, fullH, android.graphics.Bitmap.Config.ARGB_8888)
+                val fullCanvas = android.graphics.Canvas(fullBitmap)
+
+                fullCanvas.scale(renderScale, renderScale)
+                fullCanvas.drawColor(android.graphics.Color.WHITE)
+
+                val localFallbackBitmap = if (pdfPageBitmap == null) renderPdfPageFromDocumentUri(sourcePageIndex, fullW, fullH) else null
+                val resolvedPdfBitmap = pdfPageBitmap ?: localFallbackBitmap
+                if (resolvedPdfBitmap != null) {
+                    fullCanvas.drawBitmap(
+                        resolvedPdfBitmap,
+                        android.graphics.Rect(0, 0, resolvedPdfBitmap.width, resolvedPdfBitmap.height),
+                        android.graphics.RectF(0f, 0f, modelWidth, modelHeight),
+                        android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
+                    )
+                }
+                localFallbackBitmap?.recycle()
+
+                for (img in sourceImageAnnotations) {
+                    val bmp = loadBitmapFromUri(context, img.uri)
+                    if (bmp != null) {
+                        fullCanvas.drawBitmap(
+                            bmp, null,
+                            android.graphics.RectF(img.modelX, img.modelY, img.modelX + img.modelWidth, img.modelY + img.modelHeight),
+                            android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
+                        )
+                        bmp.recycle()
+                    }
+                }
+
+                val strokePaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                    style = android.graphics.Paint.Style.STROKE
+                    strokeCap = android.graphics.Paint.Cap.ROUND
+                    strokeJoin = android.graphics.Paint.Join.ROUND
+                }
+                for (swp in sourceStrokes) {
+                    val isHL = swp.stroke.isHighlighter
+                    strokePaint.color = swp.stroke.color
+                    strokePaint.strokeWidth = swp.stroke.strokeWidth * (if (isHL) 3f else 1f)
+                    strokePaint.alpha = if (isHL) (255 * 0.4f).toInt() else 255
+                    strokePaint.xfermode = if (isHL) android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.MULTIPLY) else null
+
+                    if (swp.stroke.shapeType != null) {
+                        val r = android.graphics.RectF(swp.stroke.boundsLeft, swp.stroke.boundsTop, swp.stroke.boundsRight, swp.stroke.boundsBottom)
+                        when (swp.stroke.shapeType) {
+                            "RECT"  -> fullCanvas.drawRect(r, strokePaint)
+                            "OVAL"  -> fullCanvas.drawOval(r, strokePaint)
+                            "LINE", "ARROW" -> if (swp.points.size >= 2) {
+                                val p0 = swp.points.first(); val p1 = swp.points.last()
+                                fullCanvas.drawLine(p0.x, p0.y, p1.x, p1.y, strokePaint)
+                            }
+                        }
+                    } else {
+                        val pts = swp.points
+                        if (pts.size >= 2) {
+                            val path = android.graphics.Path()
+                            path.moveTo(pts[0].x, pts[0].y)
+                            if (pts.size < 3) {
+                                for (i in 1 until pts.size) path.lineTo(pts[i].x, pts[i].y)
+                            } else {
+                                for (i in 1 until pts.size) {
+                                    val prev = pts[i - 1]; val curr = pts[i]
+                                    path.quadTo(prev.x, prev.y, (prev.x + curr.x) / 2f, (prev.y + curr.y) / 2f)
+                                }
+                                path.lineTo(pts.last().x, pts.last().y)
+                            }
+                            fullCanvas.drawPath(path, strokePaint)
+                        }
+                    }
+                }
+
+                val textPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                    style = android.graphics.Paint.Style.FILL
+                }
+                for (txt in sourceTextAnnotations) {
+                    textPaint.textSize = txt.fontSize
+                    textPaint.color = txt.colorArgb
+                    var y = txt.modelY + txt.fontSize
+                    txt.text.split("\n").forEach { line ->
+                        fullCanvas.drawText(line, txt.modelX, y, textPaint)
+                        y += txt.fontSize * 1.2f
+                    }
+                }
+
+                val cropPixX    = (minX * renderScale).toInt().coerceIn(0, fullW - 1)
+                val cropPixY    = (minY * renderScale).toInt().coerceIn(0, fullH - 1)
+                val cropPixW    = (cropW * renderScale).toInt().coerceAtLeast(1).coerceAtMost(fullW - cropPixX)
+                val cropPixH    = (cropH * renderScale).toInt().coerceAtLeast(1).coerceAtMost(fullH - cropPixY)
+                val croppedBitmap = android.graphics.Bitmap.createBitmap(fullBitmap, cropPixX, cropPixY, cropPixW, cropPixH)
+                fullBitmap.recycle()
+
+                val maskedBitmap = android.graphics.Bitmap.createBitmap(cropPixW, cropPixH, android.graphics.Bitmap.Config.ARGB_8888)
+                val maskCanvas = android.graphics.Canvas(maskedBitmap)
+                maskCanvas.drawColor(android.graphics.Color.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
+
+                val polyPath = android.graphics.Path()
+                polyPath.moveTo((polygon.first().x - minX) * renderScale, (polygon.first().y - minY) * renderScale)
+                for (i in 1 until polygon.size) {
+                    polyPath.lineTo((polygon[i].x - minX) * renderScale, (polygon[i].y - minY) * renderScale)
+                }
+                polyPath.close()
+                maskCanvas.clipPath(polyPath)
+                maskCanvas.drawBitmap(croppedBitmap, 0f, 0f, null)
+                croppedBitmap.recycle()
+
+                var trimOffsetX = 0f
+                var trimOffsetY = 0f
+                val trimmedBitmap = trimTransparentEdges(maskedBitmap) { ox, oy ->
+                    trimOffsetX = ox / renderScale
+                    trimOffsetY = oy / renderScale
+                }
+                if (trimmedBitmap !== maskedBitmap) maskedBitmap.recycle()
+
+                val sharedDir = java.io.File(context.cacheDir, "shared")
+                if (!sharedDir.exists()) sharedDir.mkdirs()
+                val file = java.io.File(sharedDir, "share_${System.currentTimeMillis()}.png")
+                java.io.FileOutputStream(file).use { out ->
+                    trimmedBitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
+                }
+                trimmedBitmap.recycle()
+
+                withContext(Dispatchers.Main) {
+                    clearSelection()
+                    onToolSelected(Tool.PEN)
+                }
+                
+                file
             }
         } finally {
             extractionMutex.unlock()

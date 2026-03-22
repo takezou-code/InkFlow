@@ -19,6 +19,9 @@ interface ImageAnnotationDao {
     @Query("SELECT * FROM image_annotations WHERE documentUri = :documentUri AND pageIndex = :pageIndex")
     fun getForPage(documentUri: String, pageIndex: Int): Flow<List<ImageAnnotationEntity>>
 
+    @Query("SELECT * FROM image_annotations WHERE documentUri = :documentUri AND pageIndex = :pageIndex")
+    suspend fun getForPageSync(documentUri: String, pageIndex: Int): List<ImageAnnotationEntity>
+
     @Query("SELECT * FROM image_annotations WHERE documentUri = :documentUri")
     suspend fun getAllForDocument(documentUri: String): List<ImageAnnotationEntity>
 
@@ -33,6 +36,15 @@ interface ImageAnnotationDao {
 
     @Query("UPDATE image_annotations SET pageIndex = pageIndex + :amount WHERE documentUri = :documentUri AND pageIndex >= :startingIndex")
     suspend fun shiftPageIndicesUp(documentUri: String, startingIndex: Int, amount: Int)
+
+    @Query("UPDATE image_annotations SET pageIndex = :tempIndex WHERE documentUri = :documentUri AND pageIndex = :fromIndex")
+    suspend fun moveToTempIndex(documentUri: String, fromIndex: Int, tempIndex: Int = -1)
+
+    @Query("UPDATE image_annotations SET pageIndex = pageIndex - 1 WHERE documentUri = :documentUri AND pageIndex > :fromIndex AND pageIndex <= :toIndex")
+    suspend fun shiftForMoveDown(documentUri: String, fromIndex: Int, toIndex: Int)
+
+    @Query("UPDATE image_annotations SET pageIndex = pageIndex + 1 WHERE documentUri = :documentUri AND pageIndex >= :toIndex AND pageIndex < :fromIndex")
+    suspend fun shiftForMoveUp(documentUri: String, fromIndex: Int, toIndex: Int)
 
     @Query("DELETE FROM image_annotations WHERE documentUri = :documentUri")
     suspend fun deleteForDocument(documentUri: String)

@@ -21,6 +21,10 @@ interface StrokeDao {
     fun getStrokesForPage(documentUri: String, pageIndex: Int): Flow<List<StrokeWithPoints>>
 
     @Transaction
+    @Query("SELECT * FROM strokes WHERE documentUri = :documentUri AND pageIndex = :pageIndex")
+    suspend fun getStrokesForPageSync(documentUri: String, pageIndex: Int): List<StrokeWithPoints>
+
+    @Transaction
     @Query("SELECT * FROM strokes WHERE documentUri = :documentUri")
     suspend fun getAllStrokesForDocument(documentUri: String): List<StrokeWithPoints>
 
@@ -35,6 +39,16 @@ interface StrokeDao {
 
     @Query("UPDATE strokes SET pageIndex = pageIndex + :amount WHERE documentUri = :documentUri AND pageIndex >= :startingIndex")
     suspend fun shiftPageIndicesUp(documentUri: String, startingIndex: Int, amount: Int)
+
+    // For moving a page: Step 1 = change moved page to -1; Step 2 = shift others; Step 3 = change -1 to toIndex
+    @Query("UPDATE strokes SET pageIndex = :tempIndex WHERE documentUri = :documentUri AND pageIndex = :fromIndex")
+    suspend fun moveToTempIndex(documentUri: String, fromIndex: Int, tempIndex: Int = -1)
+
+    @Query("UPDATE strokes SET pageIndex = pageIndex - 1 WHERE documentUri = :documentUri AND pageIndex > :fromIndex AND pageIndex <= :toIndex")
+    suspend fun shiftForMoveDown(documentUri: String, fromIndex: Int, toIndex: Int)
+
+    @Query("UPDATE strokes SET pageIndex = pageIndex + 1 WHERE documentUri = :documentUri AND pageIndex >= :toIndex AND pageIndex < :fromIndex")
+    suspend fun shiftForMoveUp(documentUri: String, fromIndex: Int, toIndex: Int)
 
     @Query("DELETE FROM strokes WHERE documentUri = :documentUri")
     suspend fun deleteStrokesForDocument(documentUri: String)

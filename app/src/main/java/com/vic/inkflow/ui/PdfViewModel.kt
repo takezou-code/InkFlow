@@ -1,25 +1,46 @@
 package com.vic.inkflow.ui
 
+
 import android.app.Application
+
 import android.content.Context
+
 import android.graphics.Bitmap
+
 import android.graphics.pdf.PdfRenderer
+
 import android.net.Uri
+
 import android.os.ParcelFileDescriptor
+
 import androidx.collection.LruCache
+
 import androidx.lifecycle.AndroidViewModel
+
 import androidx.lifecycle.viewModelScope
+
 import androidx.room.withTransaction
+
 import com.vic.inkflow.data.AppDatabase
+
 import com.vic.inkflow.util.PdfManager
+
 import kotlinx.coroutines.Dispatchers
+
 import kotlinx.coroutines.flow.MutableStateFlow
+
 import kotlinx.coroutines.withContext
+
 import kotlinx.coroutines.flow.StateFlow
+
 import kotlinx.coroutines.flow.asStateFlow
+
 import kotlinx.coroutines.launch
+
 import kotlinx.coroutines.sync.Mutex
+
 import kotlinx.coroutines.sync.withLock
+
 import java.io.File
 
 class PdfViewModel(application: Application) : AndroidViewModel(application) {
@@ -44,11 +65,11 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
     private val _currentPdfUri = MutableStateFlow<Uri?>(null)
     val currentPdfUri: StateFlow<Uri?> = _currentPdfUri.asStateFlow()
 
-    /** true 期間表示正在進行插入 / 刪除頁面的後台儲存，UI 應顯示進度指示器並停用相關按鈕。 */
+    /** true ??銵函內甇??脰?? / ?芷????啣摮?UI ?＊蝷粹脣漲?內?其蒂??賊?????*/
     private val _isPageOperationInProgress = MutableStateFlow(false)
     val isPageOperationInProgress: StateFlow<Boolean> = _isPageOperationInProgress.asStateFlow()
 
-    /** Emits the width × height (pts) of the first page once the PDF is opened.
+    /** Emits the width ? height (pts) of the first page once the PDF is opened.
      *  UI / EditorViewModel should use this to set the model coordinate space. */
     private val _firstPageSize = MutableStateFlow<Pair<Float, Float>?>(null)
     val firstPageSize: StateFlow<Pair<Float, Float>?> = _firstPageSize.asStateFlow()
@@ -123,7 +144,7 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun openPdf(uri: Uri) {
-        // ViewModel survives configuration changes — skip re-opening if the same PDF is already loaded
+        // ViewModel survives configuration changes ??skip re-opening if the same PDF is already loaded
         if (_currentPdfUri.value == uri && pdfRenderer != null) return
 
         viewModelScope.launch(Dispatchers.IO) {
@@ -153,7 +174,7 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** 僅關閉 Renderer／FD，不清空 URI 或 pageCount（用於追加頁面後重新開啟）。 */
+    /** ????Renderer嚗D嚗?皜征 URI ??pageCount嚗?潸蕭???Ｗ????嚗?*/
     private fun closeRendererOnly() {
         pdfRenderer?.close()
         parcelFileDescriptor?.close()
@@ -165,20 +186,20 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         bitmapFlowCache.clear()
     }
 
-    /** 在 Main 執行緒清空 flow cache，使下一次 getPageThumbnail/getPageBitmap 強制重新渲染。 */
+    /** ??Main ?瑁?蝺?蝛?flow cache嚗蝙銝?甈?getPageThumbnail/getPageBitmap 撘瑕?皜脫???*/
     private fun clearFlowCaches() {
         thumbnailFlowCache.clear()
         bitmapFlowCache.clear()
     }
 
-    /** 在目前 PDF（須為 file:// URI）的 [afterIndex] 頁之後插入一頁 A4 空白頁。
-     *  afterIndex = -1 或 Int.MAX_VALUE 時追加到末尾。
+    /** ?函??PDF嚗???file:// URI嚗? [afterIndex] ??敺??乩???A4 蝛箇??
+     *  afterIndex = -1 ??Int.MAX_VALUE ?蕭??怠偏??
      *
-     *  採用樂觀式 UI 更新（Optimistic UI）：
-     *  - 立即遞增 _pageCount 並發出 _lastInsertedPageIndex，使 UI 瞬間導航至新空白頁。
-     *  - 後台非同步執行 PDDocument 的修改與存檔（耗時 2–8 秒）。
-     *  - 存檔完成後重新開啟 Renderer，更新 _thumbnailVersion 觸發縮圖刷新。
-     *  - 失敗時回滾樂觀更新。
+     *  ?∠璅?撘?UI ?湔嚗ptimistic UI嚗?
+     *  - 蝡?? _pageCount 銝衣??_lastInsertedPageIndex嚗蝙 UI ?祇?撠?單蝛箇??
+     *  - 敺??甇亙銵?PDDocument ?耨?寡?摮?嚗? 2?? 蝘???
+     *  - 摮?摰?敺??圈???Renderer嚗??_thumbnailVersion 閫貊蝮桀??瑟??
+     *  - 憭望???皛暹?閫?湔??
      */
     fun insertBlankPage(
         context: Context,
@@ -193,18 +214,16 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         val currentCount = _pageCount.value
-        // 計算新插入頁的索引（在 afterIndex 之後，或末尾）
+        // 閮??唳??仿??揣撘???afterIndex 銋?嚗??怠偏嚗?
         val optimisticNewIndex = if (afterIndex == Int.MAX_VALUE || afterIndex >= currentCount - 1) {
-            currentCount  // 追加到末尾，新頁 index = currentCount
+            currentCount  // 餈賢??唳撠橘??圈? index = currentCount
         } else {
             afterIndex + 1
         }.coerceIn(0, currentCount)
 
-        // ── 樂觀式更新（立即，Main Thread）──────────────────────────────────
+        // 蝡閮剖??脰?銝哨?霈?UI ?臭誑憿舐內?脣漲璇?雿???閫?湔 pageCount
+        // ???PDF 撠摮????圈?????UI ?岫隢??圈??Ｙ? Bitmap ????PDF 撠頛??? null ???⊿???
         _isPageOperationInProgress.value = true
-        _pageCount.value = currentCount + 1
-        _lastInsertedPageIndex.value = optimisticNewIndex
-        // ────────────────────────────────────────────────────────────────────
 
         viewModelScope.launch(Dispatchers.IO) {
             var dbShiftApplied = false
@@ -216,48 +235,26 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 dbShiftApplied = true
 
-            renderMutex.withLock { closeRendererOnly() }
-            val ok = com.vic.inkflow.util.PdfManager.insertBlankPage(fileUri, afterIndex, pageWidthPt, pageHeightPt)
-            if (!ok) {
-                // 回滾樂觀更新
-                if (dbShiftApplied) {
-                    db.withTransaction {
-                        db.strokeDao().shiftPageIndicesDown(documentUri, optimisticNewIndex - 1)
-                        db.textAnnotationDao().shiftPageIndicesDown(documentUri, optimisticNewIndex - 1)
-                        db.imageAnnotationDao().shiftPageIndicesDown(documentUri, optimisticNewIndex - 1)
+                renderMutex.withLock { closeRendererOnly() }
+                val ok = com.vic.inkflow.util.PdfManager.insertBlankPage(fileUri, afterIndex, pageWidthPt, pageHeightPt)
+                
+                if (!ok) {
+                    if (dbShiftApplied) {
+                        db.withTransaction {
+                            db.strokeDao().shiftPageIndicesDown(documentUri, optimisticNewIndex - 1)
+                            db.textAnnotationDao().shiftPageIndicesDown(documentUri, optimisticNewIndex - 1)
+                            db.imageAnnotationDao().shiftPageIndicesDown(documentUri, optimisticNewIndex - 1)
+                        }
                     }
-                }
-                _pageCount.value = currentCount
-                _lastInsertedPageIndex.value = null
-                _isPageOperationInProgress.value = false
-                return@launch
-            }
-            try {
-                val fd = ParcelFileDescriptor.open(
-                    File(fileUri.path!!),
-                    ParcelFileDescriptor.MODE_READ_ONLY
-                )
-                val renderer = try {
-                    PdfRenderer(fd)
-                } catch (e: Exception) {
-                    fd.close()
-                    _pageCount.value = currentCount  // 回滾
-                    _isPageOperationInProgress.value = false
+                    reopenCurrentPdf(fileUri, fallbackPageCount = currentCount)
                     return@launch
                 }
-                renderMutex.withLock {
-                    parcelFileDescriptor = fd
-                    pdfRenderer = renderer
-                    readAndCachePageSizes(renderer)
-                }
-                // Clear stale null-flows created while the renderer was unavailable,
-                // so the next recomposition triggers fresh renderPage calls.
-                thumbnailFlowCache.clear()
-                bitmapFlowCache.clear()
-                _pageCount.value = renderer.pageCount  // 以實際值確認
-                _thumbnailVersion.value++   // 通知側邊欄重新抓取所有縮圖
+                
+                _lastInsertedPageIndex.value = optimisticNewIndex
+                reopenCurrentPdf(fileUri, fallbackPageCount = currentCount + 1)
+
             } catch (e: Exception) {
-                android.util.Log.e("PdfViewModel", "insertBlankPage reopen failed", e)
+                android.util.Log.e("PdfViewModel", "insertBlankPage failed", e)
                 if (dbShiftApplied) {
                     runCatching {
                         db.withTransaction {
@@ -267,14 +264,8 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
                 }
-                _pageCount.value = currentCount  // 回滾
+                reopenCurrentPdf(fileUri, fallbackPageCount = currentCount)
             } finally {
-                _isPageOperationInProgress.value = false
-            }
-            } catch (e: Exception) {
-                android.util.Log.e("PdfViewModel", "insertBlankPage failed before reopen", e)
-                _pageCount.value = currentCount
-                _lastInsertedPageIndex.value = null
                 _isPageOperationInProgress.value = false
             }
         }
@@ -309,9 +300,6 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
             val currentCount = _pageCount.value
             val insertionIndex = if (afterIndex >= currentCount - 1) currentCount else afterIndex + 1
 
-            _pageCount.value = currentCount + insertedPageCount
-            _lastInsertedPageIndex.value = insertionIndex
-
             var dbShiftApplied = false
             try {
                 db.withTransaction {
@@ -333,12 +321,11 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                             }
                         }
                     }
-                    _pageCount.value = currentCount
-                    _lastInsertedPageIndex.value = null
                     reopenCurrentPdf(targetFileUri, fallbackPageCount = currentCount)
                     return@launch
                 }
 
+                _lastInsertedPageIndex.value = insertionIndex
                 reopenCurrentPdf(targetFileUri, fallbackPageCount = currentCount + insertedPageCount)
             } catch (e: Exception) {
                 android.util.Log.e("PdfViewModel", "insertPdfPages failed", e)
@@ -365,55 +352,55 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** 刪除目前 PDF 中第 [pageIndex] 頁（file:// URI）。
-     *
-     *  採用樂觀式 UI 更新（Optimistic UI）：
-     *  - 立即遞減 _pageCount 並發出 _lastDeletedPageIndex，使 UI 瞬間移離已刪頁面。
-     *  - 後台非同步執行 PDDocument 刪除與存檔。
-     *  - 存檔完成後重新開啟 Renderer，更新 _thumbnailVersion 觸發縮圖刷新。
-     *  - 失敗時回滾樂觀更新（並重新開啟原有 Renderer）。
-     */
-    fun deletePage(pageIndex: Int) {
-        val fileUri = _currentPdfUri.value ?: return
-        if (fileUri.scheme != "file") {
-            android.util.Log.w("PdfViewModel", "deletePage: only file:// URIs supported")
-            return
-        }
-        val currentCount = _pageCount.value
-        if (currentCount <= 1) return  // 防止刪除最後一頁（與 PdfManager 邏輯一致）
 
-        // ── 樂觀式更新（立即，Main Thread）──────────────────────────────────
+
+    /** 
+     * 撠?PDF ?洵 [fromIndex] ?宏? [toIndex]??
+     * ?湔 PDF ?辣???湔 DB 銝剖????Ｙ? annotations index??
+     */
+    fun movePage(documentUri: String, fromIndex: Int, toIndex: Int) {
+        val fileUri = _currentPdfUri.value ?: return
+        if (fileUri.scheme != "file") return
+        if (fromIndex == toIndex) return
+        val currentCount = _pageCount.value
+        if (fromIndex !in 0 until currentCount || toIndex !in 0 until currentCount) return
+
         _isPageOperationInProgress.value = true
-        _pageCount.value = currentCount - 1
-        _lastDeletedPageIndex.value = pageIndex
-        // ────────────────────────────────────────────────────────────────────
 
         viewModelScope.launch(Dispatchers.IO) {
             renderMutex.withLock { closeRendererOnly() }
-            val ok = com.vic.inkflow.util.PdfManager.deletePage(fileUri, pageIndex)
-            if (!ok) {
-                // 刪除失敗（例如超出範圍），回滾並重新開啟原有 PDF
-                try {
-                    val fd = ParcelFileDescriptor.open(
-                        File(fileUri.path!!),
-                        ParcelFileDescriptor.MODE_READ_ONLY
-                    )
-                    val renderer = PdfRenderer(fd)
-                    renderMutex.withLock {
-                        parcelFileDescriptor = fd
-                        pdfRenderer = renderer
-                        readAndCachePageSizes(renderer)
+            
+            // 1. Move page in PDF file
+            val ok = com.vic.inkflow.util.PdfManager.movePage(fileUri, fromIndex, toIndex)
+            
+            if (ok) {
+                // 2. Transact DB index updates
+                db.withTransaction {
+                    // Update StrokeDao
+                    with(db.strokeDao()) {
+                        moveToTempIndex(documentUri, fromIndex, -1)
+                        if (fromIndex < toIndex) shiftForMoveDown(documentUri, fromIndex, toIndex)
+                        else shiftForMoveUp(documentUri, fromIndex, toIndex)
+                        moveToTempIndex(documentUri, -1, toIndex)
                     }
-                    _pageCount.value = renderer.pageCount
-                    _thumbnailVersion.value++
-                } catch (e: Exception) {
-                    android.util.Log.e("PdfViewModel", "deletePage rollback reopen failed", e)
-                    _pageCount.value = currentCount  // 至少回滾計數
+                    // Update TextAnnotationDao
+                    with(db.textAnnotationDao()) {
+                        moveToTempIndex(documentUri, fromIndex, -1)
+                        if (fromIndex < toIndex) shiftForMoveDown(documentUri, fromIndex, toIndex)
+                        else shiftForMoveUp(documentUri, fromIndex, toIndex)
+                        moveToTempIndex(documentUri, -1, toIndex)
+                    }
+                    // Update ImageAnnotationDao
+                    with(db.imageAnnotationDao()) {
+                        moveToTempIndex(documentUri, fromIndex, -1)
+                        if (fromIndex < toIndex) shiftForMoveDown(documentUri, fromIndex, toIndex)
+                        else shiftForMoveUp(documentUri, fromIndex, toIndex)
+                        moveToTempIndex(documentUri, -1, toIndex)
+                    }
                 }
-                _lastDeletedPageIndex.value = null
-                _isPageOperationInProgress.value = false
-                return@launch
             }
+
+            // 3. Reopen PDF
             try {
                 val fd = ParcelFileDescriptor.open(
                     File(fileUri.path!!),
@@ -423,7 +410,6 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                     PdfRenderer(fd)
                 } catch (e: Exception) {
                     fd.close()
-                    _pageCount.value = currentCount - 1  // 保留樂觀值
                     _isPageOperationInProgress.value = false
                     return@launch
                 }
@@ -432,11 +418,78 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                     pdfRenderer = renderer
                     readAndCachePageSizes(renderer)
                 }
-                _pageCount.value = renderer.pageCount  // 以實際值確認
-                _thumbnailVersion.value++   // 通知側邊欄重新抓取所有縮圖
+                _pageCount.value = renderer.pageCount
+                _thumbnailVersion.value++ // ? UI ??渡?蝮桀?
             } catch (e: Exception) {
-                android.util.Log.e("PdfViewModel", "deletePage reopen failed", e)
-                // 不回滾計數：PDF 已成功刪除，只是重新開啟失敗
+                android.util.Log.e("PdfViewModel", "movePage reopen failed", e)
+            } finally {
+                _isPageOperationInProgress.value = false
+            }
+        }
+    }
+
+        /**
+     * ?寞活?芷憭???
+     * @param documentUri ?冽皜?鞈?摨怎?瑼? URI 璅?
+     * @param pageIndices 閬?斤??蝝Ｗ?皜??
+     */
+    fun deletePages(documentUri: String, pageIndices: List<Int>) {
+        val fileUri = _currentPdfUri.value ?: return
+        if (fileUri.scheme != "file" || pageIndices.isEmpty()) return
+        val currentCount = _pageCount.value
+        // 銝???Ｗ?芸?
+        if (currentCount <= pageIndices.size) return 
+
+        _isPageOperationInProgress.value = true
+
+        viewModelScope.launch(Dispatchers.IO) {
+            renderMutex.withLock { closeRendererOnly() }
+            
+            // ???格活摨惜 I/O ?寞活?芷????撖阡? PDF ?
+            val sortedIndices = pageIndices.sortedDescending(); val ok = com.vic.inkflow.util.PdfManager.deletePages(fileUri, sortedIndices)
+            
+            if (ok) {
+                // ?芷鞈?摨?annotation 銝虫?蝘餃???index
+                db.withTransaction {
+                    for (index in sortedIndices) {
+                        with(db.strokeDao()) {
+                            clearPage(documentUri, index)
+                            shiftPageIndicesDown(documentUri, index)
+                        }
+                        with(db.textAnnotationDao()) {
+                            deleteForPage(documentUri, index)
+                            shiftPageIndicesDown(documentUri, index)
+                        }
+                        with(db.imageAnnotationDao()) {
+                            deleteForPage(documentUri, index)
+                            shiftPageIndicesDown(documentUri, index)
+                        }
+                    }
+                }
+            }
+            
+            // Reopen PDF
+            try {
+                val fd = ParcelFileDescriptor.open(
+                    File(fileUri.path!!),
+                    ParcelFileDescriptor.MODE_READ_ONLY
+                )
+                val renderer = try {
+                    PdfRenderer(fd)
+                } catch (e: Exception) {
+                    fd.close()
+                    _isPageOperationInProgress.value = false
+                    return@launch
+                }
+                renderMutex.withLock {
+                    parcelFileDescriptor = fd
+                    pdfRenderer = renderer
+                    readAndCachePageSizes(renderer)
+                }
+                _pageCount.value = renderer.pageCount
+                _thumbnailVersion.value++
+            } catch (e: Exception) {
+                android.util.Log.e("PdfViewModel", "deletePages reopen failed", e)
             } finally {
                 _isPageOperationInProgress.value = false
             }

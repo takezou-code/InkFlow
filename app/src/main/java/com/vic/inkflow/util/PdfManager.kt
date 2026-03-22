@@ -236,6 +236,90 @@ object PdfManager {
             }
         }
 
+    /** 將 PDF 的第 [fromIndex] 頁移動到 [toIndex]。
+     *  採用「寫入暫存檔 → 原子重命名」策略，確保操作失敗時原始 PDF 不受損。 */
+    suspend fun movePage(fileUri: Uri, fromIndex: Int, toIndex: Int): Boolean =
+        withContext(Dispatchers.IO) {
+            if (fileUri.scheme != "file") {
+                Log.w(TAG, "movePage: only file:// URIs are supported")
+                return@withContext false
+            }
+            if (fromIndex == toIndex) return@withContext true
+            try {
+                val file = File(fileUri.path!!)
+                PDDocument.load(file).use { doc ->
+                    if (fromIndex < 0 || fromIndex >= doc.numberOfPages || 
+                        toIndex < 0 || toIndex >= doc.numberOfPages) return@withContext false
+                    
+                    val pageToMove = doc.getPage(fromIndex)
+                    doc.removePage(fromIndex) // 移除後，後面的頁面 index 會減 1
+                    
+                    if (toIndex >= doc.numberOfPages) { // 移到最後一頁
+                        doc.addPage(pageToMove)
+                    } else {
+                        // 因為已移除 fromIndex，toIndex 代表的就是最終想要的絕對位置索引
+                        doc.pages.insertBefore(pageToMove, doc.getPage(toIndex))
+                    }
+                    
+                    val tmpFile = File(file.parent, ".tmp_.pdf")
+                    try {
+                        doc.save(tmpFile)
+                        if (!tmpFile.renameTo(file)) {
+                            tmpFile.copyTo(file, overwrite = true)
+                            tmpFile.delete()
+                        }
+                    } catch (e: Exception) {
+                        tmpFile.delete()
+                        throw e
+                    }
+                }
+                true
+            } catch (e: Exception) {
+                Log.e(TAG, "movePage failed", e)
+                false
+            }
+        }
+
+    /** 批次刪除 file:// URI PDF 中的多個頁面。[pageIndices] 必須是在原始文件中的絕對索引。
+     *  採用「一次載入 → 全數刪除 → 一次存檔」策略，大幅提升 I/O 效能。*/
+    suspend fun deletePages(fileUri: Uri, pageIndices: List<Int>): Boolean =
+        withContext(Dispatchers.IO) {
+            if (fileUri.scheme != "file" || pageIndices.isEmpty()) return@withContext false
+            try {
+                val file = File(fileUri.path!!)
+                PDDocument.load(file).use { doc ->
+                    if (doc.numberOfPages <= pageIndices.size) {
+                        Log.w(TAG, "deletePages: cannot delete all pages")
+                        return@withContext false
+                    }
+                    
+                    // 從後往前刪除，這樣已經刪除的頁面就不會影響到前面頁面的索引
+                    val sortedDescending = pageIndices.sortedDescending()
+                    for (index in sortedDescending) {
+                        if (index in 0 until doc.numberOfPages) {
+                            doc.removePage(index)
+                        }
+                    }
+                    
+                    val tmpFile = File(file.parent, ".tmp_.pdf")
+                    try {
+                        doc.save(tmpFile)
+                        if (!tmpFile.renameTo(file)) {
+                            tmpFile.copyTo(file, overwrite = true)
+                            tmpFile.delete()
+                        }
+                    } catch (e: Exception) {
+                        tmpFile.delete()
+                        throw e
+                    }
+                }
+                true
+            } catch (e: Exception) {
+                Log.e(TAG, "deletePages failed", e)
+                false
+            }
+        }
+
     // ─── 雙 Scheme 支援 ───────────────────────────────────────────────────────
 
     /**

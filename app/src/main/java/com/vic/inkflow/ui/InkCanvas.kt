@@ -32,6 +32,8 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.graphics.ImageBitmapConfig
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
@@ -545,7 +547,7 @@ fun InkCanvas(
                                 drag.consume()
                                 drag = awaitDragOrCancellation(drag.id)
                             }
-                            viewModel.commitTextAnnotationResize(selAnn.id, selAnn.fontSize + accModelDelta)
+                            viewModel.commitTextAnnotationResize(selAnn.id, selAnn.modelX, selAnn.modelY, selAnn.fontSize + accModelDelta)
                             textFontSizeDelta = 0f
                             activePathVersion++
                             return@awaitEachGesture
@@ -637,7 +639,7 @@ fun InkCanvas(
                             // Commit: convert effective canvas size back to model space
                             val newModelW = ((selAnn.modelWidth  * sx + imageResizePreview.x).coerceAtLeast(30f)) / sx
                             val newModelH = ((selAnn.modelHeight * sy + imageResizePreview.y).coerceAtLeast(30f)) / sy
-                            viewModel.commitImageAnnotationResize(selAnn.id, newModelW, newModelH)
+                            viewModel.commitImageAnnotationResize(selAnn.id, selAnn.modelX, selAnn.modelY, newModelW, newModelH)
                             imageResizePreview = Offset.Zero
                             activePathVersion++
                             return@awaitEachGesture
@@ -927,22 +929,48 @@ fun InkCanvas(
                 currentPathPoints.clear()
             }
         }
-        .drawBehind {
+        .drawWithCache {
             val sx = size.width  / viewModel.modelWidth
             val sy = size.height / viewModel.modelHeight
 
+            val strokes = committedStrokes
+            val preview = commitPreview
+            val previewIds = preview?.map { it.stroke.id }?.toHashSet() ?: emptySet()
+
+            val bmpWidth = size.width.toInt().coerceAtLeast(1)
+            val bmpHeight = size.height.toInt().coerceAtLeast(1)
+            val cachedImage = ImageBitmap(bmpWidth, bmpHeight, ImageBitmapConfig.Argb8888)
+            val cacheCanvas = androidx.compose.ui.graphics.Canvas(cachedImage)
+            
+            cacheCanvas.save()
+            cacheCanvas.scale(sx, sy)
+            strokes.forEach { swp ->
+                if (swp.stroke.id in previewIds) return@forEach
+                if (swp.stroke.shapeType != null) {
+                    drawShapeOnCanvas(cacheCanvas, swp.stroke, swp.points)
+                } else {
+                    drawPathOnCanvas(cacheCanvas, swp.points.toComposePath(),
+                        Color(swp.stroke.color), swp.stroke.strokeWidth, swp.stroke.isHighlighter)
+                }
+            }
+            cacheCanvas.restore()
+
+            onDrawBehind {
+                val currentPaperStyle = paperStyle
+                val currentImageAnns = imageAnnotations
+
             // Background lines — drawn as the very bottom layer below all annotations and strokes.
-            if (paperStyle.background != PageBackground.BLANK) {
+            if (currentPaperStyle.background != PageBackground.BLANK) {
                 val lineColor = androidx.compose.ui.graphics.Color(0x33000000)
-                val step = when (paperStyle.background) {
+                val step = when (currentPaperStyle.background) {
                     PageBackground.NARROW_RULED -> 18f
                     PageBackground.WIDE_RULED   -> 42f
                     else                        -> 28f
                 }
-                val drawHLines = paperStyle.background == PageBackground.RULED ||
-                    paperStyle.background == PageBackground.NARROW_RULED ||
-                    paperStyle.background == PageBackground.WIDE_RULED ||
-                    paperStyle.background == PageBackground.GRID
+                val drawHLines = currentPaperStyle.background == PageBackground.RULED ||
+                    currentPaperStyle.background == PageBackground.NARROW_RULED ||
+                    currentPaperStyle.background == PageBackground.WIDE_RULED ||
+                    currentPaperStyle.background == PageBackground.GRID
                 if (drawHLines) {
                     var lineY = step
                     while (lineY < viewModel.modelHeight) {
@@ -955,7 +983,7 @@ fun InkCanvas(
                         lineY += step
                     }
                 }
-                if (paperStyle.background == PageBackground.GRID) {
+                if (currentPaperStyle.background == PageBackground.GRID) {
                     var lineX = step
                     while (lineX < viewModel.modelWidth) {
                         drawLine(
@@ -967,7 +995,7 @@ fun InkCanvas(
                         lineX += step
                     }
                 }
-                if (paperStyle.background == PageBackground.DOT_GRID) {
+                if (currentPaperStyle.background == PageBackground.DOT_GRID) {
                     var lineY = step
                     while (lineY < viewModel.modelHeight) {
                         var lineX = step
@@ -985,7 +1013,7 @@ fun InkCanvas(
             }
 
             // Image annotations — drawn BELOW strokes (above PDF layer which is a separate Composable)
-            imageAnnotations.forEach { ann ->
+            currentImageAnns.forEach { ann ->
                 val bmp = loadedImages[ann.uri]
                 if (bmp != null) {
                     val isSelected = ann.id == selectedImageAnnotationId && activeTool == Tool.IMAGE
@@ -1006,25 +1034,16 @@ fun InkCanvas(
             }
 
             // Committed strokes from DB.
-            // While a commitPreview is active (DB write in flight after a move), skip the
-            // preview strokes from the DB layer and draw them separately below so the user
-            // sees them at the new position immediately (no flash-back to old position).
+            // Play the cached strokes layer!
+            drawImage(cachedImage)
+
             val preview = commitPreview
-            val previewIds = preview?.map { it.stroke.id }?.toHashSet() ?: emptySet()
-            drawIntoCanvas { cvs ->
-                cvs.save()
-                cvs.scale(sx, sy)
-                committedStrokes.forEach { swp ->
-                    if (swp.stroke.id in previewIds) return@forEach
-                    if (swp.stroke.shapeType != null) {
-                        drawShapeOnCanvas(cvs, swp.stroke, swp.points)
-                    } else {
-                        drawPathOnCanvas(cvs, swp.points.toComposePath(),
-                            Color(swp.stroke.color), swp.stroke.strokeWidth, swp.stroke.isHighlighter)
-                    }
-                }
-                // Preview layer: moved strokes at their committed (new) position.
-                if (preview != null) {
+            // While a commitPreview is active (DB write in flight after a move), draw the preview layer separately.
+            if (preview != null) {
+                drawIntoCanvas { cvs ->
+                    cvs.save()
+                    cvs.scale(sx, sy)
+                    // Preview layer: moved strokes at their committed (new) position.
                     preview.forEach { swp ->
                         if (swp.stroke.shapeType != null) {
                             drawShapeOnCanvas(cvs, swp.stroke, swp.points)
@@ -1033,8 +1052,8 @@ fun InkCanvas(
                                 Color(swp.stroke.color), swp.stroke.strokeWidth, swp.stroke.isHighlighter)
                         }
                     }
+                    cvs.restore()
                 }
-                cvs.restore()
             }
 
             // Selected strokes (highlighted with current preview transform applied).
@@ -1230,6 +1249,7 @@ fun InkCanvas(
                     else -> { }
                 }
             }
+        }
 
     Canvas(modifier = drawModifier) { }
 }

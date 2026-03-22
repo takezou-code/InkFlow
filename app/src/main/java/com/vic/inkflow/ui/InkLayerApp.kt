@@ -780,7 +780,7 @@ private fun DocumentLibraryFab(
                 .clip(RoundedCornerShape(24.dp))
                 .background(brandGradient)
                 .border(1.dp, Color.White.copy(alpha = 0.22f), RoundedCornerShape(24.dp))
-                .clickable(interactionSource = fabInteractionSource, indication = null, onClick = onToggleMenu)
+                .clickable(interactionSource = fabInteractionSource, indication = androidx.compose.foundation.LocalIndication.current, onClick = onToggleMenu)
                 .padding(horizontal = 18.dp, vertical = 14.dp)
         ) {
             Row(
@@ -1195,6 +1195,9 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
     var showStrokeWidthSlider by rememberSaveable { mutableStateOf(false) }
     // Guards against overwriting the DB value before we've read it on first open
     var initialPageRestored by rememberSaveable { mutableStateOf(false) }
+
+    var showAiPanel by rememberSaveable { mutableStateOf(false) }
+    var aiFileUri by remember { mutableStateOf<android.net.Uri?>(null) }
     val sidebarListState = rememberLazyListState()
 
     // Restore the last-viewed page from DB on first open; rememberSaveable keeps it
@@ -1392,14 +1395,33 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                         db.textAnnotationDao().deleteForPage(uri.toString(), index)
                         db.textAnnotationDao().shiftPageIndicesDown(uri.toString(), index)
                     }
-                    pdfViewModel.deletePage(index)
+                    pdfViewModel.deletePages(uri.toString(), listOf(index))
                 },
                 listState = sidebarListState,
                 modifier = if (isFullscreen) Modifier.fillMaxHeight().weight(1f) else Modifier.fillMaxHeight()
             )
 
             if (!isFullscreen) {
-                Box(Modifier.weight(1f).fillMaxHeight()) {
+                // Left Panel: AI Parser View
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = showAiPanel,
+                    modifier = Modifier.weight(0.4f).fillMaxHeight()
+                ) {
+                    AiWebPanel(
+                        fileUri = aiFileUri,
+                        onClose = {
+                            showAiPanel = false
+                            aiFileUri = null
+                        }
+                    )
+                }
+                if (showAiPanel) {
+                    androidx.compose.material3.VerticalDivider(Modifier.fillMaxHeight().width(1.dp))
+                }
+
+                // Main Workspace
+                val workspaceWeight = if (showAiPanel) 0.6f else 1f
+                Box(Modifier.weight(workspaceWeight).fillMaxHeight()) {
                     Workspace(
                         pageIndex = currentPageIndex,
                         pdfViewModel = pdfViewModel,
@@ -1471,6 +1493,70 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                                     }
                                 ) {
                                     Text("提取到新頁面")
+                                }
+                                TextButton(
+                                    onClick = {
+                                        isExtracting = true
+                                        scope.launch {
+                                            try {
+                                                val sourcePageIndex = currentPageIndex
+                                                val sourceBitmap = kotlinx.coroutines.withTimeoutOrNull(1200) {
+                                                    pdfViewModel.getPageBitmap(sourcePageIndex).filterNotNull().first()
+                                                } ?: pdfViewModel.getPageBitmap(sourcePageIndex).value
+
+                                                val file = viewModel.extractRegionToShareFile(
+                                                    context = context,
+                                                    sourcePageIndex = sourcePageIndex,
+                                                    pdfPageBitmap = sourceBitmap
+                                                )
+                                                if (file != null) {
+                                                    val fileUri = androidx.core.content.FileProvider.getUriForFile(
+                                                        context,
+                                                        "${context.packageName}.fileprovider",
+                                                        file
+                                                    )
+                                                    aiFileUri = fileUri
+                                                    showAiPanel = true
+                                                }
+                                            } finally {
+                                                isExtracting = false
+                                            }
+                                        }
+                                    }
+                                ) {
+                                    Text("AI 解析")
+                                }
+                                TextButton(
+                                    onClick = {
+                                        isExtracting = true
+                                        scope.launch {
+                                            try {
+                                                val sourcePageIndex = currentPageIndex
+                                                val sourceBitmap = kotlinx.coroutines.withTimeoutOrNull(1200) {
+                                                    pdfViewModel.getPageBitmap(sourcePageIndex).filterNotNull().first()
+                                                } ?: pdfViewModel.getPageBitmap(sourcePageIndex).value
+
+                                                val file = viewModel.extractRegionToShareFile(
+                                                    context = context,
+                                                    sourcePageIndex = sourcePageIndex,
+                                                    pdfPageBitmap = sourceBitmap
+                                                )
+                                                if (file != null) {
+                                                    val fileUri = androidx.core.content.FileProvider.getUriForFile(
+                                                        context,
+                                                        "${context.packageName}.fileprovider",
+                                                        file
+                                                    )
+                                                    aiFileUri = fileUri
+                                                    showAiPanel = true
+                                                }
+                                            } finally {
+                                                isExtracting = false
+                                            }
+                                        }
+                                    }
+                                ) {
+                                    Text("AI 解析")
                                 }
                                 androidx.compose.material3.IconButton(
                                     onClick = { viewModel.clearSelection() },
@@ -2280,8 +2366,8 @@ fun TabletEditorTopBar(
     val shellColor = if (isDarkSurface) ToolbarGlassDark else ToolbarGlassLight
     val clusterColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = if (isDarkSurface) 0.78f else 0.94f)
     val borderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.58f)
-    val toolButtonSize = 36.dp
-    val utilityButtonSize = 38.dp
+    val toolButtonSize = 32.dp
+    val utilityButtonSize = 34.dp
 
     val drawingTools = listOf(Tool.PEN, Tool.HIGHLIGHTER, Tool.ERASER, Tool.LASSO)
     val drawingActiveIdx = drawingTools.indexOf(activeTool).let { if (it < 0) -1 else it }
@@ -2326,18 +2412,19 @@ fun TabletEditorTopBar(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(68.dp)
-                .padding(horizontal = 10.dp, vertical = 6.dp),
+                .height(56.dp)
+                .padding(horizontal = 8.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Surface(
-                shape = RoundedCornerShape(20.dp),
-                color = clusterColor,
+                modifier = Modifier.fillMaxHeight(),
+                shape = RoundedCornerShape(24.dp),
+                color = shellColor,
                 border = BorderStroke(1.dp, borderColor)
             ) {
                 Row(
-                    modifier = Modifier.padding(start = 2.dp, end = 10.dp, top = 4.dp, bottom = 4.dp),
+                    modifier = Modifier.fillMaxHeight().padding(start = 6.dp, end = 16.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     IconButton(onClick = onBack, modifier = Modifier.size(utilityButtonSize)) {
@@ -2360,21 +2447,21 @@ fun TabletEditorTopBar(
             }
 
             Surface(
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).fillMaxHeight(),
                 shape = RoundedCornerShape(24.dp),
                 color = shellColor,
-                border = BorderStroke(1.dp, borderColor),
-                shadowElevation = 4.dp
+                border = BorderStroke(1.dp, borderColor)
             ) {
                 Row(
                     modifier = Modifier
+                        .fillMaxHeight()
                         .horizontalScroll(rememberScrollState())
-                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                        .padding(horizontal = 10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Box(
                         modifier = Modifier
-                            .background(clusterColor, RoundedCornerShape(20.dp))
+                            
                             .padding(horizontal = 3.dp, vertical = 3.dp)
                     ) {
                         if (drawingActiveIdx >= 0) {
@@ -2447,7 +2534,7 @@ fun TabletEditorTopBar(
                         Row(
                             modifier = Modifier
                                 .padding(start = 8.dp)
-                                .background(clusterColor, RoundedCornerShape(18.dp))
+                                
                                 .padding(horizontal = 4.dp, vertical = 2.dp),
                             horizontalArrangement = Arrangement.spacedBy(2.dp),
                             verticalAlignment = Alignment.CenterVertically
@@ -2478,7 +2565,7 @@ fun TabletEditorTopBar(
 
                     Box(
                         modifier = Modifier
-                            .background(clusterColor, RoundedCornerShape(20.dp))
+                            
                             .padding(horizontal = 3.dp, vertical = 3.dp)
                     ) {
                         if (annotationActiveIdx >= 0) {
@@ -2545,7 +2632,7 @@ fun TabletEditorTopBar(
                         Row(
                             modifier = Modifier
                                 .padding(start = 8.dp)
-                                .background(clusterColor, RoundedCornerShape(18.dp))
+                                
                                 .padding(horizontal = 4.dp, vertical = 2.dp),
                             horizontalArrangement = Arrangement.spacedBy(2.dp),
                             verticalAlignment = Alignment.CenterVertically
@@ -2640,12 +2727,13 @@ fun TabletEditorTopBar(
             }
 
             Surface(
-                shape = RoundedCornerShape(20.dp),
+                modifier = Modifier.fillMaxHeight(),
+                shape = RoundedCornerShape(24.dp),
                 color = shellColor,
                 border = BorderStroke(1.dp, borderColor)
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
+                    modifier = Modifier.fillMaxHeight().padding(horizontal = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     IconButton(
@@ -2975,7 +3063,8 @@ private fun EditorIconButton(
     onClick: () -> Unit,
     isActive: Boolean,
     icon: androidx.compose.ui.graphics.vector.ImageVector,
-    contentDescription: String
+    contentDescription: String,
+    size: androidx.compose.ui.unit.Dp = 32.dp
 ) {
     val animatedTintColor by animateColorAsState(
         if (isActive) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
@@ -2997,8 +3086,8 @@ private fun EditorIconButton(
         label = "EditorIconIndicatorAlpha"
     )
 
-    Box(modifier = Modifier.size(36.dp), contentAlignment = Alignment.Center) {
-        IconButton(onClick = onClick, modifier = Modifier.size(36.dp)) {
+    Box(modifier = Modifier.size(size), contentAlignment = Alignment.Center) {
+        IconButton(onClick = onClick, modifier = Modifier.size(size)) {
             Icon(
                 icon,
                 contentDescription = contentDescription,
@@ -3030,10 +3119,51 @@ private suspend fun LazyListState.scrollToCenter(index: Int) {
 }
 
 /** Animated scroll so [index] is vertically centered in the sidebar. */
-private suspend fun LazyListState.animateScrollToCenter(index: Int) {
+
+private suspend fun androidx.compose.foundation.lazy.LazyListState.animateScrollToCenter(index: Int) {
     scrollToItem(index)
     val itemInfo = layoutInfo.visibleItemsInfo.firstOrNull { it.index == index } ?: return
     val viewportHeight = layoutInfo.viewportEndOffset - layoutInfo.viewportStartOffset
     val delta = (itemInfo.offset + itemInfo.size / 2 - viewportHeight / 2).toFloat()
     animateScrollBy(delta)
+}
+
+
+@androidx.compose.runtime.Composable
+fun AiWebPanel(
+    fileUri: android.net.Uri?,
+    onClose: () -> Unit,
+    modifier: androidx.compose.ui.Modifier = androidx.compose.ui.Modifier
+) {
+    androidx.compose.foundation.layout.Box(
+        modifier = modifier
+            .fillMaxSize()
+    ) {
+        androidx.compose.foundation.layout.Column(
+            modifier = androidx.compose.ui.Modifier.padding(16.dp).fillMaxSize()
+        ) {
+            androidx.compose.foundation.layout.Row(
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                horizontalArrangement = androidx.compose.foundation.layout.Arrangement.SpaceBetween,
+                modifier = androidx.compose.ui.Modifier.fillMaxWidth()
+            ) {
+                androidx.compose.material3.Text(
+                    text = "AI Parser Preview",
+                    style = androidx.compose.material3.MaterialTheme.typography.titleMedium
+                )
+                androidx.compose.material3.IconButton(onClick = onClose) {
+                    androidx.compose.material3.Icon(
+                        imageVector = androidx.compose.material.icons.Icons.Default.Close,
+                        contentDescription = "Close"
+                    )
+                }
+            }
+            androidx.compose.material3.HorizontalDivider()
+            androidx.compose.foundation.layout.Spacer(modifier = androidx.compose.ui.Modifier.height(16.dp))
+            androidx.compose.material3.Text(
+                text = if (fileUri != null) "File:\n" else "No file",
+                style = androidx.compose.material3.MaterialTheme.typography.bodyMedium
+            )
+        }
+    }
 }
