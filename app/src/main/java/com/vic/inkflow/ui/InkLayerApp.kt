@@ -3340,9 +3340,32 @@ fun AiWebPanel(
     onClose: () -> Unit,
     modifier: androidx.compose.ui.Modifier = androidx.compose.ui.Modifier
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var bitmap by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+    
+    androidx.compose.runtime.LaunchedEffect(fileUri) {
+        if (fileUri != null) {
+            try {
+                val b = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                    val source = android.graphics.ImageDecoder.createSource(context.contentResolver, fileUri)
+                    android.graphics.ImageDecoder.decodeBitmap(source)
+                } else {
+                    @Suppress("DEPRECATION")
+                    android.provider.MediaStore.Images.Media.getBitmap(context.contentResolver, fileUri)
+                }
+                bitmap = b.copy(android.graphics.Bitmap.Config.ARGB_8888, true).asImageBitmap()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        } else {
+            bitmap = null
+        }
+    }
+
     androidx.compose.foundation.layout.Box(
         modifier = modifier
             .fillMaxSize()
+            .background(androidx.compose.material3.MaterialTheme.colorScheme.surface)
     ) {
         androidx.compose.foundation.layout.Column(
             modifier = androidx.compose.ui.Modifier.padding(16.dp).fillMaxSize()
@@ -3353,22 +3376,50 @@ fun AiWebPanel(
                 modifier = androidx.compose.ui.Modifier.fillMaxWidth()
             ) {
                 androidx.compose.material3.Text(
-                    text = "AI Parser Preview",
+                    text = "AI 解析",
                     style = androidx.compose.material3.MaterialTheme.typography.titleMedium
                 )
                 androidx.compose.material3.IconButton(onClick = onClose) {
                     androidx.compose.material3.Icon(
-                        imageVector = Icons.Default.Close,
+                        imageVector = androidx.compose.material.icons.Icons.Default.Close,
                         contentDescription = "Close"
                     )
                 }
             }
             androidx.compose.material3.HorizontalDivider()
             androidx.compose.foundation.layout.Spacer(modifier = androidx.compose.ui.Modifier.height(16.dp))
-            androidx.compose.material3.Text(
-                text = if (fileUri != null) "File:\n" else "No file",
-                style = androidx.compose.material3.MaterialTheme.typography.bodyMedium
-            )
+            
+            if (bitmap != null) {
+                androidx.compose.foundation.Image(
+                    bitmap = bitmap!!,
+                    contentDescription = "Selected Region",
+                    modifier = androidx.compose.ui.Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+                        .border(1.dp, androidx.compose.material3.MaterialTheme.colorScheme.outlineVariant, androidx.compose.foundation.shape.RoundedCornerShape(8.dp)),
+                    contentScale = androidx.compose.ui.layout.ContentScale.Fit
+                )
+            } else {
+                androidx.compose.foundation.layout.Box(
+                    modifier = androidx.compose.ui.Modifier.fillMaxWidth().weight(1f),
+                    contentAlignment = androidx.compose.ui.Alignment.Center
+                ) {
+                    androidx.compose.material3.Text(
+                        text = if (fileUri != null) "載入圖片中..." else "沒有選取圖片",
+                        style = androidx.compose.material3.MaterialTheme.typography.bodyMedium,
+                        color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            
+            androidx.compose.foundation.layout.Spacer(modifier = androidx.compose.ui.Modifier.height(16.dp))
+            androidx.compose.material3.Button(
+                onClick = { /* TODO */ },
+                modifier = androidx.compose.ui.Modifier.fillMaxWidth()
+            ) {
+                androidx.compose.material3.Text("開始解析")
+            }
         }
     }
 }
