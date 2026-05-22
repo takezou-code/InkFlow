@@ -16,7 +16,12 @@ data class PointF(val x: Float, val y: Float)
  * [REFACTORED] Represents the metadata for a single stroke, without the point data.
  * Added bounding box fields for efficient broad-phase collision detection.
  */
-@Entity(tableName = "strokes")
+@Entity(
+    tableName = "strokes",
+    indices = [
+        Index(value = ["documentUri", "pageIndex"])
+    ]
+)
 data class StrokeEntity(
     @PrimaryKey
     val id: String = UUID.randomUUID().toString(),

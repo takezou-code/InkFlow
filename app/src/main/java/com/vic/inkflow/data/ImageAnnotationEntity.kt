@@ -1,6 +1,7 @@
 package com.vic.inkflow.data
 
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 import java.util.UUID
 
@@ -9,7 +10,12 @@ import java.util.UUID
  * All coordinates are in model space (595 × 842).
  * [uri] is a content:// or file:// URI obtained via the system media picker.
  */
-@Entity(tableName = "image_annotations")
+@Entity(
+    tableName = "image_annotations",
+    indices = [
+        Index(value = ["documentUri", "pageIndex"])
+    ]
+)
 data class ImageAnnotationEntity(
     @PrimaryKey
     val id: String = UUID.randomUUID().toString(),

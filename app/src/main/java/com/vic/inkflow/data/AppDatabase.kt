@@ -19,11 +19,14 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 // v15: Added bookmarks table.
 // v18: Rebuilt strokes table to remove document foreign key/index.
 // v19: Added quickSwipeEraserEnabled to document_preferences.
+// v20: Added composite indexes to strokes, text_annotations, and image_annotations.
+// v21: Added strokeSpeedSensitivity and fingerTouchThresholdDp to document_preferences.
+// v22: Added autoSwitchToPenAfterErase to document_preferences.
 @Database(
     entities = [StrokeEntity::class, PointEntity::class, DocumentEntity::class, FolderEntity::class,
                 TextAnnotationEntity::class, ImageAnnotationEntity::class,
                 DocumentPreferenceEntity::class, BookmarkEntity::class],
-    version = 19
+    version = 22
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun strokeDao(): StrokeDao
@@ -481,6 +484,30 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_19_20 = object : Migration(19, 20) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_strokes_documentUri_pageIndex` ON `strokes` (`documentUri`, `pageIndex`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_text_annotations_documentUri_pageIndex` ON `text_annotations` (`documentUri`, `pageIndex`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_image_annotations_documentUri_pageIndex` ON `image_annotations` (`documentUri`, `pageIndex`)")
+            }
+        }
+
+        private val MIGRATION_20_21 = object : Migration(20, 21) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE document_preferences ADD COLUMN strokeSpeedSensitivity REAL")
+                db.execSQL("ALTER TABLE document_preferences ADD COLUMN fingerTouchThresholdDp REAL")
+            }
+        }
+
+        private val MIGRATION_21_22 = object : Migration(21, 22) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE document_preferences ADD COLUMN autoSwitchToPenAfterErase INTEGER")
+                db.execSQL(
+                    "UPDATE document_preferences SET autoSwitchToPenAfterErase = 0 WHERE autoSwitchToPenAfterErase IS NULL"
+                )
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -504,7 +531,10 @@ abstract class AppDatabase : RoomDatabase() {
                     MIGRATION_15_16,
                     MIGRATION_16_17,
                     MIGRATION_17_18,
-                    MIGRATION_18_19
+                    MIGRATION_18_19,
+                    MIGRATION_19_20,
+                    MIGRATION_20_21,
+                    MIGRATION_21_22
                 )
                 // Only allow destructive migration on downgrade (e.g. user reverts to an
                 // older APK). Unknown *upgrade* paths surface as a hard crash rather than

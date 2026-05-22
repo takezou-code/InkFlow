@@ -123,6 +123,9 @@ class EditorViewModel(
     private val _selectedTool = MutableStateFlow(Tool.PEN)
     val selectedTool: StateFlow<Tool> = _selectedTool.asStateFlow()
 
+    // For stylus button quick eraser: save the tool before button press
+    private var toolBeforeStylusButton: Tool? = null
+
     private val _selectedColor = MutableStateFlow(Color.Black)
     val selectedColor: StateFlow<Color> = _selectedColor.asStateFlow()
 
@@ -151,6 +154,18 @@ class EditorViewModel(
     private val _quickSwipeEraserEnabled = MutableStateFlow(false)
     val quickSwipeEraserEnabled: StateFlow<Boolean> = _quickSwipeEraserEnabled.asStateFlow()
 
+    private val _autoSwitchToPenAfterErase = MutableStateFlow(false)
+    val autoSwitchToPenAfterErase: StateFlow<Boolean> = _autoSwitchToPenAfterErase.asStateFlow()
+
+    private val _palmThresholdDp = MutableStateFlow(45f)
+    val palmThresholdDp: StateFlow<Float> = _palmThresholdDp.asStateFlow()
+
+    private val _strokeSpeedSensitivity = MutableStateFlow(1f)
+    val strokeSpeedSensitivity: StateFlow<Float> = _strokeSpeedSensitivity.asStateFlow()
+
+    private val _fingerTouchThresholdDp = MutableStateFlow(8f)
+    val fingerTouchThresholdDp: StateFlow<Float> = _fingerTouchThresholdDp.asStateFlow()
+
     private val _selectedShapeSubType = MutableStateFlow(ShapeSubType.RECT)
     val selectedShapeSubType: StateFlow<ShapeSubType> = _selectedShapeSubType.asStateFlow()
 
@@ -175,6 +190,10 @@ class EditorViewModel(
                 _selectedShapeSubType.value = prefs.shapeSubType
                 _inputMode.value = prefs.inputMode
                 _quickSwipeEraserEnabled.value = prefs.quickSwipeEraserEnabled
+                _autoSwitchToPenAfterErase.value = prefs.autoSwitchToPenAfterErase
+                _palmThresholdDp.value = prefs.palmThresholdDp
+                _strokeSpeedSensitivity.value = prefs.strokeSpeedSensitivity
+                _fingerTouchThresholdDp.value = prefs.fingerTouchThresholdDp
                 _recentColors.value = prefs.recentColors.map { Color(it) }
                 val restoredStyle = _paperStyle.value.copy(
                     background = prefs.background,
@@ -208,6 +227,34 @@ class EditorViewModel(
         _quickSwipeEraserEnabled.value = enabled
         viewModelScope.launch(Dispatchers.IO) {
             settingsRepository.setQuickSwipeEraserEnabled(documentUri, enabled)
+        }
+    }
+
+    fun onAutoSwitchToPenAfterEraseChanged(enabled: Boolean) {
+        _autoSwitchToPenAfterErase.value = enabled
+        viewModelScope.launch(Dispatchers.IO) {
+            settingsRepository.setAutoSwitchToPenAfterErase(documentUri, enabled)
+        }
+    }
+
+    fun setPalmThresholdDp(thresholdDp: Float) {
+        _palmThresholdDp.value = thresholdDp
+        viewModelScope.launch(Dispatchers.IO) {
+            settingsRepository.setPalmThresholdDp(documentUri, thresholdDp)
+        }
+    }
+
+    fun setStrokeSpeedSensitivity(sensitivity: Float) {
+        _strokeSpeedSensitivity.value = sensitivity
+        viewModelScope.launch(Dispatchers.IO) {
+            settingsRepository.setStrokeSpeedSensitivity(documentUri, sensitivity)
+        }
+    }
+
+    fun setFingerTouchThresholdDp(thresholdDp: Float) {
+        _fingerTouchThresholdDp.value = thresholdDp
+        viewModelScope.launch(Dispatchers.IO) {
+            settingsRepository.setFingerTouchThresholdDp(documentUri, thresholdDp)
         }
     }
 
@@ -280,6 +327,33 @@ class EditorViewModel(
         }
         viewModelScope.launch(Dispatchers.IO) {
             settingsRepository.setTool(documentUri, tool)
+        }
+    }
+
+    /**
+     * Called when the stylus button is pressed.
+     * Switches to ERASER tool and saves the current tool.
+     */
+    fun onStylusButtonPressed() {
+        val currentTool = _selectedTool.value
+        // Only switch if not already in eraser mode
+        if (currentTool != Tool.ERASER) {
+            toolBeforeStylusButton = currentTool
+            // Directly switch to ERASER without saving to preferences
+            _selectedTool.value = Tool.ERASER
+        }
+    }
+
+    /**
+     * Called when the stylus button is released.
+     * Restores the tool that was active before the button press.
+     */
+    fun onStylusButtonReleased() {
+        val previousTool = toolBeforeStylusButton
+        if (previousTool != null) {
+            toolBeforeStylusButton = null
+            // Restore the previous tool
+            onToolSelected(previousTool)
         }
     }
 
@@ -378,7 +452,10 @@ class EditorViewModel(
         }
     }
 
-    fun deleteStrokesIntersecting(eraserPointsCanvas: List<Offset>) {
+    fun deleteStrokesIntersecting(
+        eraserPointsCanvas: List<Offset>,
+        switchToPenAfterEraseHit: Boolean = false
+    ) {
         val cW = canvasW
         val cH = canvasH
         // Pass the snapshot of eraser points to the coroutine
@@ -392,12 +469,14 @@ class EditorViewModel(
                 eraserPoints = modelEraserPoints,
                 strokes = currentStrokes.value
             )
+            var erasedAnything = false
             if (intersectingStrokes.isNotEmpty()) {
                 withContext(Dispatchers.IO) {
                     strokeDao.deleteStrokesByIds(intersectingStrokes.map { it.stroke.id })
                 }
                 val command = DrawCommand.RemoveStrokes(intersectingStrokes)
                 withContext(Dispatchers.Main) { pushUndo(command) }
+                erasedAnything = true
             }
             // Also erase text annotations whose model coords fall within the eraser bounds.
             var eMinX = Float.POSITIVE_INFINITY
@@ -431,6 +510,20 @@ class EditorViewModel(
             hitTexts.forEach { ann ->
                 withContext(Dispatchers.IO) { textAnnotationDao.deleteById(ann.id) }
                 withContext(Dispatchers.Main) { pushUndo(DrawCommand.RemoveTextAnnotation(ann)) }
+                erasedAnything = true
+            }
+
+            if (
+                switchToPenAfterEraseHit &&
+                erasedAnything &&
+                _autoSwitchToPenAfterErase.value
+            ) {
+                withContext(Dispatchers.Main) {
+                    // Do not override temporary stylus-button eraser state.
+                    if (_selectedTool.value == Tool.ERASER && toolBeforeStylusButton == null) {
+                        onToolSelected(Tool.PEN)
+                    }
+                }
             }
         }
     }
@@ -898,8 +991,8 @@ class EditorViewModel(
     )
 
     private suspend fun replaceStrokeSnapshots(strokes: List<StrokeWithPoints>) {
-        strokes.forEach { swp ->
-            db.withTransaction {
+        db.withTransaction {
+            strokes.forEach { swp ->
                 strokeDao.deletePointsForStroke(swp.stroke.id)
                 strokeDao.insertStroke(swp.stroke)
                 strokeDao.insertPoints(swp.points)

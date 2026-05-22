@@ -17,16 +17,24 @@ data class DrawingPreferences(
     val background: PageBackground,
     val paperWidthPt: Float?,
     val paperHeightPt: Float?,
-    val quickSwipeEraserEnabled: Boolean
+    val quickSwipeEraserEnabled: Boolean,
+    val autoSwitchToPenAfterErase: Boolean,
+    val palmThresholdDp: Float,
+    val strokeSpeedSensitivity: Float,
+    val fingerTouchThresholdDp: Float
 )
 
 class EditorSettingsRepository(
     private val db: AppDatabase,
-    private val documentPreferenceDao: DocumentPreferenceDao
+    private val documentPreferenceDao: DocumentPreferenceDao,
+    private val prefs: android.content.SharedPreferences
 ) {
     companion object {
         private const val DEFAULT_PEN_STROKE_WIDTH = 4f
         private const val DEFAULT_HIGHLIGHTER_STROKE_WIDTH = 8f
+        private const val DEFAULT_PALM_THRESHOLD_DP = 45f
+        private const val DEFAULT_STROKE_SPEED_SENSITIVITY = 1f
+        private const val DEFAULT_FINGER_TOUCH_THRESHOLD_DP = 8f
         private const val DEFAULT_HIGHLIGHTER_COLOR_ARGB = 0xFFFFC700.toInt()
         private val DEFAULT_RECENT_COLORS = listOf(
             0xFF000000.toInt(),
@@ -38,20 +46,44 @@ class EditorSettingsRepository(
 
     suspend fun resolvePreferences(documentUri: String): DrawingPreferences {
         val local = documentPreferenceDao.getByDocumentUri(documentUri)
+        
+        // Read global defaults
+        val defaultPenColor = prefs.getInt("default_pen_color", 0xFF000000.toInt())
+        val defaultHighlighterColor = prefs.getInt("default_highlighter_color", DEFAULT_HIGHLIGHTER_COLOR_ARGB)
+        val defaultPenWidth = prefs.getFloat("default_pen_width", DEFAULT_PEN_STROKE_WIDTH)
+        val defaultHighlighterWidth = prefs.getFloat("default_highlighter_width", DEFAULT_HIGHLIGHTER_STROKE_WIDTH)
+        val defaultInputModeStr = prefs.getString("default_input_mode", InputMode.FREE.name)
+        val defaultInputMode = InputMode.values().find { it.name == defaultInputModeStr } ?: InputMode.FREE
+        val defaultBackgroundStr = prefs.getString("default_paper_background", PageBackground.BLANK.name)
+        val defaultBackground = PageBackground.values().find { it.name == defaultBackgroundStr } ?: PageBackground.BLANK
+        val defaultQuickSwipe = prefs.getBoolean("default_quick_swipe_eraser_enabled", false)
+        val defaultAutoSwitchToPenAfterErase = prefs.getBoolean("default_auto_switch_to_pen_after_erase", false)
+        val defaultPalmThresholdDp = prefs.getFloat("default_palm_threshold_dp", DEFAULT_PALM_THRESHOLD_DP)
+        val defaultRecentColorsCsv = prefs.getString("default_recent_colors", null)
+        val defaultRecentColors = defaultRecentColorsCsv?.let { csv ->
+            csv.split(',').mapNotNull { it.toIntOrNull() }.takeIf { it.isNotEmpty() }
+        } ?: DEFAULT_RECENT_COLORS
+        val defaultStrokeSpeedSensitivity = prefs.getFloat("default_stroke_speed_sensitivity", DEFAULT_STROKE_SPEED_SENSITIVITY)
+        val defaultFingerTouchThresholdDp = prefs.getFloat("default_finger_touch_threshold_dp", DEFAULT_FINGER_TOUCH_THRESHOLD_DP)
+
         return DrawingPreferences(
             tool = local?.tool?.toToolOrNull() ?: Tool.PEN,
-            colorArgb = local?.colorArgb ?: 0xFF000000.toInt(),
-            highlighterColorArgb = local?.highlighterColorArgb ?: DEFAULT_HIGHLIGHTER_COLOR_ARGB,
-            penStrokeWidth = local?.penStrokeWidth ?: local?.strokeWidth ?: DEFAULT_PEN_STROKE_WIDTH,
-            highlighterStrokeWidth = local?.highlighterStrokeWidth ?: local?.strokeWidth ?: DEFAULT_HIGHLIGHTER_STROKE_WIDTH,
+            colorArgb = local?.colorArgb ?: defaultPenColor,
+            highlighterColorArgb = local?.highlighterColorArgb ?: defaultHighlighterColor,
+            penStrokeWidth = local?.penStrokeWidth ?: local?.strokeWidth ?: defaultPenWidth,
+            highlighterStrokeWidth = local?.highlighterStrokeWidth ?: local?.strokeWidth ?: defaultHighlighterWidth,
             shapeSubType = local?.shapeSubType?.toShapeSubTypeOrNull() ?: ShapeSubType.RECT,
             inputMode = local?.inputMode?.toInputModeOrNull()
-                ?: (if (local?.stylusOnlyMode == true) InputMode.STYLUS_ONLY else InputMode.FREE),
-            recentColors = local?.recentColorsCsv?.toColorListOrNull() ?: DEFAULT_RECENT_COLORS,
-            background = local?.pageBackground?.toPageBackgroundOrNull() ?: PageBackground.BLANK,
+                ?: (if (local?.stylusOnlyMode == true) InputMode.STYLUS_ONLY else defaultInputMode),
+            recentColors = local?.recentColorsCsv?.toColorListOrNull() ?: defaultRecentColors,
+            background = local?.pageBackground?.toPageBackgroundOrNull() ?: defaultBackground,
             paperWidthPt = local?.paperWidthPt,
             paperHeightPt = local?.paperHeightPt,
-            quickSwipeEraserEnabled = local?.quickSwipeEraserEnabled ?: false
+            quickSwipeEraserEnabled = defaultQuickSwipe,
+            autoSwitchToPenAfterErase = defaultAutoSwitchToPenAfterErase,
+            palmThresholdDp = local?.palmThresholdDp ?: defaultPalmThresholdDp,
+            strokeSpeedSensitivity = local?.strokeSpeedSensitivity ?: defaultStrokeSpeedSensitivity,
+            fingerTouchThresholdDp = local?.fingerTouchThresholdDp ?: defaultFingerTouchThresholdDp
         )
     }
 
@@ -101,7 +133,35 @@ class EditorSettingsRepository(
     }
 
     suspend fun setQuickSwipeEraserEnabled(documentUri: String, enabled: Boolean) {
-        upsertDocument(documentUri) { copy(quickSwipeEraserEnabled = enabled) }
+        prefs.edit().putBoolean("default_quick_swipe_eraser_enabled", enabled).apply()
+    }
+
+    suspend fun setAutoSwitchToPenAfterErase(documentUri: String, enabled: Boolean) {
+        prefs.edit().putBoolean("default_auto_switch_to_pen_after_erase", enabled).apply()
+    }
+
+    suspend fun setPalmThresholdDp(documentUri: String, thresholdDp: Float) {
+        upsertDocument(documentUri) { copy(palmThresholdDp = thresholdDp) }
+    }
+
+    suspend fun setStrokeSpeedSensitivity(documentUri: String, sensitivity: Float) {
+        upsertDocument(documentUri) { copy(strokeSpeedSensitivity = sensitivity) }
+    }
+
+    suspend fun setFingerTouchThresholdDp(documentUri: String, thresholdDp: Float) {
+        upsertDocument(documentUri) { copy(fingerTouchThresholdDp = thresholdDp) }
+    }
+
+    fun setDefaultPalmThresholdDp(thresholdDp: Float) {
+        prefs.edit().putFloat("default_palm_threshold_dp", thresholdDp).apply()
+    }
+
+    fun setDefaultStrokeSpeedSensitivity(sensitivity: Float) {
+        prefs.edit().putFloat("default_stroke_speed_sensitivity", sensitivity).apply()
+    }
+
+    fun setDefaultFingerTouchThresholdDp(thresholdDp: Float) {
+        prefs.edit().putFloat("default_finger_touch_threshold_dp", thresholdDp).apply()
     }
 
     suspend fun resetDocument(documentUri: String) {

@@ -66,7 +66,10 @@ class DocumentViewModel(
             if (current?.cacheKey == cacheKey) {
                 current
             } else {
-                current?.let { ThumbnailCacheManager.remove(it.cacheKey) }
+                current?.let {
+                    ThumbnailCacheManager.remove(it.cacheKey)
+                    ThumbnailCacheManager.removeFromDisk(appContext, it.cacheKey)
+                }
                 DocumentThumbnailEntry(
                     cacheKey = cacheKey,
                     flow = MutableStateFlow(ThumbnailCacheManager.get(cacheKey))
@@ -92,9 +95,10 @@ class DocumentViewModel(
         }
     }
 
-    fun delete(uri: String) {
+    fun delete(context: Context, uri: String) {
+        val appContext = context.applicationContext
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            invalidateThumbnail(uri)
+            invalidateThumbnail(appContext, uri)
             // Delete all strokes and annotations belonging to this document first.
             strokeDao.deleteStrokesForDocument(uri)
             db.textAnnotationDao().deleteForDocument(uri)
@@ -278,7 +282,8 @@ class DocumentViewModel(
     private fun ensureThumbnailLoaded(
         context: Context,
         documentUri: String,
-        entry: DocumentThumbnailEntry
+        entry: DocumentThumbnailEntry,
+        force: Boolean = false
     ) {
         val currentJob = thumbnailJobs[documentUri]
         if (currentJob?.isActive == true) return
@@ -287,11 +292,18 @@ class DocumentViewModel(
             thumbnailLoadSemaphore.withPermit {
                 try {
                     val latestEntry = thumbnailEntries[documentUri]
-                    if (latestEntry == null || latestEntry.cacheKey != entry.cacheKey || latestEntry.flow.value != null) {
+                    if (latestEntry == null || latestEntry.cacheKey != entry.cacheKey || (!force && latestEntry.flow.value != null)) {
                         return@withPermit
                     }
 
-                    val bitmap = renderThumbnailBitmap(context, documentUri)
+                    var bitmap = ThumbnailCacheManager.loadFromDisk(context, entry.cacheKey)
+                    if (bitmap == null || force) {
+                        bitmap = renderThumbnailBitmap(context, documentUri)
+                        if (bitmap != null) {
+                            ThumbnailCacheManager.saveToDisk(context, entry.cacheKey, bitmap)
+                        }
+                    }
+
                     if (bitmap != null) {
                         ThumbnailCacheManager.put(entry.cacheKey, bitmap)
                     }
@@ -431,11 +443,26 @@ class DocumentViewModel(
         return "$documentUri#$fileVersion"
     }
 
-    private fun invalidateThumbnail(documentUri: String) {
+    fun invalidateThumbnail(context: Context, documentUri: String) {
         thumbnailJobs.remove(documentUri)?.cancel()
         thumbnailEntries.remove(documentUri)?.let { entry ->
             ThumbnailCacheManager.remove(entry.cacheKey)
+            ThumbnailCacheManager.removeFromDisk(context.applicationContext, entry.cacheKey)
             entry.flow.value = null
+        }
+    }
+
+    fun updateThumbnail(context: Context, documentUri: String) {
+        val appContext = context.applicationContext
+        val entry = thumbnailEntries[documentUri]
+        if (entry != null) {
+            ThumbnailCacheManager.remove(entry.cacheKey)
+            ThumbnailCacheManager.removeFromDisk(appContext, entry.cacheKey)
+            ensureThumbnailLoaded(appContext, documentUri, entry, force = true)
+        } else {
+            // Even if not in memory, delete disk cache to force update next time it's loaded
+            val cacheKey = buildThumbnailCacheKey(documentUri)
+            ThumbnailCacheManager.removeFromDisk(appContext, cacheKey)
         }
     }
 }

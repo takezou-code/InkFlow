@@ -21,5 +21,9 @@ data class DocumentPreferenceEntity(
     val pageBackground: String? = null,
     val paperWidthPt: Float? = null,
     val paperHeightPt: Float? = null,
-    val quickSwipeEraserEnabled: Boolean? = null
+    val quickSwipeEraserEnabled: Boolean? = null,
+    val autoSwitchToPenAfterErase: Boolean? = null,
+    val palmThresholdDp: Float? = null,
+    val strokeSpeedSensitivity: Float? = null,
+    val fingerTouchThresholdDp: Float? = null
 )

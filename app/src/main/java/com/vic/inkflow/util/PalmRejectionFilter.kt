@@ -41,10 +41,15 @@ object PalmRejectionFilter {
     private const val PIXEL_UNIT_THRESHOLD = 10.0f
 
     /**
-     * Palm threshold for pixel-unit devices: fingertip ≈ 10–30 dp, palm ≥ 50 dp.
+     * Default palm threshold for pixel-unit devices: fingertip ≈ 10–30 dp, palm ≥ 50 dp.
      * Expressed in dp so the comparison is DPI-independent.
      */
-    private val MAX_TOUCH_MAJOR_DP = 45.dp
+    private val DEFAULT_MAX_TOUCH_MAJOR_DP = 45.dp
+
+    /**
+     * Default finger/stylus boundary on pixel-unit devices.
+     */
+    private val DEFAULT_FINGER_TOUCH_MAJOR_DP = 8.dp
 
     /**
      * Stylus / finger boundary for normalized-unit devices (MIUI, etc.).
@@ -65,17 +70,16 @@ object PalmRejectionFilter {
      *                       Pass 0f if unavailable; only the multi-pointer check will apply.
      * @param concurrentPointers  Total active pointers in the current gesture frame.
      * @param density        Compose [Density] for dp→px conversion on pixel-unit devices.
+     * @param maxTouchMajorDp  Maximum allowed touch major threshold in dp. Defaults to 45dp.
+     *                         Contacts larger than this (when in pixel-unit mode) are rejected as palms.
      * @return `true` if the contact should be rejected as a palm / unintentional touch.
-     */
-    /**
-     * Returns true if the contact should be hard-rejected as a palm or multi-finger gesture.
-     * Does NOT cover the finger-vs-stylus distinction; use [isFinger] for that.
      */
     fun shouldReject(
         touchMajorPx: Float,
         @Suppress("UNUSED_PARAMETER") pressure: Float,
         concurrentPointers: Int,
-        density: Density
+        density: Density,
+        maxTouchMajorDp: androidx.compose.ui.unit.Dp = DEFAULT_MAX_TOUCH_MAJOR_DP
     ): Boolean {
         // Multi-pointer frame → palm resting alongside a finger, or pinch gesture
         if (concurrentPointers > 1) return true
@@ -83,7 +87,7 @@ object PalmRejectionFilter {
         // Contact area too large → palm
         if (touchMajorPx > 0f) {
             if (touchMajorPx >= PIXEL_UNIT_THRESHOLD) {
-                val maxPx = with(density) { MAX_TOUCH_MAJOR_DP.toPx() }
+                val maxPx = with(density) { maxTouchMajorDp.toPx() }
                 if (touchMajorPx > maxPx) return true
             } else {
                 if (touchMajorPx > RAW_UNIT_PALM_THRESHOLD) return true
@@ -100,15 +104,22 @@ object PalmRejectionFilter {
      * A return value of false (unknown / stylus-sized) → allow drawing.
      * A return value of true (finger-sized)            → pass through for panning.
      */
-    fun isFinger(touchMajorPx: Float, density: Density): Boolean {
+    fun isFinger(
+        touchMajorPx: Float,
+        density: Density,
+        fingerTouchMajorDp: androidx.compose.ui.unit.Dp = DEFAULT_FINGER_TOUCH_MAJOR_DP
+    ): Boolean {
         if (touchMajorPx <= 0f) return false  // no data → assume stylus, allow draw
         return if (touchMajorPx >= PIXEL_UNIT_THRESHOLD) {
-            // Pixel-unit device: stylus tip typically < ~8 dp
-            val stylusMaxPx = with(density) { 8.dp.toPx() }
+            // Pixel-unit device: stylus tip typically < ~8 dp.
+            val stylusMaxPx = with(density) { fingerTouchMajorDp.toPx() }
             touchMajorPx > stylusMaxPx
         } else {
-            // Normalized-unit device (e.g., MIUI)
-            touchMajorPx > STYLUS_TOUCH_MAJOR_THRESHOLD
+            // Normalized-unit device (e.g., MIUI). Scale the default 8dp boundary
+            // proportionally so one user-facing slider works across both regimes.
+            val normalizedThreshold = STYLUS_TOUCH_MAJOR_THRESHOLD *
+                (fingerTouchMajorDp.value / DEFAULT_FINGER_TOUCH_MAJOR_DP.value)
+            touchMajorPx > normalizedThreshold
         }
     }
 }

@@ -1,4 +1,4 @@
-package com.vic.inkflow.ui
+﻿package com.vic.inkflow.ui
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.BorderStroke
@@ -36,8 +36,6 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
-import com.vic.inkflow.ui.theme.BrandIndigo
-import com.vic.inkflow.ui.theme.BrandPurple
 import com.vic.inkflow.ui.theme.ToolbarGlassDark
 import com.vic.inkflow.ui.theme.ToolbarGlassLight
 import kotlin.math.atan2
@@ -47,13 +45,15 @@ import kotlin.math.sin
 
 @Composable
 fun ColorPickerDialog(
+    initialColor: Color = Color.White,
     onColorSelected: (Color) -> Unit,
     onDismiss: () -> Unit
 ) {
-    var hue by remember { mutableFloatStateOf(0f) }
-    var saturation by remember { mutableFloatStateOf(1f) }
-    var brightness by remember { mutableFloatStateOf(1f) }
-    var alpha by remember { mutableFloatStateOf(1f) }
+    val initialHsv = remember(initialColor) { FloatArray(3).also { initialColor.toHsv(it) } }
+    var hue by remember(initialColor) { mutableFloatStateOf(initialHsv[0]) }
+    var saturation by remember(initialColor) { mutableFloatStateOf(initialHsv[1]) }
+    var brightness by remember(initialColor) { mutableFloatStateOf(initialHsv[2]) }
+    var alpha by remember(initialColor) { mutableFloatStateOf(initialColor.alpha) }
     val isDarkSurface = MaterialTheme.colorScheme.background.luminance() < 0.5f
     val panelColor = if (isDarkSurface) ToolbarGlassDark else ToolbarGlassLight
 
@@ -143,21 +143,22 @@ fun ColorPickerDialog(
                             .height(48.dp)
                             .clip(RoundedCornerShape(14.dp))
                             .background(
-                                Brush.linearGradient(
-                                    listOf(
-                                        BrandIndigo.copy(alpha = 0.12f),
-                                        BrandPurple.copy(alpha = 0.12f)
-                                    )
-                                )
+                                if (isDarkSurface) {
+                                    Color(0xFF2A2A2A)
+                                } else {
+                                    Color(0xFFF5F5F5)
+                                }
                             )
                     ) {
                         val cellSize = 10.dp.toPx()
                         val cols = (size.width / cellSize).toInt() + 1
                         val rows = (size.height / cellSize).toInt() + 1
+                        val checkColor1 = if (isDarkSurface) Color(0xFF444444) else Color(0xFFE8E8E8)
+                        val checkColor2 = if (isDarkSurface) Color(0xFF333333) else Color(0xFFFFFFFF)
                         for (row in 0..rows) {
                             for (col in 0..cols) {
                                 drawRect(
-                                    color = if ((row + col) % 2 == 0) Color.LightGray else Color.White,
+                                    color = if ((row + col) % 2 == 0) checkColor1 else checkColor2,
                                     topLeft = Offset(col * cellSize, row * cellSize),
                                     size = Size(cellSize, cellSize)
                                 )
@@ -169,6 +170,27 @@ fun ColorPickerDialog(
             }
         }
     )
+}
+
+private fun Color.toHsv(out: FloatArray) {
+    val r = red
+    val g = green
+    val b = blue
+    val max = maxOf(r, g, b)
+    val min = minOf(r, g, b)
+    val delta = max - min
+
+    out[2] = max
+    out[1] = if (max == 0f) 0f else delta / max
+
+    out[0] = when {
+        delta == 0f -> 0f
+        max == r -> ((g - b) / delta) % 6f
+        max == g -> ((b - r) / delta) + 2f
+        else -> ((r - g) / delta) + 4f
+    } * 60f
+
+    if (out[0] < 0f) out[0] += 360f
 }
 
 @Composable

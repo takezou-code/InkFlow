@@ -1,6 +1,7 @@
 package com.vic.inkflow.data
 
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 import java.util.UUID
 
@@ -8,7 +9,12 @@ import java.util.UUID
  * A text (or stamp) annotation placed on a PDF page.
  * modelX/modelY are in model space (595 × 842 PDF points).
  */
-@Entity(tableName = "text_annotations")
+@Entity(
+    tableName = "text_annotations",
+    indices = [
+        Index(value = ["documentUri", "pageIndex"])
+    ]
+)
 data class TextAnnotationEntity(
     @PrimaryKey
     val id: String = UUID.randomUUID().toString(),

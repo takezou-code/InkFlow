@@ -1,4 +1,4 @@
-package com.vic.inkflow.ui
+﻿package com.vic.inkflow.ui
 
 import com.vic.inkflow.util.reorderable
 import com.vic.inkflow.util.reorderableItem
@@ -162,6 +162,7 @@ import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.graphicsLayer
@@ -196,11 +197,9 @@ import com.vic.inkflow.data.FolderEntity
 import com.vic.inkflow.data.ImageAnnotationEntity
 import com.vic.inkflow.data.StrokeWithPoints
 import com.vic.inkflow.data.TextAnnotationEntity
-import com.vic.inkflow.ui.theme.BrandIndigo
-import com.vic.inkflow.ui.theme.BrandPurple
 import com.vic.inkflow.ui.theme.InkFlowTheme
-import com.vic.inkflow.ui.theme.PaperDark
-import com.vic.inkflow.ui.theme.PaperLight
+
+
 import com.vic.inkflow.ui.theme.Slate50
 import com.vic.inkflow.ui.theme.Slate100
 import com.vic.inkflow.ui.theme.Slate900
@@ -228,8 +227,20 @@ import kotlinx.coroutines.withContext
 fun InkLayerApp(db: AppDatabase) {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("inkflow_settings", 0) }
-    var isDarkTheme by rememberSaveable { mutableStateOf(prefs.getBoolean("isDarkTheme", false)) }
-    InkFlowTheme(darkTheme = isDarkTheme) {
+    
+    var themeModeStr by rememberSaveable(prefs) { mutableStateOf(prefs.getString("theme_mode", ThemeMode.SYSTEM.name) ?: ThemeMode.SYSTEM.name) }
+    val themeMode = ThemeMode.values().find { it.name == themeModeStr } ?: ThemeMode.SYSTEM
+    val isSystemDark = androidx.compose.foundation.isSystemInDarkTheme()
+    val isDarkTheme = when (themeMode) {
+        ThemeMode.SYSTEM -> isSystemDark
+        ThemeMode.LIGHT -> false
+        ThemeMode.DARK -> true
+    }
+
+    var brandThemeStr by rememberSaveable(prefs) { mutableStateOf(prefs.getString("brand_theme", com.vic.inkflow.ui.theme.BrandTheme.INDIGO.name) ?: com.vic.inkflow.ui.theme.BrandTheme.INDIGO.name) }
+    val brandTheme = com.vic.inkflow.ui.theme.BrandTheme.values().find { it.name == brandThemeStr } ?: com.vic.inkflow.ui.theme.BrandTheme.INDIGO
+
+    InkFlowTheme(darkTheme = isDarkTheme, brandTheme = brandTheme) {
         val navController = rememberNavController()
     NavHost(
         navController = navController,
@@ -245,10 +256,20 @@ fun InkLayerApp(db: AppDatabase) {
                 db = db,
                 isDarkTheme = isDarkTheme,
                 onToggleDarkTheme = {
-                    val newValue = !isDarkTheme
-                    isDarkTheme = newValue
-                    prefs.edit().putBoolean("isDarkTheme", newValue).apply()
+                    val newMode = if (isDarkTheme) ThemeMode.LIGHT else ThemeMode.DARK
+                    themeModeStr = newMode.name
+                    prefs.edit().putString("theme_mode", newMode.name).apply()
                 }
+            )
+        }
+        composable("settings") {
+            GlobalSettingsScreen(
+                prefs = prefs,
+                onNavigateBack = { navController.popBackStack() },
+                currentBrandTheme = brandTheme,
+                onBrandThemeChanged = { brandThemeStr = it.name },
+                currentThemeMode = themeMode,
+                onThemeModeChanged = { themeModeStr = it.name }
             )
         }
         composable(
@@ -288,8 +309,8 @@ private fun rememberFlowingBrandBrush(isDarkTheme: Boolean): Brush {
     val palette = if (isDarkTheme) listOf(
         Slate900,
         WorkspaceDeskDark,
-        BrandIndigo.copy(alpha = 0.32f),
-        BrandPurple.copy(alpha = 0.28f),
+        MaterialTheme.colorScheme.primary.copy(alpha = 0.32f),
+        MaterialTheme.colorScheme.secondary.copy(alpha = 0.28f),
         Slate900,
     ) else listOf(
         Color(0xFFEAF0FF),
@@ -449,9 +470,11 @@ fun DocumentLibraryScreen(
     )
 
     // Vivid brand gradient for the FAB / logo (never animated — static)
-    val brandGradient = remember {
+    val primaryColor = MaterialTheme.colorScheme.primary
+    val secondaryColor = MaterialTheme.colorScheme.secondary
+    val brandGradient = remember(primaryColor, secondaryColor) {
         androidx.compose.ui.graphics.Brush.linearGradient(
-            listOf(androidx.compose.ui.graphics.Color(0xFF6366F1), androidx.compose.ui.graphics.Color(0xFFA855F7))
+            listOf(primaryColor, secondaryColor)
         )
     }
 
@@ -571,7 +594,7 @@ fun DocumentLibraryScreen(
                 )
             }
             // Settings
-            IconButton(onClick = { /* TODO: Settings */ }) {
+            IconButton(onClick = { navController.navigate("settings") }) {
                 Icon(Icons.Default.Settings, contentDescription = "設定")
             }
             Spacer(Modifier.height(8.dp))
@@ -630,7 +653,7 @@ fun DocumentLibraryScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(top = 4.dp, bottom = 12.dp),
-                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
                         shape = RoundedCornerShape(18.dp),
                         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
                     ) {
@@ -683,7 +706,7 @@ fun DocumentLibraryScreen(
                                 val encodedUri = URLEncoder.encode(uri, StandardCharsets.UTF_8.toString())
                                 navController.navigate("editor/$encodedUri")
                             },
-                            onDelete = { uri -> docViewModel.delete(uri) },
+                            onDelete = { uri -> docViewModel.delete(context, uri) },
                             onFavoriteToggle = { uri, isFav -> docViewModel.toggleFavorite(uri, isFav) },
                             onRename = { uri, newName -> docViewModel.rename(uri, newName) },
                             onMoveToFolder = { uri, folderId -> docViewModel.moveDocumentToFolder(uri, folderId) },
@@ -707,6 +730,7 @@ fun DocumentLibraryScreen(
                         onCreateBlank = { showNewDocSizeDialog = true }
                     )
                 } else {
+                    val animatedCardUris = remember { mutableStateMapOf<String, Boolean>() }
                     if (isGridView) {
                         androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
                             columns = androidx.compose.foundation.lazy.grid.GridCells.Adaptive(minSize = 180.dp),
@@ -718,11 +742,13 @@ fun DocumentLibraryScreen(
                             items(filteredDocs.size, key = { filteredDocs[it].uri }) { index ->
                                 val doc = filteredDocs[index]
                                 val coverBitmap by docViewModel.getDocumentThumbnail(context, doc.uri).collectAsState()
-                                var visible by remember(doc.uri) { mutableStateOf(index >= 6) }
+                                val hasAnimated = animatedCardUris[doc.uri] == true
+                                var visible by remember(doc.uri) { mutableStateOf(hasAnimated) }
                                 LaunchedEffect(doc.uri) {
-                                    if (index < 6) {
-                                        delay(index * 40L)
+                                    if (!hasAnimated) {
+                                        delay(index.coerceAtMost(8) * 60L)
                                         visible = true
+                                        animatedCardUris[doc.uri] = true
                                     }
                                 }
                                 androidx.compose.animation.AnimatedVisibility(
@@ -740,7 +766,7 @@ fun DocumentLibraryScreen(
                                             val encodedUri = URLEncoder.encode(doc.uri, StandardCharsets.UTF_8.toString())
                                             navController.navigate("editor/$encodedUri")
                                         },
-                                        onDelete = { docViewModel.delete(doc.uri) },
+                                        onDelete = { docViewModel.delete(context, doc.uri) },
                                         onFavoriteToggle = { isFav -> docViewModel.toggleFavorite(doc.uri, isFav) },
                                         onRename = { newName -> docViewModel.rename(doc.uri, newName) },
                                         onMoveToFolder = { folderId -> docViewModel.moveDocumentToFolder(doc.uri, folderId) },
@@ -758,11 +784,13 @@ fun DocumentLibraryScreen(
                             items(filteredDocs.size, key = { filteredDocs[it].uri }) { index ->
                                 val doc = filteredDocs[index]
                                 val coverBitmap by docViewModel.getDocumentThumbnail(context, doc.uri).collectAsState()
-                                var visible by remember(doc.uri) { mutableStateOf(index >= 8) }
+                                val hasAnimated = animatedCardUris[doc.uri] == true
+                                var visible by remember(doc.uri) { mutableStateOf(hasAnimated) }
                                 LaunchedEffect(doc.uri) {
-                                    if (index < 8) {
-                                        delay(index * 30L)
+                                    if (!hasAnimated) {
+                                        delay(index.coerceAtMost(8) * 60L)
                                         visible = true
+                                        animatedCardUris[doc.uri] = true
                                     }
                                 }
                                 androidx.compose.animation.AnimatedVisibility(
@@ -780,7 +808,7 @@ fun DocumentLibraryScreen(
                                             val encodedUri = URLEncoder.encode(doc.uri, StandardCharsets.UTF_8.toString())
                                             navController.navigate("editor/$encodedUri")
                                         },
-                                        onDelete = { docViewModel.delete(doc.uri) },
+                                        onDelete = { docViewModel.delete(context, doc.uri) },
                                         onFavoriteToggle = { isFav -> docViewModel.toggleFavorite(doc.uri, isFav) },
                                         onRename = { newName -> docViewModel.rename(doc.uri, newName) },
                                         onMoveToFolder = { folderId -> docViewModel.moveDocumentToFolder(doc.uri, folderId) },
@@ -1351,11 +1379,9 @@ private fun LibraryHeroPanel(
     selectedNavIndex: Int = 0,
     onCreateFolder: () -> Unit = {}
 ) {
-    val heroSurfaceColor = if (isDarkTheme) {
-        ToolbarGlassDark.copy(alpha = 0.92f)
-    } else {
-        MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.96f)
-    }
+    val cardShellColor = MaterialTheme.colorScheme.primary
+        .copy(alpha = 0.15f)
+        .compositeOver(MaterialTheme.colorScheme.surface)
 
     Column(
         modifier = Modifier
@@ -1364,10 +1390,10 @@ private fun LibraryHeroPanel(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Surface(
-            color = heroSurfaceColor,
-            shape = RoundedCornerShape(if (selectedNavIndex == 1) 24.dp else 30.dp),
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.38f)),
-            shadowElevation = if (selectedNavIndex == 1) 4.dp else 10.dp
+            color = cardShellColor,
+            shape = RoundedCornerShape(24.dp),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
+            shadowElevation = 6.dp
         ) {
             Column(
                 modifier = Modifier
@@ -1409,7 +1435,7 @@ private fun LibraryHeroPanel(
                     }
                     Surface(
                         shape = RoundedCornerShape(22.dp),
-                        color = MaterialTheme.colorScheme.primaryContainer,
+                        color = cardShellColor,
                         contentColor = MaterialTheme.colorScheme.onPrimaryContainer
                     ) {
                         Column(
@@ -1443,6 +1469,13 @@ private fun LibraryHeroPanel(
                             }
                         },
                         placeholder = { Text("搜尋標題、文件名稱或近期開啟的筆記") },
+                        colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                            focusedContainerColor = cardShellColor,
+                            unfocusedContainerColor = cardShellColor,
+                            disabledContainerColor = cardShellColor,
+                            focusedBorderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
+                            unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+                        ),
                         shape = RoundedCornerShape(24.dp),
                         modifier = Modifier.weight(1f)
                     )
@@ -1468,7 +1501,7 @@ private fun LibraryHeroPanel(
                     if (selectedNavIndex == 0) {
                         IconButton(
                             onClick = onToggleGridView,
-                            modifier = Modifier.background(MaterialTheme.colorScheme.surfaceVariant, CircleShape)
+                            modifier = Modifier.background(cardShellColor, CircleShape)
                         ) {
                             Icon(
                                 imageVector = if (isGridView) Icons.AutoMirrored.Filled.List else Icons.Default.Apps,
@@ -1503,7 +1536,7 @@ private fun LibraryHeroPanel(
 private fun LibraryStatPill(title: String, value: String) {
     Surface(
         shape = RoundedCornerShape(18.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.92f)
+        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
@@ -1742,13 +1775,10 @@ private fun DocumentCard(
     var showCreateFolderDialog by remember { mutableStateOf(false) }
     var renameInput by remember(document.displayName) { mutableStateOf(document.displayName) }
     var folderInput by remember { mutableStateOf("") }
-    val isDarkSurface = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    val cardShellColor = if (isDarkSurface) {
-        MaterialTheme.colorScheme.surface.copy(alpha = 0.84f)
-    } else {
-        MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.98f)
-    }
-    val cardCoverColor = if (isDarkSurface) PaperDark else PaperLight
+    val cardShellColor = MaterialTheme.colorScheme.primary
+        .copy(alpha = 0.15f)
+        .compositeOver(MaterialTheme.colorScheme.surface) // 和工作列 shellColor 相同
+    val cardCoverColor = MaterialTheme.colorScheme.surface
 
     if (showRenameDialog) {
         androidx.compose.material3.AlertDialog(
@@ -1881,8 +1911,8 @@ private fun DocumentCard(
 
     val brandGradient = androidx.compose.ui.graphics.Brush.linearGradient(
         listOf(
-            BrandIndigo.copy(alpha = 0.12f),
-            BrandPurple.copy(alpha = 0.10f)
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+            MaterialTheme.colorScheme.secondary.copy(alpha = 0.10f)
         )
     )
     val cardInteractionSource = remember { MutableInteractionSource() }
@@ -1917,7 +1947,7 @@ private fun DocumentCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(0.6f)
-                    .background(cardCoverColor),
+                    .background(cardShellColor),
                 contentAlignment = Alignment.Center
             ) {
                 Box(
@@ -1948,14 +1978,14 @@ private fun DocumentCard(
                                 .fillMaxSize()
                                 .padding(12.dp)
                                 .clip(RoundedCornerShape(18.dp))
-                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f)),
+                                .background(Color.Transparent),
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
                                 Icons.Outlined.FileUpload,
                                 contentDescription = null,
                                 modifier = Modifier.size(48.dp),
-                                tint = BrandIndigo.copy(alpha = 0.6f)
+                                tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)
                             )
                         }
                     }
@@ -2058,10 +2088,12 @@ enum class SidebarMode { COLLAPSED, NORMAL, FULLSCREEN }
 @Composable
 fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    val settingsRepository = remember(db) {
+    val prefs = remember { context.getSharedPreferences("inkflow_settings", 0) }
+    val settingsRepository = remember(db, prefs) {
         EditorSettingsRepository(
             db = db,
-            documentPreferenceDao = db.documentPreferenceDao()
+            documentPreferenceDao = db.documentPreferenceDao(),
+            prefs = prefs
         )
     }
     val viewModel: EditorViewModel = viewModel(
@@ -2161,20 +2193,15 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
     var showExportConfirmDialog by remember { mutableStateOf(false) }
     var isExportingPdf by remember { mutableStateOf(false) }
     val paperStyle by viewModel.paperStyle.collectAsState()
-    val quickSwipeEraserEnabled by viewModel.quickSwipeEraserEnabled.collectAsState()
     if (showDocumentSettingsDialog) {
         DocumentSettingsDialog(
             documentTitle = documentTitle,
             pageCount = pageCount,
             currentPageIndex = currentPageIndex,
             currentStyle = paperStyle,
-            currentQuickSwipeEraserEnabled = quickSwipeEraserEnabled,
             isPageOperationInProgress = isPageOperationInProgress,
             onDismiss = { showDocumentSettingsDialog = false },
             onConfirmStyle = { viewModel.setPaperStyle(it) },
-            onConfirmQuickSwipeEraserEnabled = {
-                viewModel.onQuickSwipeEraserEnabledChanged(it)
-            },
             onInsertPdf = {
                 showDocumentSettingsDialog = false
                 insertPdfLauncher.launch(arrayOf("application/pdf"))
@@ -2187,6 +2214,7 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
             onDismissRequest = {
                 if (!isExportingPdf) showExportConfirmDialog = false
             },
+            containerColor = MaterialTheme.colorScheme.surface,
             title = { Text("確認輸出 PDF") },
             text = {
                 Text(
@@ -2527,19 +2555,11 @@ private fun Sidebar(
             }
         )
     }
-    val isDarkSurface = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    val sidebarColor = if (isDarkSurface) {
-        ToolbarGlassDark.copy(alpha = 0.94f)
-    } else {
-        MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.94f)
-    }
 
     Surface(
         modifier = modifier,
-        color = sidebarColor,
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
         contentColor = MaterialTheme.colorScheme.onSurface,
-        shadowElevation = 6.dp,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
     ) {
         if (sidebarMode == SidebarMode.FULLSCREEN) {
             // Fullscreen: 4-column page grid with back button
@@ -2858,7 +2878,7 @@ private fun PageThumbnail(
 ) {
     val context = LocalContext.current
     val isDarkSurface = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    val paperColor = if (isDarkSurface) PaperDark else PaperLight
+    val paperColor = MaterialTheme.colorScheme.surface
     // Cache decoded bitmaps keyed by URI string
     val loadedImages = remember { mutableStateMapOf<String, android.graphics.Bitmap?>() }
     LaunchedEffect(imageAnnotations) {
@@ -2885,8 +2905,10 @@ private fun PageThumbnail(
         )
         // Animated gradient border for selected page
         val outlineColor = MaterialTheme.colorScheme.outlineVariant
-        val borderBrush = remember(isSelected, outlineColor) {
-            if (isSelected) Brush.linearGradient(listOf(BrandIndigo, BrandPurple))
+        val primaryColor = MaterialTheme.colorScheme.primary
+        val secondaryColor = MaterialTheme.colorScheme.secondary
+        val borderBrush = remember(isSelected, outlineColor, primaryColor, secondaryColor) {
+            if (isSelected) Brush.linearGradient(listOf(primaryColor, secondaryColor))
             else Brush.linearGradient(listOf(outlineColor, outlineColor))
         }
         Box(
@@ -2894,11 +2916,6 @@ private fun PageThumbnail(
                 .graphicsLayer { scaleX = thumbScale; scaleY = thumbScale }
                 .clip(RoundedCornerShape(18.dp))
                 .background(paperColor, shape = RoundedCornerShape(18.dp))
-                .border(
-                    width = if (isSelected) 3.dp else 1.dp,
-                    brush = borderBrush,
-                    shape = RoundedCornerShape(18.dp)
-                )
         ) {
             if (bitmap != null) {
                 Image(
@@ -3052,14 +3069,14 @@ private fun PageThumbnail(
                     modifier = Modifier
                         .align(Alignment.Center)
                         .size(38.dp, 32.dp)
-                        .background(Color.White, RoundedCornerShape(10.dp))
-                        .border(2.dp, BrandIndigo, RoundedCornerShape(10.dp)),
+                        .background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(10.dp))
+                        .border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(10.dp)),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
                         text = "${pageIndex + 1}",
                         style = MaterialTheme.typography.titleMedium,
-                        color = BrandIndigo
+                        color = MaterialTheme.colorScheme.primary
                     )
                 }
             }
@@ -3089,17 +3106,29 @@ private fun thumbnailDrawArrowHead(
 
 @Composable
 private fun PageIcon(pageIndex: Int, isSelected: Boolean) {
+    val isDarkSurface = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    // Softer, mode-aware highlight levels
+    val selectedBg = if (isDarkSurface) MaterialTheme.colorScheme.primary.copy(alpha = 0.24f)
+                      else MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+    val unselectedBg = if (isDarkSurface) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                        else MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
+    val selectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
     Box(
         modifier = Modifier
             .size(44.dp)
-            .background(
-                if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
-                shape = RoundedCornerShape(14.dp)
-            )
-            .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.75f), shape = RoundedCornerShape(14.dp)),
+            .background(if (isSelected) selectedBg else unselectedBg, shape = RoundedCornerShape(14.dp))
+            .then(
+                if (isSelected) Modifier.border(BorderStroke(2.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.9f)), shape = RoundedCornerShape(14.dp))
+                else Modifier
+            ),
         contentAlignment = Alignment.Center
     ) {
-        Text("${pageIndex + 1}", style = MaterialTheme.typography.labelMedium)
+        Text(
+            text = "${pageIndex + 1}",
+            style = MaterialTheme.typography.labelMedium,
+            color = if (isSelected) selectedTextColor else unselectedTextColor
+        )
     }
 }
 
@@ -3122,21 +3151,21 @@ private fun Workspace(
     var offsetX by rememberSaveable { mutableFloatStateOf(0f) }
     var offsetY by rememberSaveable { mutableFloatStateOf(0f) }
     val isDarkSurface = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    val lightWorkspaceSurface = MaterialTheme.colorScheme.surfaceContainerLow
-    val deskBrush = remember(isDarkSurface, lightWorkspaceSurface) {
+    val primaryColor = MaterialTheme.colorScheme.primary
+    val deskBrush = remember(isDarkSurface, primaryColor) {
         Brush.linearGradient(
             colors = if (isDarkSurface) {
-                listOf(WorkspaceDeskDark, Slate900, BrandIndigo.copy(alpha = 0.10f))
+                listOf(WorkspaceDeskDark, Slate900, primaryColor.copy(alpha = 0.10f))
             } else {
-                listOf(WorkspaceDeskLight, Slate50, lightWorkspaceSurface)
+                listOf(WorkspaceDeskLight, Slate50, Color(0xFFFAFAFA))
             }
         )
     }
-    val paperColor = if (isDarkSurface) PaperDark else PaperLight
+    val paperColor = MaterialTheme.colorScheme.surface
     val stageColor = if (isDarkSurface) {
         MaterialTheme.colorScheme.surface.copy(alpha = 0.30f)
     } else {
-        MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.76f)
+        WorkspaceDeskLight.copy(alpha = 0.76f)
     }
     val activeTool by viewModel.selectedTool.collectAsState()
     val lassoPolygon by viewModel.lassoPolygon.collectAsState()
@@ -3362,11 +3391,6 @@ private fun Workspace(
                 .padding(horizontal = 20.dp, vertical = 18.dp)
                 .clip(RoundedCornerShape(32.dp))
                 .background(stageColor)
-                .border(
-                    width = 1.dp,
-                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
-                    shape = RoundedCornerShape(32.dp)
-                )
         )
         Surface(
             modifier = Modifier
@@ -3384,8 +3408,7 @@ private fun Workspace(
                 ),
             shape = RoundedCornerShape(10.dp),
             shadowElevation = 18.dp,
-            color = paperColor,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.32f))
+            color = paperColor
         ) {
             // PDF static layer (bottom) — crossfade between page bitmaps
             Crossfade(
@@ -3682,8 +3705,9 @@ fun TabletEditorTopBar(
     val shownRecentColors = recentColors.filterNot { it in toolColors }.take(8)
     var showColorPicker by remember { mutableStateOf(false) }
     val isDarkSurface = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    val shellColor = if (isDarkSurface) ToolbarGlassDark else ToolbarGlassLight
+    val shellColor = MaterialTheme.colorScheme.primary.copy(alpha = if (isDarkSurface) 0.10f else 0.08f) // 隨主題色，非常暗
     val clusterColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = if (isDarkSurface) 0.78f else 0.94f)
+    val colorSelectorBg = MaterialTheme.colorScheme.primary.copy(alpha = if (isDarkSurface) 0.16f else 0.12f) // 隨主題色變化，比其他顏色更暗
     val borderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.58f)
     val toolButtonSize = 32.dp
     val utilityButtonSize = 34.dp
@@ -3725,8 +3749,7 @@ fun TabletEditorTopBar(
         modifier = Modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
         contentColor = MaterialTheme.colorScheme.onSurface,
-        shadowElevation = 8.dp,
-        border = BorderStroke(1.dp, borderColor)
+        shadowElevation = 8.dp
     ) {
         Row(
             modifier = Modifier
@@ -3739,8 +3762,7 @@ fun TabletEditorTopBar(
             Surface(
                 modifier = Modifier.fillMaxHeight(),
                 shape = RoundedCornerShape(24.dp),
-                color = shellColor,
-                border = BorderStroke(1.dp, borderColor)
+                color = shellColor
             ) {
                 Row(
                     modifier = Modifier.fillMaxHeight().padding(start = 6.dp, end = 16.dp),
@@ -3768,8 +3790,7 @@ fun TabletEditorTopBar(
             Surface(
                 modifier = Modifier.weight(1f).fillMaxHeight(),
                 shape = RoundedCornerShape(24.dp),
-                color = shellColor,
-                border = BorderStroke(1.dp, borderColor)
+                color = shellColor
             ) {
                 Row(
                     modifier = Modifier
@@ -3792,7 +3813,7 @@ fun TabletEditorTopBar(
                                         Brush.linearGradient(
                                             listOf(
                                                 MaterialTheme.colorScheme.primaryContainer,
-                                                BrandPurple.copy(alpha = 0.82f)
+                                                MaterialTheme.colorScheme.secondary.copy(alpha = 0.82f)
                                             )
                                         ),
                                         RoundedCornerShape(16.dp)
@@ -3896,7 +3917,7 @@ fun TabletEditorTopBar(
                                         Brush.linearGradient(
                                             listOf(
                                                 MaterialTheme.colorScheme.primaryContainer,
-                                                BrandIndigo.copy(alpha = 0.78f)
+                                                MaterialTheme.colorScheme.primary.copy(alpha = 0.78f)
                                             )
                                         ),
                                         RoundedCornerShape(16.dp)
@@ -3984,7 +4005,7 @@ fun TabletEditorTopBar(
 
                     Row(
                         modifier = Modifier
-                            .background(clusterColor, CircleShape)
+                            .background(colorSelectorBg, CircleShape)
                             .padding(horizontal = 6.dp, vertical = 3.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -4048,8 +4069,7 @@ fun TabletEditorTopBar(
             Surface(
                 modifier = Modifier.fillMaxHeight(),
                 shape = RoundedCornerShape(24.dp),
-                color = shellColor,
-                border = BorderStroke(1.dp, borderColor)
+                color = shellColor
             ) {
                 Row(
                     modifier = Modifier.fillMaxHeight().padding(horizontal = 8.dp),
@@ -4132,18 +4152,16 @@ private fun DocumentSettingsDialog(
     pageCount: Int,
     currentPageIndex: Int,
     currentStyle: PaperStyle,
-    currentQuickSwipeEraserEnabled: Boolean,
     isPageOperationInProgress: Boolean,
     onDismiss: () -> Unit,
     onConfirmStyle: (PaperStyle) -> Unit,
-    onConfirmQuickSwipeEraserEnabled: (Boolean) -> Unit,
     onInsertPdf: () -> Unit
 ) {
     var selectedBackground by remember { mutableStateOf(currentStyle.background) }
-    var selectedQuickSwipeEraserEnabled by remember { mutableStateOf(currentQuickSwipeEraserEnabled) }
 
     androidx.compose.material3.AlertDialog(
         onDismissRequest = onDismiss,
+        containerColor = MaterialTheme.colorScheme.surface,
         title = { Text("文件設定中心", style = MaterialTheme.typography.titleLarge) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -4174,35 +4192,6 @@ private fun DocumentSettingsDialog(
                             text = "共 $pageCount 頁，目前第 ${currentPageIndex + 1} 頁",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-
-                Surface(
-                    color = MaterialTheme.colorScheme.surfaceVariant,
-                    shape = RoundedCornerShape(20.dp)
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Text("快速滑動擦除", style = MaterialTheme.typography.titleSmall)
-                            Text(
-                                text = "使用畫筆、螢光筆或圖形時，快速揮掃會自動判定為橡皮擦。",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Switch(
-                            checked = selectedQuickSwipeEraserEnabled,
-                            onCheckedChange = { selectedQuickSwipeEraserEnabled = it }
                         )
                     }
                 }
@@ -4280,7 +4269,6 @@ private fun DocumentSettingsDialog(
         confirmButton = {
             androidx.compose.material3.TextButton(onClick = {
                 onConfirmStyle(currentStyle.copy(background = selectedBackground))
-                onConfirmQuickSwipeEraserEnabled(selectedQuickSwipeEraserEnabled)
                 onDismiss()
             }) { Text("確認") }
         },
@@ -4546,6 +4534,17 @@ fun AiWebPanel(
                     val cookieManager = android.webkit.CookieManager.getInstance()
                     cookieManager.setAcceptCookie(true)
                     cookieManager.setAcceptThirdPartyCookies(this, true)
+
+                    // JavaScript bridge: allow JS to notify Android about paste/click results
+                    val jsBridge = object {
+                        @android.webkit.JavascriptInterface
+                        fun onPasteResult(result: String) {
+                            try {
+                                android.util.Log.d("AiWebPanel", "onPasteResult: $result")
+                            } catch (t: Throwable) { }
+                        }
+                    }
+                    this.addJavascriptInterface(jsBridge, "AndroidBridge")
                     
                     webChromeClient = object : android.webkit.WebChromeClient() {
                         override fun onShowFileChooser(
@@ -4575,22 +4574,101 @@ fun AiWebPanel(
                                 // 第一次載入完成時觸發，如果從未被處理過。
                                 if (uri != null && uri != uploadState.lastProcessedUri) {
                                     uploadState.lastProcessedUri = uri
-                                    // Inject JavaScript to automatically trigger the file input click
-                                    val js = """
-                                        (function() {
-                                            var attempts = 0;
-                                            var interval = setInterval(function() {
-                                                var fileInput = document.querySelector('input[type="file"]');
-                                                if (fileInput) {
-                                                    fileInput.click();
-                                                    clearInterval(interval);
-                                                }
-                                                attempts++;
-                                                if (attempts >= 20) clearInterval(interval); // 最多分10秒(20*0.5s)去尋找
-                                            }, 500);
-                                        })();
-                                    """.trimIndent()
-                                    view?.evaluateJavascript(js, null)
+                                        // Build enhanced paste-and-fallback JS by encoding the image to Base64
+                                        try {
+                                            val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                                            if (bytes != null) {
+                                                val base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+                                                val js = """
+                                                    (function() {
+                                                        function simulateImagePaste(target, base64Data) {
+                                                            try {
+                                                                const byteCharacters = atob(base64Data);
+                                                                const byteNumbers = new Array(byteCharacters.length);
+                                                                for (let i = 0; i < byteCharacters.length; i++) {
+                                                                    byteNumbers[i] = byteCharacters.charCodeAt(i);
+                                                                }
+                                                                const byteArray = new Uint8Array(byteNumbers);
+                                                                const blob = new Blob([byteArray], { type: 'image/png' });
+                                                                const file = new File([blob], "pasted_image.png", { type: 'image/png' });
+
+                                                                const dataTransfer = new DataTransfer();
+                                                                dataTransfer.items.add(file);
+
+                                                                const pasteEvent = new ClipboardEvent('paste', {
+                                                                    clipboardData: dataTransfer,
+                                                                    bubbles: true,
+                                                                    cancelable: true
+                                                                });
+
+                                                                target.focus();
+                                                                const dispatched = target.dispatchEvent(pasteEvent);
+                                                                try { if (window.AndroidBridge && AndroidBridge.onPasteResult) AndroidBridge.onPasteResult(dispatched ? 'PASTE_DISPATCHED' : 'PASTE_DISPATCH_FAILED'); } catch(e){}
+                                                                return dispatched;
+                                                            } catch (e) {
+                                                                console.error('Paste simulation failed:', e);
+                                                                try { if (window.AndroidBridge && AndroidBridge.onPasteResult) AndroidBridge.onPasteResult('PASTE_EXCEPTION'); } catch(e){}
+                                                                return false;
+                                                            }
+                                                        }
+
+                                                        function tryFileInputClick() {
+                                                            var input = document.querySelector('input[type="file"]');
+                                                            if (input) {
+                                                                input.click();
+                                                                try { if (window.AndroidBridge && AndroidBridge.onPasteResult) AndroidBridge.onPasteResult('FILE_INPUT_CLICKED'); } catch(e){}
+                                                                return true;
+                                                            }
+                                                            return false;
+                                                        }
+
+                                                        function tryUploadButtonClick() {
+                                                            var selectors = [
+                                                                'button[aria-label*="Upload"]',
+                                                                'button[aria-label*="upload"]',
+                                                                'button[aria-label*="Add"]',
+                                                                'button[aria-label*="＋"]',
+                                                                '.upload-button',
+                                                                '.icon-button'
+                                                            ];
+                                                            for (var i = 0; i < selectors.length; i++) {
+                                                                var btn = document.querySelector(selectors[i]);
+                                                                if (btn) {
+                                                                    btn.click();
+                                                                    try { if (window.AndroidBridge && AndroidBridge.onPasteResult) AndroidBridge.onPasteResult('UPLOAD_BUTTON_CLICKED'); } catch(e){}
+                                                                    return true;
+                                                                }
+                                                            }
+                                                            return false;
+                                                        }
+
+                                                        var attempts = 0;
+                                                        var interval = setInterval(function() {
+                                                            var chatInput = document.querySelector('rich-textarea, div[role="textbox"][contenteditable="true"]');
+                                                            if (chatInput) {
+                                                                clearInterval(interval);
+                                                                var ok = simulateImagePaste(chatInput, "$base64");
+                                                                if (!ok) {
+                                                                    // try fallback strategies
+                                                                    if (!tryFileInputClick()) {
+                                                                        tryUploadButtonClick();
+                                                                    }
+                                                                }
+                                                            } else {
+                                                                attempts++;
+                                                                if (attempts >= 20) {
+                                                                    clearInterval(interval);
+                                                                    try { if (window.AndroidBridge && AndroidBridge.onPasteResult) AndroidBridge.onPasteResult('NO_CHAT_INPUT_FOUND'); } catch(e){}
+                                                                }
+                                                            }
+                                                        }, 500);
+                                                    })();
+                                                """.trimIndent()
+                                                view?.evaluateJavascript(js, null)
+                                            }
+                                        } catch (e: Exception) {
+                                            e.printStackTrace()
+                                        }
                                 }
                             }
                         }
@@ -4603,21 +4681,100 @@ fun AiWebPanel(
                 // 當外部 fileUri 更新(如使用者再次點擊 AI 解析)時，若這沒被處理過，就直接對已開啟的網頁下指令。
                 if (uploadState.isPageLoaded && fileUri != null && fileUri != uploadState.lastProcessedUri) {
                     uploadState.lastProcessedUri = fileUri
-                    val js = """
-                        (function() {
-                            var attempts = 0;
-                            var interval = setInterval(function() {
-                                var fileInput = document.querySelector('input[type="file"]');
-                                if (fileInput) {
-                                    fileInput.click();
-                                    clearInterval(interval);
-                                }
-                                attempts++;
-                                if (attempts >= 10) clearInterval(interval); // 5秒內沒找到就放棄
-                            }, 500);
-                        })();
-                    """.trimIndent()
-                    view.evaluateJavascript(js, null)
+                    try {
+                        val bytes = context.contentResolver.openInputStream(fileUri)?.use { it.readBytes() }
+                        if (bytes != null) {
+                            val base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+                            val js = """
+                                (function() {
+                                    // same paste-and-fallback script as onPageFinished
+                                    function simulateImagePaste(target, base64Data) {
+                                        try {
+                                            const byteCharacters = atob(base64Data);
+                                            const byteNumbers = new Array(byteCharacters.length);
+                                            for (let i = 0; i < byteCharacters.length; i++) {
+                                                byteNumbers[i] = byteCharacters.charCodeAt(i);
+                                            }
+                                            const byteArray = new Uint8Array(byteNumbers);
+                                            const blob = new Blob([byteArray], { type: 'image/png' });
+                                            const file = new File([blob], "pasted_image.png", { type: 'image/png' });
+
+                                            const dataTransfer = new DataTransfer();
+                                            dataTransfer.items.add(file);
+
+                                            const pasteEvent = new ClipboardEvent('paste', {
+                                                clipboardData: dataTransfer,
+                                                bubbles: true,
+                                                cancelable: true
+                                            });
+
+                                            target.focus();
+                                            const dispatched = target.dispatchEvent(pasteEvent);
+                                            try { if (window.AndroidBridge && AndroidBridge.onPasteResult) AndroidBridge.onPasteResult(dispatched ? 'PASTE_DISPATCHED' : 'PASTE_DISPATCH_FAILED'); } catch(e){}
+                                            return dispatched;
+                                        } catch (e) {
+                                            console.error('Paste simulation failed:', e);
+                                            try { if (window.AndroidBridge && AndroidBridge.onPasteResult) AndroidBridge.onPasteResult('PASTE_EXCEPTION'); } catch(e){}
+                                            return false;
+                                        }
+                                    }
+
+                                    function tryFileInputClick() {
+                                        var input = document.querySelector('input[type="file"]');
+                                        if (input) {
+                                            input.click();
+                                            try { if (window.AndroidBridge && AndroidBridge.onPasteResult) AndroidBridge.onPasteResult('FILE_INPUT_CLICKED'); } catch(e){}
+                                            return true;
+                                        }
+                                        return false;
+                                    }
+
+                                    function tryUploadButtonClick() {
+                                        var selectors = [
+                                            'button[aria-label*="Upload"]',
+                                            'button[aria-label*="upload"]',
+                                            'button[aria-label*="Add"]',
+                                            'button[aria-label*="＋"]',
+                                            '.upload-button',
+                                            '.icon-button'
+                                        ];
+                                        for (var i = 0; i < selectors.length; i++) {
+                                            var btn = document.querySelector(selectors[i]);
+                                            if (btn) {
+                                                btn.click();
+                                                try { if (window.AndroidBridge && AndroidBridge.onPasteResult) AndroidBridge.onPasteResult('UPLOAD_BUTTON_CLICKED'); } catch(e){}
+                                                return true;
+                                            }
+                                        }
+                                        return false;
+                                    }
+
+                                    var attempts = 0;
+                                    var interval = setInterval(function() {
+                                        var chatInput = document.querySelector('rich-textarea, div[role="textbox"][contenteditable="true"]');
+                                        if (chatInput) {
+                                            clearInterval(interval);
+                                            var ok = simulateImagePaste(chatInput, "$base64");
+                                            if (!ok) {
+                                                if (!tryFileInputClick()) {
+                                                    tryUploadButtonClick();
+                                                }
+                                            }
+                                        } else {
+                                            attempts++;
+                                            if (attempts >= 10) {
+                                                clearInterval(interval);
+                                                try { if (window.AndroidBridge && AndroidBridge.onPasteResult) AndroidBridge.onPasteResult('NO_CHAT_INPUT_FOUND'); } catch(e){}
+                                            }
+                                        }
+                                    }, 500);
+                                })();
+                            """.trimIndent()
+                            view.evaluateJavascript(js, null)
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
                 }
             },
             modifier = androidx.compose.ui.Modifier.fillMaxSize()

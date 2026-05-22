@@ -102,6 +102,8 @@ private const val QUICK_SWIPE_MAX_DURATION_MS = 320L
 private const val QUICK_SWIPE_MIN_PATH_VELOCITY_DP_PER_MS = 0.42f
 private val QUICK_SWIPE_DIRECTION_DELTA = 10.dp
 private const val QUICK_SWIPE_MIN_DIRECTION_REVERSALS = 1
+private const val ERASER_LIVE_WINDOW_POINTS = 20
+private const val ERASER_LIVE_DISPATCH_INTERVAL_MS = 24L
 
 private fun palmDebugLog(message: String) {
     if (ENABLE_PALM_DEBUG_LOGS) {
@@ -186,6 +188,9 @@ fun InkCanvas(
     val selectedStrokeResizeAnchor by viewModel.selectedStrokeResizeAnchor.collectAsState()
     val inputMode by viewModel.inputMode.collectAsState()
     val quickSwipeEraserEnabled by viewModel.quickSwipeEraserEnabled.collectAsState()
+    val palmThresholdDp by viewModel.palmThresholdDp.collectAsState()
+    val strokeSpeedSensitivity by viewModel.strokeSpeedSensitivity.collectAsState()
+    val fingerTouchThresholdDp by viewModel.fingerTouchThresholdDp.collectAsState()
     val textAnnotations by viewModel.currentTextAnnotations.collectAsState()
     val imageAnnotations by viewModel.currentImageAnnotations.collectAsState()
     val selectedImageAnnotationIds by viewModel.selectedImageAnnotationIds.collectAsState()
@@ -257,6 +262,33 @@ fun InkCanvas(
                 strokeWithPoints = swp,
                 path = if (swp.stroke.shapeType == null) swp.points.toComposePath() else null
             )
+        }
+    }
+
+    // Cache freehand paths for committed strokes to avoid rebuilding geometry on every cache refresh.
+    val committedPathCache = remember { mutableStateMapOf<String, CachedStrokePath>() }
+    LaunchedEffect(committedStrokes) {
+        val freehandIds = committedStrokes.asSequence()
+            .filter { it.stroke.shapeType == null }
+            .map { it.stroke.id }
+            .toHashSet()
+        committedPathCache.keys
+            .filter { it !in freehandIds }
+            .forEach { committedPathCache.remove(it) }
+
+        committedStrokes.forEach { swp ->
+            if (swp.stroke.shapeType != null) return@forEach
+            val cached = committedPathCache[swp.stroke.id]
+            if (!swp.matches(cached)) {
+                committedPathCache[swp.stroke.id] = CachedStrokePath(
+                    path = swp.points.toComposePath(),
+                    pointCount = swp.points.size,
+                    boundsLeft = swp.stroke.boundsLeft,
+                    boundsTop = swp.stroke.boundsTop,
+                    boundsRight = swp.stroke.boundsRight,
+                    boundsBottom = swp.stroke.boundsBottom
+                )
+            }
         }
     }
 
@@ -460,6 +492,7 @@ fun InkCanvas(
     var lastToolMajorPx  by remember { mutableFloatStateOf(0f) }
     var lastNativeToolType by remember { mutableIntStateOf(0) }
     var lastPointerCount by remember { mutableIntStateOf(1) }
+    var stylusButtonPressed by remember { mutableStateOf(false) }
     // MotionEvent pointer ID → getTouchMajor(). Updated for every pointer down event.
     // Lets awaitEachGesture identify the stylus among simultaneous palm+stylus contacts.
     val pointerTouchMajors = remember { mutableStateMapOf<Int, Float>() }
@@ -474,6 +507,23 @@ fun InkCanvas(
         // Capture raw contact metrics before Compose converts MotionEvent to PointerInputChange.
         // Returning false forwards the event unchanged to the pointerInput block below.
         .pointerInteropFilter { motionEvent ->
+            val hasStylusPointer = (0 until motionEvent.pointerCount).any { i ->
+                motionEvent.getToolType(i) == MotionEvent.TOOL_TYPE_STYLUS
+            }
+            val stylusButtonsMask = MotionEvent.BUTTON_STYLUS_PRIMARY or
+                MotionEvent.BUTTON_STYLUS_SECONDARY or
+                MotionEvent.BUTTON_SECONDARY
+            val stylusButtonNow = hasStylusPointer &&
+                (motionEvent.buttonState and stylusButtonsMask) != 0
+
+            if (!stylusButtonPressed && stylusButtonNow) {
+                stylusButtonPressed = true
+                viewModel.onStylusButtonPressed()
+            } else if (stylusButtonPressed && !stylusButtonNow) {
+                stylusButtonPressed = false
+                viewModel.onStylusButtonReleased()
+            }
+
             val actionName = when (motionEvent.actionMasked) {
                 MotionEvent.ACTION_DOWN         -> "DOWN"
                 MotionEvent.ACTION_POINTER_DOWN -> "POINTER_DOWN"
@@ -484,6 +534,8 @@ fun InkCanvas(
                 MotionEvent.ACTION_HOVER_ENTER  -> "HOVER_ENTER"
                 MotionEvent.ACTION_HOVER_MOVE   -> "HOVER_MOVE"
                 MotionEvent.ACTION_HOVER_EXIT   -> "HOVER_EXIT"
+                MotionEvent.ACTION_BUTTON_PRESS -> "BUTTON_PRESS"
+                MotionEvent.ACTION_BUTTON_RELEASE -> "BUTTON_RELEASE"
                 else -> "UNKNOWN(${motionEvent.actionMasked})"
             }
             val tool0 = when (motionEvent.getToolType(0)) {
@@ -493,7 +545,7 @@ fun InkCanvas(
             }
             palmDebugLog("RAW $actionName cnt=${motionEvent.pointerCount} " +
                 "tool0=$tool0 major0=${"%,.2f".format(motionEvent.getTouchMajor(0))} " +
-                "id0=${motionEvent.getPointerId(0)}")
+                "id0=${motionEvent.getPointerId(0)} btn=${motionEvent.buttonState}")
             when (motionEvent.actionMasked) {
                 MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
                     // Tell the parent view hierarchy not to intercept our touch stream.
@@ -512,12 +564,31 @@ fun InkCanvas(
                     lastNativeToolType = motionEvent.getToolType(0)
                     lastPointerCount   = motionEvent.pointerCount
                 }
+                MotionEvent.ACTION_BUTTON_PRESS -> {
+                    // Fallback path for devices that do emit explicit button events.
+                    if (hasStylusPointer) {
+                        viewModel.onStylusButtonPressed()
+                        stylusButtonPressed = true
+                    }
+                }
+                MotionEvent.ACTION_BUTTON_RELEASE -> {
+                    // Fallback path for devices that do emit explicit button events.
+                    if (hasStylusPointer) {
+                        viewModel.onStylusButtonReleased()
+                        stylusButtonPressed = false
+                    }
+                }
                 MotionEvent.ACTION_POINTER_UP ->
                     pointerTouchMajors.remove(
                         motionEvent.getPointerId(motionEvent.actionIndex)
                     )
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     pointerTouchMajors.clear()
+                    if (stylusButtonPressed) {
+                        stylusButtonPressed = false
+                        viewModel.onStylusButtonReleased()
+                    }
+                }
             }
             false
         }
@@ -547,10 +618,10 @@ fun InkCanvas(
                     val cMajor = pointerTouchMajors[candidate.id.value.toInt()] ?: Float.MAX_VALUE
                     when {
                         // All contacts are palms
-                        PalmRejectionFilter.shouldReject(cMajor, 1f, 1, density) ->
+                        PalmRejectionFilter.shouldReject(cMajor, 1f, 1, density, palmThresholdDp.dp) ->
                             return@awaitEachGesture
                         // All contacts are fingers — pass through for pan
-                        PalmRejectionFilter.isFinger(cMajor, density) ->
+                        PalmRejectionFilter.isFinger(cMajor, density, fingerTouchThresholdDp.dp) ->
                             return@awaitEachGesture
                         // Stylus found — use it for drawing; ignore palm/finger sibling pointers
                         else -> candidate
@@ -559,7 +630,7 @@ fun InkCanvas(
                     val singleMajor =
                         pointerTouchMajors[firstContactDown.id.value.toInt()] ?: lastTouchMajorPx
                     if (inputMode == InputMode.PALM_REJECTION &&
-                        PalmRejectionFilter.shouldReject(singleMajor, 1f, 1, density)
+                        PalmRejectionFilter.shouldReject(singleMajor, 1f, 1, density, palmThresholdDp.dp)
                     ) {
                         // Palm is the first (and only) contact. In PALM_REJECTION mode, do NOT
                         // return immediately — that would let awaitAllPointersUp() swallow the
@@ -582,8 +653,8 @@ fun InkCanvas(
                                 val major =
                                     pointerTouchMajors[change.id.value.toInt()] ?: Float.MAX_VALUE
                                 palmDebugLog("GESTURE while-loop candidate id=${change.id.value} major=$major")
-                                if (!PalmRejectionFilter.shouldReject(major, 1f, 1, density) &&
-                                    !PalmRejectionFilter.isFinger(major, density)
+                                if (!PalmRejectionFilter.shouldReject(major, 1f, 1, density, palmThresholdDp.dp) &&
+                                    !PalmRejectionFilter.isFinger(major, density, fingerTouchThresholdDp.dp)
                                 ) {
                                     downEvent = evt
                                     stylusDown = change
@@ -638,7 +709,8 @@ fun InkCanvas(
                         touchMajorPx = touchMajorPx,
                         pressure = down.pressure,
                         concurrentPointers = downEvent.changes.size,
-                        density = density
+                        density = density,
+                        maxTouchMajorDp = palmThresholdDp.dp
                     )
                 ) {
                     TouchEventLogger.logOutcome(
@@ -655,7 +727,7 @@ fun InkCanvas(
                 // --- PALM_REJECTION only: finger zone → pass through for single-finger pan ---
                 // FREE mode: finger (non-palm) falls through and draws — no zone filtering needed.
                 if (inputMode == InputMode.PALM_REJECTION && down.type == PointerType.Touch) {
-                    if (PalmRejectionFilter.isFinger(touchMajorPx, density)) {
+                    if (PalmRejectionFilter.isFinger(touchMajorPx, density, fingerTouchThresholdDp.dp)) {
                         // Finger: do NOT consume — bubbles up to Workspace Box for pan.
                         // Exception: Eraser works with finger contacts; let it fall through.
                         if (activeTool != Tool.ERASER) {
@@ -982,6 +1054,7 @@ fun InkCanvas(
                 val supportsQuickSwipeEraser = quickSwipeEraserEnabled &&
                     (activeTool == Tool.PEN || activeTool == Tool.HIGHLIGHTER)
                 var quickSwipeTriggered = false
+                var lastEraserDispatchTime = down.uptimeMillis
                 val baseWidth = if (activeTool == Tool.HIGHLIGHTER) strokeWidth * 3f else strokeWidth
                 var currentW = baseWidth
 
@@ -1026,15 +1099,17 @@ fun InkCanvas(
                             val prevPt = currentPathPoints.last()
                             val dist = kotlin.math.hypot(pos.x - prevPt.x, pos.y - prevPt.y)
                             val dt = (time - lastPointTime).coerceAtLeast(1L)
-                            val velocity = dist / dt.toFloat()
+                                val velocity = dist / dt.toFloat()
+                                val sensitivity = strokeSpeedSensitivity.coerceAtLeast(0.1f)
                             
                             val w = if (activeTool == Tool.HIGHLIGHTER) {
                                 baseWidth // For highlighter, do NOT apply variable thickness
                             } else {
-                                val maxW = baseWidth * 1.3f   // 最粗：稍微放大即可，不需要誇張
-                                val minW = baseWidth * 0.4f   // 最細
-                                // 降低速度門檻，讓普通的書寫速度也能輕易帶出筆尖般的細線條
-                                val vMapped = (velocity / 0.7f).coerceIn(0f, 1f)
+                                    val maxW = baseWidth * 1.3f   // 最粗：稍微放大即可，不需要誇張
+                                    val minW = baseWidth * 0.4f   // 最細
+                                    // Sensitivity > 1.0 makes thinning happen sooner; < 1.0 makes it slower.
+                                    val velocityThreshold = 0.7f / sensitivity
+                                    val vMapped = (velocity / velocityThreshold).coerceIn(0f, 1f)
                                 val targetW = minW + (maxW - minW) * (1f - vMapped)
                                 // 加重前一點的權重 (0.85f)，讓粗細過渡更平滑，消除竹節突變
                                 prevPt.width * 0.85f + targetW * 0.15f
@@ -1081,8 +1156,20 @@ fun InkCanvas(
                         drag.consume()
 
                         if (activeTool == Tool.ERASER || quickSwipeTriggered) {
-                            val points = currentPathPoints.map { Offset(it.x, it.y) }
-                            viewModel.deleteStrokesIntersecting(points)
+                            // Live erase: send only a recent window and throttle dispatches.
+                            // This keeps interaction fluid for large documents while the final
+                            // end-of-gesture pass still runs on the full path.
+                            val shouldDispatch =
+                                drag.uptimeMillis - lastEraserDispatchTime >= ERASER_LIVE_DISPATCH_INTERVAL_MS
+                            if (shouldDispatch) {
+                                val fromIndex = (currentPathPoints.size - ERASER_LIVE_WINDOW_POINTS).coerceAtLeast(0)
+                                val points = currentPathPoints.subList(fromIndex, currentPathPoints.size)
+                                    .map { Offset(it.x, it.y) }
+                                if (points.size >= 2) {
+                                    viewModel.deleteStrokesIntersecting(points)
+                                    lastEraserDispatchTime = drag.uptimeMillis
+                                }
+                            }
                         }
                         drag = awaitDragOrCancellation(drag.id)
                     }
@@ -1158,7 +1245,10 @@ fun InkCanvas(
                         } else {
                             currentPathPoints.map { Offset(it.x, it.y) }
                         }
-                        viewModel.deleteStrokesIntersecting(points)
+                        viewModel.deleteStrokesIntersecting(
+                            eraserPointsCanvas = points,
+                            switchToPenAfterEraseHit = true
+                        )
                     }
                     else -> { }
                 }
@@ -1188,7 +1278,8 @@ fun InkCanvas(
                 if (swp.stroke.shapeType != null) {
                     drawShapeOnCanvas(cacheCanvas, swp.stroke, swp.points)
                 } else {
-                    drawPathOnCanvas(cacheCanvas, swp.points.toComposePath(),
+                    val path = committedPathCache[swp.stroke.id]?.path ?: swp.points.toComposePath()
+                    drawPathOnCanvas(cacheCanvas, path,
                         Color(swp.stroke.color), swp.stroke.strokeWidth, swp.stroke.isHighlighter)
                 }
             }
@@ -1551,6 +1642,24 @@ private data class SelectedStrokeRenderData(
     val strokeWithPoints: StrokeWithPoints,
     val path: Path?
 )
+
+private data class CachedStrokePath(
+    val path: Path,
+    val pointCount: Int,
+    val boundsLeft: Float,
+    val boundsTop: Float,
+    val boundsRight: Float,
+    val boundsBottom: Float
+)
+
+private fun StrokeWithPoints.matches(cached: CachedStrokePath?): Boolean {
+    if (cached == null) return false
+    return cached.pointCount == points.size &&
+        cached.boundsLeft == stroke.boundsLeft &&
+        cached.boundsTop == stroke.boundsTop &&
+        cached.boundsRight == stroke.boundsRight &&
+        cached.boundsBottom == stroke.boundsBottom
+}
 
 private const val LASSO_FRAME_CORNER_RADIUS_PX = 14f
 private const val LASSO_FRAME_OUTER_STROKE_PX = 6f
