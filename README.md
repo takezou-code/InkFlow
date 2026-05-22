@@ -3,6 +3,9 @@
 A tablet-first PDF annotation and note-taking app for Android, built entirely with Jetpack Compose and Material Design 3.
 
 ---
+![IMG_20260408_224011](https://github.com/user-attachments/assets/ac6b68e7-a6fa-49a8-9f0e-575311146733)
+
+---
 
 ## Features
 
