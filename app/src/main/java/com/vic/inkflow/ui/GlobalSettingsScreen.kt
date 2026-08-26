@@ -1,5 +1,7 @@
-package com.vic.inkflow.ui
+﻿package com.vic.inkflow.ui
 
+import com.vic.inkflow.ui.theme.ShapeSm
+import com.vic.inkflow.ui.theme.ShapeLg
 import android.content.SharedPreferences
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -79,7 +81,8 @@ fun GlobalSettingsScreen(
     currentBrandTheme: BrandTheme,
     onBrandThemeChanged: (BrandTheme) -> Unit,
     currentThemeMode: ThemeMode,
-    onThemeModeChanged: (ThemeMode) -> Unit
+    onThemeModeChanged: (ThemeMode) -> Unit,
+    onDynamicColorChanged: (Boolean) -> Unit = {}
 ) {
     val scrollState = rememberScrollState()
 
@@ -135,6 +138,17 @@ fun GlobalSettingsScreen(
                     onBrandThemeChanged(brand)
                     prefs.edit().putString("brand_theme", brand.name).apply()
                 }
+                var dynamicColor by remember { mutableStateOf(prefs.getBoolean("dynamic_color", false)) }
+                SettingsSwitchRow(
+                    title = "跟隨系統配色 (Material You)",
+                    subtitle = "使用桌布產生的動態色彩，覆蓋上方品牌主題（Android 12+）",
+                    checked = dynamicColor,
+                    onCheckedChange = {
+                        dynamicColor = it
+                        prefs.edit().putBoolean("dynamic_color", it).apply()
+                        onDynamicColorChanged(it)
+                    }
+                )
             }
 
             // Section 1b: 備份與還原 (Backup & Restore)
@@ -316,7 +330,7 @@ fun GlobalSettingsScreen(
                 Surface(
                     modifier = Modifier.padding(top = 12.dp),
                     color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
-                    shape = RoundedCornerShape(24.dp),
+                    shape = ShapeLg,
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
                 ) {
                     Column(
@@ -469,7 +483,7 @@ private fun SettingsSection(title: String, content: @Composable () -> Unit) {
             modifier = Modifier.padding(bottom = 8.dp, start = 4.dp)
         )
         Surface(
-            shape = RoundedCornerShape(12.dp),
+            shape = ShapeSm,
             color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
         ) {
             Column(modifier = Modifier.padding(vertical = 4.dp)) {
@@ -527,7 +541,7 @@ private fun PaletteColorTile(
 ) {
     Surface(
         modifier = Modifier.size(tileSize),
-        shape = RoundedCornerShape(20.dp),
+        shape = ShapeLg,
         color = MaterialTheme.colorScheme.surface,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
     ) {
@@ -540,9 +554,9 @@ private fun PaletteColorTile(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .clip(RoundedCornerShape(14.dp))
+                    .clip(ShapeSm)
                     .background(color)
-                    .border(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.14f), RoundedCornerShape(14.dp))
+                    .border(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.14f), ShapeSm)
             )
             Box(
                 modifier = Modifier
@@ -567,7 +581,7 @@ private fun PaletteColorTile(
 private fun PaletteAddTile(onClick: () -> Unit, tileSize: Dp = 68.dp) {
     Surface(
         modifier = Modifier.size(tileSize),
-        shape = RoundedCornerShape(20.dp),
+        shape = ShapeLg,
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
     ) {
