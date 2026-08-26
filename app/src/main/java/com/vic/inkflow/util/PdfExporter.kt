@@ -143,7 +143,7 @@ object PdfExporter {
         }
     }
 
-    private fun normalizeRotation(rawRotation: Int): Int =
+    internal fun normalizeRotation(rawRotation: Int): Int =
         ((rawRotation % 360) + 360) % 360
 
     private fun safeCropBox(page: PDPage): PDRectangle =
@@ -155,7 +155,7 @@ object PdfExporter {
         }
 
     /** Viewport size of a page after its /Rotate is applied (matches PdfRenderer.Page.width/height). */
-    private fun rotatedViewSize(rotation: Int, cropBox: PDRectangle): Pair<Float, Float> {
+    internal fun rotatedViewSize(rotation: Int, cropBox: PDRectangle): Pair<Float, Float> {
         val r = normalizeRotation(rotation)
         return if (r == 90 || r == 270) Pair(cropBox.height, cropBox.width)
         else Pair(cropBox.width, cropBox.height)
@@ -165,7 +165,7 @@ object PdfExporter {
      * Maps Y-up coordinates in the rotated view space onto unrotated CropBox user space,
      * so annotations exported at the on-screen orientation land correctly in every viewer.
      */
-    private fun pageViewMatrix(rotation: Int, cropBox: PDRectangle): Matrix {
+    internal fun pageViewMatrix(rotation: Int, cropBox: PDRectangle): Matrix {
         val r = normalizeRotation(rotation)
         val llx = cropBox.lowerLeftX
         val lly = cropBox.lowerLeftY

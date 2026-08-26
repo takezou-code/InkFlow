@@ -109,7 +109,7 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
     private val _currentPdfUri = MutableStateFlow<Uri?>(null)
     val currentPdfUri: StateFlow<Uri?> = _currentPdfUri.asStateFlow()
 
-    /** true ??銵函內甇??脰?? / ?芷????啣摮?UI ?＊蝷粹脣漲?內?其蒂??賊?????*/
+    /** true 表示有頁面操作（插入／刪除／搬移）正在執行；UI 依此顯示進度並阻擋新的操作。*/
     private val _isPageOperationInProgress = MutableStateFlow(false)
     val isPageOperationInProgress: StateFlow<Boolean> = _isPageOperationInProgress.asStateFlow()
 
@@ -328,7 +328,7 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** ????Renderer嚗D嚗?皜征 URI ??pageCount嚗?潸蕭???Ｗ????嚗?*/
+    /** 關閉 Renderer，並視情況清除目前 URI 與 pageCount，避免殘留舊資料。*/
     private fun closeRendererOnly(clearFlows: Boolean = true) {
         pageSizeScanJob?.cancel()
         pageSizeScanJob = null
@@ -344,20 +344,20 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** ??Main ?瑁?蝺?蝛?flow cache嚗蝙銝?甈?getPageThumbnail/getPageBitmap 撘瑕?皜脫???*/
+    /** 清空 Main 執行緒的 flow cache；之後重新呼叫 getPageThumbnail/getPageBitmap 即可重建。*/
     private fun clearFlowCaches() {
         thumbnailFlowCache.clear()
         bitmapFlowCache.clear()
     }
 
-    /** ?函??PDF嚗???file:// URI嚗? [afterIndex] ??敺??乩???A4 蝛箇??
+    /** 在目前 PDF（file:// URI）的 [afterIndex] 頁之後插入一頁空白頁，尺寸預設 A4 直向。
      *  afterIndex = -1 ??Int.MAX_VALUE ?蕭??怠偏??
      *
-     *  ?∠璅?撘?UI ?湔嚗ptimistic UI嚗?
-     *  - 蝡?? _pageCount 銝衣??_lastInsertedPageIndex嚗蝙 UI ?祇?撠?單蝛箇??
-     *  - 敺??甇亙銵?PDDocument ?耨?寡?摮?嚗? 2?? 蝘???
-     *  - 摮?摰?敺??圈???Renderer嚗??_thumbnailVersion 閫貊蝮桀??瑟??
-     *  - 憭望???皛暹?閫?湔??
+      *  採用樂觀更新（Optimistic UI）策略：
+      *  - 先更新 _pageCount 與 _lastInsertedPageIndex，讓 UI 立即導向新頁面。
+      *  - 實際的 PDDocument 寫入在背景進行，通常耗時約 2 秒。
+      *  - 完成後重新開啟 Renderer，並遞增 _thumbnailVersion 使縮圖快取失效。
+      *  - 失敗時會回滾並提示錯誤。
      */
     fun insertBlankPage(
         context: Context,
@@ -376,15 +376,15 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         val currentCount = _pageCount.value
-        // 閮??唳??仿??揣撘???afterIndex 銋?嚗??怠偏嚗?
+        // 計算新頁的樂觀索引：afterIndex 為 Int.MAX_VALUE 時直接附加到最後。
         val optimisticNewIndex = if (afterIndex == Int.MAX_VALUE || afterIndex >= currentCount - 1) {
-            currentCount  // 餈賢??唳撠橘??圈? index = currentCount
+            currentCount  // 新頁的索引 = currentCount（附加到結尾）
         } else {
             afterIndex + 1
         }.coerceIn(0, currentCount)
 
-        // 蝡閮剖??脰?銝哨?霈?UI ?臭誑憿舐內?脣漲璇?雿???閫?湔 pageCount
-        // ???PDF 撠摮????圈?????UI ?岫隢??圈??Ｙ? Bitmap ????PDF 撠頛??? null ???⊿???
+        // 先同步更新狀態，讓 UI 在 PDF 寫檔期間就能反應新的頁數；
+        // 若寫入尚未完成，對應縮圖可能短暫呈現 null 或舊圖，屬預期現象。
         _isPageOperationInProgress.value = true
 
         viewModelScope.launch(Dispatchers.IO) {
@@ -545,8 +545,8 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
 
 
     /** 
-     * 撠?PDF ?洵 [fromIndex] ?宏? [toIndex]??
-     * ?湔 PDF ?辣???湔 DB 銝剖????Ｙ? annotations index??
+      * 將 PDF 的第 [fromIndex] 頁搬移到 [toIndex]。
+      * 先搬移 PDF 頁面，再於同一交易內更新所有 annotations 的頁碼索引。
      */
     fun movePage(documentUri: String, fromIndex: Int, toIndex: Int) {
         val fileUri = _currentPdfUri.value ?: return
@@ -659,9 +659,9 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
     }
 
         /**
-     * ?寞活?芷憭???
-     * @param documentUri ?冽皜?鞈?摨怎?瑼? URI 璅?
-     * @param pageIndices 閬?斤??蝝Ｗ?皜??
+      * 刪除多個頁面。
+      * @param documentUri 文件的內部 file:// URI。
+      * @param pageIndices 要刪除的頁面索引清單。
      */
     fun deletePages(documentUri: String, pageIndices: List<Int>) {
         val fileUri = _currentPdfUri.value ?: return
@@ -675,7 +675,7 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         val currentCount = _pageCount.value
-        // 銝???Ｗ?芸?
+        // 防呆：至少需要保留 1 頁。
         if (currentCount <= sortedIndices.size) {
             _pageOperationMessage.value = "至少需要保留 1 頁"
             return
@@ -710,7 +710,7 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
 
                 if (deleted) {
                     PageOpJournal.markFileDone(getApplication(), entry)
-                // ?芷鞈?摨?annotation 銝虫?蝘餃???index
+                // 同步下修所有 annotation 的頁碼索引。
                 db.withTransaction {
                     for (index in sortedIndices) {
                         with(db.strokeDao()) {
