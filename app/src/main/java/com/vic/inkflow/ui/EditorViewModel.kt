@@ -1372,7 +1372,7 @@ class EditorViewModel(
 
             // ── Step 1: Render full model page onto a bitmap ──────────────────────
             // Each model unit = renderScale pixels so all coordinates stay simple.
-            val renderScale = 2f
+            val renderScale = minOf(2f, 4096f / maxOf(modelWidth, modelHeight))
             val fullW = (modelWidth * renderScale).toInt()
             val fullH = (modelHeight * renderScale).toInt()
             val fullBitmap = android.graphics.Bitmap.createBitmap(

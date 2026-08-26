@@ -1122,14 +1122,14 @@ fun InkCanvas(
                         drag.historical.forEach { historical ->
                             val hp   = historical.position
                             val prev = currentPathPoints.last()
-                            activePath.quadraticBezierTo(prev.x, prev.y, (prev.x + hp.x) / 2f, (prev.y + hp.y) / 2f)
+                            activePath.quadraticTo(prev.x, prev.y, (prev.x + hp.x) / 2f, (prev.y + hp.y) / 2f)
                             val w = calcWidth(hp, historical.uptimeMillis)
                             currentPathPoints.add(StrokePoint(hp.x, hp.y, w))
                             quickSwipeTrace.add(hp)
                         }
                         val newPoint  = drag.position
                         val prevPoint = currentPathPoints.last()
-                        activePath.quadraticBezierTo(prevPoint.x, prevPoint.y, (prevPoint.x + newPoint.x) / 2f, (prevPoint.y + newPoint.y) / 2f)
+                        activePath.quadraticTo(prevPoint.x, prevPoint.y, (prevPoint.x + newPoint.x) / 2f, (prevPoint.y + newPoint.y) / 2f)
                         val w = calcWidth(newPoint, drag.uptimeMillis)
                         currentPathPoints.add(StrokePoint(newPoint.x, newPoint.y, w))
                         quickSwipeTrace.add(newPoint)

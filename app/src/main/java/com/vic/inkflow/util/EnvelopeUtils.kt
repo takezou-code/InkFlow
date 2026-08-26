@@ -88,7 +88,7 @@ object EnvelopeUtils {
         for (i in 1 until leftPoints.size) {
             val p1 = leftPoints[i - 1]
             val p2 = leftPoints[i]
-            path.quadraticBezierTo(p1.x, p1.y, (p1.x + p2.x) / 2f, (p1.y + p2.y) / 2f)
+            path.quadraticTo(p1.x, p1.y, (p1.x + p2.x) / 2f, (p1.y + p2.y) / 2f)
         }
         path.lineTo(leftPoints.last().x, leftPoints.last().y)
 
@@ -110,7 +110,7 @@ object EnvelopeUtils {
         for (i in rightPoints.indices.reversed().drop(1)) {
             val p1 = rightPoints[i + 1]
             val p2 = rightPoints[i]
-            path.quadraticBezierTo(p1.x, p1.y, (p1.x + p2.x) / 2f, (p1.y + p2.y) / 2f)
+            path.quadraticTo(p1.x, p1.y, (p1.x + p2.x) / 2f, (p1.y + p2.y) / 2f)
         }
         path.lineTo(rightPoints.first().x, rightPoints.first().y)
 

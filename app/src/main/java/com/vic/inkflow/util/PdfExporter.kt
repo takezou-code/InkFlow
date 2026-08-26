@@ -8,9 +8,12 @@ import android.os.Build
 import android.provider.MediaStore
 import android.widget.Toast
 import com.tom_roush.pdfbox.pdmodel.PDDocument
+import com.tom_roush.pdfbox.pdmodel.PDPage
 import com.tom_roush.pdfbox.pdmodel.PDPageContentStream
+import com.tom_roush.pdfbox.pdmodel.common.PDRectangle
 import com.tom_roush.pdfbox.pdmodel.graphics.image.PDImageXObject
 import com.tom_roush.pdfbox.pdmodel.graphics.state.PDExtendedGraphicsState
+import com.tom_roush.pdfbox.util.Matrix
 import com.vic.inkflow.data.ImageAnnotationEntity
 import com.vic.inkflow.data.PointF
 import com.vic.inkflow.data.StrokeWithPoints
@@ -52,6 +55,7 @@ object PdfExporter {
         modelH: Float = MODEL_H
     ) {
         withContext(Dispatchers.IO) {
+            var destinationUri: Uri? = null
             try {
                 val resolver = context.contentResolver
                 val contentValues = ContentValues().apply {
@@ -63,7 +67,7 @@ object PdfExporter {
                     }
                 }
 
-                val destinationUri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
+                destinationUri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
                 if (destinationUri == null) {
                     showToast(context, "Failed to create destination file.")
                     return@withContext
@@ -71,48 +75,54 @@ object PdfExporter {
 
                 context.contentResolver.openInputStream(originalPdfUri).use { inputStream ->
                     val document = PDDocument.load(inputStream)
-                    val strokesByPage = strokes.groupBy { it.stroke.pageIndex }
-                    val textByPage   = textAnnotations.groupBy { it.pageIndex }
-                    val imageByPage  = imageAnnotations.groupBy { it.pageIndex }
+                    try {
+                        val strokesByPage = strokes.groupBy { it.stroke.pageIndex }
+                        val textByPage   = textAnnotations.groupBy { it.pageIndex }
+                        val imageByPage  = imageAnnotations.groupBy { it.pageIndex }
 
-                    document.pages.forEachIndexed { pageIndex, page ->
-                        val pageStrokes = strokesByPage[pageIndex]
-                        val pageTexts   = textByPage[pageIndex]
-                        val pageImages  = imageByPage[pageIndex]
+                        document.pages.forEachIndexed { pageIndex, page ->
+                            val pageStrokes = strokesByPage[pageIndex]
+                            val pageTexts   = textByPage[pageIndex]
+                            val pageImages  = imageByPage[pageIndex]
 
-                        if (!pageStrokes.isNullOrEmpty() || !pageTexts.isNullOrEmpty() || !pageImages.isNullOrEmpty()) {
-                            val contentStream = PDPageContentStream(document, page, PDPageContentStream.AppendMode.APPEND, true, true)
-                            val pageHeight = page.mediaBox.height
-                            val pageWidth  = page.mediaBox.width
+                            if (!pageStrokes.isNullOrEmpty() || !pageTexts.isNullOrEmpty() || !pageImages.isNullOrEmpty()) {
+                                // Annotations live in the ROTATED view space (what PdfRenderer shows);
+                                // map it onto each page's real CropBox, honouring /Rotate.
+                                val cropBox = safeCropBox(page)
+                                val rotation = normalizeRotation(page.rotation)
+                                val (viewW, viewH) = rotatedViewSize(rotation, cropBox)
 
-                            pageImages?.forEach { ann ->
-                                drawImageAnnotation(contentStream, document, context, ann, pageWidth, pageHeight, modelW, modelH)
-                            }
+                                val contentStream = PDPageContentStream(document, page, PDPageContentStream.AppendMode.APPEND, true, true)
+                                try {
+                                    contentStream.transform(pageViewMatrix(rotation, cropBox))
 
-                            pageStrokes?.forEach { stroke ->
-                                if (stroke.stroke.shapeType != null) {
-                                    drawShape(contentStream, stroke, pageWidth, pageHeight, modelW, modelH)
-                                } else {
-                                    drawStroke(contentStream, stroke, pageWidth, pageHeight, modelW, modelH)
+                                    pageImages?.forEach { ann ->
+                                        drawImageAnnotation(contentStream, document, context, ann, viewW, viewH, modelW, modelH)
+                                    }
+
+                                    pageStrokes?.forEach { stroke ->
+                                        if (stroke.stroke.shapeType != null) {
+                                            drawShape(contentStream, stroke, viewW, viewH, modelW, modelH)
+                                        } else {
+                                            drawStroke(contentStream, stroke, viewW, viewH, modelW, modelH)
+                                        }
+                                    }
+
+                                    pageTexts?.forEach { ann ->
+                                        drawTextAnnotation(contentStream, document, context, ann, viewW, viewH, modelW, modelH)
+                                    }
+                                } finally {
+                                    contentStream.close()
                                 }
                             }
-
-                            pageTexts?.forEach { ann ->
-                                drawTextAnnotation(contentStream, document, context, ann, pageWidth, pageHeight, modelW, modelH)
-                            }
-
-                            contentStream.close()
                         }
-                    }
 
-                    resolver.openOutputStream(destinationUri).use { outputStream ->
-                        if (outputStream == null) {
-                            showToast(context, "Failed to open output stream.")
-                            return@use
-                        }
-                        document.save(outputStream)
+                        val outputStream = resolver.openOutputStream(destinationUri)
+                            ?: throw IllegalStateException("Failed to open output stream.")
+                        outputStream.use { document.save(it) }
+                    } finally {
+                        document.close()
                     }
-                    document.close()
                 }
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -124,9 +134,48 @@ object PdfExporter {
                 showToast(context, "PDF Exported to Downloads folder!")
 
             } catch (e: Exception) {
-                e.printStackTrace()
+                android.util.Log.e("PdfExporter", "Export failed", e)
+                destinationUri?.let { uri ->
+                    runCatching { context.contentResolver.delete(uri, null, null) }
+                }
                 showToast(context, "Error during PDF export: ${e.message}")
             }
+        }
+    }
+
+    private fun normalizeRotation(rawRotation: Int): Int =
+        ((rawRotation % 360) + 360) % 360
+
+    private fun safeCropBox(page: PDPage): PDRectangle =
+        try {
+            val box = page.cropBox
+            if (box.width > 0f && box.height > 0f) box else page.mediaBox
+        } catch (_: Exception) {
+            page.mediaBox
+        }
+
+    /** Viewport size of a page after its /Rotate is applied (matches PdfRenderer.Page.width/height). */
+    private fun rotatedViewSize(rotation: Int, cropBox: PDRectangle): Pair<Float, Float> {
+        val r = normalizeRotation(rotation)
+        return if (r == 90 || r == 270) Pair(cropBox.height, cropBox.width)
+        else Pair(cropBox.width, cropBox.height)
+    }
+
+    /**
+     * Maps Y-up coordinates in the rotated view space onto unrotated CropBox user space,
+     * so annotations exported at the on-screen orientation land correctly in every viewer.
+     */
+    private fun pageViewMatrix(rotation: Int, cropBox: PDRectangle): Matrix {
+        val r = normalizeRotation(rotation)
+        val llx = cropBox.lowerLeftX
+        val lly = cropBox.lowerLeftY
+        val urx = cropBox.upperRightX
+        val ury = cropBox.upperRightY
+        return when (r) {
+            90  -> Matrix(0f, 1f, -1f, 0f, urx, lly)
+            180 -> Matrix(-1f, 0f, 0f, -1f, urx, ury)
+            270 -> Matrix(0f, -1f, 1f, 0f, llx, ury)
+            else -> Matrix(1f, 0f, 0f, 1f, llx, lly)
         }
     }
 

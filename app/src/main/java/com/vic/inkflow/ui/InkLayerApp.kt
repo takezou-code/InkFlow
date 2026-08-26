@@ -864,15 +864,8 @@ private fun buildDocumentDragTransfer(documentUri: String): DragAndDropTransferD
 
 @OptIn(ExperimentalFoundationApi::class)
 private fun Modifier.documentDragSource(documentUri: String): Modifier {
-    return this.dragAndDropSource {
-        detectDragGesturesAfterLongPress(
-            onDragStart = {
-                startTransfer(buildDocumentDragTransfer(documentUri))
-            },
-            onDrag = { change, _ ->
-                change.consume()
-            }
-        )
+    return this.dragAndDropSource { _ ->
+        buildDocumentDragTransfer(documentUri)
     }
 }
 
@@ -2270,8 +2263,12 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
         )
     }
 
-    // Derive current page aspect ratio from the ViewModel's paper style
-    val pageAspectRatio = paperStyle.aspectRatio
+    // Per-page aspect ratio: follows each page's real dimensions once scanned;
+    // falls back to the document model space (which annotations are normalised against).
+    val pageSizeVersion by pdfViewModel.pageSizeVersion.collectAsState()
+    val pageAspectRatio = remember(paperStyle.aspectRatio, currentPageIndex, pageSizeVersion) {
+        pdfViewModel.getPageAspectRatio(currentPageIndex, paperStyle.aspectRatio)
+    }
 
     Column(
         modifier = Modifier
@@ -2363,6 +2360,8 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                 currentPageIndex = currentPageIndex,
                 db = db,
                 documentUri = uri.toString(),
+                modelWidth = viewModel.modelWidth,
+                modelHeight = viewModel.modelHeight,
                 onPageSelected = { index ->
                     currentPageIndex = index
                     viewModel.setActivePage(index)
@@ -2511,6 +2510,8 @@ private fun Sidebar(
     currentPageIndex: Int,
     db: AppDatabase,
     documentUri: String,
+    modelWidth: Float,
+    modelHeight: Float,
     onPageSelected: (Int) -> Unit,
     onAddPage: (afterIndex: Int) -> Unit,
     onDeletePages: (List<Int>) -> Unit,
@@ -2711,7 +2712,9 @@ private fun Sidebar(
                                     isBookmarked = index in bookmarkedPages,
                                     onBookmarkToggle = { newState -> pdfViewModel.toggleBookmark(documentUri, index, newState) },
                                     boxModifier = Modifier.fillMaxWidth().aspectRatio(pdfViewModel.getPageAspectRatio(index))
-                                        .let { if (isSelectionMode) it.padding(8.dp) else it }
+                                        .let { if (isSelectionMode) it.padding(8.dp) else it },
+                                    modelWidth = modelWidth,
+                                    modelHeight = modelHeight
                                 )
                                 if (isSelectionMode) {
                                     androidx.compose.material3.Checkbox(
@@ -2807,7 +2810,9 @@ private fun Sidebar(
                                     isSelected = index == currentPageIndex,
                                     isBookmarked = index in bookmarkedPages,
                                     onBookmarkToggle = { newState -> pdfViewModel.toggleBookmark(documentUri, index, newState) },
-                                    boxModifier = Modifier.width(88.dp).aspectRatio(pdfViewModel.getPageAspectRatio(index))
+                                    boxModifier = Modifier.width(88.dp).aspectRatio(pdfViewModel.getPageAspectRatio(index)),
+                                    modelWidth = modelWidth,
+                                    modelHeight = modelHeight
                                 )
                             } else {
                                 PageIcon(
@@ -2874,7 +2879,9 @@ private fun PageThumbnail(
     isSelected: Boolean,
     isBookmarked: Boolean = false,
     onBookmarkToggle: ((Boolean) -> Unit)? = null,
-    boxModifier: Modifier = Modifier.width(88.dp).aspectRatio(1f / 1.414f)
+    boxModifier: Modifier = Modifier.width(88.dp).aspectRatio(1f / 1.414f),
+    modelWidth: Float = 595f,
+    modelHeight: Float = 842f
 ) {
     val context = LocalContext.current
     val isDarkSurface = MaterialTheme.colorScheme.background.luminance() < 0.5f
@@ -2934,8 +2941,8 @@ private fun PageThumbnail(
             }
             // Unified ink + image + text overlay
             Spacer(modifier = Modifier.fillMaxSize().drawWithCache {
-                val modelW = 595f
-                val modelH = 842f
+                val modelW = modelWidth
+                val modelH = modelHeight
                 val sx = size.width / modelW
                 val sy = size.height / modelH
                 val bmpWidth = size.width.toInt().coerceAtLeast(1)
@@ -4510,7 +4517,6 @@ fun AiWebPanel(
                     settings.apply {
                         javaScriptEnabled = true
                         domStorageEnabled = true
-                        databaseEnabled = true
                         allowFileAccess = true
                         
                         // 側邊欄空間狹窄，不可開啟 WideViewPort，這會讓 Gemini 用寬視圖塞進窄空間導致內容消失跑版
