@@ -70,6 +70,9 @@ dependencies {
     // PDFBox
     implementation(libs.pdfbox.android)
 
+    // Liquid-glass backdrop blur
+    implementation(libs.haze)
+
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

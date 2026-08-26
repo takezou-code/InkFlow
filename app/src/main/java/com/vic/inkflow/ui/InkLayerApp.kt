@@ -1,5 +1,7 @@
 ﻿package com.vic.inkflow.ui
 
+import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.hazeSource
 import com.vic.inkflow.ui.theme.Motion
 import com.vic.inkflow.ui.theme.ShapeSm
 import com.vic.inkflow.ui.theme.ShapeMd
@@ -544,10 +546,13 @@ fun DocumentLibraryScreen(
 
     // Outer Box does NOT read any animated State, so it never recomposes at 60 fps.
     // The animated gradient is drawn by the isolated AnimatedGradientBackground child.
+    val libraryHazeState = rememberHazeState()
     Box(
         modifier = Modifier.fillMaxSize()
     ) {
-        AnimatedGradientBackground(isDarkTheme, Modifier.fillMaxSize())
+        AnimatedGradientBackground(isDarkTheme, Modifier.fillMaxSize().then(
+            androidx.compose.ui.Modifier.hazeSource(libraryHazeState)
+        ))
 
     Row(
         modifier = Modifier
@@ -622,7 +627,8 @@ fun DocumentLibraryScreen(
                     isGridView = isGridView,
                     onToggleGridView = { isGridView = !isGridView },
                     selectedNavIndex = selectedNavIndex,
-                    onCreateFolder = { showCreateFolderDialog = true }
+                    onCreateFolder = { showCreateFolderDialog = true },
+                    hazeState = libraryHazeState
                 )
             },
             floatingActionButton = {
@@ -631,6 +637,8 @@ fun DocumentLibraryScreen(
                     showFabMenu = showFabMenu,
                     onToggleMenu = { showFabMenu = !showFabMenu },
                     onDismissMenu = { showFabMenu = false },
+                    isDarkTheme = isDarkTheme,
+                    hazeState = libraryHazeState,
                     onOpenPdf = {
                         showFabMenu = false
                         pdfLauncher.launch(arrayOf("application/pdf"))
@@ -651,6 +659,7 @@ fun DocumentLibraryScreen(
                     .padding(innerPadding)
                     .fillMaxSize()
                     .padding(horizontal = 18.dp)
+                    .hazeSource(libraryHazeState)
             ) {
                 AnimatedVisibility(
                     visible = normalizedQuery.isNotEmpty(),
@@ -1378,7 +1387,8 @@ private fun LibraryHeroPanel(
     isGridView: Boolean,
     onToggleGridView: () -> Unit,
     selectedNavIndex: Int = 0,
-    onCreateFolder: () -> Unit = {}
+    onCreateFolder: () -> Unit = {},
+    hazeState: dev.chrisbanes.haze.HazeState
 ) {
     val cardShellColor = MaterialTheme.colorScheme.surface
 
@@ -1389,10 +1399,9 @@ private fun LibraryHeroPanel(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Surface(
-            color = cardShellColor,
-            shape = ShapeLg,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-            shadowElevation = 2.dp
+            modifier = Modifier.glassPanel(hazeState, isDarkTheme),
+            color = Color.Transparent,
+            contentColor = MaterialTheme.colorScheme.onSurface
         ) {
             Column(
                 modifier = Modifier
@@ -1433,9 +1442,9 @@ private fun LibraryHeroPanel(
                         )
                     }
                     Surface(
-                        shape = ShapeLg,
-                        color = cardShellColor,
-                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant
                     ) {
                         Column(
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
@@ -1554,10 +1563,13 @@ private fun DocumentLibraryFab(
     showFabMenu: Boolean,
     onToggleMenu: () -> Unit,
     onDismissMenu: () -> Unit,
+    isDarkTheme: Boolean,
+    hazeState: dev.chrisbanes.haze.HazeState,
     onOpenPdf: () -> Unit,
     onCreateBlank: () -> Unit,
     onCreateFolder: () -> Unit
 ) {
+    val fabContentColor = if (isDarkTheme) Color.White else MaterialTheme.colorScheme.primary
     Box {
         val fabInteractionSource = remember { MutableInteractionSource() }
         val isFabPressed by fabInteractionSource.collectIsPressedAsState()
@@ -1570,9 +1582,7 @@ private fun DocumentLibraryFab(
         Box(
             modifier = Modifier
                 .graphicsLayer { scaleX = fabScale; scaleY = fabScale }
-                .clip(ShapeLg)
-                .background(brandGradient)
-                .border(1.dp, Color.White.copy(alpha = 0.22f), ShapeLg)
+                .glassPanel(hazeState, isDarkTheme)
                 .clickable(interactionSource = fabInteractionSource, indication = androidx.compose.foundation.LocalIndication.current, onClick = onToggleMenu)
                 .padding(horizontal = 18.dp, vertical = 14.dp)
         ) {
@@ -1583,14 +1593,14 @@ private fun DocumentLibraryFab(
                 Box(
                     modifier = Modifier
                         .size(36.dp)
-                        .background(Color.White.copy(alpha = 0.18f), CircleShape),
+                        .background(fabContentColor.copy(alpha = 0.14f), CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(Icons.Default.Add, contentDescription = null, tint = Color.White)
+                    Icon(Icons.Default.Add, contentDescription = null, tint = fabContentColor)
                 }
                 Column {
-                    Text("新增筆記", color = Color.White, style = MaterialTheme.typography.labelLarge)
-                    Text("空白頁或匯入 PDF", color = Color.White.copy(alpha = 0.82f), style = MaterialTheme.typography.labelSmall)
+                    Text("新增筆記", color = fabContentColor, style = MaterialTheme.typography.labelLarge)
+                    Text("空白頁或匯入 PDF", color = fabContentColor.copy(alpha = 0.72f), style = MaterialTheme.typography.labelSmall)
                 }
             }
         }
@@ -3149,6 +3159,7 @@ private fun Workspace(
     var offsetX by rememberSaveable { mutableFloatStateOf(0f) }
     var offsetY by rememberSaveable { mutableFloatStateOf(0f) }
     val isDarkSurface = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    val bubbleHazeState = rememberHazeState()
     val primaryColor = MaterialTheme.colorScheme.primary
     val deskBrush = remember(isDarkSurface, primaryColor) {
         Brush.linearGradient(
@@ -3394,6 +3405,7 @@ private fun Workspace(
             modifier = Modifier
                 .fillMaxSize(0.86f)
                 .aspectRatio(pageAspectRatio, matchHeightConstraintsFirst = true)
+                .hazeSource(bubbleHazeState)
                 .onSizeChanged {
                     paperWidthPx = it.width
                     paperHeightPx = it.height
@@ -3508,14 +3520,16 @@ private fun Workspace(
                 )
         ) {
             Surface(
-                modifier = Modifier.onSizeChanged {
-                    bubbleWidthPx = it.width
-                    bubbleHeightPx = it.height
-                },
+                modifier = Modifier
+                    .glassPanel(bubbleHazeState, isDarkSurface, shape = CircleShape, specular = false)
+                    .onSizeChanged {
+                        bubbleWidthPx = it.width
+                        bubbleHeightPx = it.height
+                    },
                 shape = CircleShape,
-                color = MaterialTheme.colorScheme.primaryContainer,
-                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                shadowElevation = 8.dp
+                color = Color.Transparent,
+                contentColor = MaterialTheme.colorScheme.onSurface,
+                shadowElevation = 6.dp
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
