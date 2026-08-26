@@ -510,8 +510,12 @@ abstract class AppDatabase : RoomDatabase() {
 
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
+                val appContext = context.applicationContext
+                // Restore-swap and crash-journal replay must run before Room opens the DB.
+                runCatching { com.vic.inkflow.util.BackupManager.applyPendingRestoreIfNeeded(appContext) }
+                    .onFailure { android.util.Log.e("AppDatabase", "pending restore failed", it) }
                 val instance = Room.databaseBuilder(
-                    context.applicationContext,
+                    appContext,
                     AppDatabase::class.java,
                     "ink_layer_database"
                 )
@@ -542,6 +546,8 @@ abstract class AppDatabase : RoomDatabase() {
                 .fallbackToDestructiveMigrationOnDowngrade(dropAllTables = true)
                 .build()
                 INSTANCE = instance
+                runCatching { com.vic.inkflow.util.PageOpJournal.reconcilePending(appContext, instance) }
+                    .onFailure { android.util.Log.e("AppDatabase", "journal reconcile failed", it) }
                 instance
             }
         }

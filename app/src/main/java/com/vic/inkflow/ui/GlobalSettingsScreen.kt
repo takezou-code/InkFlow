@@ -1,6 +1,8 @@
 package com.vic.inkflow.ui
 
 import android.content.SharedPreferences
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
@@ -25,6 +27,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuAnchorType
+import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
@@ -47,6 +51,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -59,6 +64,10 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
 import com.vic.inkflow.ui.theme.BrandTheme
+import com.vic.inkflow.util.BackupManager
+import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
 
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
 
@@ -126,6 +135,97 @@ fun GlobalSettingsScreen(
                     onBrandThemeChanged(brand)
                     prefs.edit().putString("brand_theme", brand.name).apply()
                 }
+            }
+
+            // Section 1b: 備份與還原 (Backup & Restore)
+            val appContext = androidx.compose.ui.platform.LocalContext.current
+            val coroutineScope = rememberCoroutineScope()
+            var isBackupBusy by remember { mutableStateOf(false) }
+            var backupStatus by remember { mutableStateOf<String?>(null) }
+            var showRestartDialog by remember { mutableStateOf(false) }
+
+            val exportBackupLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.CreateDocument(BackupManager.MIME_TYPE)
+            ) { destUri ->
+                if (destUri != null && !isBackupBusy) {
+                    isBackupBusy = true
+                    backupStatus = "正在匯出…"
+                    coroutineScope.launch {
+                        val result = BackupManager.createBackup(appContext, destUri) { msg -> backupStatus = msg }
+                        backupStatus = result.fold(
+                            onSuccess = { count -> "備份完成（$count 份文件）" },
+                            onFailure = { "備份失敗：${it.message}" }
+                        )
+                        isBackupBusy = false
+                    }
+                }
+            }
+
+            val importBackupLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.OpenDocument()
+            ) { srcUri ->
+                if (srcUri != null && !isBackupBusy) {
+                    isBackupBusy = true
+                    backupStatus = "正在驗證備份檔…"
+                    coroutineScope.launch {
+                        val result = BackupManager.stageRestore(appContext, srcUri)
+                        result.fold(
+                            onSuccess = { count ->
+                                backupStatus = "備份驗證成功（$count 份文件），重啟後套用"
+                                showRestartDialog = true
+                            },
+                            onFailure = {
+                                backupStatus = "還原失敗：${it.message}"
+                                isBackupBusy = false
+                            }
+                        )
+                    }
+                }
+            }
+
+            SettingsSection("備份與還原 (Backup)") {
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+                    androidx.compose.material3.Button(
+                        onClick = {
+                            exportBackupLauncher.launch(
+                                "InkFlow_Backup_" + SimpleDateFormat("yyyyMMdd_HHmm").format(Date()) + ".zip"
+                            )
+                        },
+                        enabled = !isBackupBusy,
+                        modifier = Modifier.weight(1f)
+                    ) { Text(if (isBackupBusy) "處理中…" else "匯出全部備份") }
+                    androidx.compose.material3.OutlinedButton(
+                        onClick = { importBackupLauncher.launch(arrayOf("*/*", "application/zip", "application/octet-stream")) },
+                        enabled = !isBackupBusy,
+                        modifier = Modifier.weight(1f)
+                    ) { Text("還原備份") }
+                }
+                backupStatus?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+
+            if (showRestartDialog) {
+                androidx.compose.material3.AlertDialog(
+                    onDismissRequest = { showRestartDialog = false },
+                    title = { Text("還原就緒") },
+                    text = { Text("備份資料已完成驗證。重新啟動 App 後將以備份內容取代目前的文件清單與註解。") },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            showRestartDialog = false
+                            val intent = appContext.packageManager.getLaunchIntentForPackage(appContext.packageName)
+                            intent?.addFlags(
+                                android.content.Intent.FLAG_ACTIVITY_NEW_TASK or
+                                    android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK
+                            )
+                            if (intent != null) appContext.startActivity(intent)
+                            Runtime.getRuntime().exit(0)
+                        }) { Text("立即重新啟動") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showRestartDialog = false }) { Text("稍後自行重啟") }
+                    }
+                )
             }
 
             // Section 2: 預設操作 (Interactions)
@@ -529,7 +629,7 @@ private fun ThemeModeSelector(current: ThemeMode, onSelect: (ThemeMode) -> Unit)
                 onValueChange = {},
                 readOnly = true,
                 trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-                modifier = Modifier.menuAnchor().width(180.dp)
+                modifier = Modifier.menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable).width(180.dp)
             )
             ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
                 ThemeMode.values().forEach { mode ->
@@ -565,7 +665,7 @@ private fun InputModeSelector(current: InputMode, onSelect: (InputMode) -> Unit)
                 onValueChange = {},
                 readOnly = true,
                 trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-                modifier = Modifier.menuAnchor().width(180.dp)
+                modifier = Modifier.menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable).width(180.dp)
             )
             ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
                 InputMode.values().forEach { mode ->
@@ -596,7 +696,7 @@ private fun PageBackgroundSelector(current: PageBackground, onSelect: (PageBackg
                 onValueChange = {},
                 readOnly = true,
                 trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-                modifier = Modifier.menuAnchor().width(180.dp)
+                modifier = Modifier.menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable).width(180.dp)
             )
             ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
                 PageBackground.values().forEach { bg ->

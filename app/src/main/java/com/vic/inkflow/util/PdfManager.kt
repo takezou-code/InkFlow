@@ -45,14 +45,21 @@ object PdfManager {
 
     suspend fun copyImageToAppDir(context: Context, sourceUri: Uri): Uri? =
         withContext(Dispatchers.IO) {
+            var dest: File? = null
             try {
-                val dest = File(pdfDir(context), "${UUID.randomUUID()}.jpg")
-                context.contentResolver.openInputStream(sourceUri)?.use { input ->
-                    FileOutputStream(dest).use { output -> input.copyTo(output) }
+                dest = File(pdfDir(context), "${UUID.randomUUID()}.jpg")
+                val input = context.contentResolver.openInputStream(sourceUri)
+                if (input == null) {
+                    dest.delete()
+                    return@withContext null
+                }
+                input.use { stream ->
+                    FileOutputStream(dest).use { output -> stream.copyTo(output) }
                 }
                 Uri.fromFile(dest)
             } catch (e: Exception) {
                 Log.e(TAG, "copyImageToAppDir failed", e)
+                dest?.delete()
                 null
             }
         }
@@ -278,8 +285,8 @@ object PdfManager {
                         // 因為已移除 fromIndex，toIndex 代表的就是最終想要的絕對位置索引
                         doc.pages.insertBefore(pageToMove, doc.getPage(toIndex))
                     }
-                    
-                    val tmpFile = File(file.parent, ".tmp_.pdf")
+
+                    val tmpFile = File(file.parent, "${file.nameWithoutExtension}.tmp_${System.currentTimeMillis()}.pdf")
                     try {
                         doc.save(tmpFile)
                         if (!tmpFile.renameTo(file)) {
@@ -318,8 +325,8 @@ object PdfManager {
                             doc.removePage(index)
                         }
                     }
-                    
-                    val tmpFile = File(file.parent, ".tmp_.pdf")
+
+                    val tmpFile = File(file.parent, "${file.nameWithoutExtension}.tmp_${System.currentTimeMillis()}.pdf")
                     try {
                         doc.save(tmpFile)
                         if (!tmpFile.renameTo(file)) {

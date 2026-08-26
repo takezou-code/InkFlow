@@ -56,17 +56,18 @@ A tablet-first PDF annotation and note-taking app for Android, built entirely wi
 
 | Category | Library | Version |
 |---|---|---|
-| Language | Kotlin | 2.0.21 |
-| UI | Jetpack Compose BOM | 2024.09.00 |
+| Language | Kotlin | 2.4.10 |
+| UI | Jetpack Compose BOM | 2026.08.00 |
 | UI | Material 3 | (via BOM) |
-| Navigation | Navigation Compose | 2.7.7 |
-| Lifecycle / ViewModel | Lifecycle ViewModel Compose | 2.8.0 |
-| Database | Room | 2.7.0 |
-| Code generation | KSP | 2.0.21-1.0.28 |
+| Navigation | Navigation Compose | 2.9.8 |
+| Lifecycle / ViewModel | Lifecycle ViewModel Compose | 2.11.0 |
+| Database | Room | 2.8.4 |
+| Code generation | KSP | 2.3.11 |
 | PDF read/write | PdfBox-Android (tom-roush) | 2.0.27.0 |
 | PDF rendering | Android `PdfRenderer` | built-in |
-| JSON | Gson | 2.10.1 |
-| Build plugin | AGP | 9.0.1 |
+| JSON | Gson | 2.14.0 |
+| Build plugin | AGP | 9.3.2 |
+| Build tool | Gradle | 9.7.1 |
 
 **SDK targets**
 
@@ -74,7 +75,32 @@ A tablet-first PDF annotation and note-taking app for Android, built entirely wi
 |---|---|
 | `minSdk` | 32 (Android 12L) |
 | `targetSdk` | 36 |
-| `compileSdk` | 36 |
+| `compileSdk` | 37.1 |
+
+---
+
+## Backup & Data Safety
+
+### `.inkbak` backup container (ZIP)
+
+| Entry | Content |
+|---|---|
+| `manifest.json` | `formatVersion`, timestamps, app version, DB schema version, original working dir, document list |
+| `database.db` | Consistent SQLite snapshot (`VACUUM INTO`) of all documents / strokes / annotations / preferences |
+| `pdfs/<uuid>.pdf` | Each document's working PDF |
+| `images/<uuid>` | Image annotation assets (deduplicated) |
+
+- **Export**: 設定 → 備份與還原 → 匯出全部備份（SAF 選目的地）
+- **Restore**: 設定 → 還原備份 → 挑選 `.zip/.inkbak` → 驗證 → 重啟 App 後自動套用
+  （資料庫與 PDF 於 Room 開啟前原子交換；跨裝置還原時自動以 SQL `REPLACE` 重寫絕對路徑 URI）
+
+### Crash safety
+
+- Page operations (insert / delete / move / import) follow a journal protocol:
+  `backup file → journal(prepared) → atomic PDF mutation → journal(file_done) → DB transaction → clear`
+- Process death between the PDF mutation and the DB update is auto-repaired on next launch
+  by `PageOpJournal.reconcilePending()`; a pre-op copy is kept for rollback.
+- All PDF writes use temp-file + atomic rename; export failures clean up pending MediaStore entries.
 
 ---
 
