@@ -2885,7 +2885,9 @@ private fun PageThumbnail(
 ) {
     val context = LocalContext.current
     val isDarkSurface = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    val paperColor = MaterialTheme.colorScheme.surface
+    // Paper base must be pure white to match rendered PDF bitmaps (eraseColor(WHITE)),
+    // regardless of dark/light theme — prevents non-white patches while bitmaps load.
+    val paperColor = Color.White
     // Cache decoded bitmaps keyed by URI string
     val loadedImages = remember { mutableStateMapOf<String, android.graphics.Bitmap?>() }
     LaunchedEffect(imageAnnotations) {
@@ -3550,7 +3552,11 @@ private fun Workspace(
                                     } ?: pdfViewModel.getPageBitmap(sourcePageIndex).value
 
                                     val newPageIndex = sourcePageIndex + 1
-                                    pdfViewModel.insertBlankPage(context, documentUri, sourcePageIndex)
+                                    pdfViewModel.insertBlankPage(
+                                        context, documentUri, sourcePageIndex,
+                                        pageWidthPt = viewModel.modelWidth,
+                                        pageHeightPt = viewModel.modelHeight
+                                    )
 
                                     viewModel.extractRegionToNewPage(
                                         context = context,

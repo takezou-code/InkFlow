@@ -355,7 +355,9 @@ fun InkCanvas(
                         pdfViewModel.insertBlankPage(
                             context = context,
                             documentUri = documentUri,
-                            afterIndex = insertAfterIndex
+                            afterIndex = insertAfterIndex,
+                            pageWidthPt = viewModel.modelWidth,
+                            pageHeightPt = viewModel.modelHeight
                         )
                         val inserted = waitForInsertedPage(previousPageCount)
                         if (!inserted) return@forEachIndexed
