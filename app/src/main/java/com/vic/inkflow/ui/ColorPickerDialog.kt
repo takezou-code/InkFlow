@@ -1,5 +1,8 @@
 ﻿package com.vic.inkflow.ui
 
+import androidx.compose.foundation.shape.CircleShape
+import com.vic.inkflow.ui.theme.ShapeSm
+import com.vic.inkflow.ui.theme.ShapeLg
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -81,7 +84,7 @@ fun ColorPickerDialog(
         },
         text = {
             Surface(
-                shape = RoundedCornerShape(24.dp),
+                shape = ShapeLg,
                 color = panelColor,
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
             ) {
@@ -141,7 +144,7 @@ fun ColorPickerDialog(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(48.dp)
-                            .clip(RoundedCornerShape(14.dp))
+                            .clip(ShapeSm)
                             .background(
                                 if (isDarkSurface) {
                                     Color(0xFF2A2A2A)

@@ -2,6 +2,7 @@ package com.vic.inkflow.ui.theme
 
 import android.app.Activity
 import android.os.Build
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
@@ -13,6 +14,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 
 enum class BrandTheme(val primary: Color, val secondary: Color) {
@@ -154,6 +156,13 @@ fun InkFlowTheme(
     MaterialTheme(
         colorScheme = colorScheme,
         typography = Typography,
+        shapes = androidx.compose.material3.Shapes(
+            extraSmall = RoundedCornerShape(8.dp),
+            small = ShapeSm,
+            medium = ShapeMd,
+            large = ShapeLg,
+            extraLarge = ShapeXl
+        ),
         content = content
     )
 }

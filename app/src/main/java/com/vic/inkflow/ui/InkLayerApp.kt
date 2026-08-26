@@ -1,5 +1,10 @@
 ﻿package com.vic.inkflow.ui
 
+import com.vic.inkflow.ui.theme.Motion
+import com.vic.inkflow.ui.theme.ShapeSm
+import com.vic.inkflow.ui.theme.ShapeMd
+import com.vic.inkflow.ui.theme.ShapeLg
+import com.vic.inkflow.ui.theme.ShapeXl
 import com.vic.inkflow.util.reorderable
 import com.vic.inkflow.util.reorderableItem
 
@@ -240,15 +245,17 @@ fun InkLayerApp(db: AppDatabase) {
     var brandThemeStr by rememberSaveable(prefs) { mutableStateOf(prefs.getString("brand_theme", com.vic.inkflow.ui.theme.BrandTheme.INDIGO.name) ?: com.vic.inkflow.ui.theme.BrandTheme.INDIGO.name) }
     val brandTheme = com.vic.inkflow.ui.theme.BrandTheme.values().find { it.name == brandThemeStr } ?: com.vic.inkflow.ui.theme.BrandTheme.INDIGO
 
-    InkFlowTheme(darkTheme = isDarkTheme, brandTheme = brandTheme) {
+    var dynamicColor by rememberSaveable(prefs) { mutableStateOf(prefs.getBoolean("dynamic_color", false)) }
+
+    InkFlowTheme(darkTheme = isDarkTheme, brandTheme = brandTheme, dynamicColor = dynamicColor) {
         val navController = rememberNavController()
     NavHost(
         navController = navController,
         startDestination = "home",
-        enterTransition = { slideInHorizontally(initialOffsetX = { it }, animationSpec = tween(350)) + fadeIn(animationSpec = tween(350)) },
-        exitTransition = { slideOutHorizontally(targetOffsetX = { -it / 4 }, animationSpec = tween(350)) + fadeOut(animationSpec = tween(350)) },
-        popEnterTransition = { slideInHorizontally(initialOffsetX = { -it / 4 }, animationSpec = tween(350)) + fadeIn(animationSpec = tween(350)) },
-        popExitTransition = { slideOutHorizontally(targetOffsetX = { it }, animationSpec = tween(350)) + fadeOut(animationSpec = tween(350)) }
+        enterTransition = { slideInHorizontally(initialOffsetX = { it }, animationSpec = tween(Motion.DURATION_SLOW)) + fadeIn(animationSpec = tween(Motion.DURATION_SLOW)) },
+        exitTransition = { slideOutHorizontally(targetOffsetX = { -it / 4 }, animationSpec = tween(Motion.DURATION_SLOW)) + fadeOut(animationSpec = tween(Motion.DURATION_SLOW)) },
+        popEnterTransition = { slideInHorizontally(initialOffsetX = { -it / 4 }, animationSpec = tween(Motion.DURATION_SLOW)) + fadeIn(animationSpec = tween(Motion.DURATION_SLOW)) },
+        popExitTransition = { slideOutHorizontally(targetOffsetX = { it }, animationSpec = tween(Motion.DURATION_SLOW)) + fadeOut(animationSpec = tween(Motion.DURATION_SLOW)) }
     ) {
         composable("home") {
             DocumentLibraryScreen(
@@ -269,7 +276,8 @@ fun InkLayerApp(db: AppDatabase) {
                 currentBrandTheme = brandTheme,
                 onBrandThemeChanged = { brandThemeStr = it.name },
                 currentThemeMode = themeMode,
-                onThemeModeChanged = { themeModeStr = it.name }
+                onThemeModeChanged = { themeModeStr = it.name },
+                onDynamicColorChanged = { dynamicColor = it }
             )
         }
         composable(
@@ -654,7 +662,7 @@ fun DocumentLibraryScreen(
                             .fillMaxWidth()
                             .padding(top = 4.dp, bottom = 12.dp),
                         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
-                        shape = RoundedCornerShape(18.dp),
+                        shape = ShapeMd,
                         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
                     ) {
                         Row(
@@ -941,7 +949,7 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
                             }
                         }
                     ),
-                    shape = RoundedCornerShape(16.dp),
+                    shape = ShapeMd,
                     color = if (isDropTargetActive) {
                         MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
                     } else {
@@ -1201,7 +1209,7 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
                             }
                         }
                     ),
-                shape = RoundedCornerShape(16.dp),
+                shape = ShapeMd,
                 color = if (isFolderDropTargetActive) {
                     MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
                 } else {
@@ -1372,9 +1380,7 @@ private fun LibraryHeroPanel(
     selectedNavIndex: Int = 0,
     onCreateFolder: () -> Unit = {}
 ) {
-    val cardShellColor = MaterialTheme.colorScheme.primary
-        .copy(alpha = 0.15f)
-        .compositeOver(MaterialTheme.colorScheme.surface)
+    val cardShellColor = MaterialTheme.colorScheme.surface
 
     Column(
         modifier = Modifier
@@ -1384,9 +1390,9 @@ private fun LibraryHeroPanel(
     ) {
         Surface(
             color = cardShellColor,
-            shape = RoundedCornerShape(24.dp),
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
-            shadowElevation = 6.dp
+            shape = ShapeLg,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            shadowElevation = 2.dp
         ) {
             Column(
                 modifier = Modifier
@@ -1427,7 +1433,7 @@ private fun LibraryHeroPanel(
                         )
                     }
                     Surface(
-                        shape = RoundedCornerShape(22.dp),
+                        shape = ShapeLg,
                         color = cardShellColor,
                         contentColor = MaterialTheme.colorScheme.onPrimaryContainer
                     ) {
@@ -1469,7 +1475,7 @@ private fun LibraryHeroPanel(
                             focusedBorderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
                             unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
                         ),
-                        shape = RoundedCornerShape(24.dp),
+                        shape = ShapeLg,
                         modifier = Modifier.weight(1f)
                     )
                     
@@ -1528,7 +1534,7 @@ private fun LibraryHeroPanel(
 @Composable
 private fun LibraryStatPill(title: String, value: String) {
     Surface(
-        shape = RoundedCornerShape(18.dp),
+        shape = ShapeMd,
         color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
     ) {
         Row(
@@ -1564,9 +1570,9 @@ private fun DocumentLibraryFab(
         Box(
             modifier = Modifier
                 .graphicsLayer { scaleX = fabScale; scaleY = fabScale }
-                .clip(RoundedCornerShape(24.dp))
+                .clip(ShapeLg)
                 .background(brandGradient)
-                .border(1.dp, Color.White.copy(alpha = 0.22f), RoundedCornerShape(24.dp))
+                .border(1.dp, Color.White.copy(alpha = 0.22f), ShapeLg)
                 .clickable(interactionSource = fabInteractionSource, indication = androidx.compose.foundation.LocalIndication.current, onClick = onToggleMenu)
                 .padding(horizontal = 18.dp, vertical = 14.dp)
         ) {
@@ -1655,7 +1661,7 @@ private fun LibraryEmptyState(
                     .fillMaxWidth()
                     .widthIn(max = 560.dp),
                 color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.96f),
-                shape = RoundedCornerShape(30.dp),
+                shape = ShapeXl,
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),
                 shadowElevation = 10.dp
             ) {
@@ -1703,7 +1709,7 @@ private fun LibraryEmptyState(
                     ) {
                         if (isSearchActive) {
                             Surface(
-                                shape = RoundedCornerShape(20.dp),
+                                shape = ShapeLg,
                                 color = MaterialTheme.colorScheme.primaryContainer,
                                 modifier = Modifier.clickable(onClick = onClearSearch)
                             ) {
@@ -1717,7 +1723,7 @@ private fun LibraryEmptyState(
                         } else {
                             Box(
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(20.dp))
+                                    .clip(ShapeLg)
                                     .background(brandGradient)
                                     .clickable(onClick = onOpenPdf)
                             ) {
@@ -1731,7 +1737,7 @@ private fun LibraryEmptyState(
                         }
 
                         Surface(
-                            shape = RoundedCornerShape(20.dp),
+                            shape = ShapeLg,
                             color = MaterialTheme.colorScheme.surfaceVariant,
                             modifier = Modifier.clickable(onClick = onCreateBlank)
                         ) {
@@ -1768,9 +1774,7 @@ private fun DocumentCard(
     var showCreateFolderDialog by remember { mutableStateOf(false) }
     var renameInput by remember(document.displayName) { mutableStateOf(document.displayName) }
     var folderInput by remember { mutableStateOf("") }
-    val cardShellColor = MaterialTheme.colorScheme.primary
-        .copy(alpha = 0.15f)
-        .compositeOver(MaterialTheme.colorScheme.surface) // 和工作列 shellColor 相同
+    val cardShellColor = MaterialTheme.colorScheme.surface
     val cardCoverColor = MaterialTheme.colorScheme.surface
 
     if (showRenameDialog) {
@@ -1902,12 +1906,6 @@ private fun DocumentCard(
         )
     }
 
-    val brandGradient = androidx.compose.ui.graphics.Brush.linearGradient(
-        listOf(
-            MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
-            MaterialTheme.colorScheme.secondary.copy(alpha = 0.10f)
-        )
-    )
     val cardInteractionSource = remember { MutableInteractionSource() }
     val isCardPressed by cardInteractionSource.collectIsPressedAsState()
     val cardScale by animateFloatAsState(
@@ -1928,57 +1926,45 @@ private fun DocumentCard(
             .aspectRatio(0.85f)
             .graphicsLayer { scaleX = cardScale; scaleY = cardScale }
             .documentDragSource(document.uri),
-        shape = androidx.compose.foundation.shape.RoundedCornerShape(24.dp),
+        shape = ShapeLg,
         colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = cardShellColor),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
-        elevation = androidx.compose.material3.CardDefaults.cardElevation(defaultElevation = 6.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        elevation = androidx.compose.material3.CardDefaults.cardElevation(defaultElevation = 2.dp),
         interactionSource = cardInteractionSource
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // Cover 60%
+            // Cover 60% — full-bleed, clipped by the card shape
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(0.6f)
-                    .background(cardShellColor),
+                    .background(cardCoverColor),
                 contentAlignment = Alignment.Center
             ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(12.dp)
-                        .clip(RoundedCornerShape(18.dp))
-                        .background(brandGradient)
-                )
                 Crossfade(
                     targetState = coverBitmap,
-                    animationSpec = tween(400),
+                    animationSpec = tween(Motion.DURATION_NORMAL),
                     label = "CardCoverFade"
                 ) { bitmap ->
                     if (bitmap != null) {
                         Image(
                             bitmap = bitmap.asImageBitmap(),
                             contentDescription = null,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(12.dp)
-                                .clip(RoundedCornerShape(18.dp)),
+                            modifier = Modifier.fillMaxSize(),
                             contentScale = ContentScale.Crop
                         )
                     } else {
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .padding(12.dp)
-                                .clip(RoundedCornerShape(18.dp))
-                                .background(Color.Transparent),
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.06f)),
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
                                 Icons.Outlined.FileUpload,
                                 contentDescription = null,
                                 modifier = Modifier.size(48.dp),
-                                tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)
+                                tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
                             )
                         }
                     }
@@ -1990,13 +1976,16 @@ private fun DocumentCard(
                 ) {
                     androidx.compose.material3.IconButton(
                         onClick = { onFavoriteToggle(!document.isFavorite) },
-                        modifier = Modifier.size(32.dp).background(Color.Black.copy(alpha = 0.3f), androidx.compose.foundation.shape.CircleShape)
+                        modifier = Modifier.size(32.dp).background(
+                            MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+                            CircleShape
+                        )
                     ) {
                         Icon(
                             imageVector = Icons.Default.Star,
                             contentDescription = "Favorite",
-                            tint = if (document.isFavorite) Color.Yellow else Color.White,
-                            modifier = Modifier.size(20.dp)
+                            tint = if (document.isFavorite) Color(0xFFFFB300) else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp)
                         )
                     }
                 }
@@ -2923,8 +2912,8 @@ private fun PageThumbnail(
         Box(
             modifier = boxModifier
                 .graphicsLayer { scaleX = thumbScale; scaleY = thumbScale }
-                .clip(RoundedCornerShape(18.dp))
-                .background(paperColor, shape = RoundedCornerShape(18.dp))
+                .clip(ShapeMd)
+                .background(paperColor, shape = ShapeMd)
         ) {
             if (bitmap != null) {
                 Image(
@@ -3078,8 +3067,8 @@ private fun PageThumbnail(
                     modifier = Modifier
                         .align(Alignment.Center)
                         .size(38.dp, 32.dp)
-                        .background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(10.dp))
-                        .border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(10.dp)),
+                        .background(MaterialTheme.colorScheme.surfaceContainerHigh, ShapeSm)
+                        .border(2.dp, MaterialTheme.colorScheme.primary, ShapeSm),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
@@ -3126,9 +3115,9 @@ private fun PageIcon(pageIndex: Int, isSelected: Boolean) {
     Box(
         modifier = Modifier
             .size(44.dp)
-            .background(if (isSelected) selectedBg else unselectedBg, shape = RoundedCornerShape(14.dp))
+            .background(if (isSelected) selectedBg else unselectedBg, shape = ShapeSm)
             .then(
-                if (isSelected) Modifier.border(BorderStroke(2.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.9f)), shape = RoundedCornerShape(14.dp))
+                if (isSelected) Modifier.border(BorderStroke(2.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.9f)), shape = ShapeSm)
                 else Modifier
             ),
         contentAlignment = Alignment.Center
@@ -3398,7 +3387,7 @@ private fun Workspace(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(horizontal = 20.dp, vertical = 18.dp)
-                .clip(RoundedCornerShape(32.dp))
+                .clip(ShapeXl)
                 .background(stageColor)
         )
         Surface(
@@ -3415,7 +3404,7 @@ private fun Workspace(
                     translationX = offsetX,
                     translationY = offsetY
                 ),
-            shape = RoundedCornerShape(10.dp),
+            shape = ShapeSm,
             shadowElevation = 18.dp,
             color = paperColor
         ) {
@@ -3774,7 +3763,7 @@ fun TabletEditorTopBar(
         ) {
             Surface(
                 modifier = Modifier.fillMaxHeight(),
-                shape = RoundedCornerShape(24.dp),
+                shape = ShapeLg,
                 color = shellColor
             ) {
                 Row(
@@ -3802,7 +3791,7 @@ fun TabletEditorTopBar(
 
             Surface(
                 modifier = Modifier.weight(1f).fillMaxHeight(),
-                shape = RoundedCornerShape(24.dp),
+                shape = ShapeLg,
                 color = shellColor
             ) {
                 Row(
@@ -3829,7 +3818,7 @@ fun TabletEditorTopBar(
                                                 MaterialTheme.colorScheme.secondary.copy(alpha = 0.82f)
                                             )
                                         ),
-                                        RoundedCornerShape(16.dp)
+                                        ShapeMd
                                     )
                             )
                         }
@@ -3933,7 +3922,7 @@ fun TabletEditorTopBar(
                                                 MaterialTheme.colorScheme.primary.copy(alpha = 0.78f)
                                             )
                                         ),
-                                        RoundedCornerShape(16.dp)
+                                        ShapeMd
                                     )
                             )
                         }
@@ -4065,7 +4054,7 @@ fun TabletEditorTopBar(
                     ) {
                         Surface(
                             modifier = Modifier.padding(start = 8.dp),
-                            shape = RoundedCornerShape(16.dp),
+                            shape = ShapeMd,
                             color = MaterialTheme.colorScheme.primaryContainer,
                             contentColor = MaterialTheme.colorScheme.onPrimaryContainer
                         ) {
@@ -4081,7 +4070,7 @@ fun TabletEditorTopBar(
 
             Surface(
                 modifier = Modifier.fillMaxHeight(),
-                shape = RoundedCornerShape(24.dp),
+                shape = ShapeLg,
                 color = shellColor
             ) {
                 Row(
@@ -4186,7 +4175,7 @@ private fun DocumentSettingsDialog(
 
                 Surface(
                     color = MaterialTheme.colorScheme.surfaceVariant,
-                    shape = RoundedCornerShape(20.dp)
+                    shape = ShapeLg
                 ) {
                     Column(
                         modifier = Modifier
@@ -4242,7 +4231,7 @@ private fun DocumentSettingsDialog(
 
                 Surface(
                     color = MaterialTheme.colorScheme.surfaceVariant,
-                    shape = RoundedCornerShape(20.dp)
+                    shape = ShapeLg
                 ) {
                     Row(
                         modifier = Modifier
@@ -4464,7 +4453,7 @@ private fun EditorIconButton(
                 .width(14.dp)
                 .height(3.dp)
                 .graphicsLayer { alpha = indicatorAlpha }
-                .background(MaterialTheme.colorScheme.onPrimaryContainer, RoundedCornerShape(999.dp))
+                .background(MaterialTheme.colorScheme.onPrimaryContainer, CircleShape)
         )
     }
 }
@@ -4848,7 +4837,7 @@ private fun DocumentListRow(
             .fillMaxWidth()
             .height(88.dp)
             .documentDragSource(document.uri),
-        shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
+        shape = ShapeMd,
         color = rowShellColor,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
         shadowElevation = 2.dp
@@ -4861,7 +4850,7 @@ private fun DocumentListRow(
                 modifier = Modifier
                     .fillMaxHeight()
                     .aspectRatio(1f / 1.414f)
-                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+                    .clip(ShapeSm)
                     .background(Color.White)
             ) {
                 if (coverBitmap != null) {
