@@ -246,12 +246,12 @@ internal fun Workspace(
     val isDarkSurface = MaterialTheme.colorScheme.background.luminance() < 0.5f
     val bubbleHazeState = rememberHazeState()
     val primaryColor = MaterialTheme.colorScheme.primary
-    val deskBrush = remember(isDarkSurface, primaryColor) {
+    val deskBrush = remember(isDarkSurface) {
         Brush.linearGradient(
             colors = if (isDarkSurface) {
-                listOf(WorkspaceDeskDark, Slate900, primaryColor.copy(alpha = 0.10f))
+                listOf(WorkspaceDeskDark, WorkspaceDeskDark)
             } else {
-                listOf(WorkspaceDeskLight, Slate50, Color(0xFFFAFAFA))
+                listOf(WorkspaceDeskLight, WorkspaceDeskLight)
             }
         )
     }

@@ -65,7 +65,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
-import com.vic.inkflow.ui.theme.BrandTheme
 import com.vic.inkflow.util.BackupManager
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -78,8 +77,6 @@ enum class ThemeMode { SYSTEM, LIGHT, DARK }
 fun GlobalSettingsScreen(
     prefs: SharedPreferences,
     onNavigateBack: () -> Unit,
-    currentBrandTheme: BrandTheme,
-    onBrandThemeChanged: (BrandTheme) -> Unit,
     currentThemeMode: ThemeMode,
     onThemeModeChanged: (ThemeMode) -> Unit,
     onDynamicColorChanged: (Boolean) -> Unit = {}
@@ -133,10 +130,6 @@ fun GlobalSettingsScreen(
                 ThemeModeSelector(currentThemeMode) { mode ->
                     onThemeModeChanged(mode)
                     prefs.edit().putString("theme_mode", mode.name).apply()
-                }
-                BrandThemeSelector(currentBrandTheme) { brand ->
-                    onBrandThemeChanged(brand)
-                    prefs.edit().putString("brand_theme", brand.name).apply()
                 }
                 var dynamicColor by remember { mutableStateOf(prefs.getBoolean("dynamic_color", false)) }
                 SettingsSwitchRow(
@@ -303,8 +296,8 @@ fun GlobalSettingsScreen(
                     listOf(
                         0xFF000000.toInt(),
                         0xFFFFC700.toInt(),
-                        0xFFF44336.toInt(),
-                        0xFF4CAF50.toInt(),
+                        0xFFF87171.toInt(),
+                        0xFF4ADE80.toInt(),
                         0xFF3B82F6.toInt(),
                         0xFF8B5CF6.toInt()
                     )
@@ -724,43 +717,4 @@ private fun PageBackgroundSelector(current: PageBackground, onSelect: (PageBackg
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun BrandThemeSelector(current: BrandTheme, onSelect: (BrandTheme) -> Unit) {
-    val orderedThemes = listOf(
-        BrandTheme.ROSE,
-        BrandTheme.SUNSET,
-        BrandTheme.FOREST,
-        BrandTheme.TEAL,
-        BrandTheme.OCEAN,
-        BrandTheme.INDIGO,
-        BrandTheme.VIOLET,
-        BrandTheme.MONOCHROME
-    )
 
-    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
-        Text("品牌主題色", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(bottom = 12.dp))
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            orderedThemes.forEach { theme ->
-                val isSelected = (theme == current)
-                Box(
-                    modifier = Modifier
-                        .size(40.dp)
-                        .clip(CircleShape)
-                        .background(theme.primary)
-                        .clickable { onSelect(theme) }
-                        .border(
-                            width = if (isSelected) 3.dp else 1.dp,
-                            color = if (isSelected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.outlineVariant,
-                            shape = CircleShape
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    if (isSelected) {
-                        Icon(Icons.Default.Check, contentDescription = "選取", tint = Color.White, modifier = Modifier.size(24.dp))
-                    }
-                }
-            }
-        }
-    }
-}
