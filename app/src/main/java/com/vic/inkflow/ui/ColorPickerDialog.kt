@@ -147,17 +147,17 @@ fun ColorPickerDialog(
                             .clip(ShapeSm)
                             .background(
                                 if (isDarkSurface) {
-                                    Color(0xFF2A2A2A)
+                                    Color(0xFF1E293B)
                                 } else {
-                                    Color(0xFFF5F5F5)
+                                    Color(0xFFF8FAFC)
                                 }
                             )
                     ) {
                         val cellSize = 10.dp.toPx()
                         val cols = (size.width / cellSize).toInt() + 1
                         val rows = (size.height / cellSize).toInt() + 1
-                        val checkColor1 = if (isDarkSurface) Color(0xFF444444) else Color(0xFFE8E8E8)
-                        val checkColor2 = if (isDarkSurface) Color(0xFF333333) else Color(0xFFFFFFFF)
+                        val checkColor1 = if (isDarkSurface) Color(0xFF334155) else Color(0xFFE2E8F0)
+                        val checkColor2 = if (isDarkSurface) Color(0xFF1E293B) else Color(0xFFFFFFFF)
                         for (row in 0..rows) {
                             for (col in 0..cols) {
                                 drawRect(

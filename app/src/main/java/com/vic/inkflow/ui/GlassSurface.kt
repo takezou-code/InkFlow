@@ -23,8 +23,8 @@ import androidx.compose.runtime.remember
  */
 
 /** Translucent glass tint per theme — blur supplies legibility underneath. */
-private val GlassTintLight = Color(0xC8F6FAFF)
-private val GlassTintDark = Color(0xB01E293B)
+private val GlassTintLight = Color(0xA6FFFFFF)
+private val GlassTintDark = Color(0x8C0F172A)
 
 @Composable
 fun rememberHazeState(): HazeState = remember { HazeState() }

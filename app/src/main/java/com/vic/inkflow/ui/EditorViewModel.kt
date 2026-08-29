@@ -1,4 +1,4 @@
-package com.vic.inkflow.ui
+﻿package com.vic.inkflow.ui
 
 import android.util.Log
 import androidx.compose.ui.geometry.Offset
@@ -126,11 +126,11 @@ class EditorViewModel(
     // For stylus button quick eraser: save the tool before button press
     private var toolBeforeStylusButton: Tool? = null
 
-    private val _selectedColor = MutableStateFlow(Color.Black)
+    private val _selectedColor = MutableStateFlow(Color(0xFF111827))
     val selectedColor: StateFlow<Color> = _selectedColor.asStateFlow()
 
     // Per-tool color memory (updated on init and whenever the user picks a color)
-    private var penColor: Color = Color.Black
+    private var penColor: Color = Color(0xFF111827)
     private var highlighterColor: Color = Color(0xFFFFC700)
     private var penStrokeWidth: Float = DEFAULT_PEN_STROKE_WIDTH
     private var highlighterStrokeWidth: Float = DEFAULT_HIGHLIGHTER_STROKE_WIDTH
@@ -139,8 +139,8 @@ class EditorViewModel(
         listOf(
             Color(0xFF000000),
             Color(0xFFFFC700),
-            Color(0xFFF44336),
-            Color(0xFF4CAF50)
+            Color(0xFFF87171),
+            Color(0xFF4ADE80)
         )
     )
     val recentColors: StateFlow<List<Color>> = _recentColors.asStateFlow()

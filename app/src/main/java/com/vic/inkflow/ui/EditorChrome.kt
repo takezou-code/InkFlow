@@ -249,7 +249,7 @@ fun TabletEditorTopBar(
     val canRedo by viewModel.canRedo.collectAsState()
     val inputMode by viewModel.inputMode.collectAsState()
     val strokeWidth by viewModel.strokeWidth.collectAsState()
-    val toolColors = listOf(Color.Black, Color(0xFF_FFC700), Color(0xFF_F44336), Color(0xFF_4CAF50))
+    val toolColors = listOf(Color(0xFF111827), Color(0xFFFACC15), Color(0xFFF87171), Color(0xFF4ADE80))
     val shownRecentColors = recentColors.filterNot { it in toolColors }.take(8)
     var showColorPicker by remember { mutableStateOf(false) }
     val isDarkSurface = MaterialTheme.colorScheme.background.luminance() < 0.5f

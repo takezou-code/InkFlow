@@ -1,4 +1,4 @@
-package com.vic.inkflow.ui
+﻿package com.vic.inkflow.ui
 
 import android.graphics.BitmapFactory
 import android.net.Uri
@@ -77,6 +77,7 @@ import com.vic.inkflow.data.PointEntity
 import com.vic.inkflow.data.StrokeEntity
 import com.vic.inkflow.data.StrokeWithPoints
 import com.vic.inkflow.data.TextAnnotationEntity
+import com.vic.inkflow.ui.theme.BrandIndigo
 import com.vic.inkflow.util.PalmRejectionFilter
 import com.vic.inkflow.util.TouchEventLogger
 import com.vic.inkflow.util.EnvelopeUtils
@@ -1420,10 +1421,10 @@ fun InkCanvas(
                         val swp = renderData.strokeWithPoints
                         val stroke = swp.stroke
                         if (stroke.shapeType != null) {
-                            drawShapeOnCanvas(cvs, stroke, swp.points, tintColor = Color(0xFF6366F1))
+                            drawShapeOnCanvas(cvs, stroke, swp.points, tintColor = BrandIndigo)
                         } else {
                             val path = renderData.path ?: return@forEach
-                            drawPathOnCanvas(cvs, path, Color(0xFF6366F1), stroke.strokeWidth, stroke.isHighlighter)
+                            drawPathOnCanvas(cvs, path, BrandIndigo, stroke.strokeWidth, stroke.isHighlighter)
                         }
                     }
                     cvs.restore()
@@ -1461,7 +1462,7 @@ fun InkCanvas(
                     )
                     // Dashed border
                     drawRect(
-                        color   = Color(0xFF6366F1),
+                        color   = BrandIndigo,
                         topLeft = Offset(imgSelRect.left, imgSelRect.top),
                         size    = Size(imgSelRect.width, imgSelRect.height),
                         style   = Stroke(width = 2f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 6f)))
@@ -1469,7 +1470,7 @@ fun InkCanvas(
                     // Resize handle at bottom-right
                     val hr = imageResizeHandleRect(Offset(imgSelRect.right, imgSelRect.bottom))
                     drawRect(
-                        color   = Color(0xFF6366F1),
+                        color   = BrandIndigo,
                         topLeft = Offset(hr.left, hr.top),
                         size    = Size(hr.width, hr.height)
                     )
@@ -1513,7 +1514,7 @@ fun InkCanvas(
                     val textRect  = textAnnotationHitRect(selTextAnn, sx, sy, fsDelta).translate(textMoveDelta)
                     // Dashed selection border
                     drawRect(
-                        color    = Color(0xFF6366F1),
+                        color    = BrandIndigo,
                         topLeft  = Offset(textRect.left, textRect.top),
                         size     = Size(textRect.width, textRect.height),
                         style    = Stroke(
@@ -1524,7 +1525,7 @@ fun InkCanvas(
                     // Solid resize handle at bottom-right corner
                     val hr = textResizeHandleRect(textRect)
                     drawRect(
-                        color   = Color(0xFF6366F1),
+                        color   = BrandIndigo,
                         topLeft = Offset(hr.left, hr.top),
                         size    = Size(hr.width, hr.height)
                     )
@@ -1670,7 +1671,7 @@ private const val LASSO_HANDLE_VISUAL_RADIUS_PX = 8f
 private const val LASSO_HANDLE_HIT_RADIUS_PX = 14f
 private const val LASSO_HANDLE_HALO_RADIUS_PX = 12f
 private val LASSO_DASH_PATTERN = floatArrayOf(12f, 8f)
-private val LASSO_FRAME_COLOR = Color(0xFF6366F1)
+private val LASSO_FRAME_COLOR = BrandIndigo
 
 private fun applySelectionTransform(
     canvas: androidx.compose.ui.graphics.Canvas,

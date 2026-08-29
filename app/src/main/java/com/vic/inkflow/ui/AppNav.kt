@@ -243,12 +243,9 @@ fun InkLayerApp(db: AppDatabase) {
         ThemeMode.DARK -> true
     }
 
-    var brandThemeStr by rememberSaveable(prefs) { mutableStateOf(prefs.getString("brand_theme", com.vic.inkflow.ui.theme.BrandTheme.INDIGO.name) ?: com.vic.inkflow.ui.theme.BrandTheme.INDIGO.name) }
-    val brandTheme = com.vic.inkflow.ui.theme.BrandTheme.values().find { it.name == brandThemeStr } ?: com.vic.inkflow.ui.theme.BrandTheme.INDIGO
-
     var dynamicColor by rememberSaveable(prefs) { mutableStateOf(prefs.getBoolean("dynamic_color", false)) }
 
-    InkFlowTheme(darkTheme = isDarkTheme, brandTheme = brandTheme, dynamicColor = dynamicColor) {
+    InkFlowTheme(darkTheme = isDarkTheme, dynamicColor = dynamicColor) {
         val navController = rememberNavController()
     NavHost(
         navController = navController,
@@ -274,8 +271,6 @@ fun InkLayerApp(db: AppDatabase) {
             GlobalSettingsScreen(
                 prefs = prefs,
                 onNavigateBack = { navController.popBackStack() },
-                currentBrandTheme = brandTheme,
-                onBrandThemeChanged = { brandThemeStr = it.name },
                 currentThemeMode = themeMode,
                 onThemeModeChanged = { themeModeStr = it.name },
                 onDynamicColorChanged = { dynamicColor = it }

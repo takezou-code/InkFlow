@@ -246,15 +246,15 @@ internal fun rememberFlowingBrandBrush(isDarkTheme: Boolean): Brush {
     val palette = if (isDarkTheme) listOf(
         Slate900,
         WorkspaceDeskDark,
-        MaterialTheme.colorScheme.primary.copy(alpha = 0.32f),
-        MaterialTheme.colorScheme.secondary.copy(alpha = 0.28f),
+        MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+        MaterialTheme.colorScheme.secondary.copy(alpha = 0.08f),
         Slate900,
     ) else listOf(
-        Color(0xFFEAF0FF),
         Slate50,
-        Color(0xFFF8F3FF),
-        Color(0xFFEAF6FF),
         Slate100,
+        MaterialTheme.colorScheme.primary.copy(alpha = 0.06f),
+        Slate100,
+        Slate50,
     )
     val n = palette.size
 

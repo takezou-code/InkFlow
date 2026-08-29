@@ -207,6 +207,7 @@ import com.vic.inkflow.data.TextAnnotationEntity
 import com.vic.inkflow.ui.theme.InkFlowTheme
 
 
+import com.vic.inkflow.ui.theme.BrandAmber
 import com.vic.inkflow.ui.theme.Slate50
 import com.vic.inkflow.ui.theme.Slate100
 import com.vic.inkflow.ui.theme.Slate900
@@ -948,7 +949,7 @@ internal fun DocumentCard(
                         Icon(
                             imageVector = Icons.Default.Star,
                             contentDescription = "Favorite",
-                            tint = if (document.isFavorite) Color(0xFFFFB300) else MaterialTheme.colorScheme.onSurfaceVariant,
+                            tint = if (document.isFavorite) BrandAmber else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(18.dp)
                         )
                     }
@@ -1050,7 +1051,7 @@ internal fun DocumentListRow(
     val rowShellColor = if (isDarkSurface) {
         MaterialTheme.colorScheme.surface.copy(alpha = 0.84f)
     } else {
-        Color.White
+        MaterialTheme.colorScheme.surface
     }
 
     val dateStr = remember(document.lastOpenedAt) {
@@ -1078,7 +1079,7 @@ internal fun DocumentListRow(
                     .fillMaxHeight()
                     .aspectRatio(1f / 1.414f)
                     .clip(ShapeSm)
-                    .background(Color.White)
+                    .background(MaterialTheme.colorScheme.surfaceContainerLow)
             ) {
                 if (coverBitmap != null) {
                     androidx.compose.foundation.Image(
@@ -1091,7 +1092,7 @@ internal fun DocumentListRow(
                     Icon(
                         imageVector = Icons.Default.Description,
                         contentDescription = "PDF",
-                        tint = Color.LightGray,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
                         modifier = Modifier.align(Alignment.Center).size(32.dp)
                     )
                 }
@@ -1118,7 +1119,7 @@ internal fun DocumentListRow(
                 Icon(
                     Icons.Default.Star,
                     contentDescription = "Favorite",
-                    tint = if (document.isFavorite) Color.Yellow else Color.Gray,
+                    tint = if (document.isFavorite) BrandAmber else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
                 )
             }
             
