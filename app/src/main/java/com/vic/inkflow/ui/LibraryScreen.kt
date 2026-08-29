@@ -407,9 +407,12 @@ fun DocumentLibraryScreen(
     Box(
         modifier = Modifier.fillMaxSize()
     ) {
-        AnimatedGradientBackground(isDarkTheme, Modifier.fillMaxSize().then(
-            androidx.compose.ui.Modifier.hazeSource(libraryHazeState)
-        ))
+        AuroraBackground(
+            isDarkTheme = isDarkTheme,
+            modifier = Modifier.fillMaxSize().hazeSource(libraryHazeState),
+            orbCount = 5
+        )
+        AnimatedGradientBackground(isDarkTheme, Modifier.fillMaxSize().hazeSource(libraryHazeState))
 
     Row(
         modifier = Modifier
