@@ -479,6 +479,11 @@ internal fun Workspace(
             },
         contentAlignment = Alignment.Center
     ) {
+        AuroraBackground(
+            isDarkTheme = isDarkSurface,
+            modifier = Modifier.fillMaxSize(),
+            orbCount = 3
+        )
         Box(
             modifier = Modifier
                 .fillMaxSize()
