@@ -1,4 +1,4 @@
-﻿package com.vic.inkflow.ui
+package com.vic.inkflow.ui
 
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeSource
@@ -125,6 +125,20 @@ import androidx.compose.material.icons.outlined.FileUpload
 import androidx.compose.material.icons.outlined.LightMode
 import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.Bookmark
+import androidx.compose.material.icons.automirrored.outlined.Undo
+import androidx.compose.material.icons.automirrored.outlined.Redo
+import androidx.compose.material.icons.automirrored.outlined.Article
+import androidx.compose.material.icons.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.Create
+import androidx.compose.material.icons.outlined.Brush
+import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.Gesture
+import androidx.compose.material.icons.outlined.CropSquare
+import androidx.compose.material.icons.outlined.Title
+import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.Star
+import androidx.compose.material.icons.outlined.TouchApp
+import androidx.compose.material.icons.outlined.BackHand
 import androidx.compose.material.icons.rounded.Brush
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Gesture
@@ -238,7 +252,9 @@ fun TabletEditorTopBar(
     onHideStrokeWidthSlider: () -> Unit = {},
     onExport: () -> Unit = {},
     onDocumentSettings: () -> Unit = {},
-    onToggleAiPanel: () -> Unit = {}
+    onToggleAiPanel: () -> Unit = {},
+    hazeState: dev.chrisbanes.haze.HazeState,
+    isDarkTheme: Boolean
 ) {
     val activeTool by viewModel.selectedTool.collectAsState()
     val selectedColor by viewModel.selectedColor.collectAsState()
@@ -253,9 +269,9 @@ fun TabletEditorTopBar(
     val shownRecentColors = recentColors.filterNot { it in toolColors }.take(8)
     var showColorPicker by remember { mutableStateOf(false) }
     val isDarkSurface = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    val shellColor = MaterialTheme.colorScheme.primary.copy(alpha = if (isDarkSurface) 0.10f else 0.08f) // 隨主題色，非常暗
+    val shellColor = MaterialTheme.colorScheme.primary.copy(alpha = if (isDarkSurface) 0.10f else 0.08f) // ????,???
     val clusterColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = if (isDarkSurface) 0.78f else 0.94f)
-    val colorSelectorBg = MaterialTheme.colorScheme.primary.copy(alpha = if (isDarkSurface) 0.16f else 0.12f) // 隨主題色變化，比其他顏色更暗
+    val colorSelectorBg = MaterialTheme.colorScheme.primary.copy(alpha = if (isDarkSurface) 0.16f else 0.12f) // ??????,???????
     val borderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.58f)
     val toolButtonSize = 32.dp
     val utilityButtonSize = 34.dp
@@ -293,11 +309,13 @@ fun TabletEditorTopBar(
         )
     }
 
+    // 外層全透明：玻璃改到每顆群組藥丸上，整條才不會糊成一塊灰板
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+        color = Color.Transparent,
         contentColor = MaterialTheme.colorScheme.onSurface,
-        shadowElevation = 8.dp
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp
     ) {
         Row(
             modifier = Modifier
@@ -308,16 +326,18 @@ fun TabletEditorTopBar(
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Surface(
-                modifier = Modifier.fillMaxHeight(),
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .glassPanel(hazeState, isDarkTheme, ShapeLg),
                 shape = ShapeLg,
-                color = shellColor
+                color = Color.Transparent
             ) {
                 Row(
                     modifier = Modifier.fillMaxHeight().padding(start = 6.dp, end = 16.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     IconButton(onClick = onBack, modifier = Modifier.size(utilityButtonSize)) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to Library")
+                        Icon(Icons.Outlined.ArrowBack, contentDescription = "Back to Library")
                     }
                     Column(modifier = Modifier.widthIn(max = 156.dp)) {
                         Text(
@@ -336,9 +356,12 @@ fun TabletEditorTopBar(
             }
 
             Surface(
-                modifier = Modifier.weight(1f).fillMaxHeight(),
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .glassPanel(hazeState, isDarkTheme, ShapeLg),
                 shape = ShapeLg,
-                color = shellColor
+                color = Color.Transparent
             ) {
                 Row(
                     modifier = Modifier
@@ -378,7 +401,7 @@ fun TabletEditorTopBar(
                                     }
                                 },
                                 isActive = activeTool == Tool.PEN,
-                                icon = Icons.Default.Create,
+                                icon = Icons.Outlined.Create,
                                 contentDescription = "Pen Tool"
                             )
                             EditorIconButton(
@@ -390,7 +413,7 @@ fun TabletEditorTopBar(
                                     }
                                 },
                                 isActive = activeTool == Tool.HIGHLIGHTER,
-                                icon = Icons.Rounded.Brush,
+                                icon = Icons.Outlined.Brush,
                                 contentDescription = "Highlighter Tool"
                             )
                             EditorIconButton(
@@ -399,7 +422,7 @@ fun TabletEditorTopBar(
                                     onHideStrokeWidthSlider()
                                 },
                                 isActive = activeTool == Tool.ERASER,
-                                icon = Icons.Rounded.Delete,
+                                icon = Icons.Outlined.DeleteOutline,
                                 contentDescription = "Eraser Tool"
                             )
                             EditorIconButton(
@@ -408,7 +431,7 @@ fun TabletEditorTopBar(
                                     onHideStrokeWidthSlider()
                                 },
                                 isActive = activeTool == Tool.LASSO,
-                                icon = Icons.Rounded.Gesture,
+                                icon = Icons.Outlined.Gesture,
                                 contentDescription = "Lasso Select Tool"
                             )
                         }
@@ -439,8 +462,8 @@ fun TabletEditorTopBar(
                                 ) {
                                     Text(
                                         text = when (subType) {
-                                            LassoSubType.FREEFORM -> "自由圈選"
-                                            LassoSubType.RECT -> "矩形圈選"
+                                            LassoSubType.FREEFORM -> "????"
+                                            LassoSubType.RECT -> "????"
                                         },
                                         style = MaterialTheme.typography.labelMedium
                                     )
@@ -479,7 +502,7 @@ fun TabletEditorTopBar(
                                     onHideStrokeWidthSlider()
                                 },
                                 isActive = activeTool == Tool.SHAPE,
-                                icon = Icons.Default.CropSquare,
+                                icon = Icons.Outlined.CropSquare,
                                 contentDescription = "Shape Tool"
                             )
                             EditorIconButton(
@@ -488,7 +511,7 @@ fun TabletEditorTopBar(
                                     onHideStrokeWidthSlider()
                                 },
                                 isActive = activeTool == Tool.TEXT,
-                                icon = Icons.Default.Title,
+                                icon = Icons.Outlined.Title,
                                 contentDescription = "Text Tool"
                             )
                             EditorIconButton(
@@ -497,7 +520,7 @@ fun TabletEditorTopBar(
                                     onHideStrokeWidthSlider()
                                 },
                                 isActive = activeTool == Tool.IMAGE,
-                                icon = Icons.Default.Image,
+                                icon = Icons.Outlined.Image,
                                 contentDescription = "Image Tool"
                             )
                             EditorIconButton(
@@ -506,7 +529,7 @@ fun TabletEditorTopBar(
                                     onHideStrokeWidthSlider()
                                 },
                                 isActive = activeTool == Tool.STAMP,
-                                icon = Icons.Default.Star,
+                                icon = Icons.Outlined.Star,
                                 contentDescription = "Stamp Tool"
                             )
                         }
@@ -537,10 +560,10 @@ fun TabletEditorTopBar(
                                 ) {
                                     Text(
                                         text = when (subType) {
-                                            ShapeSubType.RECT -> "方框"
-                                            ShapeSubType.CIRCLE -> "圓形"
-                                            ShapeSubType.LINE -> "直線"
-                                            ShapeSubType.ARROW -> "箭頭"
+                                            ShapeSubType.RECT -> "??"
+                                            ShapeSubType.CIRCLE -> "??"
+                                            ShapeSubType.LINE -> "??"
+                                            ShapeSubType.ARROW -> "??"
                                         },
                                         style = MaterialTheme.typography.labelMedium
                                     )
@@ -605,7 +628,7 @@ fun TabletEditorTopBar(
                             contentColor = MaterialTheme.colorScheme.onPrimaryContainer
                         ) {
                             Text(
-                                text = "線寬 ${strokeWidth.toInt()} px",
+                                text = "?? ${strokeWidth.toInt()} px",
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
                                 style = MaterialTheme.typography.labelMedium
                             )
@@ -615,9 +638,11 @@ fun TabletEditorTopBar(
             }
 
             Surface(
-                modifier = Modifier.fillMaxHeight(),
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .glassPanel(hazeState, isDarkTheme, ShapeLg),
                 shape = ShapeLg,
-                color = shellColor
+                color = Color.Transparent
             ) {
                 Row(
                     modifier = Modifier.fillMaxHeight().padding(horizontal = 8.dp),
@@ -630,7 +655,7 @@ fun TabletEditorTopBar(
                             .size(utilityButtonSize)
                             .graphicsLayer { scaleX = undoScale; scaleY = undoScale }
                     ) {
-                        Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "Undo")
+                        Icon(Icons.AutoMirrored.Outlined.Undo, contentDescription = "Undo")
                     }
                     IconButton(
                         onClick = { viewModel.redo() },
@@ -639,7 +664,7 @@ fun TabletEditorTopBar(
                             .size(utilityButtonSize)
                             .graphicsLayer { scaleX = redoScale; scaleY = redoScale }
                     ) {
-                        Icon(Icons.AutoMirrored.Filled.Redo, contentDescription = "Redo")
+                        Icon(Icons.AutoMirrored.Outlined.Redo, contentDescription = "Redo")
                     }
                     Box(
                         modifier = Modifier
@@ -664,7 +689,7 @@ fun TabletEditorTopBar(
                     }
                     IconButton(onClick = onDocumentSettings, modifier = Modifier.size(utilityButtonSize)) {
                         Icon(
-                            imageVector = Icons.AutoMirrored.Filled.Article,
+                            imageVector = Icons.AutoMirrored.Outlined.Article,
                             contentDescription = "Document Settings",
                             tint = MaterialTheme.colorScheme.onSurface
                         )
@@ -672,14 +697,14 @@ fun TabletEditorTopBar(
                     IconButton(onClick = { viewModel.cycleInputMode() }, modifier = Modifier.size(utilityButtonSize)) {
                         Icon(
                             imageVector = when (inputMode) {
-                                InputMode.FREE -> Icons.Filled.TouchApp
-                                InputMode.PALM_REJECTION -> Icons.Filled.BackHand
-                                InputMode.STYLUS_ONLY -> Icons.Filled.Create
+                                InputMode.FREE -> Icons.Outlined.TouchApp
+                                InputMode.PALM_REJECTION -> Icons.Outlined.BackHand
+                                InputMode.STYLUS_ONLY -> Icons.Outlined.Create
                             },
                             contentDescription = when (inputMode) {
-                                InputMode.FREE -> "Free (no filter)"
-                                InputMode.PALM_REJECTION -> "Palm Rejection"
-                                InputMode.STYLUS_ONLY -> "Stylus Only"
+                                InputMode.FREE -> "手指模式（單指書寫）"
+                                InputMode.PALM_REJECTION -> "觸控筆模式"
+                                InputMode.STYLUS_ONLY -> "觸控筆模式（手指卷動）"
                             },
                             tint = when (inputMode) {
                                 InputMode.FREE -> MaterialTheme.colorScheme.onSurface

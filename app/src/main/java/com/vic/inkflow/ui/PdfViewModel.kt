@@ -1,4 +1,4 @@
-﻿package com.vic.inkflow.ui
+package com.vic.inkflow.ui
 
 
 import android.app.Application
@@ -177,6 +177,22 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
     val pageSizeVersion: StateFlow<Int> = _pageSizeVersion.asStateFlow()
 
     private fun bumpPageSizeVersion() { _pageSizeVersion.value += 1 }
+
+    // 顯示用渲染倍率（密度感知，由 Workspace 按可視寬設定；變更即整批失效重渲）。
+    // renderEpoch 供 UI 纳入 remember key，可视页自動重取。
+    var displayRenderScale = 2f
+        private set
+    private val _renderEpoch = MutableStateFlow(0)
+    val renderEpoch: StateFlow<Int> = _renderEpoch.asStateFlow()
+
+    fun setDisplayRenderScale(scale: Float) {
+        val s = scale.coerceIn(2f, 3f)
+        if (s == displayRenderScale) return
+        displayRenderScale = s
+        bitmapCache.evictAll()
+        bitmapFlowCache.values.forEach { it.value = null }
+        _renderEpoch.value += 1
+    }
 
     private fun invalidateRenderedFlowsInRange(range: IntRange) {
         for (index in range) {
@@ -923,7 +939,7 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                 pdfRenderer?.let { renderer ->
                     try {
                         val page = renderer.openPage(pageIndex)
-                        val scale = if (highQuality) 2f else 0.4f
+                        val scale = if (highQuality) displayRenderScale else 0.4f
                         // For thumbnails, cap width at 240 px to keep memory reasonable
                         val rawW = (page.width * scale).toInt()
                         val rawH = (page.height * scale).toInt()
@@ -942,7 +958,15 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                             height = rawH.coerceAtLeast(1)
                         }
                         // Always use ARGB_8888 for correct PDF rendering
-                        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                        val bitmap = try {
+                            Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                        } catch (oom: OutOfMemoryError) {
+                            android.util.Log.e("PdfViewModel", "OOM creating page bitmap for page $pageIndex", oom)
+                            bitmapCache.evictAll()
+                            thumbnailCache.evictAll()
+                            System.gc()
+                            return@let null
+                        }
                         bitmap.eraseColor(android.graphics.Color.WHITE)
 
                         // Render page content. If rendering fails, do NOT cache a white placeholder,
@@ -965,6 +989,9 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                         bitmap
                     } catch (e: Exception) {
                         null
+                    } catch (t: Throwable) {
+                        android.util.Log.e("PdfViewModel", "Unexpected error rendering page $pageIndex", t)
+                        null
                     }
                 }
             }
@@ -975,9 +1002,18 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
 
     override fun onCleared() {
-        runBlocking {
-            renderMutex.withLock { closePdf() }
-        }
         super.onCleared()
+        pageSizeScanJob?.cancel()
+        pageSizeScanJob = null
+        try {
+            pdfRenderer?.close()
+            parcelFileDescriptor?.close()
+        } catch (_: Exception) {}
+        pdfRenderer = null
+        parcelFileDescriptor = null
+        bitmapCache.evictAll()
+        thumbnailCache.evictAll()
+        thumbnailFlowCache.clear()
+        bitmapFlowCache.clear()
     }
 }

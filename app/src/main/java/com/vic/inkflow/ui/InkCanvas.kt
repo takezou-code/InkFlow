@@ -13,6 +13,17 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.awaitDragOrCancellation
@@ -20,7 +31,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -58,6 +68,7 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.pointerInput
@@ -65,7 +76,13 @@ import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
@@ -196,6 +213,8 @@ fun InkCanvas(
     val imageAnnotations by viewModel.currentImageAnnotations.collectAsState()
     val selectedImageAnnotationIds by viewModel.selectedImageAnnotationIds.collectAsState()
     val paperStyle by viewModel.paperStyle.collectAsState()
+    // 雙指縮放進行中：各畫筆迴圈見此即棄筆（由 Workspace 仲裁器寫入）
+    val pinchActive by viewModel.pinchActive.collectAsState()
     val lassoFrameTransition = rememberInfiniteTransition(label = "lasso-frame")
     val lassoDashPhase by lassoFrameTransition.animateFloat(
         initialValue = 0f,
@@ -222,10 +241,40 @@ fun InkCanvas(
     var activeShapeStart by remember { mutableStateOf<Offset?>(null) }
     var activeShapeEnd   by remember { mutableStateOf<Offset?>(null) }
 
-    // Text / Stamp placement dialog
+    // Stamp placement dialog
     var pendingTextPosition by remember { mutableStateOf<Offset?>(null) }
     var pendingIsStamp      by remember { mutableStateOf(false) }
-    var textInputValue      by remember { mutableStateOf("") }
+
+    // Inline text editor (replaces the 新增文字 dialog): NEW at a canvas pos, or EDIT an existing id
+    var inlineTextNewPos by remember { mutableStateOf<Offset?>(null) }
+    var inlineTextEditId by remember { mutableStateOf<String?>(null) }
+    var inlineTextValue  by remember { mutableStateOf("") }
+    var inlineTextColor  by remember { mutableStateOf(selectedColor) }
+    val keyboardController   = LocalSoftwareKeyboardController.current
+    val inlineFocusRequester = remember { FocusRequester() }
+    // Default text size ≈ 20sp in canvas pixels (old dialog passed a fixed 14px, too small to read)
+    val defaultTextFontPx = with(density) { 20.sp.toPx() }
+    // Refs for the pointer-input coroutine (which outlives recompositions)
+    val inlineTextValueRef  = rememberUpdatedState(inlineTextValue)
+    val inlineTextNewPosRef = rememberUpdatedState(inlineTextNewPos)
+    val inlineTextEditIdRef = rememberUpdatedState(inlineTextEditId)
+    val inlineTextColorRef  = rememberUpdatedState(inlineTextColor)
+    val selectedColorRef    = rememberUpdatedState(selectedColor)
+    val keyboardRef         = rememberUpdatedState(keyboardController)
+
+    /** Commits (or cancels when blank) the inline editor. Safe to call from composition. */
+    fun commitInlineText() {
+        val v      = inlineTextValue
+        val newPos = inlineTextNewPos
+        val editId = inlineTextEditId
+        inlineTextNewPos = null
+        inlineTextEditId = null
+        inlineTextValue  = ""
+        keyboardController?.hide()
+        if (v.isBlank()) return
+        if (editId != null) viewModel.commitTextAnnotationContent(editId, v)
+        else if (newPos != null) viewModel.addTextAnnotation(v, newPos.x, newPos.y, defaultTextFontPx, inlineTextColor)
+    }
 
     // Canvas pixel size (updated via onSizeChanged, used for hit-testing in pointer input)
     var canvasPixelSize by remember { mutableStateOf(Size.Zero) }
@@ -387,6 +436,7 @@ fun InkCanvas(
     // Open gallery whenever IMAGE tool is activated; clear selections on tool change
     LaunchedEffect(activeTool) {
         if (activeTool != Tool.TEXT) {
+            if (inlineTextNewPos != null || inlineTextEditId != null) commitInlineText()
             selectedTextAnnotationId = null
             textMoveDelta = Offset.Zero
             textFontSizeDelta = 0f
@@ -418,41 +468,6 @@ fun InkCanvas(
     // ---- Dialogs ----
 
     val pendingPos = pendingTextPosition
-    if (pendingPos != null && !pendingIsStamp) {
-        AlertDialog(
-            onDismissRequest = { pendingTextPosition = null; textInputValue = "" },
-            title = { Text("新增文字") },
-            text = {
-                OutlinedTextField(
-                    value = textInputValue,
-                    onValueChange = { textInputValue = it },
-                    label = { Text("輸入文字") },
-                    singleLine = false,
-                    maxLines = 5
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    if (textInputValue.isNotBlank()) {
-                        viewModel.addTextAnnotation(
-                            text  = textInputValue,
-                            canvasX = pendingPos.x,
-                            canvasY = pendingPos.y,
-                            fontSize = 14f,
-                            color = selectedColor
-                        )
-                    }
-                    textInputValue = ""
-                    pendingTextPosition = null
-                }) { Text("確定") }
-            },
-            dismissButton = {
-                TextButton(onClick = { pendingTextPosition = null; textInputValue = "" }) {
-                    Text("取消")
-                }
-            }
-        )
-    }
 
     if (pendingPos != null && pendingIsStamp) {
         val stamps = listOf("✓", "✗", "⭐", "❤", "★", "!", "?", "→")
@@ -502,7 +517,7 @@ fun InkCanvas(
 
     // ---- Modifier chain ----
 
-    val drawModifier = modifier
+    val drawModifier = Modifier.fillMaxSize()
         .onSizeChanged { size ->
             canvasPixelSize = Size(size.width.toFloat(), size.height.toFloat())
             viewModel.setCanvasSize(size.width.toFloat(), size.height.toFloat())
@@ -748,6 +763,29 @@ fun InkCanvas(
                     // Stylus (small touchMajor): fall through to draw
                 }
 
+                // --- Inline text editor open: this new contact commits it (tap-outside-to-commit).
+                // A second tap is then needed to start another annotation — matching GoodNotes behaviour.
+                if (inlineTextNewPosRef.value != null || inlineTextEditIdRef.value != null) {
+                    val v      = inlineTextValueRef.value
+                    val editId = inlineTextEditIdRef.value
+                    val newPos = inlineTextNewPosRef.value
+                    inlineTextNewPos = null
+                    inlineTextEditId = null
+                    inlineTextValue  = ""
+                    keyboardRef.value?.hide()
+                    if (v.isNotBlank()) {
+                        if (editId != null) viewModel.commitTextAnnotationContent(editId, v)
+                        else if (newPos != null) {
+                            viewModel.addTextAnnotation(
+                                v, newPos.x, newPos.y,
+                                with(density) { 20.sp.toPx() }, inlineTextColorRef.value
+                            )
+                        }
+                    }
+                    down.consume()
+                    return@awaitEachGesture
+                }
+
                 // Claim accepted in-canvas gestures immediately so fast stylus motion cannot
                 // leak through to the workspace pan handler before we enter the tool branch.
                 downEvent.changes
@@ -776,6 +814,12 @@ fun InkCanvas(
                             var accModelDelta = 0f
                             var drag = awaitDragOrCancellation(down.id)
                             while (drag != null && drag.pressed) {
+                                if (pinchActive) {
+                                    viewModel.commitTextAnnotationResize(selAnn.id, selAnn.modelX, selAnn.modelY, selAnn.fontSize + accModelDelta)
+                                    textFontSizeDelta = 0f
+                                    activePathVersion++
+                                    return@awaitEachGesture
+                                }
                                 // Standard resize UX: dragging toward bottom-right = bigger
                                 val change = drag.positionChange()
                                 val diagonal = (change.x + change.y) / 2f
@@ -791,12 +835,18 @@ fun InkCanvas(
                             return@awaitEachGesture
                         }
 
-                        // Move: drag inside the selected text box
+                        // Move: drag inside the selected text box; plain tap re-edits contents inline
                         if (currentTextRect.contains(startOffset)) {
                             down.consume()
                             var totalDelta = Offset.Zero
                             var drag = awaitDragOrCancellation(down.id)
                             while (drag != null && drag.pressed) {
+                                if (pinchActive) {
+                                    viewModel.commitTextAnnotationMove(selAnn.id, totalDelta.x, totalDelta.y)
+                                    textMoveDelta = Offset.Zero
+                                    activePathVersion++
+                                    return@awaitEachGesture
+                                }
                                 val delta = drag.positionChange()
                                 totalDelta += delta
                                 textMoveDelta += delta
@@ -804,7 +854,13 @@ fun InkCanvas(
                                 drag.consume()
                                 drag = awaitDragOrCancellation(drag.id)
                             }
-                            viewModel.commitTextAnnotationMove(selAnn.id, totalDelta.x, totalDelta.y)
+                            if (totalDelta == Offset.Zero) {
+                                inlineTextEditId = selAnn.id
+                                inlineTextValue  = selAnn.text
+                                inlineTextColor  = Color(selAnn.colorArgb)
+                            } else {
+                                viewModel.commitTextAnnotationMove(selAnn.id, totalDelta.x, totalDelta.y)
+                            }
                             textMoveDelta = Offset.Zero
                             activePathVersion++
                             return@awaitEachGesture
@@ -824,11 +880,13 @@ fun InkCanvas(
                         return@awaitEachGesture
                     }
 
-                    // Tap on empty space: deselect and open new-text dialog
+                    // Tap on empty space: deselect and open the inline editor at the tap point
                     selectedTextAnnotationId = null
                     textMoveDelta = Offset.Zero
-                    pendingIsStamp = false
-                    pendingTextPosition = startOffset
+                    inlineTextEditId = null
+                    inlineTextNewPos = startOffset
+                    inlineTextValue  = ""
+                    inlineTextColor  = selectedColorRef.value
                     down.consume()
                     return@awaitEachGesture
                 }
@@ -868,6 +926,14 @@ fun InkCanvas(
                             down.consume()
                             var drag = awaitDragOrCancellation(down.id)
                             while (drag != null && drag.pressed) {
+                                if (pinchActive) {
+                                    val newModelW = ((selAnn.modelWidth * sx + imageResizePreview.x).coerceAtLeast(30f)) / sx
+                                    val newModelH = ((selAnn.modelHeight * sy + imageResizePreview.y).coerceAtLeast(30f)) / sy
+                                    viewModel.commitImageAnnotationResize(selAnn.id, selAnn.modelX, selAnn.modelY, newModelW, newModelH)
+                                    imageResizePreview = Offset.Zero
+                                    activePathVersion++
+                                    return@awaitEachGesture
+                                }
                                 // Direct mapping: handle follows the finger
                                 imageResizePreview += drag.positionChange()
                                 activePathVersion++
@@ -889,6 +955,12 @@ fun InkCanvas(
                             var totalDelta = Offset.Zero
                             var drag = awaitDragOrCancellation(down.id)
                             while (drag != null && drag.pressed) {
+                                if (pinchActive) {
+                                    viewModel.commitImageAnnotationMove(selAnn.id, totalDelta.x, totalDelta.y)
+                                    imageMovePreview = Offset.Zero
+                                    activePathVersion++
+                                    return@awaitEachGesture
+                                }
                                 val delta = drag.positionChange()
                                 totalDelta += delta
                                 imageMovePreview += delta
@@ -956,6 +1028,11 @@ fun InkCanvas(
                             viewModel.beginSelectedStrokeResize(anchorCanvas)
                             var drag = awaitDragOrCancellation(down.id)
                             while (drag != null && drag.pressed) {
+                                // 縮放介入：提交當前進度後退出（model-space 變換與縮放無關，可安全提交）
+                                if (pinchActive) {
+                                    viewModel.commitResizedStrokes()
+                                    return@awaitEachGesture
+                                }
                                 val currentDistance = hypot(
                                     (drag.position.x - anchorCanvas.x).toDouble(),
                                     (drag.position.y - anchorCanvas.y).toDouble()
@@ -972,6 +1049,10 @@ fun InkCanvas(
                             down.consume()
                             var drag = awaitDragOrCancellation(down.id)
                             while (drag != null && drag.pressed) {
+                                if (pinchActive) {
+                                    viewModel.commitMovedStrokes()
+                                    return@awaitEachGesture
+                                }
                                 val delta = drag.positionChange()
                                 if (delta != Offset.Zero) viewModel.moveSelectedStrokes(delta)
                                 drag.consume()
@@ -1004,6 +1085,12 @@ fun InkCanvas(
                     down.consume()
                     var drag = awaitDragOrCancellation(down.id)
                     while (drag != null && drag.pressed) {
+                        if (pinchActive) {
+                            activeShapeStart = null
+                            activeShapeEnd = null
+                            activePathVersion++
+                            return@awaitEachGesture
+                        }
                         activeShapeEnd = drag.position
                         shapeGestureTrace.add(drag.position)
                         shapeLastEventTime = drag.uptimeMillis
@@ -1053,6 +1140,7 @@ fun InkCanvas(
                 
                 var lastPointTime = down.uptimeMillis
                 val gestureStartTime = down.uptimeMillis
+                val zoomAtStrokeStart = viewModel.docZoom.value
                 val quickSwipeTrace = mutableListOf(startOffset)
                 val supportsQuickSwipeEraser = quickSwipeEraserEnabled &&
                     (activeTool == Tool.PEN || activeTool == Tool.HIGHLIGHTER)
@@ -1089,6 +1177,14 @@ fun InkCanvas(
                     drag = awaitDragOrCancellation(down.id)
 
                         while (drag != null && drag.pressed && !isRejected) {
+                        // 雙指介入：棄筆，不提交（縮放會改變座標映射）
+                        if (pinchActive) {
+                            activePath.reset()
+                            activeEnvelopePath.reset()
+                            currentPathPoints.clear()
+                            activePathVersion++
+                            return@awaitEachGesture
+                        }
                         // Track peak pressure for outcome log
                         maxPressureDuring = maxOf(maxPressureDuring, drag.pressure)
 
@@ -1191,6 +1287,15 @@ fun InkCanvas(
                         maxSizeHeightPx = maxSizeHeightDuring
                     )
                     // Gracefully discard the in-flight path
+                    activePath.reset()
+                    activeEnvelopePath.reset()
+                    currentPathPoints.clear()
+                    activePathVersion++
+                    return@awaitEachGesture
+                }
+
+                // 手指全程沒動、縮放卻在中途發生過：同樣丟棄，避免提交錯位座標
+                if (viewModel.docZoom.value != zoomAtStrokeStart) {
                     activePath.reset()
                     activeEnvelopePath.reset()
                     currentPathPoints.clear()
@@ -1499,9 +1604,13 @@ fun InkCanvas(
                             isAntiAlias = true
                             typeface    = android.graphics.Typeface.DEFAULT_BOLD
                         }
-                        composeCanvas.nativeCanvas.drawText(
-                            ann.text, ann.modelX * sx + dx, ann.modelY * sy + dy, paint
-                        )
+                        // Multiline: modelY is the first-line baseline (matches PDF export).
+                        val lineHeight = with(paint.fontMetrics) { -ascent + descent + leading }
+                        ann.text.split("\n").forEachIndexed { i, line ->
+                            composeCanvas.nativeCanvas.drawText(
+                                line, ann.modelX * sx + dx, ann.modelY * sy + dy + i * lineHeight, paint
+                            )
+                        }
                     }
                 }
 
@@ -1594,10 +1703,58 @@ fun InkCanvas(
             }
         }
 
-    Canvas(modifier = drawModifier) { }
-}
+    val inlineOpen = inlineTextNewPos != null || inlineTextEditId != null
+    LaunchedEffect(inlineOpen) {
+        if (inlineOpen) {
+            inlineFocusRequester.requestFocus()
+            delay(100)
+            keyboardRef.value?.show()
+        }
+    }
 
-// ---- Text annotation hit-testing helpers ----
+    Box(modifier = modifier) {
+        Canvas(modifier = drawModifier) { }
+
+        // Inline text editor — spawns at the tap point / annotation, commits on Done or outside tap
+        if (inlineOpen && activeTool == Tool.TEXT && canvasPixelSize != Size.Zero) {
+            val cs  = canvasPixelSize
+            val osx = if (cs.width > 0f) cs.width / viewModel.modelWidth else 1f
+            val osy = if (cs.height > 0f) cs.height / viewModel.modelHeight else 1f
+            val editAnn = inlineTextEditId?.let { id -> textAnnotations.firstOrNull { it.id == id } }
+            val anchorPx = when {
+                editAnn != null       -> Offset(editAnn.modelX * osx, editAnn.modelY * osy)
+                inlineTextNewPos != null -> inlineTextNewPos!!
+                else                  -> Offset.Zero
+            }
+            val fontPx  = editAnn?.fontSize?.times(osy) ?: defaultTextFontPx
+            val boxX    = anchorPx.x.coerceIn(0f, (cs.width - 160f).coerceAtLeast(0f))
+            // anchorPx is the first-line baseline; the box top sits one line above it
+            val boxY    = (anchorPx.y - fontPx - 8f).coerceAtLeast(0f)
+            val maxBoxW = with(density) { (cs.width - boxX - 8f).coerceAtLeast(120f).toDp() }
+            BasicTextField(
+                value = inlineTextValue,
+                onValueChange = { inlineTextValue = it },
+                modifier = Modifier
+                    .offset { IntOffset(boxX.toInt(), boxY.toInt()) }
+                    .widthIn(min = 140.dp, max = maxBoxW)
+                    .background(Color.White, RoundedCornerShape(6.dp))
+                    .border(1.5.dp, BrandIndigo, RoundedCornerShape(6.dp))
+                    .padding(6.dp)
+                    .focusRequester(inlineFocusRequester),
+                textStyle = TextStyle(
+                    fontSize   = with(density) { fontPx.toSp() },
+                    fontWeight = FontWeight.Bold,
+                    color      = Color(editAnn?.colorArgb ?: inlineTextColor.toArgb())
+                ),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { commitInlineText() }),
+                singleLine = false,
+                maxLines   = 8,
+                cursorBrush = androidx.compose.ui.graphics.SolidColor(BrandIndigo)
+            )
+        }
+    }
+}
 
 /**
  * Returns the bounding rect of [ann] in canvas-pixel space.
@@ -1609,9 +1766,13 @@ private fun textAnnotationHitRect(
     val canvasX         = ann.modelX * sx
     val canvasY         = ann.modelY * sy
     val effectiveFontPx = (ann.fontSize + fontSizeDelta).coerceAtLeast(4f) * sy
+    // Multiline bounds: modelY is the first-line baseline; each extra line adds one line-height.
+    val lines           = ann.text.split("\n")
+    val maxLineLen      = lines.maxOfOrNull { it.length } ?: 0
     // Approximate text width; drawText baseline is at (canvasX, canvasY)
-    val textWidth       = ann.text.length * effectiveFontPx * 0.65f + 8f
-    return Rect(canvasX - 4f, canvasY - effectiveFontPx - 4f, canvasX + textWidth, canvasY + 4f)
+    val textWidth       = maxLineLen * effectiveFontPx * 0.65f + 8f
+    val textHeight      = effectiveFontPx + (lines.size - 1) * effectiveFontPx * 1.2f
+    return Rect(canvasX - 4f, canvasY - effectiveFontPx - 4f, canvasX + textWidth, canvasY - effectiveFontPx + textHeight + 4f)
 }
 
 /** Returns the 22×22 px resize handle rect anchored to the bottom-right of [textRect]. */

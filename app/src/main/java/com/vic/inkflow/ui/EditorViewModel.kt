@@ -151,6 +151,15 @@ class EditorViewModel(
     private val _inputMode = MutableStateFlow(InputMode.FREE)
     val inputMode: StateFlow<InputMode> = _inputMode.asStateFlow()
 
+    // 文件級縮放（整份同縮，Chrome 式）：Workspace 雙指寫入，InkCanvas 只讀判定。
+    // pinchActive 為 true 時各畫筆迴圈必須棄筆；docZoom 變化即代表中途被縮放過。
+    private val _docZoom = MutableStateFlow(1f)
+    val docZoom: StateFlow<Float> = _docZoom.asStateFlow()
+    fun setDocZoom(z: Float) { _docZoom.value = z }
+    private val _pinchActive = MutableStateFlow(false)
+    val pinchActive: StateFlow<Boolean> = _pinchActive.asStateFlow()
+    fun setPinchActive(active: Boolean) { _pinchActive.value = active }
+
     private val _quickSwipeEraserEnabled = MutableStateFlow(false)
     val quickSwipeEraserEnabled: StateFlow<Boolean> = _quickSwipeEraserEnabled.asStateFlow()
 
@@ -188,7 +197,9 @@ class EditorViewModel(
                 _selectedColor.value = if (prefs.tool == Tool.HIGHLIGHTER) highlighterColor else penColor
                 _strokeWidth.value = strokeWidthFor(prefs.tool)
                 _selectedShapeSubType.value = prefs.shapeSubType
-                _inputMode.value = prefs.inputMode
+                _inputMode.value = prefs.inputMode.let {
+                    if (it == InputMode.PALM_REJECTION) InputMode.STYLUS_ONLY else it
+                }
                 _quickSwipeEraserEnabled.value = prefs.quickSwipeEraserEnabled
                 _autoSwitchToPenAfterErase.value = prefs.autoSwitchToPenAfterErase
                 _palmThresholdDp.value = prefs.palmThresholdDp
@@ -212,10 +223,10 @@ class EditorViewModel(
     }
 
     fun cycleInputMode() {
+        // 雙模式：手指模式 <-> 觸控筆模式（PALM_REJECTION 已併入觸控筆模式）
         val next = when (_inputMode.value) {
-            InputMode.FREE -> InputMode.PALM_REJECTION
-            InputMode.PALM_REJECTION -> InputMode.STYLUS_ONLY
             InputMode.STYLUS_ONLY -> InputMode.FREE
+            else -> InputMode.STYLUS_ONLY
         }
         _inputMode.value = next
         viewModelScope.launch(Dispatchers.IO) {
@@ -583,6 +594,15 @@ class EditorViewModel(
         }
     }
 
+    fun commitTextAnnotationContent(id: String, newText: String) {
+        val old = currentTextAnnotations.value.firstOrNull { it.id == id } ?: return
+        if (old.text == newText || newText.isBlank()) return
+        val updated = old.copy(text = newText)
+        viewModelScope.launch(Dispatchers.IO) {
+            textAnnotationDao.update(updated)
+            withContext(Dispatchers.Main) { pushUndo(DrawCommand.EditTextAnnotation(old, updated)) }
+        }
+    }
     fun deleteTextAnnotation(id: String) {
         val ann = currentTextAnnotations.value.firstOrNull { it.id == id } ?: return
         viewModelScope.launch(Dispatchers.IO) {
@@ -779,6 +799,9 @@ class EditorViewModel(
                 is DrawCommand.ResizeTextAnnotation -> {
                     textAnnotationDao.update(command.original)
                 }
+                is DrawCommand.EditTextAnnotation -> {
+                    textAnnotationDao.update(command.original)
+                }
                 is DrawCommand.AddImageAnnotation -> {
                     imageAnnotationDao.deleteById(command.annotation.id)
                 }
@@ -885,6 +908,9 @@ class EditorViewModel(
                     textAnnotationDao.update(command.updated)
                 }
                 is DrawCommand.ResizeTextAnnotation -> {
+                    textAnnotationDao.update(command.updated)
+                }
+                is DrawCommand.EditTextAnnotation -> {
                     textAnnotationDao.update(command.updated)
                 }
                 is DrawCommand.AddImageAnnotation -> {

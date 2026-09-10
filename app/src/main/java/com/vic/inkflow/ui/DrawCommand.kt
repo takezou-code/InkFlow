@@ -14,6 +14,7 @@ sealed class DrawCommand {
     data class RemoveTextAnnotation(val annotation: TextAnnotationEntity) : DrawCommand()
     data class MoveTextAnnotation(val original: TextAnnotationEntity, val updated: TextAnnotationEntity) : DrawCommand()
     data class ResizeTextAnnotation(val original: TextAnnotationEntity, val updated: TextAnnotationEntity) : DrawCommand()
+    data class EditTextAnnotation(val original: TextAnnotationEntity, val updated: TextAnnotationEntity) : DrawCommand()
     data class AddImageAnnotation(val annotation: ImageAnnotationEntity) : DrawCommand()
     data class RemoveImageAnnotation(val annotation: ImageAnnotationEntity) : DrawCommand()
     data class MoveImageAnnotation(val original: ImageAnnotationEntity, val updated: ImageAnnotationEntity) : DrawCommand()

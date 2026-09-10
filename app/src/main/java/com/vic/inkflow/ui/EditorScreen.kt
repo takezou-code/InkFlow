@@ -1,4 +1,4 @@
-﻿package com.vic.inkflow.ui
+package com.vic.inkflow.ui
 
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeSource
@@ -52,6 +52,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.draganddrop.dragAndDropSource
 import androidx.compose.foundation.draganddrop.dragAndDropTarget
 import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateCentroid
@@ -263,6 +264,23 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
     var aiPanelWeight by rememberSaveable { mutableFloatStateOf(0.4f) }
     var aiFileUri by remember { mutableStateOf<android.net.Uri?>(null) }
     val sidebarListState = rememberLazyListState()
+    val mainListState = rememberLazyListState()
+    // 點選意圖（側欄/靜態頁）：換作用頁 + 主列表滑過去
+    val onRequestPage: (Int) -> Unit = { index ->
+        currentPageIndex = index
+        viewModel.setActivePage(index)
+        scope.launch { runCatching { mainListState.animateScrollToItem(index) } }
+    }
+    // 卷動跟隨：主列表滑到哪頁就換作用頁（不捲主列表，避免打架；側欄由下方 effect 置中）
+    val onScrollPage: (Int) -> Unit = { index ->
+        if (index != currentPageIndex) {
+            currentPageIndex = index
+            viewModel.setActivePage(index)
+        }
+    }
+    // 編輯器共用玻璃狀態：根 Aurora 當 source，TopBar/側欄/氣泡當 effect
+    val editorHaze = rememberHazeState()
+    val isEditorDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
 
     // Restore the last-viewed page from DB on first open; rememberSaveable keeps it
     // true across config changes so we don't reset the page on rotation.
@@ -275,6 +293,16 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                 sidebarListState.scrollToCenter(stored)
             }
             initialPageRestored = true
+            // 陳舊頁碼（刪頁後）+ 空文件都不可直接捲，會閃退
+            runCatching {
+                val count = pdfViewModel.pageCount.value
+                if (count > 0) {
+                    val safe = currentPageIndex.coerceIn(0, count - 1)
+                    currentPageIndex = safe
+                    viewModel.setActivePage(safe)
+                    mainListState.scrollToItem(safe)
+                }
+            }
         }
     }
 
@@ -423,33 +451,40 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
         pdfViewModel.getPageAspectRatio(currentPageIndex, paperStyle.aspectRatio)
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.surface)
-            .statusBarsPadding()
-    ) {
-        TabletEditorTopBar(
-            documentTitle = documentTitle,
-            onBack = { navController.popBackStack() },
-            viewModel = viewModel,
-            showStrokeWidthSlider = showStrokeWidthSlider,
-            onToggleStrokeWidthSlider = { showStrokeWidthSlider = !showStrokeWidthSlider },
-            onHideStrokeWidthSlider = { showStrokeWidthSlider = false },
-            onExport = {
-                showExportConfirmDialog = true
-            },
-            onDocumentSettings = { showDocumentSettingsDialog = true },
-            onToggleAiPanel = { showAiPanel = !showAiPanel }
+    Box(modifier = Modifier.fillMaxSize()) {
+        AuroraBackground(
+            isDarkTheme = isEditorDark,
+            modifier = Modifier.fillMaxSize().hazeSource(editorHaze),
+            orbCount = 5
         )
+        Column(modifier = Modifier.fillMaxSize()) {
+            TabletEditorTopBar(
+                documentTitle = documentTitle,
+                onBack = { navController.popBackStack() },
+                viewModel = viewModel,
+                showStrokeWidthSlider = showStrokeWidthSlider,
+                onToggleStrokeWidthSlider = { showStrokeWidthSlider = !showStrokeWidthSlider },
+                onHideStrokeWidthSlider = { showStrokeWidthSlider = false },
+                onExport = {
+                    showExportConfirmDialog = true
+                },
+                onDocumentSettings = { showDocumentSettingsDialog = true },
+                onToggleAiPanel = { showAiPanel = !showAiPanel },
+                hazeState = editorHaze,
+                isDarkTheme = isEditorDark
+            )
 
-        AnimatedVisibility(
-            visible = showStrokeWidthSlider && (activeTool == Tool.PEN || activeTool == Tool.HIGHLIGHTER),
-            enter = expandVertically(),
-            exit = shrinkVertically()
-        ) {
-            StrokeWidthSlider(viewModel = viewModel)
-        }
+            AnimatedVisibility(
+                visible = showStrokeWidthSlider && (activeTool == Tool.PEN || activeTool == Tool.HIGHLIGHTER),
+                enter = expandVertically(),
+                exit = shrinkVertically()
+            ) {
+                StrokeWidthSlider(
+                    viewModel = viewModel,
+                    hazeState = editorHaze,
+                    isDarkTheme = isEditorDark
+                )
+            }
 
         // Auto-navigate to the newly inserted page
         val lastInsertedPage by pdfViewModel.lastInsertedPageIndex.collectAsState()
@@ -459,6 +494,7 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                 currentPageIndex = idx
                 viewModel.setActivePage(idx)
                 sidebarListState.animateScrollToCenter(idx)
+                runCatching { mainListState.animateScrollToItem(idx) }
                 pdfViewModel.consumeInsertedPageEvent()
             }
         }
@@ -475,6 +511,7 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
             currentPageIndex = clamped
             viewModel.setActivePage(clamped)
             sidebarListState.animateScrollToCenter(clamped)
+            runCatching { mainListState.scrollToItem(clamped) }
             pdfViewModel.consumeDeletedPageEvent()
         }
 
@@ -491,7 +528,15 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                 SidebarMode.FULLSCREEN -> totalWidth
             }
 
-            val animatableWidth = remember { androidx.compose.animation.core.Animatable(if(sidebarMode == SidebarMode.COLLAPSED) 68f else 160f) }
+            val animatableWidth = remember {
+                androidx.compose.animation.core.Animatable(
+                    when (sidebarMode) {
+                        SidebarMode.COLLAPSED -> 68f
+                        SidebarMode.NORMAL -> 160f
+                        SidebarMode.FULLSCREEN -> 160f
+                    }
+                )
+            }
             val coroutineScope = rememberCoroutineScope()
 
             LaunchedEffect(targetWidth, totalWidth) {
@@ -515,10 +560,7 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                 documentUri = uri.toString(),
                 modelWidth = viewModel.modelWidth,
                 modelHeight = viewModel.modelHeight,
-                onPageSelected = { index ->
-                    currentPageIndex = index
-                    viewModel.setActivePage(index)
-                },
+                onPageSelected = { index -> onRequestPage(index) },
                 onAddPage = { afterIndex ->
                     scope.launch {
                         pdfViewModel.insertBlankPage(
@@ -534,51 +576,103 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                     pdfViewModel.deletePages(uri.toString(), indices)
                 },
                 listState = sidebarListState,
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier.fillMaxSize(),
+                hazeState = editorHaze,
+                isDarkTheme = isEditorDark
             )
 
-            // Drag Handle
-            if (sidebarMode != SidebarMode.FULLSCREEN) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .fillMaxHeight()
-                        .width(24.dp)
-                        .pointerInput(totalWidth) {
-                            detectHorizontalDragGestures(
-                                onDragEnd = {
-                                    val currentW = animatableWidth.value
-                                    val newMode = when {
-                                        currentW > (normalWidth.value + totalWidth.value) / 2 -> SidebarMode.FULLSCREEN
-                                        currentW > (collapsedWidth.value + normalWidth.value) / 2 -> SidebarMode.NORMAL
-                                        else -> SidebarMode.COLLAPSED
-                                    }
-                                    sidebarMode = newMode
-                                    coroutineScope.launch {
-                                        val tW = when (newMode) {
-                                            SidebarMode.COLLAPSED -> collapsedWidth.value
-                                            SidebarMode.NORMAL -> normalWidth.value
-                                            SidebarMode.FULLSCREEN -> totalWidth.value
+        }
+
+        // Drag Strip：獨立 24dp 細觸控條，NORMAL 顯示玻璃丸；
+        // 點循環切換；橫拖調寬（1:1 跟手），直拖捲主列表；主軸先過 slop 先鎖定
+        // 全屏態由網格內返回鈕退出，這裡不佔位
+        if (sidebarMode != SidebarMode.FULLSCREEN) {
+            Box(
+                modifier = Modifier
+                    .width(24.dp)
+                    .fillMaxHeight()
+                    .pointerInput(totalWidth) {
+                        val anchors = listOf(
+                            SidebarMode.COLLAPSED to collapsedWidth.value,
+                            SidebarMode.NORMAL to normalWidth.value,
+                            SidebarMode.FULLSCREEN to totalWidth.value
+                        )
+                        val order = listOf(SidebarMode.COLLAPSED, SidebarMode.NORMAL, SidebarMode.FULLSCREEN)
+                        awaitEachGesture {
+                            val down = awaitFirstDown()
+                            // null = 未定；true = 橫向調寬；false = 直向捲動（先過 slop 先鎖定）
+                            var horizontalLock: Boolean? = null
+                            var prevX = down.position.x
+                            var prevY = down.position.y
+                            var accX = 0f
+                            var accY = 0f
+                            var velX = 0f
+                            var lastT = down.uptimeMillis
+                            val slop = viewConfiguration.touchSlop
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                if (!change.pressed) {
+                                    if (horizontalLock == null) {
+                                        // 純點：循環切換，怎麼點都有反應
+                                        sidebarMode = order[(order.indexOf(sidebarMode) + 1) % order.size]
+                                    } else if (horizontalLock == true) {
+                                        val vx = velX
+                                        val currentW = animatableWidth.value
+                                        val sorted = anchors.sortedBy { it.second }
+                                        sidebarMode = when {
+                                            vx > 600f -> sorted.firstOrNull { it.second > currentW + 1f }?.first
+                                                ?: SidebarMode.FULLSCREEN
+                                            vx < -600f -> sorted.lastOrNull { it.second < currentW - 1f }?.first
+                                                ?: SidebarMode.COLLAPSED
+                                            else -> anchors.minByOrNull { (_, w) ->
+                                                kotlin.math.abs(currentW - w)
+                                            }?.first ?: SidebarMode.COLLAPSED
                                         }
-                                        animatableWidth.animateTo(tW, spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMediumLow))
                                     }
-                                },
-                                onHorizontalDrag = { change, dragAmount ->
+                                    break
+                                }
+                                val dx = change.position.x - prevX
+                                val dy = change.position.y - prevY
+                                prevX = change.position.x
+                                prevY = change.position.y
+                                if (horizontalLock == null) {
+                                    accX += dx
+                                    accY += dy
+                                    horizontalLock = when {
+                                        kotlin.math.abs(accX) > slop && kotlin.math.abs(accX) >= kotlin.math.abs(accY) -> true
+                                        kotlin.math.abs(accY) > slop -> false
+                                        else -> null
+                                    }
+                                }
+                                if (horizontalLock == true) {
+                                    val now = change.uptimeMillis
+                                    val dt = (now - lastT).coerceAtLeast(1L)
+                                    lastT = now
+                                    velX = velX * 0.75f + (dx / dt * 1000f) * 0.25f
                                     change.consume()
-                                    val deltaDp = dragAmount / density.density
+                                    val deltaDp = dx / density.density
                                     val newWidth = (animatableWidth.value + deltaDp).coerceIn(collapsedWidth.value, totalWidth.value)
                                     coroutineScope.launch { animatableWidth.snapTo(newWidth) }
+                                } else if (horizontalLock == false) {
+                                    // 直向：把主列表跟著手指捲（內容跟手）
+                                    change.consume()
+                                    val dyPx = -dy
+                                    if (dyPx != 0f) {
+                                        coroutineScope.launch { mainListState.scrollBy(dyPx) }
+                                    }
                                 }
-                            )
+                            }
                         }
-                ) {
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                if (sidebarMode == SidebarMode.NORMAL) {
                     Box(
                         Modifier
-                            .align(Alignment.Center)
-                            .width(4.dp)
-                            .height(48.dp)
-                            .clip(RoundedCornerShape(2.dp))
-                            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f))
+                            .width(6.dp)
+                            .height(56.dp)
+                            .glassPanel(editorHaze, isEditorDark, CircleShape)
                     )
                 }
             }
@@ -604,7 +698,7 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                         modifier = Modifier
                             .fillMaxHeight()
                             .width(10.dp)
-                            .background(MaterialTheme.colorScheme.surface)
+                            .background(Color.Transparent)
                             .pointerInput(Unit) {
                                 detectHorizontalDragGestures { change, dragAmount ->
                                     change.consume()
@@ -643,12 +737,19 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                         onAiFileReady = { fileUri ->
                             aiFileUri = fileUri
                             showAiPanel = true
-                        }
+                        },
+                        hazeState = editorHaze,
+                        isDarkTheme = isEditorDark,
+                        db = db,
+                        mainListState = mainListState,
+                        onRequestPage = onRequestPage,
+                        onScrollPage = onScrollPage
                     )
                 } // 5 Box(Workspace)
             } // 6 inner Row
         } // 7 Box(weight 1f)
         } // 8 outer Row
         } // 9 BoxWithConstraints
-    } // 10 Column
-} // 11 TabletEditorScreen
+        } // 10 Column
+    } // 11 root Box(Aurora)
+} // 12 TabletEditorScreen

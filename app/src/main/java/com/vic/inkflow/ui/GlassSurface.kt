@@ -1,6 +1,7 @@
 package com.vic.inkflow.ui
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -22,18 +23,19 @@ import androidx.compose.runtime.remember
  * of curved glass.
  */
 
-/** Translucent glass tint per theme — blur supplies legibility underneath. */
-private val GlassTintLight = Color(0xA6FFFFFF)
-private val GlassTintDark = Color(0x8C0F172A)
+/** Heavy liquid glass — deeper tint + stronger blur so panels stand out. */
+private val GlassTintLight = Color(0x66FFFFFF) // 40%
+private val GlassTintDark = Color(0x800F172A) // 50% dark liquid
 
 @Composable
 fun rememberHazeState(): HazeState = remember { HazeState() }
 
+// backgroundColor 必須 Transparent，實色會直接蓋掉 blur
 fun glassStyle(isDark: Boolean): HazeStyle = HazeStyle(
     backgroundColor = Color.Transparent,
     tints = listOf(HazeTint(if (isDark) GlassTintDark else GlassTintLight)),
-    blurRadius = 22.dp,
-    noiseFactor = 0.04f
+    blurRadius = 30.dp,
+    noiseFactor = 0.02f
 )
 
 /**
@@ -49,9 +51,20 @@ fun Modifier.glassPanel(
     var m = this
         .clip(shape)
         .hazeEffect(state, style = glassStyle(isDark))
+        // 頂部 Sheen 反光：玻璃感的關鍵，壓在 blur 上、內容下
+        .background(
+            brush = Brush.verticalGradient(
+                colorStops = arrayOf(
+                    0f to Color.White.copy(alpha = if (isDark) 0.10f else 0.16f),
+                    0.35f to Color.White.copy(alpha = 0.02f),
+                    1f to Color.Transparent
+                )
+            ),
+            shape = shape
+        )
     if (specular) {
-        val rimTop = if (isDark) Color.White.copy(alpha = 0.32f) else Color.White.copy(alpha = 0.65f)
-        val rimBottom = if (isDark) Color.White.copy(alpha = 0.05f) else Color.White.copy(alpha = 0.10f)
+        val rimTop = if (isDark) Color.White.copy(alpha = 0.60f) else Color.White.copy(alpha = 0.90f)
+        val rimBottom = if (isDark) Color.White.copy(alpha = 0.10f) else Color.White.copy(alpha = 0.15f)
         m = m.border(
             border = BorderStroke(
                 width = 1.dp,

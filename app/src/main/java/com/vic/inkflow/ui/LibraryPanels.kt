@@ -125,6 +125,13 @@ import androidx.compose.material.icons.outlined.FileUpload
 import androidx.compose.material.icons.outlined.LightMode
 import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.Bookmark
+import androidx.compose.material.icons.automirrored.outlined.NoteAdd
+import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.GridView
+import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.rounded.Brush
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Gesture
@@ -318,22 +325,22 @@ internal fun LibraryHeroPanel(
                         onValueChange = onSearchQueryChange,
                         singleLine = true,
                         leadingIcon = {
-                            Icon(Icons.Default.Search, contentDescription = null)
+                            Icon(Icons.Outlined.Search, contentDescription = null)
                         },
                         trailingIcon = {
                             AnimatedVisibility(visible = searchQuery.isNotBlank()) {
                                 IconButton(onClick = { onSearchQueryChange("") }) {
-                                    Icon(Icons.Default.Close, contentDescription = "清除搜尋")
+                                    Icon(Icons.Outlined.Close, contentDescription = "清除搜尋")
                                 }
                             }
                         },
                         placeholder = { Text("搜尋標題、文件名稱或近期開啟的筆記") },
                         colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
-                            focusedContainerColor = cardShellColor,
-                            unfocusedContainerColor = cardShellColor,
-                            disabledContainerColor = cardShellColor,
-                            focusedBorderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
-                            unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+                            focusedContainerColor = Color.Transparent,
+                            unfocusedContainerColor = Color.Transparent,
+                            disabledContainerColor = Color.Transparent,
+                            focusedBorderColor = Color.Transparent,
+                            unfocusedBorderColor = Color.White.copy(alpha = 0.14f)
                         ),
                         shape = ShapeLg,
                         modifier = Modifier.weight(1f)
@@ -351,7 +358,7 @@ internal fun LibraryHeroPanel(
                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(20.dp))
+                                Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(20.dp))
                                 Text("新增資料夾", style = MaterialTheme.typography.labelLarge)
                             }
                         }
@@ -363,7 +370,7 @@ internal fun LibraryHeroPanel(
                             modifier = Modifier.background(cardShellColor, CircleShape)
                         ) {
                             Icon(
-                                imageVector = if (isGridView) Icons.AutoMirrored.Filled.List else Icons.Default.Apps,
+                                imageVector = if (isGridView) Icons.AutoMirrored.Filled.List else Icons.Outlined.GridView,
                                 contentDescription = "切換檢視",
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -447,7 +454,7 @@ internal fun DocumentLibraryFab(
                         .background(fabContentColor.copy(alpha = 0.14f), CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(Icons.Default.Add, contentDescription = null, tint = fabContentColor)
+                    Icon(Icons.Outlined.Add, contentDescription = null, tint = fabContentColor)
                 }
                 Column {
                     Text("新增筆記", color = fabContentColor, style = MaterialTheme.typography.labelLarge)
@@ -462,17 +469,17 @@ internal fun DocumentLibraryFab(
         ) {
             androidx.compose.material3.DropdownMenuItem(
                 text = { Text("開啟 PDF") },
-                leadingIcon = { Icon(Icons.Default.Description, contentDescription = null) },
+                leadingIcon = { Icon(Icons.Outlined.Description, contentDescription = null) },
                 onClick = onOpenPdf
             )
             androidx.compose.material3.DropdownMenuItem(
                 text = { Text("空白筆記") },
-                leadingIcon = { Icon(Icons.Filled.Add, contentDescription = null) },
+                leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null) },
                 onClick = onCreateBlank
             )
             androidx.compose.material3.DropdownMenuItem(
                 text = { Text("新增資料夾") },
-                leadingIcon = { Icon(Icons.Default.Folder, contentDescription = null) },
+                leadingIcon = { Icon(Icons.Outlined.Folder, contentDescription = null) },
                 onClick = onCreateFolder
             )
         }
@@ -487,7 +494,9 @@ internal fun LibraryEmptyState(
     searchQuery: String,
     onClearSearch: () -> Unit,
     onOpenPdf: () -> Unit,
-    onCreateBlank: () -> Unit
+    onCreateBlank: () -> Unit,
+    hazeState: dev.chrisbanes.haze.HazeState? = null,
+    isDarkTheme: Boolean = false
 ) {
     val emptyStateFloat by rememberInfiniteTransition(label = "EmptyIconFloat")
         .animateFloat(
@@ -520,11 +529,12 @@ internal fun LibraryEmptyState(
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .widthIn(max = 560.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.96f),
+                    .widthIn(max = 560.dp)
+                    .then(if (hazeState != null) Modifier.glassPanel(hazeState, isDarkTheme, ShapeXl) else Modifier),
+                color = if (hazeState != null) Color.Transparent else MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.96f),
                 shape = ShapeXl,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),
-                shadowElevation = 10.dp
+                border = if (hazeState != null) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),
+                shadowElevation = if (hazeState != null) 0.dp else 10.dp
             ) {
                 Column(
                     modifier = Modifier
@@ -542,7 +552,7 @@ internal fun LibraryEmptyState(
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
-                            imageVector = if (isSearchActive) Icons.Default.Search else Icons.AutoMirrored.Filled.NoteAdd,
+                            imageVector = if (isSearchActive) Icons.Outlined.Search else Icons.AutoMirrored.Outlined.NoteAdd,
                             contentDescription = null,
                             modifier = Modifier.size(38.dp),
                             tint = Color.White.copy(alpha = emptyStateAlpha + 0.34f)

@@ -1,4 +1,4 @@
-﻿package com.vic.inkflow.ui
+package com.vic.inkflow.ui
 
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeSource
@@ -125,6 +125,12 @@ import androidx.compose.material.icons.outlined.FileUpload
 import androidx.compose.material.icons.outlined.LightMode
 import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.Bookmark
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.Star
+import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.rounded.Brush
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Gesture
@@ -159,6 +165,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -244,7 +251,9 @@ internal fun Sidebar(
     onAddPage: (afterIndex: Int) -> Unit,
     onDeletePages: (List<Int>) -> Unit,
     listState: LazyListState = rememberLazyListState(),
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    hazeState: dev.chrisbanes.haze.HazeState,
+    isDarkTheme: Boolean
 ) {
     var deleteConfirmIndices by remember { mutableStateOf<List<Int>>(emptyList()) }
     var isSelectionMode by remember { mutableStateOf(false) }
@@ -285,9 +294,10 @@ internal fun Sidebar(
         )
     }
 
+    // 整塊底全透明，跟工具列一樣只留零件玻璃
     Surface(
         modifier = modifier,
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+        color = Color.Transparent,
         contentColor = MaterialTheme.colorScheme.onSurface,
     ) {
         if (sidebarMode == SidebarMode.FULLSCREEN) {
@@ -315,60 +325,91 @@ internal fun Sidebar(
                 gridState.scrollToItem(index = (row * 4).coerceAtLeast(0))
             }
             Column(Modifier.fillMaxSize()) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().height(48.dp).padding(horizontal = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                // 玻璃頂欄：跟工具列藥丸同一語言
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 10.dp)
                 ) {
-                    if (isSelectionMode) {
-                        IconButton(onClick = { 
-                            isSelectionMode = false
-                            selectedPages = emptySet()
-                        }) {
-                            Icon(Icons.Default.Close, contentDescription = "Cancel Mode")
-                        }
-                        Text(
-                            text = "已選取 ${selectedPages.size} 頁",
-                            style = MaterialTheme.typography.titleSmall,
-                            modifier = Modifier.weight(1f)
-                        )
-                        androidx.compose.material3.TextButton(onClick = {
-                            if (selectedPages.size == pageCount) selectedPages = emptySet() else selectedPages = (0 until pageCount).toSet()
-                        }) {
-                            Text(if (selectedPages.size == pageCount) "取消全選" else "全選")
-                        }
-                        IconButton(onClick = {
-                            if (selectedPages.isNotEmpty() && !isPageOperationInProgress) {
-                                deleteConfirmIndices = selectedPages.toList()
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(52.dp)
+                            .glassPanel(hazeState, isDarkTheme, ShapeLg)
+                            .padding(horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (isSelectionMode) {
+                            IconButton(onClick = {
+                                isSelectionMode = false
+                                selectedPages = emptySet()
+                            }) {
+                                Icon(Icons.Outlined.Close, contentDescription = "取消多選")
                             }
-                        }) {
-                            Icon(Icons.Default.Delete, contentDescription = "刪除選擇", tint = MaterialTheme.colorScheme.error)
-                        }
-                    } else {
-                        IconButton(onClick = { onModeChange(SidebarMode.NORMAL) }) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Exit grid view")
-                        }
-                        Text(
-                            text = "所有頁面",
-                            style = MaterialTheme.typography.titleSmall,
-                            modifier = Modifier.weight(1f)
-                        )
-                        androidx.compose.material3.FilterChip(
-                            selected = showOnlyBookmarked,
-                            onClick = { showOnlyBookmarked = !showOnlyBookmarked },
-                            label = { Text("書籤") },
-                            leadingIcon = { if (showOnlyBookmarked) Icon(Icons.Default.Star, null) else Icon(Icons.Outlined.BookmarkBorder, null) }
-                        )
-                        IconButton(onClick = { isSelectionMode = true }) {
-                            Icon(Icons.Default.Check, contentDescription = "Select Pages")
+                            Text(
+                                text = "已選取 ${selectedPages.size} 頁",
+                                style = MaterialTheme.typography.titleSmall,
+                                modifier = Modifier.weight(1f)
+                            )
+                            androidx.compose.material3.TextButton(onClick = {
+                                if (selectedPages.size == pageCount) selectedPages = emptySet() else selectedPages = (0 until pageCount).toSet()
+                            }) {
+                                Text(if (selectedPages.size == pageCount) "取消全選" else "全選")
+                            }
+                            IconButton(
+                                onClick = {
+                                    if (selectedPages.isNotEmpty() && !isPageOperationInProgress) {
+                                        deleteConfirmIndices = selectedPages.toList()
+                                    }
+                                },
+                                enabled = selectedPages.isNotEmpty() && !isPageOperationInProgress
+                            ) {
+                                Icon(Icons.Outlined.DeleteOutline, contentDescription = "刪除選擇", tint = MaterialTheme.colorScheme.error)
+                            }
+                        } else {
+                            IconButton(onClick = { onModeChange(SidebarMode.NORMAL) }) {
+                                Icon(Icons.Outlined.ArrowBack, contentDescription = "回預覽條")
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(text = "所有頁面", style = MaterialTheme.typography.titleSmall)
+                                Text(
+                                    text = "${visibleIndices.size} 頁",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            // 書籤開關：玻璃小丸（取代 M3 FilterChip）
+                            Box(
+                                modifier = Modifier
+                                    .clip(CircleShape)
+                                    .then(
+                                        if (showOnlyBookmarked) Modifier.glassPanel(hazeState, isDarkTheme, CircleShape)
+                                        else Modifier
+                                    )
+                                    .clickable { showOnlyBookmarked = !showOnlyBookmarked }
+                                    .padding(8.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = if (showOnlyBookmarked) Icons.Outlined.Star else Icons.Outlined.BookmarkBorder,
+                                    contentDescription = "只看書籤",
+                                    tint = if (showOnlyBookmarked) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                            IconButton(onClick = { isSelectionMode = true }) {
+                                Icon(Icons.Outlined.Check, contentDescription = "多選頁面")
+                            }
                         }
                     }
                 }
                 LazyVerticalGrid(
-                    columns = GridCells.Adaptive(180.dp),
+                    columns = GridCells.Adaptive(240.dp),
                     state = gridState,
-                    contentPadding = PaddingValues(8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 64.dp),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
                     modifier = Modifier.fillMaxSize().reorderable(reorderState, enabled = !showOnlyBookmarked && !isSelectionMode && !isPageOperationInProgress)
                 ) {
                     items(count = dragOrder.size, key = { dragOrder[it] }) { it ->
@@ -429,6 +470,12 @@ internal fun Sidebar(
                                 )
                             }
                         )) {
+                            // 玻璃卡框 + 內嵌 8dp 白紙，跟文件庫卡片同語言
+                            Box(
+                                modifier = Modifier
+                                    .glassPanel(hazeState, isDarkTheme, ShapeLg)
+                                    .padding(8.dp)
+                            ) {
                             Box {
                                 PageThumbnail(
                                     pageIndex = index,
@@ -445,14 +492,35 @@ internal fun Sidebar(
                                     modelHeight = modelHeight
                                 )
                                 if (isSelectionMode) {
-                                    androidx.compose.material3.Checkbox(
-                                        checked = index in selectedPages,
-                                        onCheckedChange = { chk ->
-                                            if (chk) selectedPages += index else selectedPages -= index
-                                        },
-                                        modifier = Modifier.align(Alignment.TopStart).padding(12.dp)
-                                    )
+                                    // 自繪勾選圓（取代 M3 Checkbox）
+                                    val checked = index in selectedPages
+                                    Box(
+                                        modifier = Modifier
+                                            .align(Alignment.TopStart)
+                                            .padding(12.dp)
+                                            .size(28.dp)
+                                            .clip(CircleShape)
+                                            .background(
+                                                if (checked) MaterialTheme.colorScheme.primary
+                                                else MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
+                                                CircleShape
+                                            )
+                                            .clickable {
+                                                if (checked) selectedPages -= index else selectedPages += index
+                                            },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        if (checked) {
+                                            Icon(
+                                                Icons.Outlined.Check,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.onPrimary,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        }
+                                    }
                                 }
+                            }
                             }
                         }
                     }
@@ -482,8 +550,9 @@ internal fun Sidebar(
                         }
                     }
 
-                    // 2. 只要中心項目改變，馬上同步到畫布
-                    androidx.compose.runtime.LaunchedEffect(centerItemIndex) {
+                    // 2. 只有頁碼模式才隨滑動翻頁：預覽/全頁模式滑動只用來看，點了才翻
+                    androidx.compose.runtime.LaunchedEffect(centerItemIndex, sidebarMode) {
+                        if (sidebarMode != SidebarMode.COLLAPSED) return@LaunchedEffect
                         centerItemIndex?.let { newIndex ->
                             if (newIndex != currentPageIndex) {
                                 onPageSelected(newIndex)
@@ -545,15 +614,16 @@ internal fun Sidebar(
                             } else {
                                 PageIcon(
                                     pageIndex = index,
-                                    isSelected = index == currentPageIndex
+                                    isSelected = index == currentPageIndex,
+                                    hazeState = hazeState,
+                                    isDarkTheme = isDarkTheme
                                 )
                             }
                         }
                     }
                 }
                 }
-                // 固定在底部的新增頁面按鈕
-                androidx.compose.material3.HorizontalDivider()
+                // 固定在底部的新增頁面按鈕（去分隔線，玻璃藥丸）
                 // 頁面操作進行中時顯示細長進度條，給予使用者視覺回饋
                 if (isPageOperationInProgress) {
                     androidx.compose.material3.LinearProgressIndicator(
@@ -568,9 +638,10 @@ internal fun Sidebar(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = 6.dp, vertical = 5.dp)
+                                .glassPanel(hazeState, isDarkTheme, ShapeMd)
                         ) {
                             Icon(
-                                Icons.Default.Add,
+                                Icons.Outlined.Add,
                                 contentDescription = null,
                                 modifier = Modifier.size(16.dp)
                             )
@@ -584,7 +655,7 @@ internal fun Sidebar(
                             modifier = Modifier.padding(vertical = 5.dp)
                         ) {
                             Icon(
-                                Icons.Default.Add,
+                                Icons.Outlined.Add,
                                 contentDescription = "新增頁面",
                                 modifier = Modifier.size(24.dp),
                                 tint = MaterialTheme.colorScheme.primary
@@ -669,122 +740,108 @@ internal fun PageThumbnail(
                     strokeWidth = 2.dp
                 )
             }
-            // Unified ink + image + text overlay
-            Spacer(modifier = Modifier.fillMaxSize().drawWithCache {
+            // Unified ink + image + text overlay (direct hardware-accelerated draw without intermediate bitmap allocation)
+            Spacer(modifier = Modifier.fillMaxSize().drawBehind {
                 val modelW = modelWidth
                 val modelH = modelHeight
+                if (modelW <= 0f || modelH <= 0f) return@drawBehind
                 val sx = size.width / modelW
                 val sy = size.height / modelH
-                val bmpWidth = size.width.toInt().coerceAtLeast(1)
-                val bmpHeight = size.height.toInt().coerceAtLeast(1)
-                val cachedImage = androidx.compose.ui.graphics.ImageBitmap(bmpWidth, bmpHeight, androidx.compose.ui.graphics.ImageBitmapConfig.Argb8888)
-                val cacheCanvas = androidx.compose.ui.graphics.Canvas(cachedImage)
-                val drawScope = androidx.compose.ui.graphics.drawscope.CanvasDrawScope()
-                drawScope.draw(
-                    androidx.compose.ui.unit.Density(1f),
-                    androidx.compose.ui.unit.LayoutDirection.Ltr,
-                    cacheCanvas,
-                    size
-                ) {
-                    // --- Strokes (freehand + shapes) ---
-                    strokes.forEach { swp ->
-                        val stroke = swp.stroke
-                        val strokeColor = Color(stroke.color)
-                        val alpha = if (stroke.isHighlighter) 0.4f else 1f
-                        val widthPx = stroke.strokeWidth * (if (stroke.isHighlighter) 3f else 1f) * sx
-                        val paintStyle = Stroke(width = widthPx, cap = StrokeCap.Round, join = StrokeJoin.Round)
-                        if (stroke.shapeType != null) {
-                            val r = Rect(
-                                stroke.boundsLeft * sx, stroke.boundsTop * sy,
-                                stroke.boundsRight * sx, stroke.boundsBottom * sy
+                // --- Strokes (freehand + shapes) ---
+                strokes.forEach { swp ->
+                    val stroke = swp.stroke
+                    val strokeColor = Color(stroke.color)
+                    val alpha = if (stroke.isHighlighter) 0.4f else 1f
+                    val widthPx = stroke.strokeWidth * (if (stroke.isHighlighter) 3f else 1f) * sx
+                    val paintStyle = Stroke(width = widthPx, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                    if (stroke.shapeType != null) {
+                        val r = Rect(
+                            stroke.boundsLeft * sx, stroke.boundsTop * sy,
+                            stroke.boundsRight * sx, stroke.boundsBottom * sy
+                        )
+                        when (stroke.shapeType) {
+                            "RECT" -> drawRect(
+                                color = strokeColor.copy(alpha = alpha),
+                                topLeft = Offset(r.left, r.top),
+                                size = Size(r.width, r.height),
+                                style = paintStyle
                             )
-                            when (stroke.shapeType) {
-                                "RECT" -> drawRect(
+                            "CIRCLE" -> drawOval(
+                                color = strokeColor.copy(alpha = alpha),
+                                topLeft = Offset(r.left, r.top),
+                                size = Size(r.width, r.height),
+                                style = paintStyle
+                            )
+                            "LINE" -> if (swp.points.size >= 2) {
+                                drawLine(
                                     color = strokeColor.copy(alpha = alpha),
-                                    topLeft = Offset(r.left, r.top),
-                                    size = Size(r.width, r.height),
-                                    style = paintStyle
+                                    start = Offset(swp.points.first().x * sx, swp.points.first().y * sy),
+                                    end = Offset(swp.points.last().x * sx, swp.points.last().y * sy),
+                                    strokeWidth = widthPx,
+                                    cap = StrokeCap.Round
                                 )
-                                "CIRCLE" -> drawOval(
-                                    color = strokeColor.copy(alpha = alpha),
-                                    topLeft = Offset(r.left, r.top),
-                                    size = Size(r.width, r.height),
-                                    style = paintStyle
-                                )
-                                "LINE" -> if (swp.points.size >= 2) {
-                                    drawLine(
-                                        color = strokeColor.copy(alpha = alpha),
-                                        start = Offset(swp.points.first().x * sx, swp.points.first().y * sy),
-                                        end = Offset(swp.points.last().x * sx, swp.points.last().y * sy),
-                                        strokeWidth = widthPx,
-                                        cap = StrokeCap.Round
-                                    )
-                                }
-                                "ARROW" -> if (swp.points.size >= 2) {
-                                    val p0 = Offset(swp.points.first().x * sx, swp.points.first().y * sy)
-                                    val p1 = Offset(swp.points.last().x * sx, swp.points.last().y * sy)
-                                    drawLine(
-                                        color = strokeColor.copy(alpha = alpha),
-                                        start = p0, end = p1,
-                                        strokeWidth = widthPx, cap = StrokeCap.Round
-                                    )
-                                    thumbnailDrawArrowHead(
-                                        drawScope = this,
-                                        color = strokeColor.copy(alpha = alpha),
-                                        start = p0, end = p1, sw = widthPx
-                                    )
-                                }
                             }
-                        } else {
-                            val pts = swp.points
-                            if (pts.size >= 2) {
-                                val path = androidx.compose.ui.graphics.Path()
-                                path.moveTo(pts.first().x * sx, pts.first().y * sy)
-                                for (i in 1 until pts.size) {
-                                    val p1 = pts[i - 1]; val p2 = pts[i]
-                                    path.quadraticTo(
-                                        p1.x * sx, p1.y * sy,
-                                        (p1.x + p2.x) / 2f * sx, (p1.y + p2.y) / 2f * sy
-                                    )
-                                }
-                                pts.lastOrNull()?.let { path.lineTo(it.x * sx, it.y * sy) }
-                                drawPath(path, strokeColor.copy(alpha = alpha), style = paintStyle)
+                            "ARROW" -> if (swp.points.size >= 2) {
+                                val p0 = Offset(swp.points.first().x * sx, swp.points.first().y * sy)
+                                val p1 = Offset(swp.points.last().x * sx, swp.points.last().y * sy)
+                                drawLine(
+                                    color = strokeColor.copy(alpha = alpha),
+                                    start = p0, end = p1,
+                                    strokeWidth = widthPx, cap = StrokeCap.Round
+                                )
+                                thumbnailDrawArrowHead(
+                                    drawScope = this,
+                                    color = strokeColor.copy(alpha = alpha),
+                                    start = p0, end = p1, sw = widthPx
+                                )
                             }
                         }
-                    }
-                    // --- Image annotations ---
-                    imageAnnotations.forEach { ann ->
-                        val bmp = loadedImages[ann.uri]
-                        if (bmp != null) {
-                            drawImage(
-                                image = bmp.asImageBitmap(),
-                                dstOffset = IntOffset((ann.modelX * sx).toInt(), (ann.modelY * sy).toInt()),
-                                dstSize = IntSize(
-                                    (ann.modelWidth * sx).toInt().coerceAtLeast(1),
-                                    (ann.modelHeight * sy).toInt().coerceAtLeast(1)
-                                )
-                            )
-                        }
-                    }
-                    // --- Text annotations ---
-                    if (textAnnotations.isNotEmpty()) {
-                        drawIntoCanvas { composeCanvas ->
-                            textAnnotations.forEach { ann ->
-                                val paint = android.graphics.Paint().apply {
-                                    textSize    = ann.fontSize * sy
-                                    color       = ann.colorArgb
-                                    isAntiAlias = true
-                                    typeface    = android.graphics.Typeface.DEFAULT_BOLD
-                                }
-                                composeCanvas.nativeCanvas.drawText(
-                                    ann.text, ann.modelX * sx, ann.modelY * sy, paint
+                    } else {
+                        val pts = swp.points
+                        if (pts.size >= 2) {
+                            val path = androidx.compose.ui.graphics.Path()
+                            path.moveTo(pts.first().x * sx, pts.first().y * sy)
+                            for (i in 1 until pts.size) {
+                                val p1 = pts[i - 1]; val p2 = pts[i]
+                                path.quadraticTo(
+                                    p1.x * sx, p1.y * sy,
+                                    (p1.x + p2.x) / 2f * sx, (p1.y + p2.y) / 2f * sy
                                 )
                             }
+                            pts.lastOrNull()?.let { path.lineTo(it.x * sx, it.y * sy) }
+                            drawPath(path, strokeColor.copy(alpha = alpha), style = paintStyle)
                         }
                     }
                 }
-                onDrawBehind {
-                    drawImage(cachedImage)
+                // --- Image annotations ---
+                imageAnnotations.forEach { ann ->
+                    val bmp = loadedImages[ann.uri]
+                    if (bmp != null) {
+                        drawImage(
+                            image = bmp.asImageBitmap(),
+                            dstOffset = IntOffset((ann.modelX * sx).toInt(), (ann.modelY * sy).toInt()),
+                            dstSize = IntSize(
+                                (ann.modelWidth * sx).toInt().coerceAtLeast(1),
+                                (ann.modelHeight * sy).toInt().coerceAtLeast(1)
+                            )
+                        )
+                    }
+                }
+                // --- Text annotations ---
+                if (textAnnotations.isNotEmpty()) {
+                    drawIntoCanvas { composeCanvas ->
+                        textAnnotations.forEach { ann ->
+                            val paint = android.graphics.Paint().apply {
+                                textSize    = ann.fontSize * sy
+                                color       = ann.colorArgb
+                                isAntiAlias = true
+                                typeface    = android.graphics.Typeface.DEFAULT_BOLD
+                            }
+                            composeCanvas.nativeCanvas.drawText(
+                                ann.text, ann.modelX * sx, ann.modelY * sy, paint
+                            )
+                        }
+                    }
                 }
             })
             if (onBookmarkToggle != null) {
@@ -793,29 +850,32 @@ internal fun PageThumbnail(
                     modifier = Modifier.align(Alignment.TopEnd).padding(4.dp).size(24.dp)
                 ) {
                     Icon(
-                        imageVector = if (isBookmarked) Icons.Default.Star else Icons.Default.Star,
+                        imageVector = Icons.Outlined.Star,
                         contentDescription = "Toggle Bookmark",
                         tint = if (isBookmarked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
                         modifier = Modifier.size(16.dp)
                     )
                 }
             }
-            // Centered page number box (only for selected)
-            if (isSelected) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .size(38.dp, 32.dp)
-                        .background(MaterialTheme.colorScheme.surfaceContainerHigh, ShapeSm)
-                        .border(2.dp, MaterialTheme.colorScheme.primary, ShapeSm),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "${pageIndex + 1}",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.primary
+            // 頁碼徽：常駐左上，選中上色，未選中半透明（去中央大框）
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(6.dp)
+                    .background(
+                        if (isSelected) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.surface.copy(alpha = 0.78f),
+                        CircleShape
                     )
-                }
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "${pageIndex + 1}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (isSelected) MaterialTheme.colorScheme.onPrimary
+                        else MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }
@@ -842,29 +902,28 @@ internal fun thumbnailDrawArrowHead(
 }
 
 @Composable
-internal fun PageIcon(pageIndex: Int, isSelected: Boolean) {
-    val isDarkSurface = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    // Softer, mode-aware highlight levels
-    val selectedBg = if (isDarkSurface) MaterialTheme.colorScheme.primary.copy(alpha = 0.24f)
-                      else MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-    val unselectedBg = if (isDarkSurface) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
-                        else MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
-    val selectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
-    val unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+internal fun PageIcon(
+    pageIndex: Int,
+    isSelected: Boolean,
+    hazeState: dev.chrisbanes.haze.HazeState? = null,
+    isDarkTheme: Boolean = false
+) {
+    // 玻璃頁碼藥丸：選中是實心玻璃丸，未選中全透明只留數字
     Box(
         modifier = Modifier
-            .size(44.dp)
-            .background(if (isSelected) selectedBg else unselectedBg, shape = ShapeSm)
+            .size(48.dp)
             .then(
-                if (isSelected) Modifier.border(BorderStroke(2.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.9f)), shape = ShapeSm)
+                if (isSelected && hazeState != null) Modifier.glassPanel(hazeState, isDarkTheme, CircleShape)
                 else Modifier
             ),
         contentAlignment = Alignment.Center
     ) {
         Text(
             text = "${pageIndex + 1}",
-            style = MaterialTheme.typography.labelMedium,
-            color = if (isSelected) selectedTextColor else unselectedTextColor
+            style = if (isSelected) MaterialTheme.typography.titleSmall
+                else MaterialTheme.typography.labelMedium,
+            color = if (isSelected) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
         )
     }
 }

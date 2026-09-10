@@ -7,6 +7,7 @@ import androidx.activity.enableEdgeToEdge
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.vic.inkflow.data.AppDatabase
 import com.vic.inkflow.ui.InkLayerApp
+import com.vic.inkflow.util.AutoBackupScheduler
 
 class MainActivity : ComponentActivity() {
 
@@ -15,6 +16,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         PDFBoxResourceLoader.init(applicationContext)
         val db = AppDatabase.getDatabase(this)
+        AutoBackupScheduler.ensureScheduled(this)
         setContent {
             InkLayerApp(db = db)
         }

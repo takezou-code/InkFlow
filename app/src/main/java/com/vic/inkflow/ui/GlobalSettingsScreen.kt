@@ -26,7 +26,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuAnchorType
@@ -65,6 +66,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
+import com.vic.inkflow.util.AutoBackupScheduler
 import com.vic.inkflow.util.BackupManager
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -104,7 +106,7 @@ fun GlobalSettingsScreen(
                 title = { Text("設定", fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                        Icon(Icons.Outlined.ArrowBack, contentDescription = "返回")
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -209,6 +211,61 @@ fun GlobalSettingsScreen(
                 }
                 backupStatus?.let {
                     Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+
+                // 自動備份：每天一次、只留 3 份、沒變更不寫檔
+                var autoEnabled by remember { mutableStateOf(AutoBackupScheduler.isEnabled(appContext)) }
+                var autoTick by remember { mutableIntStateOf(0) }
+                val autoPrefs = remember(autoTick) { BackupManager.backupPrefs(appContext) }
+                val autoLastRun = remember(autoTick) {
+                    autoPrefs.getLong(AutoBackupScheduler.KEY_LAST_RUN_MS, 0L).let {
+                        if (it == 0L) "尚未執行過"
+                        else SimpleDateFormat("yyyy/MM/dd HH:mm", java.util.Locale.getDefault()).format(Date(it))
+                    }
+                }
+                val autoLastStatus = remember(autoTick) {
+                    autoPrefs.getString(AutoBackupScheduler.KEY_LAST_STATUS, null)
+                }
+                val autoFiles = remember(autoTick) { AutoBackupScheduler.listBackups(appContext) }
+                SettingsSwitchRow(
+                    title = "自動備份（每天）",
+                    subtitle = "只留最新 ${AutoBackupScheduler.MAX_KEEP} 份，資料沒變就不寫新檔",
+                    checked = autoEnabled,
+                    onCheckedChange = {
+                        autoEnabled = it
+                        AutoBackupScheduler.setEnabled(appContext, it)
+                        autoTick++
+                    }
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+                    androidx.compose.material3.OutlinedButton(
+                        onClick = {
+                            AutoBackupScheduler.runOnce(appContext)
+                            backupStatus = "已送出備份任務，稍後按重新整理查看"
+                            autoTick++
+                        },
+                        enabled = !isBackupBusy,
+                        modifier = Modifier.weight(1f)
+                    ) { Text("立即備份") }
+                    androidx.compose.material3.TextButton(
+                        onClick = { autoTick++ },
+                        modifier = Modifier.weight(1f)
+                    ) { Text("重新整理狀態") }
+                }
+                Text(
+                    "上次執行：$autoLastRun",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                autoLastStatus?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                autoFiles.forEach { f ->
+                    Text(
+                        "· ${f.name}（${String.format("%.1f", f.length() / 1024.0 / 1024.0)}MB）",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
 

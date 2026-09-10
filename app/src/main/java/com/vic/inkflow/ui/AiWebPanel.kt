@@ -125,6 +125,7 @@ import androidx.compose.material.icons.outlined.FileUpload
 import androidx.compose.material.icons.outlined.LightMode
 import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.Bookmark
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.rounded.Brush
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Gesture
@@ -543,7 +544,7 @@ fun AiWebPanel(
                 )
         ) {
             androidx.compose.material3.Icon(
-                imageVector = androidx.compose.material.icons.Icons.Default.Close,
+                imageVector = androidx.compose.material.icons.Icons.Outlined.Close,
                 contentDescription = "Close",
                 tint = androidx.compose.material3.MaterialTheme.colorScheme.onSurface
             )

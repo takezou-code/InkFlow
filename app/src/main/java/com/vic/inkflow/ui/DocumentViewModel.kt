@@ -141,15 +141,20 @@ class DocumentViewModel(
     fun createFolder(name: String, parentFolderId: String? = null) {
         val trimmed = name.trim()
         if (trimmed.isEmpty()) return
+        // 單層模式：忽略 parentFolderId，全部建在頂層
+        val effectiveParent: String? = null
+        if (parentFolderId != null) {
+            _folderOperationMessage.value = "已改為單層，新增的資料夾會放在最上層"
+        }
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val now = System.currentTimeMillis()
-                val nextSortOrder = folderDao.getNextSortOrder(parentFolderId)
+                val nextSortOrder = folderDao.getNextSortOrder(effectiveParent)
                 folderDao.insert(
                     FolderEntity(
                         id = UUID.randomUUID().toString(),
                         name = trimmed,
-                        parentFolderId = parentFolderId,
+                        parentFolderId = effectiveParent,
                         sortOrder = nextSortOrder,
                         createdAt = now,
                         updatedAt = now
@@ -229,46 +234,9 @@ class DocumentViewModel(
     }
 
     fun moveFolderToParent(folderId: String, targetParentFolderId: String?) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val current = folders.value
-            val movingFolder = current.firstOrNull { it.id == folderId } ?: return@launch
-
-            if (targetParentFolderId == folderId) {
-                _folderOperationMessage.value = "不能移動到自己底下"
-                return@launch
-            }
-
-            if (movingFolder.parentFolderId == targetParentFolderId) {
-                return@launch
-            }
-
-            if (targetParentFolderId != null && current.none { it.id == targetParentFolderId }) {
-                _folderOperationMessage.value = "目標資料夾不存在"
-                return@launch
-            }
-
-            val descendants = folderDao.getFolderAndDescendantIds(folderId).toHashSet()
-            if (targetParentFolderId != null && targetParentFolderId in descendants) {
-                _folderOperationMessage.value = "不能移動到自己的子資料夾"
-                return@launch
-            }
-
-            try {
-                val nextSortOrder = folderDao.getNextSortOrder(targetParentFolderId)
-                folderDao.moveToParent(
-                    folderId = folderId,
-                    parentFolderId = targetParentFolderId,
-                    sortOrder = nextSortOrder,
-                    updatedAt = System.currentTimeMillis()
-                )
-            } catch (error: Throwable) {
-                _folderOperationMessage.value = if (isFolderNameConflict(error)) {
-                    "目標資料夾已有同名資料夾"
-                } else {
-                    "移動資料夾失敗，請稍後再試"
-                }
-            }
-        }
+        // 單層模式：停用巢狀移動
+        _folderOperationMessage.value = "已改為單層，無法移動到其他資料夾內"
+        return
     }
 
     private fun isFolderNameConflict(error: Throwable): Boolean {
