@@ -125,6 +125,14 @@ import androidx.compose.material.icons.outlined.FileUpload
 import androidx.compose.material.icons.outlined.LightMode
 import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.Bookmark
+import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.Create
+import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.Star
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.rounded.Brush
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Gesture
@@ -246,23 +254,16 @@ internal fun FolderGroupedDocumentsView(
     onRenameFolder: (String, String) -> Unit,
     onDeleteFolder: (String) -> Unit,
     onMoveFolder: (String, Boolean) -> Unit,
-    onMoveFolderToParent: (String, String?) -> Unit
+    onMoveFolderToParent: (String, String?) -> Unit,
+    hazeState: dev.chrisbanes.haze.HazeState? = null,
+    isDarkTheme: Boolean = false
 ) {
 val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
     fun isCollapsed(sectionId: String): Boolean = collapsedSections[sectionId] == true
 
-    val flatFolders = remember(folderTree, collapsedSections.toMap()) {
-        fun flatten(nodes: List<FolderNode>, level: Int): List<Pair<FolderNode, Int>> {
-            val result = mutableListOf<Pair<FolderNode, Int>>()
-            for (node in nodes) {
-                result.add(node to level)
-                if (collapsedSections[node.folder.id] != true) {
-                    result.addAll(flatten(node.children, level + 1))
-                }
-            }
-            return result
-        }
-        flatten(folderTree, 0)
+    // 單層：不再展開 children，level 恆為 0
+    val flatFolders = remember(folderTree) {
+        folderTree.map { it to 0 }
     }
 
     LazyColumn(
@@ -281,18 +282,9 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
                                     ?.hasMimeType(ClipDescription.MIMETYPE_TEXT_PLAIN) == true
                         },
                         target = object : DragAndDropTarget {
-                            override fun onEntered(event: DragAndDropEvent) {
-                                isDropTargetActive = true
-                            }
-
-                            override fun onExited(event: DragAndDropEvent) {
-                                isDropTargetActive = false
-                            }
-
-                            override fun onEnded(event: DragAndDropEvent) {
-                                isDropTargetActive = false
-                            }
-
+                            override fun onEntered(event: DragAndDropEvent) { isDropTargetActive = true }
+                            override fun onExited(event: DragAndDropEvent) { isDropTargetActive = false }
+                            override fun onEnded(event: DragAndDropEvent) { isDropTargetActive = false }
                             override fun onDrop(event: DragAndDropEvent): Boolean {
                                 val docUri = extractDraggedDocumentUri(event) ?: return false
                                 onMoveToFolder(docUri, null)
@@ -300,20 +292,13 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
                                 return true
                             }
                         }
-                    ),
+                    ).then(if (hazeState != null) Modifier.glassPanel(hazeState, isDarkTheme, ShapeMd) else Modifier),
                     shape = ShapeMd,
-                    color = if (isDropTargetActive) {
-                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
-                    } else {
-                        MaterialTheme.colorScheme.surface.copy(alpha = 0.78f)
-                    },
-                    border = BorderStroke(
+                    color = if (hazeState != null) Color.Transparent else if (isDropTargetActive) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f) else MaterialTheme.colorScheme.surface.copy(alpha = 0.78f),
+                    contentColor = MaterialTheme.colorScheme.onSurface,
+                    border = if (hazeState != null) null else BorderStroke(
                         1.dp,
-                        if (isDropTargetActive) {
-                            MaterialTheme.colorScheme.primary.copy(alpha = 0.8f)
-                        } else {
-                            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
-                        }
+                        if (isDropTargetActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.8f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
                     )
                 ) {
                     Column(
@@ -336,12 +321,12 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
                                     collapsedSections[key] = !isCollapsed(key)
                                 }) {
                                     Icon(
-                                        imageVector = Icons.Default.ChevronRight,
+                                        imageVector = Icons.Outlined.ChevronRight,
                                         contentDescription = "展開或收合",
                                         modifier = Modifier.graphicsLayer { rotationZ = if (isCollapsed("uncategorized")) 0f else 90f }
                                     )
                                 }
-                                Icon(Icons.Default.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                Icon(Icons.Outlined.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                                 Text("未分類", style = MaterialTheme.typography.titleMedium)
                             }
                             Text(
@@ -364,7 +349,9 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
                                         onFavoriteToggle = { isFav -> onFavoriteToggle(doc.uri, isFav) },
                                         onRename = { newName -> onRename(doc.uri, newName) },
                                         onMoveToFolder = { folderId -> onMoveToFolder(doc.uri, folderId) },
-                                        onCreateFolder = { folderName -> onCreateFolder(folderName, null) }
+                                        onCreateFolder = { folderName -> onCreateFolder(folderName, null) },
+                                        hazeState = hazeState,
+                                        isDarkTheme = isDarkTheme
                                     )
                                 }
                             }
@@ -388,30 +375,8 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
             var folderDragAccumulator by remember(folder.id) { mutableFloatStateOf(0f) }
             var isFolderDropTargetActive by remember(folder.id) { mutableStateOf(false) }
 
-            val descendantFolderIds = remember(folder.id, node.children) {
-                val ids = mutableSetOf<String>()
-                fun collect(children: List<FolderNode>) {
-                    children.forEach { child ->
-                        ids.add(child.folder.id)
-                        collect(child.children)
-                    }
-                }
-                collect(node.children)
-                ids
-            }
-
-            val movableParentCandidates = remember(
-                availableFolders,
-                folder.id,
-                folder.parentFolderId,
-                descendantFolderIds
-            ) {
-                availableFolders.filter { candidate ->
-                    candidate.id != folder.id &&
-                        candidate.id != folder.parentFolderId &&
-                        candidate.id !in descendantFolderIds
-                }
-            }
+            val descendantFolderIds = remember { emptySet<String>() }
+            val movableParentCandidates = remember { emptyList<FolderEntity>() }
 
                         if (showNewChildFolderDialog) {
                 androidx.compose.material3.AlertDialog(
@@ -533,7 +498,6 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
 
             Surface(
                 modifier = Modifier
-                    .padding(start = (level * 24).dp)
                     .dragAndDropTarget(
                         shouldStartDragAndDrop = { event ->
                             extractDraggedDocumentUri(event) != null ||
@@ -541,18 +505,9 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
                                     ?.hasMimeType(ClipDescription.MIMETYPE_TEXT_PLAIN) == true
                         },
                         target = object : DragAndDropTarget {
-                            override fun onEntered(event: DragAndDropEvent) {
-                                isFolderDropTargetActive = true
-                            }
-
-                            override fun onExited(event: DragAndDropEvent) {
-                                isFolderDropTargetActive = false
-                            }
-
-                            override fun onEnded(event: DragAndDropEvent) {
-                                isFolderDropTargetActive = false
-                            }
-
+                            override fun onEntered(event: DragAndDropEvent) { isFolderDropTargetActive = true }
+                            override fun onExited(event: DragAndDropEvent) { isFolderDropTargetActive = false }
+                            override fun onEnded(event: DragAndDropEvent) { isFolderDropTargetActive = false }
                             override fun onDrop(event: DragAndDropEvent): Boolean {
                                 val docUri = extractDraggedDocumentUri(event) ?: return false
                                 onMoveToFolder(docUri, folder.id)
@@ -560,20 +515,13 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
                                 return true
                             }
                         }
-                    ),
+                    ).then(if (hazeState != null) Modifier.glassPanel(hazeState, isDarkTheme, ShapeMd) else Modifier),
                 shape = ShapeMd,
-                color = if (isFolderDropTargetActive) {
-                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
-                } else {
-                    MaterialTheme.colorScheme.surface.copy(alpha = 0.78f)
-                },
-                border = BorderStroke(
+                color = if (hazeState != null) Color.Transparent else if (isFolderDropTargetActive) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f) else MaterialTheme.colorScheme.surface.copy(alpha = 0.78f),
+                contentColor = MaterialTheme.colorScheme.onSurface,
+                border = if (hazeState != null) null else BorderStroke(
                     1.dp,
-                    if (isFolderDropTargetActive) {
-                        MaterialTheme.colorScheme.primary.copy(alpha = 0.8f)
-                    } else {
-                        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
-                    }
+                    if (isFolderDropTargetActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.8f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
                 )
             ) {
                 Column(
@@ -595,15 +543,15 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
                                 collapsedSections[folder.id] = !isCollapsed(folder.id)
                             }) {
                                 Icon(
-                                    imageVector = Icons.Default.ChevronRight,
+                                    imageVector = Icons.Outlined.ChevronRight,
                                     contentDescription = "展開或收合",
                                     modifier = Modifier.graphicsLayer { rotationZ = if (isCollapsed(folder.id)) 0f else 90f }
                                 )
                             }
-                            Icon(Icons.Default.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                            Icon(Icons.Outlined.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                             Text(folder.name, style = MaterialTheme.typography.titleMedium)
                             Icon(
-                                imageVector = Icons.Default.MoreVert,
+                                imageVector = Icons.Outlined.MoreVert,
                                 contentDescription = "拖曳排序",
                                 modifier = Modifier
                                     .size(20.dp)
@@ -642,32 +590,15 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
                             )
                             Box {
                                 IconButton(onClick = { showFolderMenu = true }) {
-                                    Icon(Icons.Default.MoreVert, contentDescription = "資料夾操作")
+                                    Icon(Icons.Outlined.MoreVert, contentDescription = "資料夾操作")
                                 }
                                 androidx.compose.material3.DropdownMenu(
                                     expanded = showFolderMenu,
                                     onDismissRequest = { showFolderMenu = false }
                                 ) {
                                     androidx.compose.material3.DropdownMenuItem(
-                                        text = { Text("新增子資料夾") },
-                                        leadingIcon = { Icon(Icons.Default.Folder, contentDescription = null) },
-                                        onClick = {
-                                            showFolderMenu = false
-                                            newChildFolderName = ""
-                                            showNewChildFolderDialog = true
-                                        }
-                                    )
-                                    androidx.compose.material3.DropdownMenuItem(
-                                        text = { Text("移動到其他資料夾") },
-                                        leadingIcon = { Icon(Icons.Default.Folder, contentDescription = null) },
-                                        onClick = {
-                                            showFolderMenu = false
-                                            showMoveFolderDialog = true
-                                        }
-                                    )
-                                    androidx.compose.material3.DropdownMenuItem(
                                         text = { Text("重新命名") },
-                                        leadingIcon = { Icon(Icons.Default.Create, contentDescription = null) },
+                                        leadingIcon = { Icon(Icons.Outlined.Create, contentDescription = null) },
                                         onClick = {
                                             showFolderMenu = false
                                             renameFolderInput = folder.name
@@ -676,7 +607,7 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
                                     )
                                     androidx.compose.material3.DropdownMenuItem(
                                         text = { Text("刪除資料夾") },
-                                        leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
+                                        leadingIcon = { Icon(Icons.Outlined.DeleteOutline, contentDescription = null) },
                                         onClick = {
                                             showFolderMenu = false
                                             showDeleteFolderDialog = true
@@ -708,7 +639,9 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
                                         onFavoriteToggle = { isFav -> onFavoriteToggle(doc.uri, isFav) },
                                         onRename = { newName -> onRename(doc.uri, newName) },
                                         onMoveToFolder = { folderId -> onMoveToFolder(doc.uri, folderId) },
-                                        onCreateFolder = { folderName -> onCreateFolder(folderName, null) }
+                                        onCreateFolder = { folderName -> onCreateFolder(folderName, null) },
+                                        hazeState = hazeState,
+                                        isDarkTheme = isDarkTheme
                                     )
                                 }
                             }
@@ -731,7 +664,9 @@ internal fun DocumentCard(
     onRename: (String) -> Unit = {},
     onFavoriteToggle: (Boolean) -> Unit = {},
     onMoveToFolder: (String?) -> Unit = {},
-    onCreateFolder: (String) -> Unit = {}
+    onCreateFolder: (String) -> Unit = {},
+    hazeState: dev.chrisbanes.haze.HazeState? = null,
+    isDarkTheme: Boolean = false
 ) {
     var showRenameDialog by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
@@ -884,25 +819,28 @@ internal fun DocumentCard(
             .format(java.util.Date(document.lastOpenedAt))
     }
 
+    val cardModifier = Modifier
+        .fillMaxWidth()
+        .aspectRatio(0.85f)
+        .graphicsLayer { scaleX = cardScale; scaleY = cardScale }
+        .documentDragSource(document.uri)
+        .then(if (hazeState != null) Modifier.glassPanel(hazeState, isDarkTheme, ShapeLg) else Modifier)
     androidx.compose.material3.Card(
         onClick = onClick,
-        modifier = Modifier
-            .fillMaxWidth()
-            .aspectRatio(0.85f)
-            .graphicsLayer { scaleX = cardScale; scaleY = cardScale }
-            .documentDragSource(document.uri),
+        modifier = cardModifier,
         shape = ShapeLg,
-        colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = cardShellColor),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-        elevation = androidx.compose.material3.CardDefaults.cardElevation(defaultElevation = 2.dp),
+        colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = if (hazeState != null) Color.Transparent else cardShellColor),
+        border = if (hazeState != null) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        elevation = androidx.compose.material3.CardDefaults.cardElevation(defaultElevation = if (hazeState != null) 0.dp else 2.dp),
         interactionSource = cardInteractionSource
     ) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            // Cover 60% — full-bleed, clipped by the card shape
+        Column(modifier = Modifier.fillMaxSize().padding(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            // Inset cover so thin glass rim stays visible around
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(0.6f)
+                    .clip(ShapeMd)
                     .background(cardCoverColor),
                 contentAlignment = Alignment.Center
             ) {
@@ -947,7 +885,7 @@ internal fun DocumentCard(
                         )
                     ) {
                         Icon(
-                            imageVector = Icons.Default.Star,
+                            imageVector = Icons.Outlined.Star,
                             contentDescription = "Favorite",
                             tint = if (document.isFavorite) BrandAmber else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(18.dp)
@@ -976,7 +914,7 @@ internal fun DocumentCard(
                     )
                     Box {
                         IconButton(onClick = { showMenu = true }, modifier = Modifier.size(24.dp)) {
-                            Icon(Icons.Default.MoreVert, contentDescription = "More", modifier = Modifier.size(16.dp))
+                            Icon(Icons.Outlined.MoreVert, contentDescription = "More", modifier = Modifier.size(16.dp))
                         }
                         androidx.compose.material3.DropdownMenu(
                             expanded = showMenu,
@@ -984,7 +922,7 @@ internal fun DocumentCard(
                         ) {
                             androidx.compose.material3.DropdownMenuItem(
                                 text = { Text("移到資料夾") },
-                                leadingIcon = { Icon(Icons.Default.Folder, contentDescription = null) },
+                                leadingIcon = { Icon(Icons.Outlined.Folder, contentDescription = null) },
                                 onClick = {
                                     showMenu = false
                                     showMoveDialog = true
@@ -992,7 +930,7 @@ internal fun DocumentCard(
                             )
                             androidx.compose.material3.DropdownMenuItem(
                                 text = { Text("新增資料夾") },
-                                leadingIcon = { Icon(Icons.Default.Add, contentDescription = null) },
+                                leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null) },
                                 onClick = {
                                     showMenu = false
                                     showCreateFolderDialog = true
@@ -1000,7 +938,7 @@ internal fun DocumentCard(
                             )
                             androidx.compose.material3.DropdownMenuItem(
                                 text = { Text("重新命名") },
-                                leadingIcon = { Icon(Icons.Default.Create, contentDescription = null) },
+                                leadingIcon = { Icon(Icons.Outlined.Create, contentDescription = null) },
                                 onClick = {
                                     showMenu = false
                                     renameInput = document.displayName
@@ -1009,7 +947,7 @@ internal fun DocumentCard(
                             )
                             androidx.compose.material3.DropdownMenuItem(
                                 text = { Text("刪除") },
-                                leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
+                                leadingIcon = { Icon(Icons.Outlined.DeleteOutline, contentDescription = null) },
                                 onClick = {
                                     showMenu = false
                                     showDeleteDialog = true
@@ -1039,7 +977,9 @@ internal fun DocumentListRow(
     onRename: (String) -> Unit = {},
     onFavoriteToggle: (Boolean) -> Unit = {},
     onMoveToFolder: (String?) -> Unit = {},
-    onCreateFolder: (String) -> Unit = {}
+    onCreateFolder: (String) -> Unit = {},
+    hazeState: dev.chrisbanes.haze.HazeState? = null,
+    isDarkTheme: Boolean = false
 ) {
     var showRenameDialog by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
@@ -1064,11 +1004,13 @@ internal fun DocumentListRow(
         modifier = Modifier
             .fillMaxWidth()
             .height(88.dp)
-            .documentDragSource(document.uri),
+            .documentDragSource(document.uri)
+            .then(if (hazeState != null) Modifier.glassPanel(hazeState, isDarkTheme, ShapeMd) else Modifier),
         shape = ShapeMd,
-        color = rowShellColor,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
-        shadowElevation = 2.dp
+        color = if (hazeState != null) Color.Transparent else rowShellColor,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        border = if (hazeState != null) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
+        shadowElevation = if (hazeState != null) 0.dp else 2.dp
     ) {
         Row(
             modifier = Modifier.fillMaxSize().padding(8.dp),
@@ -1090,7 +1032,7 @@ internal fun DocumentListRow(
                     )
                 } else {
                     Icon(
-                        imageVector = Icons.Default.Description,
+                        imageVector = Icons.Outlined.Description,
                         contentDescription = "PDF",
                         tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
                         modifier = Modifier.align(Alignment.Center).size(32.dp)
@@ -1117,7 +1059,7 @@ internal fun DocumentListRow(
 
             IconButton(onClick = { onFavoriteToggle(!document.isFavorite) }) {
                 Icon(
-                    Icons.Default.Star,
+                    Icons.Outlined.Star,
                     contentDescription = "Favorite",
                     tint = if (document.isFavorite) BrandAmber else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
                 )
@@ -1126,7 +1068,7 @@ internal fun DocumentListRow(
             var showMenu by remember { mutableStateOf(false) }
             Box {
                 IconButton(onClick = { showMenu = true }) {
-                    Icon(Icons.Default.MoreVert, contentDescription = "More")
+                    Icon(Icons.Outlined.MoreVert, contentDescription = "More")
                 }
                 androidx.compose.material3.DropdownMenu(
                     expanded = showMenu,
@@ -1134,7 +1076,7 @@ internal fun DocumentListRow(
                 ) {
                     androidx.compose.material3.DropdownMenuItem(
                         text = { Text("移到資料夾") },
-                        leadingIcon = { Icon(Icons.Default.Folder, contentDescription = null) },
+                        leadingIcon = { Icon(Icons.Outlined.Folder, contentDescription = null) },
                         onClick = {
                             showMenu = false
                             showMoveDialog = true
@@ -1142,7 +1084,7 @@ internal fun DocumentListRow(
                     )
                     androidx.compose.material3.DropdownMenuItem(
                         text = { Text("新增資料夾") },
-                        leadingIcon = { Icon(Icons.Default.Add, contentDescription = null) },
+                        leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null) },
                         onClick = {
                             showMenu = false
                             showCreateFolderDialog = true
@@ -1150,7 +1092,7 @@ internal fun DocumentListRow(
                     )
                     androidx.compose.material3.DropdownMenuItem(
                         text = { Text("重新命名") },
-                        leadingIcon = { Icon(Icons.Default.Create, contentDescription = null) },
+                        leadingIcon = { Icon(Icons.Outlined.Create, contentDescription = null) },
                         onClick = {
                             showMenu = false
                             renameInput = document.displayName
@@ -1159,7 +1101,7 @@ internal fun DocumentListRow(
                     )
                     androidx.compose.material3.DropdownMenuItem(
                         text = { Text("刪除") },
-                        leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
+                        leadingIcon = { Icon(Icons.Outlined.DeleteOutline, contentDescription = null) },
                         onClick = {
                             showMenu = false
                             showDeleteDialog = true

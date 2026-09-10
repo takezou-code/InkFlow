@@ -16,6 +16,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 
 @Composable
 fun InkFlowTheme(
@@ -36,7 +38,7 @@ fun InkFlowTheme(
         onTertiary = Color.White,
         tertiaryContainer = Color(0xFFCFFAFE),
         onTertiaryContainer = Color(0xFF083344),
-        background = Color(0xFF09090B),
+        background = Color(0xFF0B0F1E),
         onBackground = Color(0xFFF8FAFC),
         surface = Color(0xFF18181B),
         onSurface = Color(0xFFF8FAFC),
@@ -46,15 +48,15 @@ fun InkFlowTheme(
         inverseSurface = Color(0xFFF8FAFC),
         inverseOnSurface = Color(0xFF18181B),
         inversePrimary = Color(0xFF818CF8),
-        surfaceDim = Color(0xFF09090B),
+        surfaceDim = Color(0xFF0B0F1E),
         surfaceBright = Color(0xFF27272A),
-        surfaceContainerLowest = Color(0xFF09090B),
+        surfaceContainerLowest = Color(0xFF0B0F1E),
         surfaceContainerLow = Color(0xFF18181B),
         surfaceContainer = Color(0xFF1F1F23),
         surfaceContainerHigh = Color(0xFF27272A),
         surfaceContainerHighest = Color(0xFF3F3F46),
-        outline = Color(0xFFE2E8F0),
-        outlineVariant = Color(0xFFF1F5F9),
+        outline = Slate600,
+        outlineVariant = Slate700,
         scrim = Color(0xFF000000),
         error = Color(0xFFEF4444),
         onError = Color.White,
@@ -101,20 +103,17 @@ fun InkFlowTheme(
         onErrorContainer = Color(0xFF450A0A)
     )
 
-    val colorScheme = when {
-        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-            val context = LocalContext.current
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-        }
-        darkTheme -> darkColorScheme
-        else -> lightColorScheme
-    }
+    val colorScheme = if (darkTheme) darkColorScheme else lightColorScheme
 
     val view = LocalView.current
     if (!view.isInEditMode) {
         SideEffect {
             val window = (view.context as Activity).window
             val insetsController = WindowCompat.getInsetsController(window, view)
+            // 全螢幕：藏頂部狀態列（時間/電量），下滑可短暫叫回
+            insetsController.hide(WindowInsetsCompat.Type.statusBars())
+            insetsController.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             insetsController.isAppearanceLightStatusBars = !darkTheme
             insetsController.isAppearanceLightNavigationBars = !darkTheme
         }
@@ -124,7 +123,7 @@ fun InkFlowTheme(
         colorScheme = colorScheme,
         typography = Typography,
         shapes = androidx.compose.material3.Shapes(
-            extraSmall = RoundedCornerShape(8.dp),
+            extraSmall = ShapeSm,
             small = ShapeSm,
             medium = ShapeMd,
             large = ShapeLg,

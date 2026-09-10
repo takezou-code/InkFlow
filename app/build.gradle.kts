@@ -64,6 +64,9 @@ dependencies {
     // DataStore
     implementation(libs.androidx.datastore.preferences)
 
+    // WorkManager (periodic auto backup)
+    implementation(libs.androidx.work.runtime.ktx)
+
     // Gson
     implementation(libs.gson)
 

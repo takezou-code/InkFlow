@@ -243,45 +243,20 @@ import kotlinx.coroutines.withContext
  */
 @Composable
 internal fun rememberFlowingBrandBrush(isDarkTheme: Boolean): Brush {
+    // 靜態深空：避免與 Aurora 雙動態疊加搶糊
     val palette = if (isDarkTheme) listOf(
-        Slate900,
-        WorkspaceDeskDark,
-        MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
-        MaterialTheme.colorScheme.secondary.copy(alpha = 0.08f),
-        Slate900,
+        Color(0xFF0B0F1E),
+        Color(0xFF1A1B3A).copy(alpha = 0.72f),
+        MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+        Color(0xFF1E1B4B).copy(alpha = 0.42f),
     ) else listOf(
-        Slate50,
-        Slate100,
-        MaterialTheme.colorScheme.primary.copy(alpha = 0.06f),
-        Slate100,
-        Slate50,
+        Color(0xFFF1F5F9),
+        Color(0xFFE2E8F0),
+        MaterialTheme.colorScheme.primary.copy(alpha = 0.07f),
+        Color(0xFFE0E7FF).copy(alpha = 0.42f),
     )
-    val n = palette.size
-
-    val transition = rememberInfiniteTransition(label = "BrandGradientFlow")
-    // offset travels 0 → n over 7 s, then wraps — driving the colour cycle
-    val offset by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = n.toFloat(),
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 7000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "GradientOffset"
-    )
-
-    // Build 5 animated stops by reading palette positions rotated by `offset`
-    val animatedColors = (0 until n).map { i ->
-        val pos = (offset + i) % n
-        val lo = pos.toInt() % n
-        val hi = (lo + 1) % n
-        lerp(palette[lo], palette[hi], pos - pos.toInt())
-    }
-
-    // Offset.Zero → Offset.Infinite: Compose expands to the full component size,
-    // so the gradient always fills corner-to-corner regardless of screen dimensions.
     return Brush.linearGradient(
-        colors = animatedColors,
+        colors = palette,
         start = Offset.Zero,
         end = Offset.Infinite
     )

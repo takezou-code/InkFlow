@@ -125,6 +125,10 @@ import androidx.compose.material.icons.outlined.FileUpload
 import androidx.compose.material.icons.outlined.LightMode
 import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.Bookmark
+import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.Star
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.rounded.Brush
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Gesture
@@ -359,31 +363,21 @@ fun DocumentLibraryScreen(
             matchesQuery && matchesTab
         }
     }
+    // 單層模式：扁平化，不再組巢狀樹
     val folderTree = remember(folders, documents, normalizedQuery) {
-        val folderScopedDocs = documents
-            .asSequence()
-            .filter { it.folderId != null }
-            .groupBy { it.folderId }
-
-        val childrenMap = folders.groupBy { it.parentFolderId }
-
-        fun buildNode(folder: FolderEntity): FolderNode? {
-            val childNodes = childrenMap[folder.id].orEmpty().mapNotNull { buildNode(it) }
-            val docs = folderScopedDocs[folder.id].orEmpty()
-            
-            if (normalizedQuery.isNotEmpty()) {
-                val matchedDocs = docs.filter { it.displayName.contains(normalizedQuery, ignoreCase = true) }
-                val folderMatches = folder.name.contains(normalizedQuery, ignoreCase = true)
-                if (matchedDocs.isNotEmpty() || folderMatches || childNodes.isNotEmpty()) {
-                    return FolderNode(folder, matchedDocs, childNodes)
+        val docsByFolder = documents.groupBy { it.folderId }
+        folders
+            .sortedWith(compareBy<FolderEntity>({ it.sortOrder }, { it.name.lowercase() }))
+            .mapNotNull { folder ->
+                val docs = docsByFolder[folder.id].orEmpty()
+                if (normalizedQuery.isNotEmpty()) {
+                    val matchedDocs = docs.filter { it.displayName.contains(normalizedQuery, ignoreCase = true) }
+                    val folderMatches = folder.name.contains(normalizedQuery, ignoreCase = true)
+                    if (matchedDocs.isNotEmpty() || folderMatches) FolderNode(folder, matchedDocs, emptyList()) else null
                 } else {
-                    return null
+                    FolderNode(folder, docs, emptyList())
                 }
             }
-            return FolderNode(folder, docs, childNodes)
-        }
-        
-        childrenMap[null].orEmpty().mapNotNull { buildNode(it) }
     }
     val uncategorizedDocs = remember(folders, documents, normalizedQuery) {
         val knownFolderIds = folders.map { it.id }.toHashSet()
@@ -394,8 +388,7 @@ fun DocumentLibraryScreen(
         }
     }
     val visibleDocumentCount = if (selectedNavIndex == 1) {
-        fun countDocs(nodes: List<FolderNode>): Int = nodes.sumOf { it.documents.size + countDocs(it.children) }
-        countDocs(folderTree) + uncategorizedDocs.size
+        folderTree.sumOf { it.documents.size } + uncategorizedDocs.size
     } else {
         filteredDocs.size
     }
@@ -407,23 +400,27 @@ fun DocumentLibraryScreen(
     Box(
         modifier = Modifier.fillMaxSize()
     ) {
+        // 深空單一背景：只有 Aurora，讓薄玻璃有東西可糊
         AuroraBackground(
             isDarkTheme = isDarkTheme,
             modifier = Modifier.fillMaxSize().hazeSource(libraryHazeState),
-            orbCount = 5
+            orbCount = 9
         )
-        AnimatedGradientBackground(isDarkTheme, Modifier.fillMaxSize().hazeSource(libraryHazeState))
 
+    // 全螢幕：狀態列已藏，不再留白
     Row(
-        modifier = Modifier
-            .fillMaxSize()
-            .statusBarsPadding()
+        modifier = Modifier.fillMaxSize()
     ) {
-        // Navigation Rail — transparent so the full-screen gradient shows through
-        androidx.compose.material3.NavigationRail(
-            modifier = Modifier.fillMaxHeight(),
-            containerColor = Color.Transparent,
-            contentColor = MaterialTheme.colorScheme.onBackground
+        // 左側浮動玻璃 Dock：整顆圓角玻璃膠囊，四周留白透光斑，
+        // 跟工具列藥丸同一語言，不再是一整條貼邊深色板
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier
+                .fillMaxHeight()
+                .padding(start = 12.dp, top = 12.dp, bottom = 12.dp)
+                .width(76.dp)
+                .glassPanel(libraryHazeState, isDarkTheme, ShapeLg)
+                .padding(vertical = 8.dp)
         ) {
             Spacer(Modifier.height(8.dp))
             // Brand logo — vivid flowing gradient circle
@@ -439,42 +436,53 @@ fun DocumentLibraryScreen(
                 ))
             }
             Spacer(Modifier.height(16.dp))
-            // Nav items
-            NavigationRailItem(
+            // Nav items — 自繪玻璃藥丸，取代 M3 實心 indicator
+            GlassRailItem(
                 selected = selectedNavIndex == 0,
                 onClick = { selectedNavIndex = 0 },
-                icon = { Icon(Icons.Default.Home, contentDescription = "首頁") },
-                label = { Text("首頁") }
+                icon = Icons.Outlined.Home,
+                label = "首頁",
+                hazeState = libraryHazeState,
+                isDarkTheme = isDarkTheme
             )
-            NavigationRailItem(
+            GlassRailItem(
                 selected = selectedNavIndex == 1,
                 onClick = { selectedNavIndex = 1 },
-                icon = { Icon(Icons.Default.Folder, contentDescription = "資料夾") },
-                label = { Text("資料夾") }
+                icon = Icons.Outlined.Folder,
+                label = "資料夾",
+                hazeState = libraryHazeState,
+                isDarkTheme = isDarkTheme
             )
-            NavigationRailItem(
+            GlassRailItem(
                 selected = selectedNavIndex == 2,
                 onClick = { selectedNavIndex = 2 },
-                icon = { Icon(Icons.Default.Star, contentDescription = "收藏") },
-                label = { Text("收藏") }
+                icon = Icons.Outlined.Star,
+                label = "收藏",
+                hazeState = libraryHazeState,
+                isDarkTheme = isDarkTheme
             )
             Spacer(Modifier.weight(1f))
-            // Dark / Light mode toggle
+            // Dark / Light mode toggle（Dock 自繪無 M3 contentColor，需顯式 tint）
             IconButton(onClick = onToggleDarkTheme) {
                 Icon(
                     imageVector = if (isDarkTheme) Icons.Outlined.LightMode else Icons.Outlined.DarkMode,
-                    contentDescription = "切換主題"
+                    contentDescription = "切換主題",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
             // Settings
             IconButton(onClick = { navController.navigate("settings") }) {
-                Icon(Icons.Default.Settings, contentDescription = "設定")
+                Icon(
+                    Icons.Outlined.Settings,
+                    contentDescription = "設定",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(4.dp))
         }
 
         Scaffold(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.weight(1f).fillMaxHeight(),
             containerColor = Color.Transparent,
             contentColor = MaterialTheme.colorScheme.onBackground,
             topBar = {
@@ -514,12 +522,12 @@ fun DocumentLibraryScreen(
                 )
             }
         ) { innerPadding ->
+            // 內容層不再當 hazeSource，避免自己糊自己；只有背景 Aurora 是 source
             Column(
                 modifier = Modifier
                     .padding(innerPadding)
                     .fillMaxSize()
-                    .padding(horizontal = 18.dp)
-                    .hazeSource(libraryHazeState)
+                    .padding(horizontal = 20.dp, vertical = 6.dp)
             ) {
                 AnimatedVisibility(
                     visible = normalizedQuery.isNotEmpty(),
@@ -529,10 +537,12 @@ fun DocumentLibraryScreen(
                     Surface(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(top = 4.dp, bottom = 12.dp),
-                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+                            .padding(top = 4.dp, bottom = 12.dp)
+                            .glassPanel(libraryHazeState, isDarkTheme, ShapeMd),
+                        color = Color.Transparent,
+                        contentColor = MaterialTheme.colorScheme.onSurface,
                         shape = ShapeMd,
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                        border = null
                     ) {
                         Row(
                             modifier = Modifier
@@ -570,7 +580,9 @@ fun DocumentLibraryScreen(
                             searchQuery = normalizedQuery,
                             onClearSearch = { searchQuery = "" },
                             onOpenPdf = { pdfLauncher.launch(arrayOf("application/pdf")) },
-                            onCreateBlank = { showNewDocSizeDialog = true }
+                            onCreateBlank = { showNewDocSizeDialog = true },
+                            hazeState = libraryHazeState,
+                            isDarkTheme = isDarkTheme
                         )
                     } else {
                         FolderGroupedDocumentsView(
@@ -593,7 +605,9 @@ fun DocumentLibraryScreen(
                             onMoveFolder = { folderId, moveUp -> docViewModel.moveFolder(folderId, moveUp) },
                             onMoveFolderToParent = { folderId, targetParentId ->
                                 docViewModel.moveFolderToParent(folderId, targetParentId)
-                            }
+                            },
+                            hazeState = libraryHazeState,
+                            isDarkTheme = isDarkTheme
                         )
                     }
                 } else if (filteredDocs.isEmpty()) {
@@ -604,7 +618,9 @@ fun DocumentLibraryScreen(
                         searchQuery = normalizedQuery,
                         onClearSearch = { searchQuery = "" },
                         onOpenPdf = { pdfLauncher.launch(arrayOf("application/pdf")) },
-                        onCreateBlank = { showNewDocSizeDialog = true }
+                        onCreateBlank = { showNewDocSizeDialog = true },
+                        hazeState = libraryHazeState,
+                        isDarkTheme = isDarkTheme
                     )
                 } else {
                     val animatedCardUris = remember { mutableStateMapOf<String, Boolean>() }
@@ -613,8 +629,8 @@ fun DocumentLibraryScreen(
                             columns = androidx.compose.foundation.lazy.grid.GridCells.Adaptive(minSize = 180.dp),
                             modifier = Modifier.fillMaxSize(),
                             contentPadding = PaddingValues(top = 6.dp, bottom = 120.dp),
-                            horizontalArrangement = Arrangement.spacedBy(14.dp),
-                            verticalArrangement = Arrangement.spacedBy(14.dp)
+                            horizontalArrangement = Arrangement.spacedBy(18.dp),
+                            verticalArrangement = Arrangement.spacedBy(18.dp)
                         ) {
                             items(filteredDocs.size, key = { filteredDocs[it].uri }) { index ->
                                 val doc = filteredDocs[index]
@@ -647,7 +663,9 @@ fun DocumentLibraryScreen(
                                         onFavoriteToggle = { isFav -> docViewModel.toggleFavorite(doc.uri, isFav) },
                                         onRename = { newName -> docViewModel.rename(doc.uri, newName) },
                                         onMoveToFolder = { folderId -> docViewModel.moveDocumentToFolder(doc.uri, folderId) },
-                                        onCreateFolder = { folderName -> docViewModel.createFolder(folderName) }
+                                        onCreateFolder = { folderName -> docViewModel.createFolder(folderName) },
+                                        hazeState = libraryHazeState,
+                                        isDarkTheme = isDarkTheme
                                     )
                                 }
                             }
@@ -689,7 +707,9 @@ fun DocumentLibraryScreen(
                                         onFavoriteToggle = { isFav -> docViewModel.toggleFavorite(doc.uri, isFav) },
                                         onRename = { newName -> docViewModel.rename(doc.uri, newName) },
                                         onMoveToFolder = { folderId -> docViewModel.moveDocumentToFolder(doc.uri, folderId) },
-                                        onCreateFolder = { folderName -> docViewModel.createFolder(folderName) }
+                                        onCreateFolder = { folderName -> docViewModel.createFolder(folderName) },
+                                        hazeState = libraryHazeState,
+                                        isDarkTheme = isDarkTheme
                                     )
                                 }
                             }
@@ -703,6 +723,42 @@ fun DocumentLibraryScreen(
     }   // close outer Box (background + gradient overlay)
 }
 
+
+@Composable
+internal fun GlassRailItem(
+    selected: Boolean,
+    onClick: () -> Unit,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    hazeState: dev.chrisbanes.haze.HazeState,
+    isDarkTheme: Boolean
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+        modifier = Modifier
+            .padding(vertical = 4.dp)
+            .then(
+                if (selected) Modifier.glassPanel(hazeState, isDarkTheme, CircleShape)
+                else Modifier
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = label,
+            tint = if (selected) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (selected) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
 
 data class FolderNode(
     val folder: FolderEntity,

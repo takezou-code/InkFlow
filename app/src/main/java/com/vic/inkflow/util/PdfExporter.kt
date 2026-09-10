@@ -381,7 +381,7 @@ object PdfExporter {
                 stream.addRect(pdfLeft, pdfBottom, pdfWidth, pdfHeight)
                 stream.stroke()
             }
-            "CIRCLE" -> {
+            "CIRCLE", "OVAL" -> {
                 // Approximate ellipse with 4 cubic Bézier arcs (κ ≈ 0.5523).
                 val cx = pdfLeft + pdfWidth  / 2f
                 val cy = pdfBottom + pdfHeight / 2f
@@ -470,13 +470,18 @@ object PdfExporter {
                            else android.graphics.Typeface.DEFAULT_BOLD
             }
 
-            val textWidth = paint.measureText(ann.text).coerceAtLeast(1f)
+            val lines = ann.text.split("\n")
+            val textWidth = lines.maxOfOrNull { paint.measureText(it) }?.coerceAtLeast(1f) ?: 1f
             val fm        = paint.fontMetrics
+            val lineHeight = -fm.ascent + fm.descent + fm.leading
             val bmpW      = (textWidth + 4f).toInt()
-            val bmpH      = (-fm.ascent + fm.descent + 4f).toInt().coerceAtLeast(1)
+            val bmpH      = (lineHeight * lines.size + 4f).toInt().coerceAtLeast(1)
 
             val bmp = android.graphics.Bitmap.createBitmap(bmpW, bmpH, android.graphics.Bitmap.Config.ARGB_8888)
-            android.graphics.Canvas(bmp).drawText(ann.text, 2f, -fm.ascent + 2f, paint)
+            val canvas = android.graphics.Canvas(bmp)
+            lines.forEachIndexed { i, line ->
+                canvas.drawText(line, 2f, -fm.ascent + 2f + i * lineHeight, paint)
+            }
 
             val baos = ByteArrayOutputStream()
             bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, baos)

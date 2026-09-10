@@ -1,4 +1,4 @@
-﻿package com.vic.inkflow.ui
+package com.vic.inkflow.ui
 
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeSource
@@ -48,6 +48,11 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.input.pointer.PointerId
+import androidx.compose.ui.input.pointer.PointerType
+import androidx.compose.runtime.withFrameNanos
+import com.vic.inkflow.util.TwoFingerArbitrator
+import com.vic.inkflow.util.TwoFingerDecision
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.draganddrop.dragAndDropSource
 import androidx.compose.foundation.draganddrop.dragAndDropTarget
@@ -83,6 +88,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.items
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -125,6 +132,7 @@ import androidx.compose.material.icons.outlined.FileUpload
 import androidx.compose.material.icons.outlined.LightMode
 import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.Bookmark
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.rounded.Brush
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Gesture
@@ -159,6 +167,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -236,31 +245,20 @@ internal fun Workspace(
     modifier: Modifier = Modifier,
     pageAspectRatio: Float = 1f / 1.414f,
     documentUri: String,
-    onAiFileReady: (android.net.Uri) -> Unit
+    onAiFileReady: (android.net.Uri) -> Unit,
+    hazeState: dev.chrisbanes.haze.HazeState = rememberHazeState(),
+    isDarkTheme: Boolean = false,
+    db: AppDatabase,
+    mainListState: LazyListState = rememberLazyListState(),
+    onRequestPage: (Int) -> Unit = {},
+    onScrollPage: (Int) -> Unit = {}
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var scale by rememberSaveable { mutableFloatStateOf(1f) }
-    var offsetX by rememberSaveable { mutableFloatStateOf(0f) }
-    var offsetY by rememberSaveable { mutableFloatStateOf(0f) }
-    val isDarkSurface = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    val bubbleHazeState = rememberHazeState()
-    val primaryColor = MaterialTheme.colorScheme.primary
-    val deskBrush = remember(isDarkSurface) {
-        Brush.linearGradient(
-            colors = if (isDarkSurface) {
-                listOf(WorkspaceDeskDark, WorkspaceDeskDark)
-            } else {
-                listOf(WorkspaceDeskLight, WorkspaceDeskLight)
-            }
-        )
-    }
+    // 直向連續卷動：一頁接一頁，不再做縮放平移（觸控直走卷動、觸控筆走繪圖）
+    val isDarkSurface = isDarkTheme || MaterialTheme.colorScheme.background.luminance() < 0.5f
+    // 桌面全透明：底由 EditorScreen 根 Aurora 提供，紙直接浮在光斑上
     val paperColor = MaterialTheme.colorScheme.surface
-    val stageColor = if (isDarkSurface) {
-        MaterialTheme.colorScheme.surface.copy(alpha = 0.30f)
-    } else {
-        WorkspaceDeskLight.copy(alpha = 0.76f)
-    }
     val activeTool by viewModel.selectedTool.collectAsState()
     val lassoPolygon by viewModel.lassoPolygon.collectAsState()
     val lastLassoPolygon by viewModel.lastLassoPolygon.collectAsState()
@@ -273,243 +271,198 @@ internal fun Workspace(
     val hasRegionSnapshot = activeRegionPolygon.isNotEmpty()
     var isExtracting by remember { mutableStateOf(false) }
 
-    // Track container dimensions (pixels) to compute the fit-to-page minimum scale
-    var containerWidth by remember { mutableIntStateOf(0) }
-    var containerHeight by remember { mutableIntStateOf(0) }
-    var paperWidthPx by remember { mutableIntStateOf(0) }
-    var paperHeightPx by remember { mutableIntStateOf(0) }
     var bubbleWidthPx by remember { mutableIntStateOf(0) }
     var bubbleHeightPx by remember { mutableIntStateOf(0) }
-    val minScale = remember(containerWidth, containerHeight, pageAspectRatio) {
-        if (containerWidth <= 0 || containerHeight <= 0) return@remember 1f
-        val cW = containerWidth.toFloat()
-        val cH = containerHeight.toFloat()
-        // Compute page dimensions (height-constrained for portrait, width-constrained for landscape)
-        val pageH = cH * 0.9f
-        val pageW = pageH * pageAspectRatio
-        // Minimum scale = page occupies 85% of viewport (full page visible with comfortable margins)
-        minOf(cW * 0.85f / pageW, cH * 0.85f / pageH)
-    }
 
-    // When container first appears (or resizes), clamp saved scale to the new minimum
-    LaunchedEffect(minScale) {
-        if (scale < minScale) scale = minScale
-    }
+    // 文件級縮放：整份文件同一個 docZoom（Chrome 式），ViewModel 持有、跨頁保持；
+    // pinchActive 供 InkCanvas 棄筆判定
+    val docZoom by viewModel.docZoom.collectAsState()
+    val hScrollState = rememberScrollState()
+    var viewportWpx by remember { mutableIntStateOf(0) }
 
     val density = LocalDensity.current
     val bubbleGapPx = with(density) { 12.dp.toPx() }
     val bubbleSidePaddingPx = with(density) { 12.dp.toPx() }
     val bubbleTopSafePx = with(density) { 12.dp.toPx() }
-    val hasSelectionState = rememberUpdatedState(hasSelection)
-    val activeToolState = rememberUpdatedState(activeTool)
+
+    // 雙指仲裁手勢：PAN 交給原生卷動，PINCH 寫 shared docZoom + 卷動錨定
+    val pinchModifier = Modifier.pointerInput(Unit) {
+        val arbitrator = TwoFingerArbitrator(touchSlopPx = viewConfiguration.touchSlop)
+        awaitEachGesture {
+            awaitFirstDown(requireUnconsumed = false)
+            var lastIds: Set<PointerId> = emptySet()
+            var wasPinching = false
+            while (true) {
+                val event = awaitPointerEvent()
+                val pressedAll = event.changes.filter { it.pressed }
+                if (pressedAll.isEmpty()) {
+                    arbitrator.reset()
+                    if (wasPinching) {
+                        viewModel.setPinchActive(false)
+                        wasPinching = false
+                    }
+                    break
+                }
+                // 只算觸控手指：觸控筆書寫時不參與
+                val touch = pressedAll.filter { it.type == PointerType.Touch }
+                if (touch.size >= 2) {
+                    val ids = touch.map { it.id }.toSet()
+                    val cx = touch.sumOf { it.position.x.toDouble() }.toFloat() / touch.size
+                    val cy = touch.sumOf { it.position.y.toDouble() }.toFloat() / touch.size
+                    val span = (touch[0].position - touch[1].position).getDistance()
+                    if (ids != lastIds) {
+                        arbitrator.rebaseline(cx, cy, span)
+                        lastIds = ids
+                    }
+                    when (val decision = arbitrator.onFrame(cx, cy, span)) {
+                        is TwoFingerDecision.Pinch -> {
+                            event.changes.forEach { it.consume() }
+                            if (!wasPinching) {
+                                viewModel.setPinchActive(true)
+                                wasPinching = true
+                            }
+                            if (decision.zoomFactor.isFinite() && !decision.zoomFactor.isNaN() && decision.zoomFactor > 0f && decision.zoomFactor != 1f) {
+                                val old = docZoom
+                                val new = (old * decision.zoomFactor).coerceIn(0.4f, 4f)
+                                if (new.isFinite() && !new.isNaN() && new != old) {
+                                    val ratio = new / old
+                                    val currentScrollX = hScrollState.value
+                                    val maxScrollX = maxOf(0f, viewportWpx * (new - 1f))
+                                    val targetScrollX = ((currentScrollX + cx) * ratio - cx).coerceIn(0f, maxScrollX)
+                                    val deltaX = targetScrollX - currentScrollX
+                                    viewModel.setDocZoom(new)
+                                    if (kotlin.math.abs(deltaX) > 0.5f) {
+                                        hScrollState.dispatchRawDelta(deltaX)
+                                    }
+                                }
+                            }
+                        }
+                        else -> Unit // PAN / 未定：原生卷動接手，不 consume
+                    }
+                } else {
+                    arbitrator.reset()
+                    lastIds = emptySet()
+                    if (wasPinching) {
+                        viewModel.setPinchActive(false)
+                        wasPinching = false
+                    }
+                }
+            }
+        }
+    }
 
     val regionBoundsModel = remember(activeRegionPolygon) { polygonBounds(activeRegionPolygon) }
     val showSelectionBubble = activeTool == Tool.LASSO && hasSelection && !isExtracting
 
-    val bubbleTargetOffset = remember(
-        regionBoundsModel,
-        paperWidthPx,
-        paperHeightPx,
-        containerWidth,
-        containerHeight,
-        scale,
-        offsetX,
-        offsetY,
-        bubbleWidthPx,
-        bubbleHeightPx,
-        bubbleGapPx,
-        bubbleSidePaddingPx,
-        bubbleTopSafePx
-    ) {
-        if (regionBoundsModel == null || paperWidthPx <= 0 || paperHeightPx <= 0 || containerWidth <= 0 || containerHeight <= 0) {
-            IntOffset(0, 0)
-        } else {
-            val paperLeft = (containerWidth - paperWidthPx) / 2f
-            val paperTop = (containerHeight - paperHeightPx) / 2f
-            val paperScaleX = paperWidthPx / viewModel.modelWidth
-            val paperScaleY = paperHeightPx / viewModel.modelHeight
-
-            val boundsBase = Rect(
-                left = paperLeft + regionBoundsModel.left * paperScaleX,
-                top = paperTop + regionBoundsModel.top * paperScaleY,
-                right = paperLeft + regionBoundsModel.right * paperScaleX,
-                bottom = paperTop + regionBoundsModel.bottom * paperScaleY
-            )
-
-            val centerX = containerWidth / 2f
-            val centerY = containerHeight / 2f
-            fun transformPoint(point: Offset): Offset {
-                val dx = point.x - centerX
-                val dy = point.y - centerY
-                return Offset(
-                    x = centerX + dx * scale + offsetX,
-                    y = centerY + dy * scale + offsetY
-                )
-            }
-
-            val transformedTopLeft = transformPoint(boundsBase.topLeft)
-            val transformedBottomRight = transformPoint(boundsBase.bottomRight)
-            val transformedBounds = Rect(
-                left = minOf(transformedTopLeft.x, transformedBottomRight.x),
-                top = minOf(transformedTopLeft.y, transformedBottomRight.y),
-                right = maxOf(transformedTopLeft.x, transformedBottomRight.x),
-                bottom = maxOf(transformedTopLeft.y, transformedBottomRight.y)
-            )
-
-            val anchorX = transformedBounds.center.x
-            val bubbleW = bubbleWidthPx.toFloat()
-            val bubbleH = bubbleHeightPx.toFloat()
-            val aboveY = transformedBounds.top - bubbleH - bubbleGapPx
-            val bubbleY = if (aboveY < bubbleTopSafePx) {
-                transformedBounds.bottom + bubbleGapPx
-            } else {
-                aboveY
-            }
-
-            val maxX = maxOf(bubbleSidePaddingPx, containerWidth.toFloat() - bubbleW - bubbleSidePaddingPx)
-            val maxY = maxOf(bubbleTopSafePx, containerHeight.toFloat() - bubbleH - bubbleTopSafePx)
-
-            val clampedX = (anchorX - bubbleW / 2f).coerceIn(bubbleSidePaddingPx, maxX)
-            val clampedY = bubbleY.coerceIn(bubbleTopSafePx, maxY)
-            IntOffset(clampedX.roundToInt(), clampedY.roundToInt())
-        }
-    }
     // pdfViewModel and LaunchedEffect(uri) are owned by TabletEditorScreen
     val pageCount by pdfViewModel.pageCount.collectAsState()
-    val pageBitmapFlow = androidx.compose.runtime.remember(pageIndex, pageCount) {
-        if (pageCount > 0) pdfViewModel.getPageBitmap(pageIndex)
-        else kotlinx.coroutines.flow.MutableStateFlow(null)
+    // 全文件統一直徑：所有頁同一個 aspect（model 為準），上下頁不可能大小不一；
+    // 墨水映射也因此是 1:1 精確（不再被混尺寸拉伸）
+    val modelW0 = viewModel.modelWidth
+    val modelH0 = viewModel.modelHeight
+    val uniformAspect = remember(modelW0, modelH0, pageAspectRatio) {
+        val a = if (modelW0 > 0f && modelH0 > 0f) modelW0 / modelH0 else pageAspectRatio
+        // 非有限值會讓 aspectRatio 罷工甚至閃退，直接兜底 A4 直式
+        if (a.isFinite() && a in 0.2f..5f) a else 1f / 1.414f
     }
-    val pageBitmap by pageBitmapFlow.collectAsState()
 
+    // 卷動跟著走：主列表滑到哪頁，作用頁就換到哪頁（側欄由 EditorScreen 跟著置中）
+    LaunchedEffect(mainListState, pageCount) {
+        snapshotFlow { mainListState.firstVisibleItemIndex }
+            .collect { idx ->
+                if (idx in 0 until pageCount) onScrollPage(idx)
+            }
+    }
+
+    // 渲染刻度跟著可視寬：可視越寬渲染倍率越高（2x–3.5x），旋轉/轉向自動重渲
+    val renderEpoch by pdfViewModel.renderEpoch.collectAsState()
+    val firstSize by pdfViewModel.firstPageSize.collectAsState()
+    LaunchedEffect(viewportWpx, firstSize) {
+        val w = firstSize?.first ?: 595f
+        if (viewportWpx > 0 && w > 0f) {
+            pdfViewModel.setDisplayRenderScale(viewportWpx.toFloat() / w)
+        }
+    }
+
+    // 直向連續卷動：一頁接一頁；外層橫向卷軸承載文件級縮放（整份同縮，Chrome 式）
     Box(
         modifier = modifier
-            .clip(RectangleShape)
-            .background(deskBrush)
-            .onSizeChanged { size ->
-                containerWidth = size.width
-                containerHeight = size.height
-            }
-            .pointerInput(minScale) {
-                // Pan / zoom handler for the Workspace background Box.
-                //
-                // Routing contract (agreed with InkCanvas.pointerInput):
-                //   FREE          — InkCanvas does NOT consume Touch events → all single-finger
-                //                   touch contacts bubble here for pan.  Stylus is consumed by
-                //                   InkCanvas for drawing.
-                //   PALM_REJECTION — InkCanvas does NOT consume finger-zone contacts → single
-                //                   finger pans here.  Stylus consumed for drawing.  Palm dropped.
-                //   STYLUS_ONLY   — InkCanvas does NOT consume any Touch (finger/palm) → all
-                //                   touch contacts bubble here for single-finger pan.
-                //
-                // For 2+ simultaneous pointers this handler handles pinch-zoom + two-finger pan
-                // regardless of mode (InkCanvas always passes multi-touch through in FREE /
-                // STYLUS_ONLY, and passes finger-only multi-touch through in PALM_REJECTION).
-                awaitEachGesture {
-                    // requireUnconsumed = false: picks up events not consumed by children (InkCanvas).
-                    val firstDown = awaitFirstDown(requireUnconsumed = false)
-                    if (firstDown.isConsumed) return@awaitEachGesture  // InkCanvas claimed it (stylus draw)
-
-                    if (activeToolState.value == Tool.LASSO && hasSelectionState.value) {
-                        val paperRect = transformedPaperRect(
-                            containerWidth = containerWidth,
-                            containerHeight = containerHeight,
-                            paperWidthPx = paperWidthPx,
-                            paperHeightPx = paperHeightPx,
-                            scale = scale,
-                            offsetX = offsetX,
-                            offsetY = offsetY
-                        )
-                        if (paperRect == null || !paperRect.contains(firstDown.position)) {
-                            viewModel.clearSelection()
-                        }
-                    }
-
-                    val touchSlop = viewConfiguration.touchSlop
-                    var accZoom = 1f
-                    var accPan = androidx.compose.ui.geometry.Offset.Zero
-                    var pastTouchSlop = false
-
-                    while (true) {
-                        val evt = awaitPointerEvent()
-                        // If any change was consumed by a child (shouldn't happen after firstDown
-                        // check, but be safe) stop handling.
-                        if (evt.changes.any { it.isConsumed }) break
-                        if (evt.changes.none { it.pressed }) break
-
-                        val zoomChange = evt.calculateZoom()
-                        val panChange  = evt.calculatePan()
-
-                        if (!pastTouchSlop) {
-                            accZoom *= zoomChange
-                            accPan  += panChange
-                            val centroidSize = evt.calculateCentroidSize(useCurrent = false)
-                            val zoomMotion = kotlin.math.abs(1 - accZoom) * centroidSize
-                            val panMotion  = accPan.getDistance()
-                            if (zoomMotion > touchSlop || panMotion > touchSlop) {
-                                pastTouchSlop = true
-                                accZoom = 1f
-                                accPan  = androidx.compose.ui.geometry.Offset.Zero
-                            }
-                        }
-
-                        // If InkCanvas claimed the gesture on this frame, bail out before
-                        // applying any offset change from the same motion sample.
-                        if (evt.changes.any { it.isConsumed }) break
-
-                        if (pastTouchSlop) {
-                            val centroid = evt.calculateCentroid(useCurrent = false)
-                            val oldScale = scale
-                            // Single-finger pan: zoom = 1 so scale is unchanged.
-                            // Multi-finger pinch: zoom != 1 so scale changes.
-                            val newScale = (scale * zoomChange).coerceIn(minScale, 5f)
-                            if (newScale <= minScale) {
-                                offsetX = 0f
-                                offsetY = 0f
-                            } else {
-                                val r = newScale / oldScale
-                                offsetX = offsetX * r + (centroid.x - containerWidth / 2f) * (1 - r) + panChange.x
-                                offsetY = offsetY * r + (centroid.y - containerHeight / 2f) * (1 - r) + panChange.y
-                            }
-                            scale = newScale
-                            evt.changes.forEach { it.consume() }
-                        }
-                    }
-                }
-            },
-        contentAlignment = Alignment.Center
+            .background(Color.Transparent)
+            .onSizeChanged { viewportWpx = it.width }
     ) {
-        AuroraBackground(
-            isDarkTheme = isDarkSurface,
-            modifier = Modifier.fillMaxSize(),
-            orbCount = 3
-        )
+        // 列表恒满视口宽（无死角）；纸在 item 内按比例缩、居中
+        val listWdp = with(density) { (viewportWpx.toFloat() * maxOf(docZoom, 1f)).toDp() }
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 20.dp, vertical = 18.dp)
-                .clip(ShapeXl)
-                .background(stageColor)
-        )
-        Surface(
-            modifier = Modifier
-                .fillMaxSize(0.86f)
-                .aspectRatio(pageAspectRatio, matchHeightConstraintsFirst = true)
-                .hazeSource(bubbleHazeState)
-                .onSizeChanged {
-                    paperWidthPx = it.width
-                    paperHeightPx = it.height
-                }
-                .graphicsLayer(
-                    scaleX = scale,
-                    scaleY = scale,
-                    translationX = offsetX,
-                    translationY = offsetY
-                ),
-            shape = ShapeSm,
-            shadowElevation = 18.dp,
-            color = paperColor
+                .horizontalScroll(hScrollState, enabled = docZoom > 1f),
+            contentAlignment = Alignment.Center
         ) {
+            LazyColumn(
+                state = mainListState,
+                modifier = Modifier
+                    .width(listWdp.coerceAtLeast(1.dp))
+                    .fillMaxHeight(),
+                contentPadding = PaddingValues(vertical = 18.dp),
+                verticalArrangement = Arrangement.spacedBy(18.dp)
+            ) {
+        items(pageCount, key = { it }) { index ->
+            val aspect = uniformAspect
+            if (index == pageIndex) {
+                val bitmapFlow = remember(index, renderEpoch) { pdfViewModel.getPageBitmap(index) }
+                val pageBitmap by bitmapFlow.collectAsState()
+                var itemWidthPx by remember { mutableIntStateOf(0) }
+                val itemTargetOffset = remember(
+                    regionBoundsModel, itemWidthPx, bubbleWidthPx, bubbleHeightPx,
+                    aspect, bubbleGapPx, bubbleSidePaddingPx, bubbleTopSafePx
+                ) {
+                    if (regionBoundsModel == null || itemWidthPx <= 0) {
+                        IntOffset(0, 0)
+                    } else {
+                        val modelW = viewModel.modelWidth
+                        val modelH = viewModel.modelHeight
+                        if (modelW <= 0f || modelH <= 0f) {
+                            IntOffset(0, 0)
+                        } else {
+                            val wF = itemWidthPx.toFloat()
+                            val hF = wF / aspect
+                            val sx = wF / modelW
+                            val sy = hF / modelH
+                            val left = regionBoundsModel.left * sx
+                            val top = regionBoundsModel.top * sy
+                            val right = regionBoundsModel.right * sx
+                            val bottom = regionBoundsModel.bottom * sy
+                            val cx = (left + right) / 2f
+                            val bw = bubbleWidthPx.toFloat()
+                            val bh = bubbleHeightPx.toFloat()
+                            val aboveY = top - bh - bubbleGapPx
+                            val y = if (aboveY < bubbleTopSafePx) bottom + bubbleGapPx else aboveY
+                            val maxX = maxOf(bubbleSidePaddingPx, wF - bw - bubbleSidePaddingPx)
+                            val maxY = maxOf(bubbleTopSafePx, hF - bh - bubbleTopSafePx)
+                            IntOffset(
+                                ((cx - bw / 2f).coerceIn(bubbleSidePaddingPx, maxX)).roundToInt(),
+                                y.coerceIn(bubbleTopSafePx, maxY).roundToInt()
+                            )
+                        }
+                    }
+                }
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .then(pinchModifier),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth(docZoom.coerceAtMost(1f))
+                            .padding(horizontal = 20.dp)
+                            .aspectRatio(aspect)
+                            .onSizeChanged { itemWidthPx = it.width },
+                        shape = ShapeSm,
+                        shadowElevation = 18.dp,
+                        color = paperColor
+                    ) {
+                        Box(modifier = Modifier.fillMaxSize()) {
             // PDF static layer (bottom) — crossfade between page bitmaps
             Crossfade(
                 targetState = pageBitmap,
@@ -591,13 +544,14 @@ internal fun Workspace(
                 pdfViewModel = pdfViewModel,
                 documentUri = documentUri
             )
-        }
-
-        androidx.compose.animation.AnimatedVisibility(
-            visible = showSelectionBubble,
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .offset { bubbleTargetOffset },
+                        } // 作用頁內容 Box
+                    } // 紙 Surface
+                    // 套索氣泡：作用頁內定位
+                    androidx.compose.animation.AnimatedVisibility(
+                        visible = showSelectionBubble && docZoom == 1f,
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .offset { itemTargetOffset },
             enter = fadeIn(animationSpec = tween(180)) +
                 slideInVertically(
                     animationSpec = tween(220, easing = androidx.compose.animation.core.FastOutSlowInEasing),
@@ -611,7 +565,7 @@ internal fun Workspace(
         ) {
             Surface(
                 modifier = Modifier
-                    .glassPanel(bubbleHazeState, isDarkSurface, shape = CircleShape, specular = false)
+                    .glassPanel(hazeState, isDarkSurface, shape = CircleShape, specular = false)
                     .onSizeChanged {
                         bubbleWidthPx = it.width
                         bubbleHeightPx = it.height
@@ -724,15 +678,270 @@ internal fun Workspace(
                         modifier = Modifier.size(24.dp)
                     ) {
                         Icon(
-                            Icons.Default.Close,
+                            Icons.Outlined.Close,
                             contentDescription = "取消選取",
                             modifier = Modifier.size(16.dp)
                         )
                     }
                 }
             }
+                    }
+                    } // 作用頁 item Box
+                } else {
+                    // ===== 靜態頁：點了變作用頁，尺寸樣式與作用頁完全一致 =====
+                    val staticBitmapFlow = remember(index, renderEpoch) { pdfViewModel.getPageBitmap(index) }
+                    val staticBitmap by staticBitmapFlow.collectAsState()
+                    val staticStrokes by remember(index, documentUri) {
+                        db.strokeDao().getStrokesForPage(documentUri, index)
+                    }.collectAsState(initial = emptyList())
+                    val staticImages by remember(index, documentUri) {
+                        db.imageAnnotationDao().getForPage(documentUri, index)
+                    }.collectAsState(initial = emptyList())
+                    val staticTexts by remember(index, documentUri) {
+                        db.textAnnotationDao().getForPage(documentUri, index)
+                    }.collectAsState(initial = emptyList())
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .then(pinchModifier),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth(docZoom.coerceAtMost(1f))
+                                .padding(horizontal = 20.dp)
+                                .aspectRatio(aspect)
+                                .clip(ShapeSm)
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null
+                                ) { onRequestPage(index) },
+                            shape = ShapeSm,
+                            shadowElevation = 18.dp,
+                            color = paperColor
+                        ) {
+                            Box(modifier = Modifier.fillMaxSize()) {
+                                val currentBmp = staticBitmap
+                                if (currentBmp != null) {
+                                    androidx.compose.foundation.Image(
+                                        bitmap = currentBmp.asImageBitmap(),
+                                        contentDescription = "PDF Page $index",
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentScale = androidx.compose.ui.layout.ContentScale.Fit
+                                    )
+                                } else {
+                                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                        androidx.compose.material3.CircularProgressIndicator(
+                                            modifier = Modifier.size(24.dp),
+                                            strokeWidth = 2.dp
+                                        )
+                                    }
+                                }
+                                val paperStyle by viewModel.paperStyle.collectAsState()
+                                if (paperStyle.background != PageBackground.BLANK) {
+                                    val lineColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                                    androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
+                                        val modelW = viewModel.modelWidth
+                                        val modelH = viewModel.modelHeight
+                                        if (modelW > 0f && modelH > 0f) {
+                                            val sx = size.width / modelW
+                                            val sy = size.height / modelH
+                                            val step = when (paperStyle.background) {
+                                                PageBackground.NARROW_RULED -> 18f
+                                                PageBackground.WIDE_RULED   -> 42f
+                                                else                        -> 28f
+                                            }
+                                            val drawHLines = paperStyle.background == PageBackground.RULED ||
+                                                paperStyle.background == PageBackground.NARROW_RULED ||
+                                                paperStyle.background == PageBackground.WIDE_RULED ||
+                                                paperStyle.background == PageBackground.GRID
+                                            if (drawHLines) {
+                                                var y = step
+                                                while (y < modelH) {
+                                                    drawLine(
+                                                        color = lineColor,
+                                                        start = androidx.compose.ui.geometry.Offset(0f, y * sy),
+                                                        end = androidx.compose.ui.geometry.Offset(size.width, y * sy),
+                                                        strokeWidth = 1f
+                                                    )
+                                                    y += step
+                                                }
+                                            }
+                                            if (paperStyle.background == PageBackground.GRID) {
+                                                var x = step
+                                                while (x < modelW) {
+                                                    drawLine(
+                                                        color = lineColor,
+                                                        start = androidx.compose.ui.geometry.Offset(x * sx, 0f),
+                                                        end = androidx.compose.ui.geometry.Offset(x * sx, size.height),
+                                                        strokeWidth = 1f
+                                                    )
+                                                    x += step
+                                                }
+                                            }
+                                            if (paperStyle.background == PageBackground.DOT_GRID) {
+                                                var y = step
+                                                while (y < modelH) {
+                                                    var x = step
+                                                    while (x < modelW) {
+                                                        drawCircle(
+                                                            color = lineColor,
+                                                            radius = 1.5f,
+                                                            center = androidx.compose.ui.geometry.Offset(x * sx, y * sy)
+                                                        )
+                                                        x += step
+                                                    }
+                                                    y += step
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                StaticPageOverlay(
+                                    modifier = Modifier.fillMaxSize(),
+                                    strokes = staticStrokes,
+                                    imageAnnotations = staticImages,
+                                    textAnnotations = staticTexts,
+                                    modelWidth = viewModel.modelWidth,
+                                    modelHeight = viewModel.modelHeight
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
+}
+}
+
+@Composable
+private fun StaticPageOverlay(
+    modifier: Modifier = Modifier,
+    strokes: List<StrokeWithPoints>,
+    imageAnnotations: List<ImageAnnotationEntity>,
+    textAnnotations: List<TextAnnotationEntity>,
+    modelWidth: Float,
+    modelHeight: Float
+) {
+    val context = LocalContext.current
+    val loadedImages = remember { mutableStateMapOf<String, android.graphics.Bitmap?>() }
+    LaunchedEffect(imageAnnotations) {
+        imageAnnotations.forEach { ann ->
+            if (ann.uri !in loadedImages) {
+                loadedImages[ann.uri] = null
+                withContext(Dispatchers.IO) {
+                    try {
+                        val bmp = context.contentResolver.openInputStream(Uri.parse(ann.uri))?.use { stream ->
+                            BitmapFactory.decodeStream(stream)
+                        }
+                        loadedImages[ann.uri] = bmp
+                    } catch (_: Exception) { }
+                }
+            }
+        }
+    }
+
+    Spacer(modifier = modifier.drawBehind {
+        val modelW = modelWidth
+        val modelH = modelHeight
+        if (modelW <= 0f || modelH <= 0f) return@drawBehind
+        val sx = size.width / modelW
+        val sy = size.height / modelH
+        strokes.forEach { swp ->
+            val stroke = swp.stroke
+            val strokeColor = Color(stroke.color)
+            val alpha = if (stroke.isHighlighter) 0.4f else 1f
+            val widthPx = stroke.strokeWidth * (if (stroke.isHighlighter) 3f else 1f) * sx
+            val paintStyle = Stroke(width = widthPx, cap = StrokeCap.Round, join = StrokeJoin.Round)
+            if (stroke.shapeType != null) {
+                val r = Rect(
+                    stroke.boundsLeft * sx, stroke.boundsTop * sy,
+                    stroke.boundsRight * sx, stroke.boundsBottom * sy
+                )
+                when (stroke.shapeType) {
+                    "RECT" -> drawRect(
+                        color = strokeColor.copy(alpha = alpha),
+                        topLeft = Offset(r.left, r.top),
+                        size = Size(r.width, r.height),
+                        style = paintStyle
+                    )
+                    "CIRCLE" -> drawOval(
+                        color = strokeColor.copy(alpha = alpha),
+                        topLeft = Offset(r.left, r.top),
+                        size = Size(r.width, r.height),
+                        style = paintStyle
+                    )
+                    "LINE" -> if (swp.points.size >= 2) {
+                        drawLine(
+                            color = strokeColor.copy(alpha = alpha),
+                            start = Offset(swp.points.first().x * sx, swp.points.first().y * sy),
+                            end = Offset(swp.points.last().x * sx, swp.points.last().y * sy),
+                            strokeWidth = widthPx,
+                            cap = StrokeCap.Round
+                        )
+                    }
+                    "ARROW" -> if (swp.points.size >= 2) {
+                        val p0 = Offset(swp.points.first().x * sx, swp.points.first().y * sy)
+                        val p1 = Offset(swp.points.last().x * sx, swp.points.last().y * sy)
+                        drawLine(
+                            color = strokeColor.copy(alpha = alpha),
+                            start = p0, end = p1,
+                            strokeWidth = widthPx, cap = StrokeCap.Round
+                        )
+                        thumbnailDrawArrowHead(
+                            drawScope = this,
+                            color = strokeColor.copy(alpha = alpha),
+                            start = p0, end = p1, sw = widthPx
+                        )
+                    }
+                }
+            } else {
+                val pts = swp.points
+                if (pts.size >= 2) {
+                    val path = androidx.compose.ui.graphics.Path()
+                    path.moveTo(pts.first().x * sx, pts.first().y * sy)
+                    for (i in 1 until pts.size) {
+                        val p1 = pts[i - 1]; val p2 = pts[i]
+                        path.quadraticTo(
+                            p1.x * sx, p1.y * sy,
+                            (p1.x + p2.x) / 2f * sx, (p1.y + p2.y) / 2f * sy
+                        )
+                    }
+                    pts.lastOrNull()?.let { path.lineTo(it.x * sx, it.y * sy) }
+                    drawPath(path, strokeColor.copy(alpha = alpha), style = paintStyle)
+                }
+            }
+        }
+        imageAnnotations.forEach { ann ->
+            val bmp = loadedImages[ann.uri]
+            if (bmp != null) {
+                drawImage(
+                    image = bmp.asImageBitmap(),
+                    dstOffset = IntOffset((ann.modelX * sx).toInt(), (ann.modelY * sy).toInt()),
+                    dstSize = IntSize(
+                        (ann.modelWidth * sx).toInt().coerceAtLeast(1),
+                        (ann.modelHeight * sy).toInt().coerceAtLeast(1)
+                    )
+                )
+            }
+        }
+        if (textAnnotations.isNotEmpty()) {
+            drawIntoCanvas { composeCanvas ->
+                textAnnotations.forEach { ann ->
+                    val paint = android.graphics.Paint().apply {
+                        textSize    = ann.fontSize * sy
+                        color       = ann.colorArgb
+                        isAntiAlias = true
+                        typeface    = android.graphics.Typeface.DEFAULT_BOLD
+                    }
+                    composeCanvas.nativeCanvas.drawText(
+                        ann.text, ann.modelX * sx, ann.modelY * sy, paint
+                    )
+                }
+            }
+        }
+    })
 }
 
 internal fun polygonBounds(points: List<Offset>): Rect? {

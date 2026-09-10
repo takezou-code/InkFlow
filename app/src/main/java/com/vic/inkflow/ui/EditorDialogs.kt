@@ -125,6 +125,7 @@ import androidx.compose.material.icons.outlined.FileUpload
 import androidx.compose.material.icons.outlined.LightMode
 import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.Bookmark
+import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.rounded.Brush
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Gesture
@@ -303,7 +304,7 @@ internal fun DocumentSettingsDialog(
                             onClick = { selectedBackground = bg },
                             label = { Text(label) },
                             leadingIcon = if (selectedBackground == bg) {
-                                { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                                { Icon(Icons.Outlined.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
                             } else null
                         )
                     }
@@ -398,7 +399,7 @@ internal fun NewDocPaperSizeDialog(
                             onClick = { selectedWidth = w; selectedHeight = h },
                             label = { Text("$label 直向") },
                             leadingIcon = if (isPortrait) {
-                                { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                                { Icon(Icons.Outlined.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
                             } else null
                         )
                         FilterChip(
@@ -406,7 +407,7 @@ internal fun NewDocPaperSizeDialog(
                             onClick = { selectedWidth = h; selectedHeight = w },
                             label = { Text("$label 橫向") },
                             leadingIcon = if (isLandscape) {
-                                { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                                { Icon(Icons.Outlined.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
                             } else null
                         )
                     }
@@ -450,15 +451,21 @@ internal fun ColorChip(color: Color, isSelected: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-internal fun StrokeWidthSlider(viewModel: EditorViewModel) {
+internal fun StrokeWidthSlider(
+    viewModel: EditorViewModel,
+    hazeState: dev.chrisbanes.haze.HazeState,
+    isDarkTheme: Boolean
+) {
     val strokeWidth by viewModel.strokeWidth.collectAsState()
     val activeTool by viewModel.selectedTool.collectAsState()
     val range = if (activeTool == Tool.HIGHLIGHTER) 5f..40f else 1f..20f
     Surface(
-        modifier = Modifier.fillMaxWidth(),
-        tonalElevation = 1.dp,
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+        modifier = Modifier
+            .fillMaxWidth()
+            .glassPanel(hazeState, isDarkTheme, shape = RectangleShape, specular = false),
+        tonalElevation = 0.dp,
+        color = Color.Transparent,
+        contentColor = MaterialTheme.colorScheme.onSurface
     ) {
         Row(
             modifier = Modifier
@@ -540,7 +547,9 @@ internal fun EditorIconButton(
 
 /** Instantly scroll so [index] is vertically centered in the sidebar. */
 internal suspend fun LazyListState.scrollToCenter(index: Int) {
-    scrollToItem(index)
+    // 陳舊頁碼（刪頁/空文件）直接捲會閃退，先擋
+    if (index < 0 || index >= layoutInfo.totalItemsCount) return
+    runCatching { scrollToItem(index) }.getOrNull() ?: return
     val itemInfo = layoutInfo.visibleItemsInfo.firstOrNull { it.index == index } ?: return
     val viewportHeight = layoutInfo.viewportEndOffset - layoutInfo.viewportStartOffset
     val delta = (itemInfo.offset + itemInfo.size / 2 - viewportHeight / 2).toFloat()
@@ -551,8 +560,9 @@ internal suspend fun LazyListState.scrollToCenter(index: Int) {
 
 internal suspend fun androidx.compose.foundation.lazy.LazyListState.animateScrollToCenter(index: Int) {
     if (isScrollInProgress) return // 如果使用者正在滑動，不要強制中斷它
+    if (index < 0 || index >= layoutInfo.totalItemsCount) return
     // 因為我們已經為側邊欄設定了精確的 verticalPadding (約為螢幕一半)
     // 所以原生 animateScrollToItem(index) 將項目對齊到 content padding 邊緣時，
     // 就剛好會落在螢幕的正中央！不需再做二次位移。
-    animateScrollToItem(index)
+    runCatching { animateScrollToItem(index) }
 }
