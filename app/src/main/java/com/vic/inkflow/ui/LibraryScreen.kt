@@ -2,6 +2,11 @@
 
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeSource
+import com.styropyr0.prismal.drawPrismalGlass
+import com.styropyr0.prismal.prismalGlassEffects
+import com.styropyr0.prismal.shapes.PrismalRoundedRectangle
+import com.styropyr0.prismal.sources.prismalGlassLayer
+import com.styropyr0.prismal.sources.rememberPrismalGlassLayer
 import com.vic.inkflow.ui.theme.Motion
 import com.vic.inkflow.ui.theme.ShapeSm
 import com.vic.inkflow.ui.theme.ShapeMd
@@ -149,6 +154,7 @@ import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -258,7 +264,7 @@ fun DocumentLibraryScreen(
         docViewModel.consumeFolderOperationMessage()
     }
 
-    if (showCreateFolderDialog) {
+    AnimatedDialog(visible = showCreateFolderDialog) {
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { showCreateFolderDialog = false },
             title = { Text("建立新資料夾") },
@@ -397,14 +403,22 @@ fun DocumentLibraryScreen(
     // Outer Box does NOT read any animated State, so it never recomposes at 60 fps.
     // The animated gradient is drawn by the isolated AnimatedGradientBackground child.
     val libraryHazeState = rememberHazeState()
+    // 真折射試點：backdrop 錄 Aurora，一個 Dock 先吃，其它面板看效果再說
+    val prismalBackdrop = rememberPrismalGlassLayer()
+    val prismalDensity = LocalDensity.current
+    val gridScrollState = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
+    val listScrollState = rememberLazyListState()
     Box(
         modifier = Modifier.fillMaxSize()
     ) {
         // 深空單一背景：只有 Aurora，讓薄玻璃有東西可糊
         AuroraBackground(
             isDarkTheme = isDarkTheme,
-            modifier = Modifier.fillMaxSize().hazeSource(libraryHazeState),
-            orbCount = 9
+            modifier = Modifier
+                .fillMaxSize()
+                .hazeSource(libraryHazeState)
+                .prismalGlassLayer(prismalBackdrop),
+            orbCount = 12
         )
 
     // 全螢幕：狀態列已藏，不再留白
@@ -419,7 +433,11 @@ fun DocumentLibraryScreen(
                 .fillMaxHeight()
                 .padding(start = 12.dp, top = 12.dp, bottom = 12.dp)
                 .width(76.dp)
-                .glassPanel(libraryHazeState, isDarkTheme, ShapeLg)
+                .drawPrismalGlass(
+                    backdrop = prismalBackdrop,
+                    shape = { PrismalRoundedRectangle(24.dp) },
+                    effects = prismalGlassEffects(prismalDensity)
+                )
                 .padding(vertical = 8.dp)
         ) {
             Spacer(Modifier.height(8.dp))
@@ -496,7 +514,8 @@ fun DocumentLibraryScreen(
                     onToggleGridView = { isGridView = !isGridView },
                     selectedNavIndex = selectedNavIndex,
                     onCreateFolder = { showCreateFolderDialog = true },
-                    hazeState = libraryHazeState
+                    hazeState = libraryHazeState,
+                    prismalBackdrop = prismalBackdrop
                 )
             },
             floatingActionButton = {
@@ -518,7 +537,8 @@ fun DocumentLibraryScreen(
                     onCreateFolder = {
                         showFabMenu = false
                         showCreateFolderDialog = true
-                    }
+                    },
+                    prismalBackdrop = prismalBackdrop
                 )
             }
         ) { innerPadding ->
@@ -582,7 +602,8 @@ fun DocumentLibraryScreen(
                             onOpenPdf = { pdfLauncher.launch(arrayOf("application/pdf")) },
                             onCreateBlank = { showNewDocSizeDialog = true },
                             hazeState = libraryHazeState,
-                            isDarkTheme = isDarkTheme
+                            isDarkTheme = isDarkTheme,
+                            prismalBackdrop = prismalBackdrop
                         )
                     } else {
                         FolderGroupedDocumentsView(
@@ -620,13 +641,15 @@ fun DocumentLibraryScreen(
                         onOpenPdf = { pdfLauncher.launch(arrayOf("application/pdf")) },
                         onCreateBlank = { showNewDocSizeDialog = true },
                         hazeState = libraryHazeState,
-                        isDarkTheme = isDarkTheme
+                        isDarkTheme = isDarkTheme,
+                        prismalBackdrop = prismalBackdrop
                     )
                 } else {
                     val animatedCardUris = remember { mutableStateMapOf<String, Boolean>() }
                     if (isGridView) {
                         androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
                             columns = androidx.compose.foundation.lazy.grid.GridCells.Adaptive(minSize = 180.dp),
+                            state = gridScrollState,
                             modifier = Modifier.fillMaxSize(),
                             contentPadding = PaddingValues(top = 6.dp, bottom = 120.dp),
                             horizontalArrangement = Arrangement.spacedBy(18.dp),
@@ -664,7 +687,8 @@ fun DocumentLibraryScreen(
                                         onRename = { newName -> docViewModel.rename(doc.uri, newName) },
                                         onMoveToFolder = { folderId -> docViewModel.moveDocumentToFolder(doc.uri, folderId) },
                                         onCreateFolder = { folderName -> docViewModel.createFolder(folderName) },
-                                        hazeState = libraryHazeState,
+                                        // 卡片實底：每卡一個即時模糊是滾動卡頓主因
+                                        hazeState = null,
                                         isDarkTheme = isDarkTheme
                                     )
                                 }
@@ -672,6 +696,7 @@ fun DocumentLibraryScreen(
                         }
                     } else {
                         androidx.compose.foundation.lazy.LazyColumn(
+                            state = listScrollState,
                             modifier = Modifier.fillMaxSize(),
                             contentPadding = PaddingValues(top = 6.dp, bottom = 120.dp),
                             verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -708,7 +733,8 @@ fun DocumentLibraryScreen(
                                         onRename = { newName -> docViewModel.rename(doc.uri, newName) },
                                         onMoveToFolder = { folderId -> docViewModel.moveDocumentToFolder(doc.uri, folderId) },
                                         onCreateFolder = { folderName -> docViewModel.createFolder(folderName) },
-                                        hazeState = libraryHazeState,
+                                        // 列表行實底：同卡片
+                                        hazeState = null,
                                         isDarkTheme = isDarkTheme
                                     )
                                 }

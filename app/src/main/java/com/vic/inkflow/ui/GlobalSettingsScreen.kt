@@ -49,6 +49,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -152,23 +153,7 @@ fun GlobalSettingsScreen(
             var isBackupBusy by remember { mutableStateOf(false) }
             var backupStatus by remember { mutableStateOf<String?>(null) }
             var showRestartDialog by remember { mutableStateOf(false) }
-
-            val exportBackupLauncher = rememberLauncherForActivityResult(
-                ActivityResultContracts.CreateDocument(BackupManager.MIME_TYPE)
-            ) { destUri ->
-                if (destUri != null && !isBackupBusy) {
-                    isBackupBusy = true
-                    backupStatus = "正在匯出…"
-                    coroutineScope.launch {
-                        val result = BackupManager.createBackup(appContext, destUri) { msg -> backupStatus = msg }
-                        backupStatus = result.fold(
-                            onSuccess = { count -> "備份完成（$count 份文件）" },
-                            onFailure = { "備份失敗：${it.message}" }
-                        )
-                        isBackupBusy = false
-                    }
-                }
-            }
+            var confirmRestoreFile by remember { mutableStateOf<java.io.File?>(null) }
 
             val importBackupLauncher = rememberLauncherForActivityResult(
                 ActivityResultContracts.OpenDocument()
@@ -193,43 +178,37 @@ fun GlobalSettingsScreen(
             }
 
             SettingsSection("備份與還原 (Backup)") {
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                    androidx.compose.material3.Button(
-                        onClick = {
-                            exportBackupLauncher.launch(
-                                "InkFlow_Backup_" + SimpleDateFormat("yyyyMMdd_HHmm").format(Date()) + ".zip"
-                            )
-                        },
-                        enabled = !isBackupBusy,
-                        modifier = Modifier.weight(1f)
-                    ) { Text(if (isBackupBusy) "處理中…" else "匯出全部備份") }
-                    androidx.compose.material3.OutlinedButton(
-                        onClick = { importBackupLauncher.launch(arrayOf("*/*", "application/zip", "application/octet-stream")) },
-                        enabled = !isBackupBusy,
-                        modifier = Modifier.weight(1f)
-                    ) { Text("還原備份") }
-                }
-                backupStatus?.let {
-                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
+                Text(
+                    "自動備份每天守著資料；換手機或重裝前按「匯出分享」，用 LINE／雲端把檔案帶走。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                )
 
                 // 自動備份：每天一次、只留 3 份、沒變更不寫檔
                 var autoEnabled by remember { mutableStateOf(AutoBackupScheduler.isEnabled(appContext)) }
                 var autoTick by remember { mutableIntStateOf(0) }
-                val autoPrefs = remember(autoTick) { BackupManager.backupPrefs(appContext) }
-                val autoLastRun = remember(autoTick) {
-                    autoPrefs.getLong(AutoBackupScheduler.KEY_LAST_RUN_MS, 0L).let {
-                        if (it == 0L) "尚未執行過"
-                        else SimpleDateFormat("yyyy/MM/dd HH:mm", java.util.Locale.getDefault()).format(Date(it))
+                // 背景任務完成後自動刷新狀態，不用手動按
+                LaunchedEffect(Unit) {
+                    while (true) {
+                        kotlinx.coroutines.delay(5000)
+                        autoTick++
                     }
                 }
-                val autoLastStatus = remember(autoTick) {
-                    autoPrefs.getString(AutoBackupScheduler.KEY_LAST_STATUS, null)
+                val autoLine = remember(autoTick) {
+                    val prefs = BackupManager.backupPrefs(appContext)
+                    val runMs = prefs.getLong(AutoBackupScheduler.KEY_LAST_RUN_MS, 0L)
+                    if (runMs == 0L) "尚未執行過"
+                    else {
+                        val run = SimpleDateFormat("MM/dd HH:mm", java.util.Locale.getDefault()).format(Date(runMs))
+                        val st = prefs.getString(AutoBackupScheduler.KEY_LAST_STATUS, null)
+                        if (st.isNullOrEmpty()) "上次 $run" else "上次 $run｜$st"
+                    }
                 }
                 val autoFiles = remember(autoTick) { AutoBackupScheduler.listBackups(appContext) }
                 SettingsSwitchRow(
                     title = "自動備份（每天）",
-                    subtitle = "只留最新 ${AutoBackupScheduler.MAX_KEEP} 份，資料沒變就不寫新檔",
+                    subtitle = "只留最新 ${AutoBackupScheduler.MAX_KEEP} 份，沒變更不寫檔，低電量/低儲存自動跳過",
                     checked = autoEnabled,
                     onCheckedChange = {
                         autoEnabled = it
@@ -237,36 +216,132 @@ fun GlobalSettingsScreen(
                         autoTick++
                     }
                 )
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    autoLine,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                )
+                if (autoFiles.isNotEmpty()) {
+                    Text(
+                        "點右側直接還原，不用找檔案",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp)
+                    )
+                }
+                autoFiles.forEach { f ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "· ${f.name}（${String.format("%.1f", f.length() / 1024.0 / 1024.0)}MB）",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f).padding(start = 8.dp)
+                        )
+                        TextButton(
+                            onClick = { confirmRestoreFile = f },
+                            enabled = !isBackupBusy
+                        ) { Text(if (f == autoFiles.firstOrNull()) "還原最新" else "還原") }
+                    }
+                }
+
+                // 搬家用：匯出到外部 / 從外部檔案還原
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)
+                ) {
                     androidx.compose.material3.OutlinedButton(
-                        onClick = {
-                            AutoBackupScheduler.runOnce(appContext)
-                            backupStatus = "已送出備份任務，稍後按重新整理查看"
-                            autoTick++
-                        },
+                        onClick = { AutoBackupScheduler.runOnce(appContext) },
                         enabled = !isBackupBusy,
                         modifier = Modifier.weight(1f)
                     ) { Text("立即備份") }
-                    androidx.compose.material3.TextButton(
-                        onClick = { autoTick++ },
+                    androidx.compose.material3.Button(
+                        onClick = {
+                            if (isBackupBusy) return@Button
+                            isBackupBusy = true
+                            backupStatus = "正在匯出…"
+                            coroutineScope.launch {
+                                val result = BackupManager.exportToShareFile(
+                                    appContext,
+                                    "InkFlow_Backup_" + SimpleDateFormat("yyyyMMdd_HHmm").format(Date()) + ".zip"
+                                ) { msg -> backupStatus = msg }
+                                result.fold(
+                                    onSuccess = { (count, file) ->
+                                        backupStatus = "匯出完成（$count 份），選分享存到 LINE／雲端"
+                                        val fileUri = androidx.core.content.FileProvider.getUriForFile(
+                                            appContext,
+                                            "${appContext.packageName}.fileprovider",
+                                            file
+                                        )
+                                        val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                            type = BackupManager.MIME_TYPE
+                                            putExtra(android.content.Intent.EXTRA_STREAM, fileUri)
+                                            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                        }
+                                        appContext.startActivity(
+                                            android.content.Intent.createChooser(send, "把備份存到 LINE／雲端")
+                                        )
+                                    },
+                                    onFailure = { backupStatus = "匯出失敗：${it.message}" }
+                                )
+                                isBackupBusy = false
+                            }
+                        },
+                        enabled = !isBackupBusy,
                         modifier = Modifier.weight(1f)
-                    ) { Text("重新整理狀態") }
+                    ) { Text(if (isBackupBusy) "處理中…" else "匯出分享") }
                 }
-                Text(
-                    "上次執行：$autoLastRun",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                autoLastStatus?.let {
-                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                autoFiles.forEach { f ->
+                androidx.compose.material3.OutlinedButton(
+                    onClick = { importBackupLauncher.launch(arrayOf("*/*", "application/zip", "application/octet-stream")) },
+                    enabled = !isBackupBusy,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 8.dp)
+                ) { Text("從檔案還原（換機用）") }
+                backupStatus?.let {
                     Text(
-                        "· ${f.name}（${String.format("%.1f", f.length() / 1024.0 / 1024.0)}MB）",
+                        it,
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
                     )
                 }
+            }
+
+            // 一鍵還原自動備份：先確認（會覆蓋目前全部資料），驗證後走同一套重啟套用流程
+            confirmRestoreFile?.let { target ->
+                androidx.compose.material3.AlertDialog(
+                    onDismissRequest = { confirmRestoreFile = null },
+                    title = { Text("還原這份備份？") },
+                    text = { Text("將以「${target.name}」取代目前的文件清單與全部註解，此動作無法復原。") },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            confirmRestoreFile = null
+                            isBackupBusy = true
+                            backupStatus = "正在驗證備份檔…"
+                            coroutineScope.launch {
+                                val result = BackupManager.stageRestore(
+                                    appContext, android.net.Uri.fromFile(target)
+                                )
+                                result.fold(
+                                    onSuccess = { count ->
+                                        backupStatus = "備份驗證成功（$count 份文件），重啟後套用"
+                                        showRestartDialog = true
+                                    },
+                                    onFailure = {
+                                        backupStatus = "還原失敗：${it.message}"
+                                    }
+                                )
+                                isBackupBusy = false
+                            }
+                        }) { Text("確定還原") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { confirmRestoreFile = null }) { Text("取消") }
+                    }
+                )
             }
 
             if (showRestartDialog) {
@@ -495,6 +570,7 @@ fun GlobalSettingsScreen(
 
     if (showPenColorPicker) {
         ColorPickerDialog(
+            initialColor = Color(defaultPenColor),
             onColorSelected = { color ->
                 showPenColorPicker = false
                 val argb = color.toArgb()
@@ -507,6 +583,7 @@ fun GlobalSettingsScreen(
 
     if (showHighlighterColorPicker) {
         ColorPickerDialog(
+            initialColor = Color(defaultHighlighterColor),
             onColorSelected = { color ->
                 showHighlighterColorPicker = false
                 val argb = color.toArgb()

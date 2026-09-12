@@ -13,7 +13,7 @@ data class DrawingPreferences(
     val highlighterStrokeWidth: Float,
     val shapeSubType: ShapeSubType,
     val inputMode: InputMode,
-    val recentColors: List<Int>,
+    val palette: List<Int>,
     val background: PageBackground,
     val paperWidthPt: Float?,
     val paperHeightPt: Float?,
@@ -36,7 +36,7 @@ class EditorSettingsRepository(
         private const val DEFAULT_STROKE_SPEED_SENSITIVITY = 1f
         private const val DEFAULT_FINGER_TOUCH_THRESHOLD_DP = 8f
         private const val DEFAULT_HIGHLIGHTER_COLOR_ARGB = 0xFFFFC700.toInt()
-        private val DEFAULT_RECENT_COLORS = listOf(
+        private val DEFAULT_PALETTE = listOf(
             0xFF000000.toInt(),
             0xFFFFC700.toInt(),
             0xFFF44336.toInt(),
@@ -59,23 +59,24 @@ class EditorSettingsRepository(
         val defaultQuickSwipe = prefs.getBoolean("default_quick_swipe_eraser_enabled", false)
         val defaultAutoSwitchToPenAfterErase = prefs.getBoolean("default_auto_switch_to_pen_after_erase", false)
         val defaultPalmThresholdDp = prefs.getFloat("default_palm_threshold_dp", DEFAULT_PALM_THRESHOLD_DP)
-        val defaultRecentColorsCsv = prefs.getString("default_recent_colors", null)
-        val defaultRecentColors = defaultRecentColorsCsv?.let { csv ->
+        val defaultPaletteCsv = prefs.getString("default_recent_colors", null)
+        val defaultPalette = defaultPaletteCsv?.let { csv ->
             csv.split(',').mapNotNull { it.toIntOrNull() }.takeIf { it.isNotEmpty() }
-        } ?: DEFAULT_RECENT_COLORS
+        } ?: DEFAULT_PALETTE
         val defaultStrokeSpeedSensitivity = prefs.getFloat("default_stroke_speed_sensitivity", DEFAULT_STROKE_SPEED_SENSITIVITY)
         val defaultFingerTouchThresholdDp = prefs.getFloat("default_finger_touch_threshold_dp", DEFAULT_FINGER_TOUCH_THRESHOLD_DP)
 
         return DrawingPreferences(
             tool = local?.tool?.toToolOrNull() ?: Tool.PEN,
-            colorArgb = local?.colorArgb ?: defaultPenColor,
-            highlighterColorArgb = local?.highlighterColorArgb ?: defaultHighlighterColor,
+            // 顏色一律以設定頁為準，筆記本本地舊色直接作廢
+            colorArgb = defaultPenColor,
+            highlighterColorArgb = defaultHighlighterColor,
             penStrokeWidth = local?.penStrokeWidth ?: local?.strokeWidth ?: defaultPenWidth,
             highlighterStrokeWidth = local?.highlighterStrokeWidth ?: local?.strokeWidth ?: defaultHighlighterWidth,
             shapeSubType = local?.shapeSubType?.toShapeSubTypeOrNull() ?: ShapeSubType.RECT,
             inputMode = local?.inputMode?.toInputModeOrNull()
                 ?: (if (local?.stylusOnlyMode == true) InputMode.STYLUS_ONLY else defaultInputMode),
-            recentColors = local?.recentColorsCsv?.toColorListOrNull() ?: defaultRecentColors,
+            palette = defaultPalette,
             background = local?.pageBackground?.toPageBackgroundOrNull() ?: defaultBackground,
             paperWidthPt = local?.paperWidthPt,
             paperHeightPt = local?.paperHeightPt,
@@ -89,15 +90,6 @@ class EditorSettingsRepository(
 
     suspend fun setTool(documentUri: String, tool: Tool) {
         upsertDocument(documentUri) { copy(tool = tool.name) }
-    }
-
-    suspend fun setColor(documentUri: String, tool: Tool, colorArgb: Int, recentColors: List<Int>) {
-        upsertDocument(documentUri) {
-            when (tool) {
-                Tool.HIGHLIGHTER -> copy(highlighterColorArgb = colorArgb, recentColorsCsv = recentColors.toCsv())
-                else -> copy(colorArgb = colorArgb, recentColorsCsv = recentColors.toCsv())
-            }
-        }
     }
 
     suspend fun setStrokeWidth(documentUri: String, tool: Tool, strokeWidth: Float) {
@@ -192,11 +184,3 @@ private fun String.toInputModeOrNull(): InputMode? =
 private fun String.toPageBackgroundOrNull(): PageBackground? =
     runCatching { PageBackground.valueOf(this) }.getOrNull()
 
-private fun String.toColorListOrNull(): List<Int>? {
-    if (isBlank()) return null
-    val parsed = split(',').mapNotNull { it.toIntOrNull() }
-    return if (parsed.isEmpty()) null else parsed.take(8)
-}
-
-private fun List<Int>.toCsv(): String =
-    take(8).joinToString(",")

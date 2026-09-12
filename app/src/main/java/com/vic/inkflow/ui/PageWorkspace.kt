@@ -133,6 +133,12 @@ import androidx.compose.material.icons.outlined.LightMode
 import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.Bookmark
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.filled.LibraryAdd
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material3.LocalContentColor
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.material.icons.rounded.Brush
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Gesture
@@ -199,6 +205,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
 import androidx.navigation.NavType
@@ -237,6 +244,38 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/** 套索氣泡的圖示動作鈕：圖示 + 兩字標籤，enabled 反灰走 TextButton 預設。 */
+@Composable
+private fun SelectionBubbleAction(
+    icon: ImageVector,
+    label: String,
+    enabled: Boolean,
+    tint: Color = LocalContentColor.current,
+    onClick: () -> Unit
+) {
+    TextButton(
+        onClick = onClick,
+        enabled = enabled,
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                modifier = Modifier.size(20.dp),
+                tint = tint
+            )
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall
+            )
+        }
+    }
+}
+
 @Composable
 internal fun Workspace(
     pageIndex: Int,
@@ -248,6 +287,7 @@ internal fun Workspace(
     onAiFileReady: (android.net.Uri) -> Unit,
     hazeState: dev.chrisbanes.haze.HazeState = rememberHazeState(),
     isDarkTheme: Boolean = false,
+    prismalBackdrop: com.styropyr0.prismal.PrismalBackdrop? = null,
     db: AppDatabase,
     mainListState: LazyListState = rememberLazyListState(),
     onRequestPage: (Int) -> Unit = {},
@@ -408,9 +448,21 @@ internal fun Workspace(
             ) {
         items(pageCount, key = { it }) { index ->
             val aspect = uniformAspect
+            // 數據上提：bitmap + 三路註記流放在分支外面，作用頁/靜態頁身份互換時
+            // remember 不重建、Flow 不重訂、實例不變 —— 翻頁不再有空窗白閃。
+            // （之前翻頁閃光的主因：分支內各自 remember，切換必重載 + Crossfade 重播）
+            val bitmapFlow = remember(index, renderEpoch) { pdfViewModel.getPageBitmap(index) }
+            val pageBitmap by bitmapFlow.collectAsState()
+            val pageStrokes by remember(index, documentUri) {
+                db.strokeDao().getStrokesForPage(documentUri, index)
+            }.collectAsState(initial = emptyList())
+            val pageImages by remember(index, documentUri) {
+                db.imageAnnotationDao().getForPage(documentUri, index)
+            }.collectAsState(initial = emptyList())
+            val pageTexts by remember(index, documentUri) {
+                db.textAnnotationDao().getForPage(documentUri, index)
+            }.collectAsState(initial = emptyList())
             if (index == pageIndex) {
-                val bitmapFlow = remember(index, renderEpoch) { pdfViewModel.getPageBitmap(index) }
-                val pageBitmap by bitmapFlow.collectAsState()
                 var itemWidthPx by remember { mutableIntStateOf(0) }
                 val itemTargetOffset = remember(
                     regionBoundsModel, itemWidthPx, bubbleWidthPx, bubbleHeightPx,
@@ -537,18 +589,39 @@ internal fun Workspace(
                     }
                 }
             }
-            // Ink active layer (top)
-            InkCanvas(
-                modifier = Modifier.fillMaxSize(),
-                viewModel = viewModel,
-                pdfViewModel = pdfViewModel,
-                documentUri = documentUri
-            )
+            // Ink active layer (top)，帶新鮮度門：
+            // ViewModel 的 currentStrokes 是 flatMapLatest，換頁瞬間還吐著上頁的墨
+            // （這就是「上頁東西殘留」的鬼影）。門只放行「全部屬於本頁」的數據；
+            // 沒過門時顯示跟靜態頁一模一樣的疊層（數據同源、像素一致，無縫交接）。
+            // 空集合視為過門（新開空白頁本來就沒墨）。
+            val liveStrokes by viewModel.currentStrokes.collectAsState()
+            val liveTexts by viewModel.currentTextAnnotations.collectAsState()
+            val liveImages by viewModel.currentImageAnnotations.collectAsState()
+            val liveMatches = liveStrokes.all { it.stroke.pageIndex == index } &&
+                liveTexts.all { it.pageIndex == index } &&
+                liveImages.all { it.pageIndex == index }
+            if (liveMatches) {
+                InkCanvas(
+                    modifier = Modifier.fillMaxSize(),
+                    viewModel = viewModel,
+                    pdfViewModel = pdfViewModel,
+                    documentUri = documentUri
+                )
+            } else {
+                StaticPageOverlay(
+                    modifier = Modifier.fillMaxSize(),
+                    strokes = pageStrokes,
+                    imageAnnotations = pageImages,
+                    textAnnotations = pageTexts,
+                    modelWidth = viewModel.modelWidth,
+                    modelHeight = viewModel.modelHeight
+                )
+            }
                         } // 作用頁內容 Box
                     } // 紙 Surface
-                    // 套索氣泡：作用頁內定位
+                    // 套索氣泡：作用頁內定位（任何縮放都可見；定位已用實測 item 寬換算，縮放自洽）
                     androidx.compose.animation.AnimatedVisibility(
-                        visible = showSelectionBubble && docZoom == 1f,
+                        visible = showSelectionBubble,
                         modifier = Modifier
                             .align(Alignment.TopStart)
                             .offset { itemTargetOffset },
@@ -565,29 +638,27 @@ internal fun Workspace(
         ) {
             Surface(
                 modifier = Modifier
-                    .glassPanel(hazeState, isDarkSurface, shape = CircleShape, specular = false)
+                    .smartGlass(hazeState, isDarkSurface, shape = RoundedCornerShape(22.dp), specular = true, prismal = prismalBackdrop)
                     .onSizeChanged {
                         bubbleWidthPx = it.width
                         bubbleHeightPx = it.height
                     },
-                shape = CircleShape,
+                shape = RoundedCornerShape(22.dp),
                 color = Color.Transparent,
                 contentColor = MaterialTheme.colorScheme.onSurface,
                 shadowElevation = 6.dp
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = if (hasEditableSelection) "已選取物件" else "已選取 PDF 區域",
-                        style = MaterialTheme.typography.labelLarge
-                    )
-                    TextButton(
+                    SelectionBubbleAction(
+                        icon = Icons.Filled.LibraryAdd,
+                        label = "提取",
                         enabled = !isExtracting && hasSelection && hasRegionSnapshot,
                         onClick = {
-                            if (isExtracting || !hasSelection || !hasRegionSnapshot) return@TextButton
+                            if (isExtracting || !hasSelection || !hasRegionSnapshot) return@SelectionBubbleAction
                             isExtracting = true
                             scope.launch {
                                 try {
@@ -616,13 +687,13 @@ internal fun Workspace(
                                 }
                             }
                         }
-                    ) {
-                        Text("提取到新頁面")
-                    }
-                    TextButton(
+                    )
+                    SelectionBubbleAction(
+                        icon = Icons.Filled.AutoAwesome,
+                        label = "AI 解析",
                         enabled = !isExtracting && hasSelection && hasRegionSnapshot,
                         onClick = {
-                            if (isExtracting || !hasSelection || !hasRegionSnapshot) return@TextButton
+                            if (isExtracting || !hasSelection || !hasRegionSnapshot) return@SelectionBubbleAction
                             isExtracting = true
                             scope.launch {
                                 try {
@@ -649,30 +720,26 @@ internal fun Workspace(
                                 }
                             }
                         }
-                    ) {
-                        Text("AI 解析")
-                    }
-                    TextButton(
+                    )
+                    SelectionBubbleAction(
+                        icon = Icons.Filled.ContentCopy,
+                        label = "複製",
                         enabled = hasEditableSelection,
                         onClick = {
-                            if (!hasEditableSelection) return@TextButton
+                            if (!hasEditableSelection) return@SelectionBubbleAction
                             viewModel.copySelectionInPlace()
                         }
-                    ) {
-                        Text("複製")
-                    }
-                    TextButton(
+                    )
+                    SelectionBubbleAction(
+                        icon = Icons.Filled.DeleteOutline,
+                        label = "刪除",
                         enabled = hasEditableSelection,
+                        tint = if (hasEditableSelection) MaterialTheme.colorScheme.error else LocalContentColor.current,
                         onClick = {
-                            if (!hasEditableSelection) return@TextButton
+                            if (!hasEditableSelection) return@SelectionBubbleAction
                             viewModel.deleteSelection()
-                        },
-                        colors = ButtonDefaults.textButtonColors(
-                            contentColor = MaterialTheme.colorScheme.error
-                        )
-                    ) {
-                        Text("刪除")
-                    }
+                        }
+                    )
                     IconButton(
                         onClick = { viewModel.clearSelection() },
                         modifier = Modifier.size(24.dp)
@@ -689,17 +756,7 @@ internal fun Workspace(
                     } // 作用頁 item Box
                 } else {
                     // ===== 靜態頁：點了變作用頁，尺寸樣式與作用頁完全一致 =====
-                    val staticBitmapFlow = remember(index, renderEpoch) { pdfViewModel.getPageBitmap(index) }
-                    val staticBitmap by staticBitmapFlow.collectAsState()
-                    val staticStrokes by remember(index, documentUri) {
-                        db.strokeDao().getStrokesForPage(documentUri, index)
-                    }.collectAsState(initial = emptyList())
-                    val staticImages by remember(index, documentUri) {
-                        db.imageAnnotationDao().getForPage(documentUri, index)
-                    }.collectAsState(initial = emptyList())
-                    val staticTexts by remember(index, documentUri) {
-                        db.textAnnotationDao().getForPage(documentUri, index)
-                    }.collectAsState(initial = emptyList())
+                    // 數據沿用 item 頂的共用流（身份互換不斷線）
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -721,7 +778,7 @@ internal fun Workspace(
                             color = paperColor
                         ) {
                             Box(modifier = Modifier.fillMaxSize()) {
-                                val currentBmp = staticBitmap
+                                val currentBmp = pageBitmap
                                 if (currentBmp != null) {
                                     androidx.compose.foundation.Image(
                                         bitmap = currentBmp.asImageBitmap(),
@@ -730,12 +787,13 @@ internal fun Workspace(
                                         contentScale = androidx.compose.ui.layout.ContentScale.Fit
                                     )
                                 } else {
-                                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                        androidx.compose.material3.CircularProgressIndicator(
-                                            modifier = Modifier.size(24.dp),
-                                            strokeWidth = 2.dp
-                                        )
-                                    }
+                                    // 紙色佔位：bitmap 到之前不轉圈。
+                                    // 轉圈+白紙+後長出的墨水，正是「閃+鬼影」的體感來源。
+                                    Box(
+                                        Modifier
+                                            .fillMaxSize()
+                                            .background(paperColor)
+                                    )
                                 }
                                 val paperStyle by viewModel.paperStyle.collectAsState()
                                 if (paperStyle.background != PageBackground.BLANK) {
@@ -799,9 +857,9 @@ internal fun Workspace(
                                 }
                                 StaticPageOverlay(
                                     modifier = Modifier.fillMaxSize(),
-                                    strokes = staticStrokes,
-                                    imageAnnotations = staticImages,
-                                    textAnnotations = staticTexts,
+                                    strokes = pageStrokes,
+                                    imageAnnotations = pageImages,
+                                    textAnnotations = pageTexts,
                                     modelWidth = viewModel.modelWidth,
                                     modelHeight = viewModel.modelHeight
                                 )

@@ -37,6 +37,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
@@ -454,7 +455,8 @@ internal fun ColorChip(color: Color, isSelected: Boolean, onClick: () -> Unit) {
 internal fun StrokeWidthSlider(
     viewModel: EditorViewModel,
     hazeState: dev.chrisbanes.haze.HazeState,
-    isDarkTheme: Boolean
+    isDarkTheme: Boolean,
+    prismalBackdrop: com.styropyr0.prismal.PrismalBackdrop? = null
 ) {
     val strokeWidth by viewModel.strokeWidth.collectAsState()
     val activeTool by viewModel.selectedTool.collectAsState()
@@ -462,7 +464,7 @@ internal fun StrokeWidthSlider(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .glassPanel(hazeState, isDarkTheme, shape = RectangleShape, specular = false),
+            .smartGlass(hazeState, isDarkTheme, shape = RectangleShape, specular = false, prismal = prismalBackdrop),
         tonalElevation = 0.dp,
         color = Color.Transparent,
         contentColor = MaterialTheme.colorScheme.onSurface
@@ -494,6 +496,21 @@ internal fun StrokeWidthSlider(
     }
 }
 
+/** 對話框縮放淡入包裝：內容播 scale+fade（系統 scrim 維持瞬間，不閃） */
+@Composable
+internal fun AnimatedDialog(
+    visible: Boolean,
+    label: String = "DialogZoom",
+    dialog: @Composable () -> Unit
+) {
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn(tween(180)) + scaleIn(initialScale = 0.92f, animationSpec = tween(220)),
+        exit = fadeOut(tween(150)) + scaleOut(targetScale = 0.95f, animationSpec = tween(150)),
+        label = label
+    ) { dialog() }
+}
+
 @Composable
 internal fun EditorIconButton(
     onClick: () -> Unit,
@@ -521,6 +538,17 @@ internal fun EditorIconButton(
         animationSpec = tween(180),
         label = "EditorIconIndicatorAlpha"
     )
+    // 切換彈跳：被選中時圖標先歪 -12° 再彈回，比單純放大更活潑
+    val iconWiggle = remember { Animatable(0f) }
+    LaunchedEffect(isActive) {
+        if (isActive) {
+            iconWiggle.snapTo(-12f)
+            iconWiggle.animateTo(
+                0f,
+                spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMediumLow)
+            )
+        }
+    }
 
     Box(modifier = Modifier.size(size), contentAlignment = Alignment.Center) {
         IconButton(onClick = onClick, modifier = Modifier.size(size)) {
@@ -530,7 +558,10 @@ internal fun EditorIconButton(
                 tint = animatedTintColor,
                 modifier = Modifier
                     .offset(y = iconOffsetY)
-                    .graphicsLayer { scaleX = iconScale; scaleY = iconScale }
+                    .graphicsLayer {
+                        scaleX = iconScale; scaleY = iconScale
+                        rotationZ = iconWiggle.value
+                    }
             )
         }
         Box(

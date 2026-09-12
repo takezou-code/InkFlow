@@ -6,8 +6,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
@@ -17,30 +16,44 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.ImageBitmapConfig
+import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.graphicsLayer
-import kotlin.math.cos
+import androidx.compose.ui.unit.IntSize
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sin
 import kotlin.random.Random
 
-private data class BubbleState(
-    var x: Float,
-    var y: Float,
-    var radiusFrac: Float,
-    var velocityX: Float,
-    var velocityY: Float,
-    var wobblePhase: Float,
-    val wobbleSpeed: Float,
-    val wobbleAmount: Float,
-    val baseColor: Color,
-    val glowIntensity: Float,
-    val riseSpeed: Float,
-    val wobblePhaseOffset: Float
+/**
+ * 泡泡規格：位置是時間 t（秒）的純函數，不存任何可變狀態。
+ * x 走正弦漂移，y 等速上升到底部回繞（回繞那一下跟舊版回收同效果）。
+ */
+private data class OrbSpec(
+    val xAmp: Float,
+    val xPeriod: Float,
+    val xPhase: Float,
+    val yRate: Float,
+    val yOffset: Float,
+    val radiusFrac: Float,
+    val pulseSpeed: Float,
+    val pulsePhase: Float,
+    val baseColor: Color
 ) {
-    fun currentX(w: Float): Float = (x + sin(wobblePhase) * wobbleAmount * 0.5f) * w
-    fun currentY(h: Float): Float = y * h
-    fun currentRadius(w: Float, h: Float): Float = min(w, h) * radiusFrac * (1f + 0.18f * sin(wobblePhase))
+    fun currentX(t: Float, w: Float): Float =
+        (0.5f + xAmp * sin(6.2832f * t / xPeriod + xPhase)) * w
+
+    fun currentY(t: Float, h: Float): Float {
+        // 回收區收緊：之前上下各 0.15  invisible，一次少兩成泡泡在螢幕外
+        val span = 1.1f
+        val raw = (t * yRate + yOffset) % span
+        return (1.05f - raw) * h
+    }
+
+    fun currentRadius(t: Float, w: Float, h: Float): Float =
+        min(w, h) * radiusFrac * (1f + 0.18f * sin(t * pulseSpeed + pulsePhase))
 }
 
 enum class BubbleRegion {
@@ -57,7 +70,7 @@ fun AuroraBackground(
     modifier: Modifier = Modifier,
     orbCount: Int = 5,
     bubbleCount: Int? = null,
-    bubbleRegion: BubbleRegion = BubbleRegion.Full
+    bubbleRegion: BubbleRegion = BubbleRegion.Full,
 ) {
     val effectiveCount = bubbleCount ?: orbCount
     // 高級感配方：小而多、柔而慢。alpha 由繪製 stops 控制，這裡存純色。
@@ -87,69 +100,56 @@ fun AuroraBackground(
     val radiusMin = 0.045f
     val radiusRange = 0.075f
 
-    val bubbleStates = remember(effectiveCount, isDarkTheme) {
-        mutableStateOf(
-            List(effectiveCount) { i ->
-                val rnd = Random(0x5A5A5A5AL + i)
-                BubbleState(
-                    x = rnd.nextFloat() * 0.8f + 0.1f,
-                    y = yBase + rnd.nextFloat() * yRange,
-                    radiusFrac = radiusMin + rnd.nextFloat() * radiusRange,
-                    velocityX = (rnd.nextFloat() - 0.5f) * 0.035f,
-                    velocityY = -(0.018f + rnd.nextFloat() * 0.028f),
-                    wobblePhase = rnd.nextFloat() * 6.28f,
-                    wobbleSpeed = 0.4f + rnd.nextFloat() * 0.9f,
-                    wobbleAmount = 0.012f + rnd.nextFloat() * 0.016f,
-                    baseColor = palette[rnd.nextInt(palette.size)],
-                    glowIntensity = 0.18f + rnd.nextFloat() * 0.22f,
-                    riseSpeed = 0.012f + rnd.nextFloat() * 0.016f,
-                    wobblePhaseOffset = rnd.nextFloat() * 6.28f
-                )
-            }
-        )
+    // 規格只算一次：普通 List，不是 State，永不觸發重組
+    val orbs = remember(effectiveCount, isDarkTheme) {
+        List(effectiveCount) { i ->
+            val rnd = Random(0x5A5A5A5AL + i)
+            OrbSpec(
+                xAmp = 0.10f + rnd.nextFloat() * 0.28f,
+                xPeriod = 26f + rnd.nextFloat() * 34f,
+                xPhase = rnd.nextFloat() * 6.28f,
+                yRate = (0.012f + rnd.nextFloat() * 0.016f) * (1.1f / 1.3f),
+                yOffset = rnd.nextFloat() * 1.3f,
+                radiusFrac = radiusMin + rnd.nextFloat() * radiusRange,
+                pulseSpeed = 0.4f + rnd.nextFloat() * 0.9f,
+                pulsePhase = rnd.nextFloat() * 6.28f,
+                baseColor = palette[rnd.nextInt(palette.size)]
+            )
+        }
     }
 
-    var time by remember { mutableFloatStateOf(0f) }
-
-    LaunchedEffect(Unit) {
-        var lastFrameNanos = 0L
-        while (true) {
-            withFrameNanos { now ->
-                if (lastFrameNanos == 0L) lastFrameNanos = now
-                val dt = ((now - lastFrameNanos) / 1_000_000_000f).coerceAtMost(0.05f)
-                lastFrameNanos = now
-                time += dt
-
-                bubbleStates.value = bubbleStates.value.map { bubble ->
-                    val wobbleX = cos(time * bubble.wobbleSpeed * 0.7f + bubble.wobblePhaseOffset) * bubble.wobbleAmount * 0.5f
-                    val wobbleY = sin(time * bubble.wobbleSpeed * 1.3f + bubble.wobblePhaseOffset) * bubble.wobbleAmount * 0.3f
-
-                    var newX = bubble.x + bubble.velocityX * dt + wobbleX * dt * 2f
-                    var newY = bubble.y + bubble.velocityY * dt + wobbleY * dt
-                    var velX = bubble.velocityX
-                    var velY = bubble.velocityY
-
-                    if (newX < 0.06f || newX > 0.94f) {
-                        velX = -velX * 0.7f
-                        newX = newX.coerceIn(0.06f, 0.94f)
-                    }
-                    // 頂部回收到底部：速度一起重置為上升，否則泡泡會卡在螢幕外永遠消失
-                    if (newY < 0.08f || newY > 1.3f) {
-                        newX = 0.08f + Random.nextFloat() * 0.84f
-                        newY = 1.12f + Random.nextFloat() * 0.1f
-                        velX = (Random.nextFloat() - 0.5f) * 0.035f
-                        velY = -(0.018f + Random.nextFloat() * 0.028f)
-                    }
-
-                    bubble.copy(
-                        x = newX,
-                        y = newY,
-                        velocityX = velX,
-                        velocityY = velY,
-                        wobblePhase = bubble.wobblePhase + bubble.wobbleSpeed * dt
-                    )
-                }
+    // 45 幀上限：delay 驅動（不對齊 vsync、不喚醒每一幀，最省電），
+    // 泡泡慢動作 45fps 綽綽有餘，GPU 少畫七成。t 取真實秒數，速度不變。
+    // 折射噪點圖：烘一次，每幀一張 drawImage 平鋪（FilterQuality.None 保銳利）。
+    // 肉眼幾乎看不見，但透鏡掃過時噪點會彎——折射現形的關鍵。靜態，不跑不動。
+    val grain = remember(isDarkTheme) {
+        // 512 配 1px 點：屏上約 6px 細沙（256 配 2px 會糊成 25px磚 veil 整片，錯過一次）
+        val s = 512
+        val img = ImageBitmap(s, s, ImageBitmapConfig.Argb8888)
+        val c = androidx.compose.ui.graphics.Canvas(img)
+        val rnd = Random(0x6AA17E55L)
+        val paint = Paint()
+        val dot = if (isDarkTheme) 1f else 0f
+        var y = 0
+        while (y < s) {
+            var x = 0
+            while (x < s) {
+                val a = rnd.nextFloat() * 0.045f
+                paint.color = Color(dot, dot, dot, alpha = a)
+                c.drawRect(x.toFloat(), y.toFloat(), x + 1f, y + 1f, paint)
+                x += 1
             }
+            y += 1
+        }
+        img
+    }
+
+    val tick = remember { mutableLongStateOf(0L) }
+    val t0 = remember { System.nanoTime() }
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(22)
+            tick.longValue += 1
         }
     }
 
@@ -161,10 +161,17 @@ fun AuroraBackground(
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
-                    compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen
-                    alpha = 0.99f
+                    // 離屏層只在暗色保留（Plus 已拿掉，亮色不需要多一層 FBO）
+                    if (isDarkTheme) {
+                        compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen
+                        alpha = 0.99f
+                    }
                 }
         ) {
+            // 讀 tick 只排重繪不重組；t 取真實秒數（tick 降頻後位置不受影響）
+            tick.longValue
+            val t = (System.nanoTime() - t0) / 1_000_000_000f
+
             // 深空底：縱向微漸層，避免純平一塊死黑
             if (isDarkTheme) {
                 drawRect(
@@ -188,16 +195,25 @@ fun AuroraBackground(
                 )
             }
 
-            val sortedBubbles = bubbleStates.value.sortedByDescending { it.y }
+            // 噪點平鋪（折射的牙齒）：一張 drawImage，銳利不過濾
+            drawImage(
+                image = grain,
+                dstSize = IntSize(size.width.toInt().coerceAtLeast(1), size.height.toInt().coerceAtLeast(1)),
+                filterQuality = FilterQuality.None
+            )
 
-            val orbBlend = if (isDarkTheme) BlendMode.Plus else BlendMode.SrcOver
+            // n ≤ 12，這一個小排序是每幀唯一的配置，可接受
+            val sortedOrbs = orbs.sortedByDescending { it.currentY(t, h) }
+
+            // 暗色 Plus 已拿掉：SrcOver 走硬體快路，視覺差異極小
+            val orbBlend = BlendMode.SrcOver
             // 柔光斑：三段衰減，中心不再 1.0 全亮
             val coreAlpha = if (isDarkTheme) 0.50f else 0.34f
             val midAlpha = if (isDarkTheme) 0.22f else 0.14f
-            sortedBubbles.forEach { bubble ->
-                val radius = bubble.currentRadius(w, h)
-                val centerX = bubble.currentX(w)
-                val centerY = bubble.currentY(h)
+            sortedOrbs.forEach { bubble ->
+                val radius = bubble.currentRadius(t, w, h)
+                val centerX = bubble.currentX(t, w)
+                val centerY = bubble.currentY(t, h)
                 val orbCenter = Offset(centerX, centerY)
 
                 drawCircle(

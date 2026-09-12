@@ -19,6 +19,9 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        maven(url = "https://jitpack.io") {
+            content { includeGroup("com.github.styropyr0") }
+        }
     }
 }
 

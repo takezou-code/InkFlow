@@ -29,10 +29,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.awaitDragOrCancellation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -215,16 +212,20 @@ fun InkCanvas(
     val paperStyle by viewModel.paperStyle.collectAsState()
     // 雙指縮放進行中：各畫筆迴圈見此即棄筆（由 Workspace 仲裁器寫入）
     val pinchActive by viewModel.pinchActive.collectAsState()
-    val lassoFrameTransition = rememberInfiniteTransition(label = "lasso-frame")
-    val lassoDashPhase by lassoFrameTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 20f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 900, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "lasso-dash-phase"
-    )
+    // 套索虛線動畫按需組成：無選取時不跑 choreographer，省常駐喚醒
+    val needLassoAnim = activeTool == Tool.LASSO && selectedStrokePreview.isNotEmpty()
+    val lassoDashPhase = if (needLassoAnim) {
+        val lassoFrameTransition = rememberInfiniteTransition(label = "lasso-frame")
+        lassoFrameTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = 20f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 900, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart
+            ),
+            label = "lasso-dash-phase"
+        ).value
+    } else 0f
 
     val density = LocalDensity.current
     val context = LocalContext.current
@@ -240,10 +241,6 @@ fun InkCanvas(
     // Shape live-preview anchors (canvas pixel space)
     var activeShapeStart by remember { mutableStateOf<Offset?>(null) }
     var activeShapeEnd   by remember { mutableStateOf<Offset?>(null) }
-
-    // Stamp placement dialog
-    var pendingTextPosition by remember { mutableStateOf<Offset?>(null) }
-    var pendingIsStamp      by remember { mutableStateOf(false) }
 
     // Inline text editor (replaces the 新增文字 dialog): NEW at a canvas pos, or EDIT an existing id
     var inlineTextNewPos by remember { mutableStateOf<Offset?>(null) }
@@ -290,9 +287,13 @@ fun InkCanvas(
     val selectedTextIdRef  = rememberUpdatedState(selectedTextAnnotationId)
 
     // Image annotation interactive selection / move / resize state
+    // Resize is uniform (aspect locked): a scale about the opposite-corner anchor.
+    // M4: tap-to-place anchor in model space (set on empty-tap, consumed by the import callback).
+    var pendingImageAnchorModel by remember { mutableStateOf<Offset?>(null) }
     var selectedImageAnnotationId by remember { mutableStateOf<String?>(null) }
     var imageMovePreview   by remember { mutableStateOf(Offset.Zero) }
-    var imageResizePreview by remember { mutableStateOf(Offset.Zero) }
+    var imageResizeScale   by remember { mutableFloatStateOf(1f) }
+    var imageResizeAnchor  by remember { mutableStateOf<Offset?>(null) }
 
     // Latest snapshot of image annotations for use inside pointer-input coroutines
     val imageAnnotationsRef    = rememberUpdatedState(imageAnnotations)
@@ -315,41 +316,42 @@ fun InkCanvas(
         }
     }
 
-    // Cache freehand paths for committed strokes to avoid rebuilding geometry on every cache refresh.
-    val committedPathCache = remember { mutableStateMapOf<String, CachedStrokePath>() }
-    LaunchedEffect(committedStrokes) {
-        val freehandIds = committedStrokes.asSequence()
-            .filter { it.stroke.shapeType == null }
-            .map { it.stroke.id }
-            .toHashSet()
-        committedPathCache.keys
-            .filter { it !in freehandIds }
-            .forEach { committedPathCache.remove(it) }
-
-        committedStrokes.forEach { swp ->
-            if (swp.stroke.shapeType != null) return@forEach
-            val cached = committedPathCache[swp.stroke.id]
-            if (!swp.matches(cached)) {
-                committedPathCache[swp.stroke.id] = CachedStrokePath(
-                    path = swp.points.toComposePath(),
-                    pointCount = swp.points.size,
-                    boundsLeft = swp.stroke.boundsLeft,
-                    boundsTop = swp.stroke.boundsTop,
-                    boundsRight = swp.stroke.boundsRight,
-                    boundsBottom = swp.stroke.boundsBottom
-                )
-            }
-        }
-    }
+    // 筆跡幾何快取：普通 Map，只在 drawWithCache 建構區讀寫。
+    // 不用 State 容器 → 提交只觸發一次重建（之前 StateMap 寫入造成第二次失效）。
+    val committedPathCache = remember { mutableMapOf<String, CachedStrokePath>() }
 
     // Image bitmap cache: uri-string → decoded Bitmap (null = load failed / placeholder)
     val loadedImages = remember { mutableStateMapOf<String, android.graphics.Bitmap?>() }
+    // 顯示用 ImageBitmap：載入時轉一次，繪製每幀不再 asImageBitmap() 包裝
+    val loadedImageBitmaps = remember { mutableStateMapOf<String, ImageBitmap?>() }
+    // 文字共用 Paint + 分行快取：繪製時只改字號顏色，不再 new
+    val textPaint = remember {
+        android.graphics.Paint().apply {
+            isAntiAlias = true
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+        }
+    }
+    val textLines = remember(textAnnotations) {
+        textAnnotations.associate { it.id to it.text.split("\n") }
+    }
+    // 螢光筆作用中預覽共用 Paint：每幀只換色，不再 new
+    val hlPreviewPaint = remember {
+        Paint().apply {
+            style = PaintingStyle.Fill
+            blendMode = BlendMode.Multiply
+        }
+    }
+    // 靜態虛線只建一次（形狀預覽用；選取框已統一走液態玻璃共用繪製）
+    val dashPreview = remember { PathEffect.dashPathEffect(floatArrayOf(10f, 10f)) }
 
     // Image picker launcher — gallery opens on empty-canvas tap (IMAGE tool)
     val imagePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 50)
     ) { uris ->
-        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        if (uris.isEmpty()) {
+            pendingImageAnchorModel = null
+            return@rememberLauncherForActivityResult
+        }
         scope.launch {
             data class ImportedImage(val localUriString: String, val imagePixelWidth: Int, val imagePixelHeight: Int)
 
@@ -381,13 +383,17 @@ fun InkCanvas(
             }
 
             var lastInsertedImageId: String? = null
+            // M4: first image lands centered on the tap anchor (if any); the rest keep legacy placement.
+            val tapAnchor = pendingImageAnchorModel
+            pendingImageAnchorModel = null
             if (imported.size == 1) {
                 val item = imported.first()
                 lastInsertedImageId = viewModel.placeImageAnnotationOnPage(
                     uri = item.localUriString,
                     targetPageIndex = viewModel.pageIndex.value,
                     imagePixelWidth = item.imagePixelWidth,
-                    imagePixelHeight = item.imagePixelHeight
+                    imagePixelHeight = item.imagePixelHeight,
+                    anchorModel = tapAnchor
                 )
             } else {
                 val currentPageIndex = viewModel.pageIndex.value
@@ -398,7 +404,8 @@ fun InkCanvas(
                             uri = item.localUriString,
                             targetPageIndex = currentPageIndex,
                             imagePixelWidth = item.imagePixelWidth,
-                            imagePixelHeight = item.imagePixelHeight
+                            imagePixelHeight = item.imagePixelHeight,
+                            anchorModel = tapAnchor
                         )
                     } else {
                         val previousPageCount = pdfViewModel.pageCount.value
@@ -427,7 +434,8 @@ fun InkCanvas(
             lastInsertedImageId?.let { insertedId ->
                 selectedImageAnnotationId = insertedId
                 imageMovePreview = Offset.Zero
-                imageResizePreview = Offset.Zero
+                imageResizeScale = 1f
+                imageResizeAnchor = null
             }
         }
         // Stay in IMAGE tool so the user can immediately adjust the placed image
@@ -444,7 +452,8 @@ fun InkCanvas(
         if (activeTool != Tool.IMAGE) {
             selectedImageAnnotationId = null
             imageMovePreview = Offset.Zero
-            imageResizePreview = Offset.Zero
+            imageResizeScale = 1f
+            imageResizeAnchor = null
         }
     }
 
@@ -455,52 +464,16 @@ fun InkCanvas(
                 loadedImages[ann.uri] = null
                 scope.launch(Dispatchers.IO) {
                     val bmp = try {
-                        context.contentResolver.openInputStream(Uri.parse(ann.uri))?.use { stream ->
-                            BitmapFactory.decodeStream(stream)
-                        }
+                        decodeBoundedBitmap(context, Uri.parse(ann.uri), maxSidePx = 2048)
                     } catch (_: Exception) { null }
-                    withContext(Dispatchers.Main) { loadedImages[ann.uri] = bmp }
+                    val frame = bmp?.asImageBitmap()
+                    withContext(Dispatchers.Main) {
+                        loadedImages[ann.uri] = bmp
+                        loadedImageBitmaps[ann.uri] = frame
+                    }
                 }
             }
         }
-    }
-
-    // ---- Dialogs ----
-
-    val pendingPos = pendingTextPosition
-
-    if (pendingPos != null && pendingIsStamp) {
-        val stamps = listOf("✓", "✗", "⭐", "❤", "★", "!", "?", "→")
-        AlertDialog(
-            onDismissRequest = { pendingTextPosition = null; pendingIsStamp = false },
-            title = { Text("選擇印章") },
-            text = {
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    stamps.forEach { stamp ->
-                        TextButton(onClick = {
-                            viewModel.addTextAnnotation(
-                                text   = stamp,
-                                canvasX = pendingPos.x,
-                                canvasY = pendingPos.y,
-                                fontSize = 48f,
-                                color  = selectedColor,
-                                isStamp = true
-                            )
-                            pendingTextPosition = null
-                            pendingIsStamp = false
-                        }) { Text(stamp, fontSize = 24.sp) }
-                    }
-                }
-            },
-            confirmButton = {},
-            dismissButton = {
-                TextButton(onClick = { pendingTextPosition = null; pendingIsStamp = false }) {
-                    Text("取消")
-                }
-            }
-        )
     }
 
     // Raw MotionEvent metrics captured via pointerInteropFilter (before Compose pipeline).
@@ -517,6 +490,8 @@ fun InkCanvas(
 
     // ---- Modifier chain ----
 
+    // 手勢凍結槽：draw 階段讀寫普通物件（非 State），不觸發重組
+    val pinchReuse = remember { object { var bmp: ImageBitmap? = null } }
     val drawModifier = Modifier.fillMaxSize()
         .onSizeChanged { size ->
             canvasPixelSize = Size(size.width.toFloat(), size.height.toFloat())
@@ -891,14 +866,6 @@ fun InkCanvas(
                     return@awaitEachGesture
                 }
 
-                // Stamp: single tap to place
-                if (activeTool == Tool.STAMP) {
-                    down.consume()
-                    pendingIsStamp = true
-                    pendingTextPosition = startOffset
-                    return@awaitEachGesture
-                }
-
                 // Image tool: selection, move, resize, or tap-to-pick
                 if (activeTool == Tool.IMAGE) {
                     val cs = canvasPixelSizeState.value
@@ -909,43 +876,55 @@ fun InkCanvas(
                     val selAnn = if (selId != null) annotations.firstOrNull { it.id == selId } else null
 
                     if (selAnn != null) {
-                        // Effective image rect in canvas space (committed position + in-flight move)
-                        val imgRect = imageAnnotationRect(selAnn, sx, sy).let { r ->
-                            Rect(r.left + imageMovePreview.x, r.top + imageMovePreview.y,
-                                 r.right + imageMovePreview.x, r.bottom + imageMovePreview.y)
-                        }
-                        // Effective bottom-right corner (includes any in-flight resize)
-                        val effectiveBR = Offset(
-                            imgRect.right  + imageResizePreview.x,
-                            imgRect.bottom + imageResizePreview.y
+                        // Effective image rect in canvas space (committed + in-flight move/resize)
+                        val imgRect = effectiveImageRect(
+                            imageAnnotationRect(selAnn, sx, sy),
+                            imageMovePreview, imageResizeAnchor, imageResizeScale
                         )
-                        val hrImg = imageResizeHandleRect(effectiveBR)
+                        // Four corner handles: uniform resize about the opposite corner
+                        val corners = listOf(
+                            imgRect.topLeft, imgRect.topRight,
+                            imgRect.bottomLeft, imgRect.bottomRight
+                        )
+                        val hitCorner = corners.firstOrNull { imageResizeHandleRect(it).contains(startOffset) }
 
-                        // — Resize: tap on the bottom-right handle —
-                        if (hrImg.contains(startOffset)) {
+                        // — Resize: tap on any corner handle (aspect locked) —
+                        if (hitCorner != null) {
                             down.consume()
+                            val anchor = when (hitCorner) {
+                                imgRect.topLeft -> imgRect.bottomRight
+                                imgRect.topRight -> imgRect.bottomLeft
+                                imgRect.bottomLeft -> imgRect.topRight
+                                else -> imgRect.topLeft
+                            }
+                            val grabVec = startOffset - anchor
+                            val grabLenSq = grabVec.getDistanceSquared().coerceAtLeast(1f)
+                            imageResizeAnchor = anchor
+                            imageResizeScale = 1f
+                            fun commitScaled() {
+                                val sc = StrokeTransformUtils.clampUniformScale(imageResizeScale)
+                                val r = scaleRectAbout(imageAnnotationRect(selAnn, sx, sy), anchor, sc)
+                                viewModel.commitImageAnnotationResize(
+                                    selAnn.id, r.left / sx, r.top / sy, r.width / sx, r.height / sy
+                                )
+                                imageResizeScale = 1f
+                                imageResizeAnchor = null
+                                activePathVersion++
+                            }
                             var drag = awaitDragOrCancellation(down.id)
                             while (drag != null && drag.pressed) {
                                 if (pinchActive) {
-                                    val newModelW = ((selAnn.modelWidth * sx + imageResizePreview.x).coerceAtLeast(30f)) / sx
-                                    val newModelH = ((selAnn.modelHeight * sy + imageResizePreview.y).coerceAtLeast(30f)) / sy
-                                    viewModel.commitImageAnnotationResize(selAnn.id, selAnn.modelX, selAnn.modelY, newModelW, newModelH)
-                                    imageResizePreview = Offset.Zero
-                                    activePathVersion++
+                                    commitScaled()
                                     return@awaitEachGesture
                                 }
-                                // Direct mapping: handle follows the finger
-                                imageResizePreview += drag.positionChange()
+                                // Project finger travel onto the grab vector → uniform scale
+                                val fingerVec = drag.position - anchor
+                                imageResizeScale = (fingerVec.x * grabVec.x + fingerVec.y * grabVec.y) / grabLenSq
                                 activePathVersion++
                                 drag.consume()
                                 drag = awaitDragOrCancellation(drag.id)
                             }
-                            // Commit: convert effective canvas size back to model space
-                            val newModelW = ((selAnn.modelWidth  * sx + imageResizePreview.x).coerceAtLeast(30f)) / sx
-                            val newModelH = ((selAnn.modelHeight * sy + imageResizePreview.y).coerceAtLeast(30f)) / sy
-                            viewModel.commitImageAnnotationResize(selAnn.id, selAnn.modelX, selAnn.modelY, newModelW, newModelH)
-                            imageResizePreview = Offset.Zero
-                            activePathVersion++
+                            commitScaled()
                             return@awaitEachGesture
                         }
 
@@ -982,14 +961,20 @@ fun InkCanvas(
                     if (hitAnn != null) {
                         selectedImageAnnotationId = hitAnn.id
                         imageMovePreview = Offset.Zero
-                        imageResizePreview = Offset.Zero
+                        imageResizeScale = 1f
+                        imageResizeAnchor = null
                         down.consume()
                         activePathVersion++
                         return@awaitEachGesture
                     }
 
-                    // Tap on empty canvas: open gallery picker
+                    // Tap on empty canvas: remember the tap point (model space) so the
+                    // imported image lands centered on it, then open gallery picker
                     down.consume()
+                    pendingImageAnchorModel = Offset(
+                        startOffset.x / sx.coerceAtLeast(1f),
+                        startOffset.y / sy.coerceAtLeast(1f)
+                    )
                     imagePickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                     return@awaitEachGesture
                 }
@@ -1376,22 +1361,60 @@ fun InkCanvas(
 
             val bmpWidth = size.width.toInt().coerceAtLeast(1)
             val bmpHeight = size.height.toInt().coerceAtLeast(1)
-            val cachedImage = ImageBitmap(bmpWidth, bmpHeight, ImageBitmapConfig.Argb8888)
-            val cacheCanvas = androidx.compose.ui.graphics.Canvas(cachedImage)
-            
-            cacheCanvas.save()
-            cacheCanvas.scale(sx, sy)
-            strokes.forEach { swp ->
-                if (swp.stroke.id in previewIds) return@forEach
-                if (swp.stroke.shapeType != null) {
-                    drawShapeOnCanvas(cacheCanvas, swp.stroke, swp.points)
-                } else {
-                    val path = committedPathCache[swp.stroke.id]?.path ?: swp.points.toComposePath()
-                    drawPathOnCanvas(cacheCanvas, path,
-                        Color(swp.stroke.color), swp.stroke.strokeWidth, swp.stroke.isHighlighter)
+            // 筆跡快取封頂：縮放時畫布可達上萬 px，原尺寸建圖會超過
+            // RecordingCanvas 上限直接閃退（321MB 事件），且每幀重建巨圖就是卡頓主因；
+            // 改固定上限，繪製時再放大回全尺寸（GPU 做，免費）
+            val cacheScale = (2048f / maxOf(bmpWidth, bmpHeight)).coerceAtMost(1f)
+            val cacheW = (bmpWidth * cacheScale).toInt().coerceAtLeast(1)
+            val cacheH = (bmpHeight * cacheScale).toInt().coerceAtLeast(1)
+            // P1 手勢凍結：pinchActive 時沿用上次的快取圖（不配置不重畫），
+            // 讀 pinchActive 會訂閱——放開切換時失效重建，剛好是銳利化的時機。
+            // 注意：手勢中若有新墨提交（理論上不會，門衛會棄筆），放開後自然重建。
+            val frozen = pinchActive && pinchReuse.bmp != null
+            val cachedImage = if (frozen) {
+                pinchReuse.bmp!!
+            } else {
+                ImageBitmap(cacheW, cacheH, ImageBitmapConfig.Argb8888).also {
+                    pinchReuse.bmp = it
                 }
             }
-            cacheCanvas.restore()
+            val cacheCanvas = androidx.compose.ui.graphics.Canvas(cachedImage)
+
+            // 凍結中連畫都跳過：整塊重建是捏合卡頓的最大頭
+            if (!frozen) {
+                cacheCanvas.save()
+                cacheCanvas.scale(sx * cacheScale, sy * cacheScale)
+                // 淘汰已刪筆跡（普通 Map 操作，不寫 State、不二次失效）
+                val keepIds = HashSet<String>(strokes.size + 16)
+                strokes.forEach { if (it.stroke.shapeType == null) keepIds.add(it.stroke.id) }
+                committedPathCache.keys.removeAll { it !in keepIds }
+                strokes.forEach { swp ->
+                    if (swp.stroke.id in previewIds) return@forEach
+                    if (swp.stroke.shapeType != null) {
+                        drawShapeOnCanvas(cacheCanvas, swp.stroke, swp.points)
+                    } else {
+                        // 增量建幾何：命中直接重用，只建新增/變更的筆
+                        val cached = committedPathCache[swp.stroke.id]
+                        val path = if (cached != null && swp.matches(cached)) {
+                            cached.path
+                        } else {
+                            swp.points.toComposePath().also {
+                                committedPathCache[swp.stroke.id] = CachedStrokePath(
+                                    path = it,
+                                    pointCount = swp.points.size,
+                                    boundsLeft = swp.stroke.boundsLeft,
+                                    boundsTop = swp.stroke.boundsTop,
+                                    boundsRight = swp.stroke.boundsRight,
+                                    boundsBottom = swp.stroke.boundsBottom
+                                )
+                            }
+                        }
+                        drawPathOnCanvas(cacheCanvas, path,
+                            Color(swp.stroke.color), swp.stroke.strokeWidth, swp.stroke.isHighlighter)
+                    }
+                }
+                cacheCanvas.restore()
+            }
 
             onDrawBehind {
                 val currentPaperStyle = paperStyle
@@ -1452,7 +1475,7 @@ fun InkCanvas(
 
             // Image annotations — drawn BELOW strokes (above PDF layer which is a separate Composable)
             currentImageAnns.forEach { ann ->
-                val bmp = loadedImages[ann.uri]
+                val bmp = loadedImageBitmaps[ann.uri]
                 if (bmp != null) {
                     val isSelectedInImageTool = ann.id == selectedImageAnnotationId && activeTool == Tool.IMAGE
                     val isSelectedInSelectionTool = ann.id in selectedImageAnnotationIds && activeTool == Tool.LASSO
@@ -1468,18 +1491,25 @@ fun InkCanvas(
                         else -> {
                             val dx = if (isSelectedInImageTool) imageMovePreview.x else 0f
                             val dy = if (isSelectedInImageTool) imageMovePreview.y else 0f
-                            val dw = if (isSelectedInImageTool) imageResizePreview.x else 0f
-                            val dh = if (isSelectedInImageTool) imageResizePreview.y else 0f
-                            Rect(
+                            val base = Rect(
                                 left = ann.modelX * sx + dx,
                                 top = ann.modelY * sy + dy,
-                                right = ann.modelX * sx + dx + (ann.modelWidth * sx + dw).coerceAtLeast(2f),
-                                bottom = ann.modelY * sy + dy + (ann.modelHeight * sy + dh).coerceAtLeast(2f)
+                                right = ann.modelX * sx + dx + ann.modelWidth * sx,
+                                bottom = ann.modelY * sy + dy + ann.modelHeight * sy
+                            )
+                            val eff = if (isSelectedInImageTool)
+                                effectiveImageRect(base, Offset.Zero, imageResizeAnchor, imageResizeScale)
+                            else base
+                            Rect(
+                                left = eff.left,
+                                top = eff.top,
+                                right = eff.left + eff.width.coerceAtLeast(2f),
+                                bottom = eff.top + eff.height.coerceAtLeast(2f)
                             )
                         }
                     }
                     drawImage(
-                        image     = bmp.asImageBitmap(),
+                        image     = bmp,
                         dstOffset = IntOffset(canvasRect.left.toInt(), canvasRect.top.toInt()),
                         dstSize   = IntSize(canvasRect.width.toInt().coerceAtLeast(2), canvasRect.height.toInt().coerceAtLeast(2))
                     )
@@ -1487,8 +1517,14 @@ fun InkCanvas(
             }
 
             // Committed strokes from DB.
-            // Play the cached strokes layer!
-            drawImage(cachedImage)
+            // Play the cached strokes layer! 快取是封頂小圖，放大回全畫布
+            drawImage(
+                image = cachedImage,
+                dstSize = IntSize(
+                    size.width.toInt().coerceAtLeast(1),
+                    size.height.toInt().coerceAtLeast(1)
+                )
+            )
 
             val preview = commitPreview
             // While a commitPreview is active (DB write in flight after a move), draw the preview layer separately.
@@ -1559,33 +1595,15 @@ fun InkCanvas(
                     imageAnnotations.firstOrNull { it.id == selImgId } else null
                 if (selImgAnn != null) {
                     val r = imageAnnotationRect(selImgAnn, sx, sy)
-                    val imgSelRect = Rect(
-                        r.left  + imageMovePreview.x,
-                        r.top   + imageMovePreview.y,
-                        r.right  + imageMovePreview.x + imageResizePreview.x,
-                        r.bottom + imageMovePreview.y + imageResizePreview.y
+                    val imgSelRect = effectiveImageRect(
+                        r, imageMovePreview, imageResizeAnchor, imageResizeScale
                     )
-                    // Dashed border
-                    drawRect(
-                        color   = BrandIndigo,
-                        topLeft = Offset(imgSelRect.left, imgSelRect.top),
-                        size    = Size(imgSelRect.width, imgSelRect.height),
-                        style   = Stroke(width = 2f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 6f)))
-                    )
-                    // Resize handle at bottom-right
-                    val hr = imageResizeHandleRect(Offset(imgSelRect.right, imgSelRect.bottom))
-                    drawRect(
-                        color   = BrandIndigo,
-                        topLeft = Offset(hr.left, hr.top),
-                        size    = Size(hr.width, hr.height)
-                    )
-                    // Diagonal arrow inside handle
-                    drawLine(
-                        color       = Color.White,
-                        start       = Offset(hr.left + 5f, hr.bottom - 5f),
-                        end         = Offset(hr.right - 5f, hr.top + 5f),
-                        strokeWidth = 2f,
-                        cap         = StrokeCap.Round
+                    drawLiquidGlassSelectionFrame(
+                        rect = imgSelRect,
+                        handleCenters = listOf(
+                            imgSelRect.topLeft, imgSelRect.topRight,
+                            imgSelRect.bottomLeft, imgSelRect.bottomRight
+                        )
                     )
                 }
 
@@ -1595,20 +1613,15 @@ fun InkCanvas(
                         val isSelected = ann.id == selectedTextAnnotationId
                         val dx = if (isSelected) textMoveDelta.x else 0f
                         val dy = if (isSelected) textMoveDelta.y else 0f
-                        val effectiveFontSize = if (isSelected)
+                        textPaint.textSize = if (isSelected)
                             (ann.fontSize + textFontSizeDelta).coerceAtLeast(4f) * sy
                         else ann.fontSize * sy
-                        val paint = android.graphics.Paint().apply {
-                            textSize    = effectiveFontSize
-                            color       = ann.colorArgb
-                            isAntiAlias = true
-                            typeface    = android.graphics.Typeface.DEFAULT_BOLD
-                        }
+                        textPaint.color = ann.colorArgb
                         // Multiline: modelY is the first-line baseline (matches PDF export).
-                        val lineHeight = with(paint.fontMetrics) { -ascent + descent + leading }
-                        ann.text.split("\n").forEachIndexed { i, line ->
+                        val lineHeight = with(textPaint.fontMetrics) { -ascent + descent + leading }
+                        textLines[ann.id].orEmpty().forEachIndexed { i, line ->
                             composeCanvas.nativeCanvas.drawText(
-                                line, ann.modelX * sx + dx, ann.modelY * sy + dy + i * lineHeight, paint
+                                line, ann.modelX * sx + dx, ann.modelY * sy + dy + i * lineHeight, textPaint
                             )
                         }
                     }
@@ -1621,30 +1634,9 @@ fun InkCanvas(
                 if (selTextAnn != null) {
                     val fsDelta   = textFontSizeDelta
                     val textRect  = textAnnotationHitRect(selTextAnn, sx, sy, fsDelta).translate(textMoveDelta)
-                    // Dashed selection border
-                    drawRect(
-                        color    = BrandIndigo,
-                        topLeft  = Offset(textRect.left, textRect.top),
-                        size     = Size(textRect.width, textRect.height),
-                        style    = Stroke(
-                            width      = 1.5.dp.toPx(),
-                            pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 5f))
-                        )
-                    )
-                    // Solid resize handle at bottom-right corner
-                    val hr = textResizeHandleRect(textRect)
-                    drawRect(
-                        color   = BrandIndigo,
-                        topLeft = Offset(hr.left, hr.top),
-                        size    = Size(hr.width, hr.height)
-                    )
-                    // Diagonal resize arrow indicator inside handle
-                    drawLine(
-                        color       = Color.White,
-                        start       = Offset(hr.left + 4f, hr.bottom - 4f),
-                        end         = Offset(hr.right - 4f, hr.top + 4f),
-                        strokeWidth = 1.5f,
-                        cap         = StrokeCap.Round
+                    drawLiquidGlassSelectionFrame(
+                        rect = textRect,
+                        handleCenters = listOf(Offset(textRect.right, textRect.bottom))
                     )
                 }
 
@@ -1682,7 +1674,7 @@ fun InkCanvas(
                         color = Color.DarkGray,
                         topLeft = Offset(left, top),
                         size = Size(right - left, bottom - top),
-                        style = Stroke(width = 2f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 10f)))
+                        style = Stroke(width = 2f, pathEffect = dashPreview)
                     )
                 }
 
@@ -1690,13 +1682,10 @@ fun InkCanvas(
                 when (activeTool) {
                     Tool.PEN -> drawPath(activeEnvelopePath, selectedColor) // Uses default Fill style
                     Tool.HIGHLIGHTER -> drawIntoCanvas { cvs ->
-                        cvs.drawPath(activeEnvelopePath, Paint().apply {
-                            color = selectedColor.copy(alpha = 0.4f)
-                            style = PaintingStyle.Fill
-                            blendMode = BlendMode.Multiply
-                        })
+                        hlPreviewPaint.color = selectedColor.copy(alpha = 0.4f)
+                        cvs.drawPath(activeEnvelopePath, hlPreviewPaint)
                     }
-                    Tool.LASSO  -> drawPath(activePath, Color.DarkGray, style = Stroke(width = 2f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 10f))))
+                    Tool.LASSO  -> drawPath(activePath, Color.DarkGray, style = Stroke(width = 2f, pathEffect = dashPreview))
                     Tool.ERASER -> drawPath(activePath, Color.Gray,     style = Stroke(width = 2f))
                     else -> { }
                 }
@@ -1775,9 +1764,9 @@ private fun textAnnotationHitRect(
     return Rect(canvasX - 4f, canvasY - effectiveFontPx - 4f, canvasX + textWidth, canvasY - effectiveFontPx + textHeight + 4f)
 }
 
-/** Returns the 22×22 px resize handle rect anchored to the bottom-right of [textRect]. */
+/** Returns the 48×48 px resize handle hit rect anchored to the bottom-right of [textRect] (24px hit radius; visual is a shared glass handle). */
 private fun textResizeHandleRect(textRect: Rect): Rect {
-    val h = 22f
+    val h = SEL_HANDLE_HIT_R_PX * 2f
     return Rect(textRect.right - h / 2f, textRect.bottom - h / 2f, textRect.right + h / 2f, textRect.bottom + h / 2f)
 }
 
@@ -1788,11 +1777,26 @@ private fun imageAnnotationRect(ann: ImageAnnotationEntity, sx: Float, sy: Float
     Rect(ann.modelX * sx, ann.modelY * sy,
          (ann.modelX + ann.modelWidth) * sx, (ann.modelY + ann.modelHeight) * sy)
 
-/** Returns the 28×28 px resize handle rect centered on [bottomRight]. */
-private fun imageResizeHandleRect(bottomRight: Offset): Rect {
-    val h = 28f
-    return Rect(bottomRight.x - h / 2f, bottomRight.y - h / 2f,
-                bottomRight.x + h / 2f, bottomRight.y + h / 2f)
+/** Returns the 48×48 px resize handle hit rect centered on [center] (24px hit radius; visual is a shared glass handle). */
+private fun imageResizeHandleRect(center: Offset): Rect {
+    val h = SEL_HANDLE_HIT_R_PX * 2f
+    return Rect(center.x - h / 2f, center.y - h / 2f,
+                center.x + h / 2f, center.y + h / 2f)
+}
+
+/** Uniform-scales [rect] about [anchor] (corner-drag resize keeps aspect). */
+private fun scaleRectAbout(rect: Rect, anchor: Offset, scale: Float): Rect {
+    fun map(p: Offset): Offset = anchor + (p - anchor) * scale
+    val a = map(rect.topLeft)
+    val b = map(rect.bottomRight)
+    return Rect(minOf(a.x, b.x), minOf(a.y, b.y), maxOf(a.x, b.x), maxOf(a.y, b.y))
+}
+
+/** Effective IMAGE-tool rect: committed + move preview + uniform resize preview. */
+private fun effectiveImageRect(base: Rect, move: Offset, anchor: Offset?, scale: Float): Rect {
+    val moved = base.translate(move)
+    return if (anchor != null && abs(scale - 1f) > 0.0001f) scaleRectAbout(moved, anchor, scale)
+    else moved
 }
 
 private enum class StrokeSelectionHandle {
@@ -1825,14 +1829,98 @@ private fun StrokeWithPoints.matches(cached: CachedStrokePath?): Boolean {
         cached.boundsBottom == stroke.boundsBottom
 }
 
-private const val LASSO_FRAME_CORNER_RADIUS_PX = 14f
-private const val LASSO_FRAME_OUTER_STROKE_PX = 6f
-private const val LASSO_FRAME_INNER_STROKE_PX = 2.2f
-private const val LASSO_HANDLE_VISUAL_RADIUS_PX = 8f
-private const val LASSO_HANDLE_HIT_RADIUS_PX = 14f
-private const val LASSO_HANDLE_HALO_RADIUS_PX = 12f
-private val LASSO_DASH_PATTERN = floatArrayOf(12f, 8f)
-private val LASSO_FRAME_COLOR = BrandIndigo
+// ---- Liquid-glass selection frame, shared by lasso / image / text ----
+private const val SEL_FRAME_CORNER_PX = 14f
+private const val SEL_FRAME_HALO_PX = 6f
+private const val SEL_FRAME_INNER_PX = 2.2f
+private val SEL_FRAME_HALO = BrandIndigo.copy(alpha = 0.22f)
+private val SEL_FRAME_FILL = Color.White.copy(alpha = 0.10f)
+private val SEL_FRAME_EDGE_LIGHT = Color.White.copy(alpha = 0.25f)
+private val SEL_DASH_PATTERN = floatArrayOf(12f, 8f)
+private const val SEL_HANDLE_R_PX = 10f
+private const val SEL_HANDLE_HALO_R_PX = 14f
+private const val SEL_HANDLE_HIT_R_PX = 24f
+private const val SEL_HANDLE_RING_PX = 2f
+
+/**
+ * 液態玻璃選取框：淡白填充 + 靛暈外框 + 白虛線內框 + 內緣高光，
+ * 手柄是白圓玻璃體（靛圈 + 左上高光點 + 外暈）。深淺紙都可讀。
+ */
+private fun DrawScope.drawLiquidGlassSelectionFrame(
+    rect: Rect,
+    dashPhase: Float = 0f,
+    animateDash: Boolean = false,
+    handleCenters: List<Offset> = emptyList()
+) {
+    val topLeft = Offset(rect.left, rect.top)
+    val size = Size(rect.width, rect.height)
+    val corner = CornerRadius(SEL_FRAME_CORNER_PX, SEL_FRAME_CORNER_PX)
+    val innerStroke = if (animateDash) {
+        Stroke(
+            width = SEL_FRAME_INNER_PX,
+            pathEffect = PathEffect.dashPathEffect(SEL_DASH_PATTERN, dashPhase)
+        )
+    } else {
+        Stroke(width = SEL_FRAME_INNER_PX)
+    }
+    // Glass body: faint white fill so the frame reads on dark paper too.
+    drawRoundRect(
+        color = SEL_FRAME_FILL,
+        topLeft = topLeft,
+        size = size,
+        cornerRadius = corner
+    )
+    // Outer halo + dashed inner line carry the brand color.
+    drawRoundRect(
+        color = SEL_FRAME_HALO,
+        topLeft = topLeft,
+        size = size,
+        cornerRadius = corner,
+        style = Stroke(width = SEL_FRAME_HALO_PX)
+    )
+    drawRoundRect(
+        color = BrandIndigo,
+        topLeft = topLeft,
+        size = size,
+        cornerRadius = corner,
+        style = innerStroke
+    )
+    // Inner edge light: the glassy top-left sheen.
+    val inset = SEL_FRAME_HALO_PX / 2f + 2f
+    if (rect.width > inset * 2f + SEL_FRAME_CORNER_PX && rect.height > inset * 2f + SEL_FRAME_CORNER_PX) {
+        drawRoundRect(
+            color = SEL_FRAME_EDGE_LIGHT,
+            topLeft = Offset(rect.left + inset, rect.top + inset),
+            size = Size(rect.width - inset * 2f, rect.height - inset * 2f),
+            cornerRadius = CornerRadius(SEL_FRAME_CORNER_PX - inset, SEL_FRAME_CORNER_PX - inset),
+            style = Stroke(width = 1.5f)
+        )
+    }
+    handleCenters.forEach { c ->
+        drawCircle(
+            color = SEL_FRAME_HALO,
+            radius = SEL_HANDLE_HALO_R_PX,
+            center = c
+        )
+        drawCircle(
+            color = Color.White.copy(alpha = 0.85f),
+            radius = SEL_HANDLE_R_PX,
+            center = c
+        )
+        drawCircle(
+            color = BrandIndigo,
+            radius = SEL_HANDLE_R_PX,
+            center = c,
+            style = Stroke(width = SEL_HANDLE_RING_PX)
+        )
+        // Specular dot: sells the glass.
+        drawCircle(
+            color = Color.White,
+            radius = 3f,
+            center = c + Offset(-3f, -3f)
+        )
+    }
+}
 
 private fun applySelectionTransform(
     canvas: androidx.compose.ui.graphics.Canvas,
@@ -1853,60 +1941,14 @@ private fun DrawScope.drawLassoSelectionFrame(
     dashPhase: Float,
     animateDash: Boolean
 ) {
-    val topLeft = Offset(selectionRect.left, selectionRect.top)
-    val size = Size(selectionRect.width, selectionRect.height)
-    val corner = CornerRadius(LASSO_FRAME_CORNER_RADIUS_PX, LASSO_FRAME_CORNER_RADIUS_PX)
-    val innerStroke = if (animateDash) {
-        Stroke(
-            width = LASSO_FRAME_INNER_STROKE_PX,
-            pathEffect = PathEffect.dashPathEffect(LASSO_DASH_PATTERN, dashPhase)
-        )
-    } else {
-        Stroke(width = LASSO_FRAME_INNER_STROKE_PX)
-    }
-
-    // Selection fill helps users identify the selected region quickly.
-    drawRoundRect(
-        color = LASSO_FRAME_COLOR.copy(alpha = 0.09f),
-        topLeft = topLeft,
-        size = size,
-        cornerRadius = corner
+    drawLiquidGlassSelectionFrame(
+        rect = selectionRect,
+        dashPhase = dashPhase,
+        animateDash = animateDash,
+        handleCenters = if (showHandles)
+            strokeSelectionHandleRects(selectionRect).map { (_, handleRect) -> handleRect.center }
+        else emptyList()
     )
-    drawRoundRect(
-        color = LASSO_FRAME_COLOR.copy(alpha = 0.22f),
-        topLeft = topLeft,
-        size = size,
-        cornerRadius = corner,
-        style = Stroke(width = LASSO_FRAME_OUTER_STROKE_PX)
-    )
-    drawRoundRect(
-        color = LASSO_FRAME_COLOR,
-        topLeft = topLeft,
-        size = size,
-        cornerRadius = corner,
-        style = innerStroke
-    )
-
-    if (!showHandles) return
-    strokeSelectionHandleRects(selectionRect).forEach { (_, handleRect) ->
-        val center = handleRect.center
-        drawCircle(
-            color = LASSO_FRAME_COLOR.copy(alpha = 0.22f),
-            radius = LASSO_HANDLE_HALO_RADIUS_PX,
-            center = center
-        )
-        drawCircle(
-            color = Color.White,
-            radius = LASSO_HANDLE_VISUAL_RADIUS_PX,
-            center = center
-        )
-        drawCircle(
-            color = LASSO_FRAME_COLOR,
-            radius = LASSO_HANDLE_VISUAL_RADIUS_PX,
-            center = center,
-            style = Stroke(width = 2f)
-        )
-    }
 }
 
 private fun strokeSelectionHandleCenter(selectionRect: Rect, handle: StrokeSelectionHandle): Offset = when (handle) {
@@ -1933,10 +1975,10 @@ private fun strokeSelectionHandleRects(selectionRect: Rect): List<Pair<StrokeSel
 }
 
 private fun strokeSelectionHandleHitRect(center: Offset): Rect = Rect(
-    left = center.x - LASSO_HANDLE_HIT_RADIUS_PX,
-    top = center.y - LASSO_HANDLE_HIT_RADIUS_PX,
-    right = center.x + LASSO_HANDLE_HIT_RADIUS_PX,
-    bottom = center.y + LASSO_HANDLE_HIT_RADIUS_PX
+    left = center.x - SEL_HANDLE_HIT_R_PX,
+    top = center.y - SEL_HANDLE_HIT_R_PX,
+    right = center.x + SEL_HANDLE_HIT_R_PX,
+    bottom = center.y + SEL_HANDLE_HIT_R_PX
 )
 
 private fun modelTransformedPolygonBoundsToCanvasRect(
@@ -2050,6 +2092,31 @@ private fun DrawScope.drawArrowHeadInScope(start: Offset, end: Offset, color: Co
 private fun List<PointEntity>.toComposePath(): Path {
     val strokePoints = this.map { StrokePoint(it.x, it.y, it.width) }
     return EnvelopeUtils.generateEnvelopePath(strokePoints)
+}
+
+/**
+ * 兩段式降採樣解碼：先讀尺寸再按 2 的冪降採樣，長邊不超過 [maxSidePx]。
+ * 原圖直解（一張照片 4000×3000×4 = 48MB 起跳）會吃光記憶體，
+ * 交給 drawImage 時還會觸發「too large bitmap」閃退。
+ */
+private fun decodeBoundedBitmap(
+    context: android.content.Context,
+    uri: android.net.Uri,
+    maxSidePx: Int = 2048
+): android.graphics.Bitmap? {
+    val cr = context.contentResolver
+    val (w, h) = cr.openInputStream(uri)?.use { stream ->
+        val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeStream(stream, null, opts)
+        opts.outWidth to opts.outHeight
+    } ?: return null
+    if (w <= 0 || h <= 0) {
+        return cr.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
+    }
+    var sample = 1
+    while (w / sample > maxSidePx || h / sample > maxSidePx) sample *= 2
+    val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+    return cr.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) }
 }
 
 private fun drawPathOnCanvas(

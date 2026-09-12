@@ -266,7 +266,11 @@ class DocumentViewModel(
 
                     var bitmap = ThumbnailCacheManager.loadFromDisk(context, entry.cacheKey)
                     if (bitmap == null || force) {
-                        bitmap = renderThumbnailBitmap(context, documentUri)
+                        // 渲染失敗不准把 flow 洗成 null（封面會永久變空白佔位）：
+                        // 留著舊圖，下次再試
+                        bitmap = runCatching { renderThumbnailBitmap(context, documentUri) }
+                            .onFailure { android.util.Log.e("InkFlowThumb", "render failed: $documentUri", it) }
+                            .getOrNull()
                         if (bitmap != null) {
                             ThumbnailCacheManager.saveToDisk(context, entry.cacheKey, bitmap)
                         }
@@ -274,8 +278,8 @@ class DocumentViewModel(
 
                     if (bitmap != null) {
                         ThumbnailCacheManager.put(entry.cacheKey, bitmap)
+                        latestEntry.flow.value = bitmap
                     }
-                    latestEntry.flow.value = bitmap
                 } finally {
                     thumbnailJobs.remove(documentUri)
                 }
