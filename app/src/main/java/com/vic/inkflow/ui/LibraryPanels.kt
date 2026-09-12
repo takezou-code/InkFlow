@@ -166,6 +166,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -246,7 +247,8 @@ internal fun LibraryHeroPanel(
     onToggleGridView: () -> Unit,
     selectedNavIndex: Int = 0,
     onCreateFolder: () -> Unit = {},
-    hazeState: dev.chrisbanes.haze.HazeState
+    hazeState: dev.chrisbanes.haze.HazeState,
+    prismalBackdrop: com.styropyr0.prismal.PrismalBackdrop? = null
 ) {
     val cardShellColor = MaterialTheme.colorScheme.surface
 
@@ -257,7 +259,7 @@ internal fun LibraryHeroPanel(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Surface(
-            modifier = Modifier.glassPanel(hazeState, isDarkTheme),
+            modifier = Modifier.smartGlass(hazeState, isDarkTheme, prismal = prismalBackdrop),
             color = Color.Transparent,
             contentColor = MaterialTheme.colorScheme.onSurface
         ) {
@@ -320,10 +322,20 @@ internal fun LibraryHeroPanel(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    // 搜尋列展開：聚焦時伸滿整行，失焦縮回， layout 動畫過渡
+                    var searchFocused by remember { mutableStateOf(false) }
+                    val searchWeight by animateFloatAsState(
+                        targetValue = if (searchFocused || searchQuery.isNotBlank()) 1f else 0.55f,
+                        animationSpec = androidx.compose.animation.core.tween(250),
+                        label = "SearchExpand"
+                    )
                     androidx.compose.material3.OutlinedTextField(
                         value = searchQuery,
                         onValueChange = onSearchQueryChange,
                         singleLine = true,
+                        modifier = Modifier
+                            .weight(searchWeight)
+                            .onFocusChanged { searchFocused = it.isFocused },
                         leadingIcon = {
                             Icon(Icons.Outlined.Search, contentDescription = null)
                         },
@@ -342,8 +354,7 @@ internal fun LibraryHeroPanel(
                             focusedBorderColor = Color.Transparent,
                             unfocusedBorderColor = Color.White.copy(alpha = 0.14f)
                         ),
-                        shape = ShapeLg,
-                        modifier = Modifier.weight(1f)
+                        shape = ShapeLg
                     )
                     
                     if (selectedNavIndex == 1) {
@@ -425,7 +436,8 @@ internal fun DocumentLibraryFab(
     hazeState: dev.chrisbanes.haze.HazeState,
     onOpenPdf: () -> Unit,
     onCreateBlank: () -> Unit,
-    onCreateFolder: () -> Unit
+    onCreateFolder: () -> Unit,
+    prismalBackdrop: com.styropyr0.prismal.PrismalBackdrop? = null
 ) {
     val fabContentColor = if (isDarkTheme) Color.White else MaterialTheme.colorScheme.primary
     Box {
@@ -440,7 +452,7 @@ internal fun DocumentLibraryFab(
         Box(
             modifier = Modifier
                 .graphicsLayer { scaleX = fabScale; scaleY = fabScale }
-                .glassPanel(hazeState, isDarkTheme)
+                .smartGlass(hazeState, isDarkTheme, prismal = prismalBackdrop)
                 .clickable(interactionSource = fabInteractionSource, indication = androidx.compose.foundation.LocalIndication.current, onClick = onToggleMenu)
                 .padding(horizontal = 18.dp, vertical = 14.dp)
         ) {
@@ -496,7 +508,8 @@ internal fun LibraryEmptyState(
     onOpenPdf: () -> Unit,
     onCreateBlank: () -> Unit,
     hazeState: dev.chrisbanes.haze.HazeState? = null,
-    isDarkTheme: Boolean = false
+    isDarkTheme: Boolean = false,
+    prismalBackdrop: com.styropyr0.prismal.PrismalBackdrop? = null
 ) {
     val emptyStateFloat by rememberInfiniteTransition(label = "EmptyIconFloat")
         .animateFloat(
@@ -530,7 +543,7 @@ internal fun LibraryEmptyState(
                 modifier = Modifier
                     .fillMaxWidth()
                     .widthIn(max = 560.dp)
-                    .then(if (hazeState != null) Modifier.glassPanel(hazeState, isDarkTheme, ShapeXl) else Modifier),
+                    .then(if (hazeState != null) Modifier.smartGlass(hazeState, isDarkTheme, ShapeXl, prismal = prismalBackdrop) else Modifier),
                 color = if (hazeState != null) Color.Transparent else MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.96f),
                 shape = ShapeXl,
                 border = if (hazeState != null) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),

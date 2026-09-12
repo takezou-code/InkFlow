@@ -254,24 +254,22 @@ fun TabletEditorTopBar(
     onDocumentSettings: () -> Unit = {},
     onToggleAiPanel: () -> Unit = {},
     hazeState: dev.chrisbanes.haze.HazeState,
-    isDarkTheme: Boolean
+    isDarkTheme: Boolean,
+    prismalBackdrop: com.styropyr0.prismal.PrismalBackdrop? = null
 ) {
     val activeTool by viewModel.selectedTool.collectAsState()
     val selectedColor by viewModel.selectedColor.collectAsState()
-    val recentColors by viewModel.recentColors.collectAsState()
+    val palette by viewModel.palette.collectAsState()
     val selectedShapeSubType by viewModel.selectedShapeSubType.collectAsState()
     val selectedLassoSubType by viewModel.selectedLassoSubType.collectAsState()
     val canUndo by viewModel.canUndo.collectAsState()
     val canRedo by viewModel.canRedo.collectAsState()
     val inputMode by viewModel.inputMode.collectAsState()
     val strokeWidth by viewModel.strokeWidth.collectAsState()
-    val toolColors = listOf(Color(0xFF111827), Color(0xFFFACC15), Color(0xFFF87171), Color(0xFF4ADE80))
-    val shownRecentColors = recentColors.filterNot { it in toolColors }.take(8)
-    var showColorPicker by remember { mutableStateOf(false) }
     val isDarkSurface = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    val shellColor = MaterialTheme.colorScheme.primary.copy(alpha = if (isDarkSurface) 0.10f else 0.08f) // ????,???
+    val shellColor = MaterialTheme.colorScheme.primary.copy(alpha = if (isDarkSurface) 0.10f else 0.08f)
     val clusterColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = if (isDarkSurface) 0.78f else 0.94f)
-    val colorSelectorBg = MaterialTheme.colorScheme.primary.copy(alpha = if (isDarkSurface) 0.16f else 0.12f) // ??????,???????
+    val colorSelectorBg = MaterialTheme.colorScheme.primary.copy(alpha = if (isDarkSurface) 0.16f else 0.12f)
     val borderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.58f)
     val toolButtonSize = 32.dp
     val utilityButtonSize = 34.dp
@@ -284,7 +282,7 @@ fun TabletEditorTopBar(
         label = "DrawingToolHighlight"
     )
 
-    val annotationTools = listOf(Tool.SHAPE, Tool.TEXT, Tool.IMAGE, Tool.STAMP)
+    val annotationTools = listOf(Tool.SHAPE, Tool.TEXT, Tool.IMAGE)
     val annotationActiveIdx = annotationTools.indexOf(activeTool).let { if (it < 0) -1 else it }
     val annotationHighlightOffset by animateDpAsState(
         targetValue = if (annotationActiveIdx >= 0) toolButtonSize * annotationActiveIdx else 0.dp,
@@ -302,13 +300,6 @@ fun TabletEditorTopBar(
         animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
         label = "RedoScale"
     )
-    if (showColorPicker) {
-        ColorPickerDialog(
-            onColorSelected = { viewModel.onColorSelected(it) },
-            onDismiss = { showColorPicker = false }
-        )
-    }
-
     // 外層全透明：玻璃改到每顆群組藥丸上，整條才不會糊成一塊灰板
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -328,7 +319,7 @@ fun TabletEditorTopBar(
             Surface(
                 modifier = Modifier
                     .fillMaxHeight()
-                    .glassPanel(hazeState, isDarkTheme, ShapeLg),
+                    .smartGlass(hazeState, isDarkTheme, ShapeLg, prismal = prismalBackdrop),
                 shape = ShapeLg,
                 color = Color.Transparent
             ) {
@@ -359,7 +350,7 @@ fun TabletEditorTopBar(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight()
-                    .glassPanel(hazeState, isDarkTheme, ShapeLg),
+                    .smartGlass(hazeState, isDarkTheme, ShapeLg, prismal = prismalBackdrop),
                 shape = ShapeLg,
                 color = Color.Transparent
             ) {
@@ -462,8 +453,8 @@ fun TabletEditorTopBar(
                                 ) {
                                     Text(
                                         text = when (subType) {
-                                            LassoSubType.FREEFORM -> "????"
-                                            LassoSubType.RECT -> "????"
+                                            LassoSubType.FREEFORM -> "自由圈選"
+                                            LassoSubType.RECT -> "方框選取"
                                         },
                                         style = MaterialTheme.typography.labelMedium
                                     )
@@ -523,15 +514,6 @@ fun TabletEditorTopBar(
                                 icon = Icons.Outlined.Image,
                                 contentDescription = "Image Tool"
                             )
-                            EditorIconButton(
-                                onClick = {
-                                    viewModel.onToolSelected(Tool.STAMP)
-                                    onHideStrokeWidthSlider()
-                                },
-                                isActive = activeTool == Tool.STAMP,
-                                icon = Icons.Outlined.Star,
-                                contentDescription = "Stamp Tool"
-                            )
                         }
                     }
 
@@ -560,10 +542,10 @@ fun TabletEditorTopBar(
                                 ) {
                                     Text(
                                         text = when (subType) {
-                                            ShapeSubType.RECT -> "??"
-                                            ShapeSubType.CIRCLE -> "??"
-                                            ShapeSubType.LINE -> "??"
-                                            ShapeSubType.ARROW -> "??"
+                                            ShapeSubType.RECT -> "方形"
+                                            ShapeSubType.CIRCLE -> "圓形"
+                                            ShapeSubType.LINE -> "直線"
+                                            ShapeSubType.ARROW -> "箭頭"
                                         },
                                         style = MaterialTheme.typography.labelMedium
                                     )
@@ -580,40 +562,12 @@ fun TabletEditorTopBar(
                             .padding(horizontal = 6.dp, vertical = 3.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        shownRecentColors.forEach { color ->
+                        // 固定色盤：只能切換設定頁定義的顏色，不可自選
+                        palette.forEach { color ->
                             ColorChip(color = color, isSelected = selectedColor == color) {
                                 viewModel.onColorSelected(color)
                             }
                         }
-                        if (shownRecentColors.isNotEmpty()) {
-                            Spacer(Modifier.width(4.dp))
-                        }
-                        toolColors.forEach { color ->
-                            ColorChip(color = color, isSelected = selectedColor == color) {
-                                viewModel.onColorSelected(color)
-                            }
-                        }
-                        Box(
-                            modifier = Modifier
-                                .size(34.dp)
-                                .padding(3.dp)
-                                .clip(CircleShape)
-                                .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f), CircleShape)
-                                .background(
-                                    Brush.sweepGradient(
-                                        listOf(
-                                            Color.Red,
-                                            Color.Yellow,
-                                            Color.Green,
-                                            Color.Cyan,
-                                            Color.Blue,
-                                            Color.Magenta,
-                                            Color.Red
-                                        )
-                                    )
-                                )
-                                .clickable { showColorPicker = true }
-                        )
                     }
 
                     AnimatedVisibility(
@@ -628,7 +582,7 @@ fun TabletEditorTopBar(
                             contentColor = MaterialTheme.colorScheme.onPrimaryContainer
                         ) {
                             Text(
-                                text = "?? ${strokeWidth.toInt()} px",
+                                text = "粗細 ${strokeWidth.toInt()} px",
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
                                 style = MaterialTheme.typography.labelMedium
                             )
@@ -640,7 +594,7 @@ fun TabletEditorTopBar(
             Surface(
                 modifier = Modifier
                     .fillMaxHeight()
-                    .glassPanel(hazeState, isDarkTheme, ShapeLg),
+                    .smartGlass(hazeState, isDarkTheme, ShapeLg, prismal = prismalBackdrop),
                 shape = ShapeLg,
                 color = Color.Transparent
             ) {

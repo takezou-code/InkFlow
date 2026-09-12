@@ -350,7 +350,8 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
                                         onRename = { newName -> onRename(doc.uri, newName) },
                                         onMoveToFolder = { folderId -> onMoveToFolder(doc.uri, folderId) },
                                         onCreateFolder = { folderName -> onCreateFolder(folderName, null) },
-                                        hazeState = hazeState,
+                                        // 實底：省即時模糊
+                                        hazeState = null,
                                         isDarkTheme = isDarkTheme
                                     )
                                 }
@@ -378,7 +379,7 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
             val descendantFolderIds = remember { emptySet<String>() }
             val movableParentCandidates = remember { emptyList<FolderEntity>() }
 
-                        if (showNewChildFolderDialog) {
+                        AnimatedDialog(visible = showNewChildFolderDialog) {
                 androidx.compose.material3.AlertDialog(
                     onDismissRequest = { showNewChildFolderDialog = false },
                     title = { Text("建立子資料夾") },
@@ -406,7 +407,7 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
                 )
             }
 
-            if (showRenameFolderDialog) {
+            AnimatedDialog(visible = showRenameFolderDialog) {
                 androidx.compose.material3.AlertDialog(
                     onDismissRequest = { showRenameFolderDialog = false },
                     title = { Text("重新命名資料夾") },
@@ -434,7 +435,7 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
                 )
             }
 
-            if (showDeleteFolderDialog) {
+            AnimatedDialog(visible = showDeleteFolderDialog) {
                 androidx.compose.material3.AlertDialog(
                     onDismissRequest = { showDeleteFolderDialog = false },
                     title = { Text("刪除資料夾") },
@@ -453,7 +454,7 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
                 )
             }
 
-            if (showMoveFolderDialog) {
+            AnimatedDialog(visible = showMoveFolderDialog) {
                 androidx.compose.material3.AlertDialog(
                     onDismissRequest = { showMoveFolderDialog = false },
                     title = { Text("移動資料夾") },
@@ -640,7 +641,8 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
                                         onRename = { newName -> onRename(doc.uri, newName) },
                                         onMoveToFolder = { folderId -> onMoveToFolder(doc.uri, folderId) },
                                         onCreateFolder = { folderName -> onCreateFolder(folderName, null) },
-                                        hazeState = hazeState,
+                                        // 實底：省即時模糊
+                                        hazeState = null,
                                         isDarkTheme = isDarkTheme
                                     )
                                 }
@@ -677,7 +679,7 @@ internal fun DocumentCard(
     val cardShellColor = MaterialTheme.colorScheme.surface
     val cardCoverColor = MaterialTheme.colorScheme.surface
 
-    if (showRenameDialog) {
+    AnimatedDialog(visible = showRenameDialog) {
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { showRenameDialog = false },
             title = { Text("重新命名") },
@@ -707,7 +709,7 @@ internal fun DocumentCard(
         )
     }
 
-    if (showDeleteDialog) {
+    AnimatedDialog(visible = showDeleteDialog) {
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { showDeleteDialog = false },
             title = { Text("刪除筆記本") },
@@ -732,7 +734,7 @@ internal fun DocumentCard(
         )
     }
 
-    if (showMoveDialog) {
+    AnimatedDialog(visible = showMoveDialog) {
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { showMoveDialog = false },
             title = { Text("移到資料夾") },
@@ -774,7 +776,7 @@ internal fun DocumentCard(
         )
     }
 
-    if (showCreateFolderDialog) {
+    AnimatedDialog(visible = showCreateFolderDialog) {
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { showCreateFolderDialog = false },
             title = { Text("建立資料夾") },
@@ -1112,7 +1114,7 @@ internal fun DocumentListRow(
         }
     }
 
-    if (showMoveDialog) {
+    AnimatedDialog(visible = showMoveDialog) {
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { showMoveDialog = false },
             title = { Text("移到資料夾") },
@@ -1154,7 +1156,7 @@ internal fun DocumentListRow(
         )
     }
 
-    if (showCreateFolderDialog) {
+    AnimatedDialog(visible = showCreateFolderDialog) {
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { showCreateFolderDialog = false },
             title = { Text("建立資料夾") },
@@ -1185,7 +1187,7 @@ internal fun DocumentListRow(
         )
     }
 
-    if (showRenameDialog) {
+    AnimatedDialog(visible = showRenameDialog) {
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { showRenameDialog = false },
             title = { Text("重新命名") },
@@ -1210,7 +1212,7 @@ internal fun DocumentListRow(
         )
     }
 
-    if (showDeleteDialog) {
+    AnimatedDialog(visible = showDeleteDialog) {
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { showDeleteDialog = false },
             title = { Text("刪除文件") },

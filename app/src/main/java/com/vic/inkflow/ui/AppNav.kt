@@ -159,6 +159,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.preferredFrameRate
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -247,6 +248,19 @@ fun InkLayerApp(db: AppDatabase) {
 
     InkFlowTheme(darkTheme = isDarkTheme, dynamicColor = dynamicColor) {
         val navController = rememberNavController()
+    // 144Hz 解鎖：這台 High 檔只有 90Hz，直接點名 144（面板上限）。
+    // 掛根節點，全 App 穩在 144，不切換頁面閃頻。耗電會多一點，要絲滑就認了。
+    Box(
+        Modifier
+            .fillMaxSize()
+            .preferredFrameRate(144f)
+    ) {
+    // 主題切換淡入淡出：整棵樹交叉淡化 350ms，不硬切
+    androidx.compose.animation.Crossfade(
+        targetState = isDarkTheme,
+        animationSpec = tween(350),
+        label = "ThemeCrossfade"
+    ) {
     NavHost(
         navController = navController,
         startDestination = "home",
@@ -293,4 +307,6 @@ fun InkLayerApp(db: AppDatabase) {
         }
     }
     }
+    }
+}
 }

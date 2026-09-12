@@ -253,7 +253,12 @@ internal fun Sidebar(
     listState: LazyListState = rememberLazyListState(),
     modifier: Modifier = Modifier,
     hazeState: dev.chrisbanes.haze.HazeState,
-    isDarkTheme: Boolean
+    isDarkTheme: Boolean,
+    // 跟隨門衛：主列表推側欄時為 true，這時側欄推主列表必須讓路，不准回推
+    isFollowingSidebar: Boolean = false,
+    // 主列表捲動中：側欄自己也在動，丸先藏起來
+    isMainScrolling: Boolean = false,
+    prismalBackdrop: com.styropyr0.prismal.PrismalBackdrop? = null
 ) {
     var deleteConfirmIndices by remember { mutableStateOf<List<Int>>(emptyList()) }
     var isSelectionMode by remember { mutableStateOf(false) }
@@ -537,6 +542,60 @@ internal fun Sidebar(
                     val approximateItemHalfHeight = if (sidebarMode == SidebarMode.NORMAL) 70.dp else 40.dp
                     val verticalPadding = (halfHeight - approximateItemHalfHeight).coerceAtLeast(0.dp)
 
+                    // 滑動玻璃丸：畫在列表下層，數字浮在玻璃上才看得清。
+                    // 一顆常駐模糊，換頁時彈一下；位置死算（行高64dp），不追蹤不脫鉤。
+                    if (sidebarMode != SidebarMode.NORMAL) {
+                        val density = LocalDensity.current
+                        val rowHPx = with(density) { 64.dp.toPx() }
+                        val padTopPx = with(density) { verticalPadding.toPx() }
+                        val viewportHPx = with(density) { maxHeight.toPx() }
+                        // currentPageIndex 是普通 Int 參數，快照系統看不見，
+                        // 不加 key 的話 derivedStateOf 永遠不重算、丸就黏在 1 號。
+                        val pillTargetY by androidx.compose.runtime.remember(currentPageIndex) {
+                            androidx.compose.runtime.derivedStateOf {
+                                padTopPx + currentPageIndex * rowHPx + rowHPx / 2f -
+                                    (listState.firstVisibleItemIndex * rowHPx +
+                                        listState.firstVisibleItemScrollOffset)
+                            }
+                        }
+                        val pillInView = pillTargetY in -48f..(viewportHPx + 48f)
+                        // 到位彈跳：位置永遠直給（精確不脫鉤），換頁時丸縮一下再彈回。
+                        val pop = remember { Animatable(1f) }
+                        androidx.compose.runtime.LaunchedEffect(currentPageIndex) {
+                            pop.snapTo(0.72f)
+                            pop.animateTo(
+                                1f,
+                                spring(
+                                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                                    stiffness = Spring.StiffnessMedium
+                                )
+                            )
+                        }
+                    // 停穩才出現：任一邊在捲就藏起來，定位自然是對的，不用追
+                    val settled = !listState.isScrollInProgress && !isMainScrolling
+                    val pillAlpha by animateFloatAsState(
+                        targetValue = if (pillInView && settled) 1f else 0f,
+                        animationSpec = tween(180),
+                        label = "GlassPillAlpha"
+                    )
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.TopCenter
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .offset { IntOffset(0, (pillTargetY - with(density) { 24.dp.toPx() }).roundToInt()) }
+                                    .size(48.dp)
+                                    .graphicsLayer {
+                                        alpha = pillAlpha
+                                        scaleX = pop.value
+                                        scaleY = pop.value
+                                    }
+                                    .glassPanel(hazeState, isDarkTheme, CircleShape)
+                            )
+                        }
+                    }
+
                     // 1. 即時計算中心項目
                     val centerItemIndex by androidx.compose.runtime.remember {
                         androidx.compose.runtime.derivedStateOf {
@@ -550,9 +609,31 @@ internal fun Sidebar(
                         }
                     }
 
-                    // 2. 只有頁碼模式才隨滑動翻頁：預覽/全頁模式滑動只用來看，點了才翻
-                    androidx.compose.runtime.LaunchedEffect(centerItemIndex, sidebarMode) {
+                    // 2. 只有頁碼模式才隨滑動翻頁：預覽/全頁模式滑動只用來看，點了才翻。
+                    // 只跟真手勢：interactionSource 只有手指拖才有 DragInteraction，
+                    // 程式捲動（跟隨/點擊/吸附）沒有——從源頭斷迴圈。門衛旗當第二道。
+                    var sidebarUserScrolling by remember { mutableStateOf(false) }
+                    var lastSidebarDragEndMs by remember { mutableStateOf(0L) }
+                    androidx.compose.runtime.LaunchedEffect(listState) {
+                        listState.interactionSource.interactions.collect { interaction ->
+                            when (interaction) {
+                                is androidx.compose.foundation.interaction.DragInteraction.Start ->
+                                    sidebarUserScrolling = true
+                                is androidx.compose.foundation.interaction.DragInteraction.Stop,
+                                is androidx.compose.foundation.interaction.DragInteraction.Cancel -> {
+                                    sidebarUserScrolling = false
+                                    lastSidebarDragEndMs = android.os.SystemClock.uptimeMillis()
+                                }
+                                else -> Unit
+                            }
+                        }
+                    }
+                    androidx.compose.runtime.LaunchedEffect(centerItemIndex, sidebarMode, isFollowingSidebar) {
                         if (sidebarMode != SidebarMode.COLLAPSED) return@LaunchedEffect
+                        if (isFollowingSidebar) return@LaunchedEffect
+                        // 手指放開後 800ms 內的慣性也算數（不然甩過去不停頁）
+                        val recentDrag = android.os.SystemClock.uptimeMillis() - lastSidebarDragEndMs < 800
+                        if (!sidebarUserScrolling && !recentDrag) return@LaunchedEffect
                         centerItemIndex?.let { newIndex ->
                             if (newIndex != currentPageIndex) {
                                 onPageSelected(newIndex)
@@ -638,7 +719,7 @@ internal fun Sidebar(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = 6.dp, vertical = 5.dp)
-                                .glassPanel(hazeState, isDarkTheme, ShapeMd)
+                                .smartGlass(hazeState, isDarkTheme, ShapeMd, prismal = prismalBackdrop)
                         ) {
                             Icon(
                                 Icons.Outlined.Add,
@@ -908,14 +989,10 @@ internal fun PageIcon(
     hazeState: dev.chrisbanes.haze.HazeState? = null,
     isDarkTheme: Boolean = false
 ) {
-    // 玻璃頁碼藥丸：選中是實心玻璃丸，未選中全透明只留數字
+    // 頁碼藥丸本體只留數字（透明），高亮由外面整顆玻璃丸滑過來。
+    // 一顆常駐模糊勝過每格開關：不掉幀、不閃。
     Box(
-        modifier = Modifier
-            .size(48.dp)
-            .then(
-                if (isSelected && hazeState != null) Modifier.glassPanel(hazeState, isDarkTheme, CircleShape)
-                else Modifier
-            ),
+        modifier = Modifier.size(48.dp),
         contentAlignment = Alignment.Center
     ) {
         Text(

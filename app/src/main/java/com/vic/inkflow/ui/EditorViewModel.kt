@@ -42,8 +42,7 @@ enum class Tool {
     LASSO,
     SHAPE,
     TEXT,
-    IMAGE,
-    STAMP
+    IMAGE
 }
 
 enum class ShapeSubType { RECT, CIRCLE, LINE, ARROW }
@@ -135,7 +134,8 @@ class EditorViewModel(
     private var penStrokeWidth: Float = DEFAULT_PEN_STROKE_WIDTH
     private var highlighterStrokeWidth: Float = DEFAULT_HIGHLIGHTER_STROKE_WIDTH
 
-    private val _recentColors = MutableStateFlow(
+    // 固定色盤：唯一顏色來源，取自設定頁（default_recent_colors）
+    private val _palette = MutableStateFlow(
         listOf(
             Color(0xFF000000),
             Color(0xFFFFC700),
@@ -143,7 +143,7 @@ class EditorViewModel(
             Color(0xFF4ADE80)
         )
     )
-    val recentColors: StateFlow<List<Color>> = _recentColors.asStateFlow()
+    val palette: StateFlow<List<Color>> = _palette.asStateFlow()
 
     private val _strokeWidth = MutableStateFlow(DEFAULT_PEN_STROKE_WIDTH)
     val strokeWidth: StateFlow<Float> = _strokeWidth.asStateFlow()
@@ -205,7 +205,7 @@ class EditorViewModel(
                 _palmThresholdDp.value = prefs.palmThresholdDp
                 _strokeSpeedSensitivity.value = prefs.strokeSpeedSensitivity
                 _fingerTouchThresholdDp.value = prefs.fingerTouchThresholdDp
-                _recentColors.value = prefs.recentColors.map { Color(it) }
+                _palette.value = prefs.palette.map { Color(it) }
                 val restoredStyle = _paperStyle.value.copy(
                     background = prefs.background,
                     widthPt = prefs.paperWidthPt ?: _paperStyle.value.widthPt,
@@ -373,21 +373,13 @@ class EditorViewModel(
     }
 
     fun onColorSelected(color: Color) {
+        // 只能切換固定色盤內的顏色，不寫回任何持久層
+        if (color !in _palette.value) return
         _selectedColor.value = color
-        val updatedRecent = listOf(color) + _recentColors.value.filterNot { it == color }
-        _recentColors.value = updatedRecent.take(8)
         when (_selectedTool.value) {
             Tool.PEN -> penColor = color
             Tool.HIGHLIGHTER -> highlighterColor = color
             else -> {}
-        }
-        viewModelScope.launch(Dispatchers.IO) {
-            settingsRepository.setColor(
-                documentUri = documentUri,
-                tool = _selectedTool.value,
-                colorArgb = color.toArgb(),
-                recentColors = _recentColors.value.map { it.toArgb() }
-            )
         }
     }
 
@@ -677,15 +669,24 @@ class EditorViewModel(
         uri: String,
         targetPageIndex: Int,
         imagePixelWidth: Int,
-        imagePixelHeight: Int
+        imagePixelHeight: Int,
+        anchorModel: Offset? = null
     ): ImageAnnotationEntity {
         val (initW, initH) = computeInitialImageSize(imagePixelWidth, imagePixelHeight)
+        // M4: anchor = tap point in model space → center the image on it (clamped in-page);
+        // null keeps the legacy top-left default.
+        val modelX = if (anchorModel != null)
+            (anchorModel.x - initW / 2f).coerceIn(0f, maxOf(0f, modelWidth - initW))
+        else modelWidth * 0.1f
+        val modelY = if (anchorModel != null)
+            (anchorModel.y - initH / 2f).coerceIn(0f, maxOf(0f, modelHeight - initH))
+        else modelHeight * 0.1f
         return ImageAnnotationEntity(
             documentUri = documentUri,
             pageIndex = targetPageIndex,
             uri = uri,
-            modelX = modelWidth * 0.1f,
-            modelY = modelHeight * 0.1f,
+            modelX = modelX,
+            modelY = modelY,
             modelWidth = initW,
             modelHeight = initH
         )
@@ -695,9 +696,10 @@ class EditorViewModel(
         uri: String,
         targetPageIndex: Int,
         imagePixelWidth: Int = 0,
-        imagePixelHeight: Int = 0
+        imagePixelHeight: Int = 0,
+        anchorModel: Offset? = null
     ): String {
-        val ann = buildPlacedImageAnnotation(uri, targetPageIndex, imagePixelWidth, imagePixelHeight)
+        val ann = buildPlacedImageAnnotation(uri, targetPageIndex, imagePixelWidth, imagePixelHeight, anchorModel)
         withContext(Dispatchers.IO) {
             imageAnnotationDao.insert(ann)
         }

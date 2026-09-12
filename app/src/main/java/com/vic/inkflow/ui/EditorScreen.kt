@@ -15,6 +15,7 @@ import android.content.ClipDescription
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.os.SystemClock
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -146,6 +147,7 @@ import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -197,6 +199,7 @@ import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.styropyr0.prismal.sources.prismalGlassLayer
 import androidx.navigation.navArgument
 import com.vic.inkflow.R
 import com.vic.inkflow.data.AppDatabase
@@ -265,6 +268,7 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
     var aiFileUri by remember { mutableStateOf<android.net.Uri?>(null) }
     val sidebarListState = rememberLazyListState()
     val mainListState = rememberLazyListState()
+    val pinchActive by viewModel.pinchActive.collectAsState()
     // 點選意圖（側欄/靜態頁）：換作用頁 + 主列表滑過去
     val onRequestPage: (Int) -> Unit = { index ->
         currentPageIndex = index
@@ -278,9 +282,18 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
             viewModel.setActivePage(index)
         }
     }
-    // 編輯器共用玻璃狀態：根 Aurora 當 source，TopBar/側欄/氣泡當 effect
+    // 編輯器共用玻璃狀態：根 Aurora 當 source，TopBar/側欄/氣泡當 effect。
+    // 真折射用同一個 Aurora 當 backdrop（haze 照用，小元件不受影響）。
     val editorHaze = rememberHazeState()
+    val editorPrismalBackdrop = com.styropyr0.prismal.sources.rememberPrismalGlassLayer()
     val isEditorDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
+
+    // 離開編輯器時刷新書庫封面（否則畫完墨水回主頁封面永遠是舊的）
+    androidx.compose.runtime.DisposableEffect(uri) {
+        onDispose {
+            docViewModel.updateThumbnail(context, uri.toString())
+        }
+    }
 
     // Restore the last-viewed page from DB on first open; rememberSaveable keeps it
     // true across config changes so we don't reset the page on rotation.
@@ -307,10 +320,32 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
     }
 
     // Persist current page and sync sidebar scroll whenever the user navigates or changes sidebar mode
+    // 跟隨門衛：主列表推側欄時舉旗，側欄推主列表的那條看到旗就讓路，
+    // 否則兩邊互推、底端來回彈（4↔5跳不停）。State 寫一天幾次，重組成本忽略。
+    var sidebarFollowActive by remember { mutableStateOf(false) }
+    // 側欄帶頭時間戳：側欄點選/轉頁蓋章，1 秒內跟隨不回拉，讓 fling 飛完。
+    var lastSidebarDriveMs by remember { mutableStateOf(0L) }
     androidx.compose.runtime.LaunchedEffect(currentPageIndex, sidebarMode) {
-        if (initialPageRestored) {
-            docViewModel.updateLastPage(uri.toString(), currentPageIndex)
-            sidebarListState.animateScrollToCenter(currentPageIndex)
+        // 旗子從 effect 一進來就舉（涵蓋防抖等待期），結束/取消才放下——
+        // 之前只包著 animate，等待期有洞，迴圈從洞裡鑽。
+        sidebarFollowActive = true
+        try {
+            if (initialPageRestored) {
+                // 側欄帶的頭不回拉：1 秒內是側欄點選/轉頁造成的換頁，
+                // 回拉會勒死側欄的 fling（只能一頁一頁切）。主列表自己動的不影響。
+                // 但 DB 照寫，不然甩完直接退出、重開頁碼是舊的。
+                if (SystemClock.uptimeMillis() - lastSidebarDriveMs < 1000) {
+                    docViewModel.updateLastPage(uri.toString(), currentPageIndex)
+                    return@LaunchedEffect
+                }
+                // 防抖：滑動中頁碼連跳時，每次重進 effect 會重設計時，
+                // 只有停穩 150ms 才跟側欄 + 寫 DB。
+                kotlinx.coroutines.delay(150)
+                docViewModel.updateLastPage(uri.toString(), currentPageIndex)
+                sidebarListState.animateScrollToCenter(currentPageIndex)
+            }
+        } finally {
+            sidebarFollowActive = false
         }
     }
 
@@ -367,7 +402,7 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
     var showExportConfirmDialog by remember { mutableStateOf(false) }
     var isExportingPdf by remember { mutableStateOf(false) }
     val paperStyle by viewModel.paperStyle.collectAsState()
-    if (showDocumentSettingsDialog) {
+    AnimatedDialog(visible = showDocumentSettingsDialog) {
         DocumentSettingsDialog(
             documentTitle = documentTitle,
             pageCount = pageCount,
@@ -383,7 +418,7 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
         )
     }
 
-    if (showExportConfirmDialog) {
+    AnimatedDialog(visible = showExportConfirmDialog) {
         androidx.compose.material3.AlertDialog(
             onDismissRequest = {
                 if (!isExportingPdf) showExportConfirmDialog = false
@@ -454,7 +489,10 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
     Box(modifier = Modifier.fillMaxSize()) {
         AuroraBackground(
             isDarkTheme = isEditorDark,
-            modifier = Modifier.fillMaxSize().hazeSource(editorHaze),
+            modifier = Modifier
+                .fillMaxSize()
+                .hazeSource(editorHaze)
+                .prismalGlassLayer(editorPrismalBackdrop),
             orbCount = 5
         )
         Column(modifier = Modifier.fillMaxSize()) {
@@ -471,7 +509,8 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                 onDocumentSettings = { showDocumentSettingsDialog = true },
                 onToggleAiPanel = { showAiPanel = !showAiPanel },
                 hazeState = editorHaze,
-                isDarkTheme = isEditorDark
+                isDarkTheme = isEditorDark,
+                prismalBackdrop = editorPrismalBackdrop
             )
 
             AnimatedVisibility(
@@ -482,7 +521,8 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                 StrokeWidthSlider(
                     viewModel = viewModel,
                     hazeState = editorHaze,
-                    isDarkTheme = isEditorDark
+                    isDarkTheme = isEditorDark,
+                    prismalBackdrop = editorPrismalBackdrop
                 )
             }
 
@@ -560,7 +600,10 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                 documentUri = uri.toString(),
                 modelWidth = viewModel.modelWidth,
                 modelHeight = viewModel.modelHeight,
-                onPageSelected = { index -> onRequestPage(index) },
+                onPageSelected = { index ->
+                    lastSidebarDriveMs = SystemClock.uptimeMillis()
+                    onRequestPage(index)
+                },
                 onAddPage = { afterIndex ->
                     scope.launch {
                         pdfViewModel.insertBlankPage(
@@ -578,7 +621,10 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                 listState = sidebarListState,
                 modifier = Modifier.fillMaxSize(),
                 hazeState = editorHaze,
-                isDarkTheme = isEditorDark
+                isDarkTheme = isEditorDark,
+                isFollowingSidebar = sidebarFollowActive,
+                isMainScrolling = mainListState.isScrollInProgress,
+                prismalBackdrop = editorPrismalBackdrop
             )
 
         }
@@ -743,7 +789,8 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                         db = db,
                         mainListState = mainListState,
                         onRequestPage = onRequestPage,
-                        onScrollPage = onScrollPage
+                        onScrollPage = onScrollPage,
+                        prismalBackdrop = editorPrismalBackdrop
                     )
                 } // 5 Box(Workspace)
             } // 6 inner Row

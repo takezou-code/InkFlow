@@ -60,7 +60,7 @@ object AutoBackupScheduler {
             .addTag(ONCE_WORK_NAME)
             .build()
         WorkManager.getInstance(context).enqueueUniqueWork(
-            ONCE_WORK_NAME, ExistingWorkPolicy.APPEND, request
+            ONCE_WORK_NAME, ExistingWorkPolicy.REPLACE, request
         )
         return request.id
     }
