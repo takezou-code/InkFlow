@@ -748,6 +748,18 @@ class EditorViewModel(
         }
     }
 
+    /** M5: commits a rotation (clockwise degrees). Rides ResizeImageAnnotation for undo/redo. */
+    fun commitImageAnnotationRotation(id: String, degrees: Float) {
+        val old = currentImageAnnotations.value.firstOrNull { it.id == id } ?: return
+        val normalized = ((degrees % 360f) + 360f) % 360f
+        if (old.rotation == normalized) return
+        val updated = old.copy(rotation = normalized)
+        viewModelScope.launch(Dispatchers.IO) {
+            imageAnnotationDao.update(updated)
+            withContext(Dispatchers.Main) { pushUndo(DrawCommand.ResizeImageAnnotation(old, updated)) }
+        }
+    }
+
     fun deleteImageAnnotation(id: String) {
         val ann = currentImageAnnotations.value.firstOrNull { it.id == id } ?: return
         viewModelScope.launch(Dispatchers.IO) {
@@ -1110,15 +1122,33 @@ class EditorViewModel(
         return inside
     }
 
+    /** M5: axis-aligned bounds of the (possibly rotated) image, in model space. */
+    private fun rotatedImageBounds(annotation: ImageAnnotationEntity): android.graphics.RectF {
+        val cx = annotation.modelX + annotation.modelWidth / 2f
+        val cy = annotation.modelY + annotation.modelHeight / 2f
+        val rad = Math.toRadians(annotation.rotation.toDouble())
+        val cos = kotlin.math.cos(rad).toFloat()
+        val sin = kotlin.math.sin(rad).toFloat()
+        val corners = listOf(
+            Offset(annotation.modelX, annotation.modelY),
+            Offset(annotation.modelX + annotation.modelWidth, annotation.modelY),
+            Offset(annotation.modelX, annotation.modelY + annotation.modelHeight),
+            Offset(annotation.modelX + annotation.modelWidth, annotation.modelY + annotation.modelHeight)
+        ).map { p ->
+            val dx = p.x - cx
+            val dy = p.y - cy
+            Offset(cx + dx * cos - dy * sin, cy + dx * sin + dy * cos)
+        }
+        return android.graphics.RectF(
+            corners.minOf { it.x }, corners.minOf { it.y },
+            corners.maxOf { it.x }, corners.maxOf { it.y }
+        )
+    }
+
     private fun isImageSelectedByLasso(annotation: ImageAnnotationEntity, polygon: List<Offset>): Boolean {
         if (polygon.size < 3) return false
 
-        val imageRect = android.graphics.RectF(
-            annotation.modelX,
-            annotation.modelY,
-            annotation.modelX + annotation.modelWidth,
-            annotation.modelY + annotation.modelHeight
-        )
+        val imageRect = rotatedImageBounds(annotation)
         val minX = polygon.minOf { it.x }
         val minY = polygon.minOf { it.y }
         val maxX = polygon.maxOf { it.x }

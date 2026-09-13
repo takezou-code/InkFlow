@@ -188,9 +188,18 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
     fun setDisplayRenderScale(scale: Float) {
         val s = scale.coerceIn(2f, 3f)
         if (s == displayRenderScale) return
+        android.util.Log.d("InkFlowDbg", "renderScale $displayRenderScale -> $s")
         displayRenderScale = s
         bitmapCache.evictAll()
-        bitmapFlowCache.values.forEach { it.value = null }
+        // Fix2c: 不再把 flow 置 null（那會讓可見頁同時變透明、露出黑紙底）。
+        // 舊圖繼續頂著顯示（倍率略差但可見），新圖在底下重渲、好了自動換上（Crossfade 接住）。
+        bitmapFlowCache.forEach { (index, flow) ->
+            if (flow.value != null) {
+                viewModelScope.launch(Dispatchers.IO) {
+                    renderPage(index, highQuality = true)?.let { flow.value = it }
+                }
+            }
+        }
         _renderEpoch.value += 1
     }
 

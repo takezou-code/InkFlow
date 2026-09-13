@@ -447,8 +447,8 @@ fun TabletEditorTopBar(
                                     onClick = { viewModel.onLassoSubTypeSelected(subType) },
                                     modifier = Modifier.height(32.dp),
                                     colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
-                                        containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
-                                        contentColor = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
+                                        containerColor = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.22f) else Color.Transparent,
+                                        contentColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
                                     )
                                 ) {
                                     Text(
@@ -536,8 +536,8 @@ fun TabletEditorTopBar(
                                     onClick = { viewModel.onShapeSubTypeSelected(subType) },
                                     modifier = Modifier.height(32.dp),
                                     colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
-                                        containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
-                                        contentColor = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
+                                        containerColor = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.22f) else Color.Transparent,
+                                        contentColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
                                     )
                                 ) {
                                     Text(
@@ -578,12 +578,14 @@ fun TabletEditorTopBar(
                         Surface(
                             modifier = Modifier.padding(start = 8.dp),
                             shape = ShapeMd,
-                            color = MaterialTheme.colorScheme.primaryContainer,
-                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                            color = Color.Transparent,
+                            contentColor = MaterialTheme.colorScheme.primary
                         ) {
                             Text(
                                 text = "粗細 ${strokeWidth.toInt()} px",
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                modifier = Modifier
+                                    .fauxGlassPanel(isDarkTheme, ShapeMd)
+                                    .padding(horizontal = 10.dp, vertical = 7.dp),
                                 style = MaterialTheme.typography.labelMedium
                             )
                         }
@@ -623,14 +625,13 @@ fun TabletEditorTopBar(
                     Box(
                         modifier = Modifier
                             .padding(horizontal = 4.dp)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.primaryContainer)
+                            .fauxGlassPanel(isDarkTheme, CircleShape)
                     ) {
                         IconButton(onClick = onExport, modifier = Modifier.size(utilityButtonSize)) {
                             Icon(
                                 Icons.Outlined.FileUpload,
                                 contentDescription = "Export PDF",
-                                tint = MaterialTheme.colorScheme.onPrimaryContainer
+                                tint = MaterialTheme.colorScheme.primary
                             )
                         }
                     }

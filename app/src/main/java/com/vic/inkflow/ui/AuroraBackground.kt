@@ -74,23 +74,25 @@ fun AuroraBackground(
 ) {
     val effectiveCount = bubbleCount ?: orbCount
     // 高級感配方：小而多、柔而慢。alpha 由繪製 stops 控制，這裡存純色。
+    // S1 預飽和：haze/RenderEffect 鏈塞不進 saturation 節點，玻璃會吃掉彩度，
+    // 所以源頭直接給更鮮的色，透出來剛好（零成本替代 saturation boost 1.5x）。
     val palette = if (isDarkTheme) {
         listOf(
-            Color(0xFF7C83FF),
-            Color(0xFFA78BFA),
-            Color(0xFF67E8F9),
-            Color(0xFF818CF8),
-            Color(0xFFE879F9),
-            Color(0xFF60A5FA)
+            Color(0xFF7C6CFF),
+            Color(0xFFA855F7),
+            Color(0xFF22D3EE),
+            Color(0xFF6366F1),
+            Color(0xFFEC6FF7),
+            Color(0xFF3B9DFF)
         )
     } else {
         listOf(
-            Color(0xFF6366F1),
-            Color(0xFF8B5CF6),
-            Color(0xFF0891B2),
-            Color(0xFFA78BFA),
-            Color(0xFF818CF8),
-            Color(0xFFC7D2FE)
+            Color(0xFF4F46E5),
+            Color(0xFF7C3AED),
+            Color(0xFF0E7490),
+            Color(0xFF9333EA),
+            Color(0xFF2563EB),
+            Color(0xFF38BDF8)
         )
     }
 

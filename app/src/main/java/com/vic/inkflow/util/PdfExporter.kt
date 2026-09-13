@@ -533,7 +533,20 @@ object PdfExporter {
             val pdfW = ann.modelWidth  * ratioX
             val pdfH = ann.modelHeight * ratioY
             val pdfY = pageHeight - ann.modelY * ratioY - pdfH
-            stream.drawImage(imgXObj, pdfX, pdfY, pdfW, pdfH)
+            // M5: model rotation is clockwise on screen (y-down) = clockwise in PDF
+            // user space too, i.e. a negative PDF (counterclockwise-positive) angle.
+            if (ann.rotation != 0f) {
+                val pdfCx = (ann.modelX + ann.modelWidth / 2f) * ratioX
+                val pdfCy = pageHeight - (ann.modelY + ann.modelHeight / 2f) * ratioY
+                stream.saveGraphicsState()
+                stream.transform(
+                    Matrix.getRotateInstance(Math.toRadians(-ann.rotation.toDouble()), pdfCx, pdfCy)
+                )
+                stream.drawImage(imgXObj, pdfX, pdfY, pdfW, pdfH)
+                stream.restoreGraphicsState()
+            } else {
+                stream.drawImage(imgXObj, pdfX, pdfY, pdfW, pdfH)
+            }
         } catch (_: Exception) { /* skip unreadable images */ }
     }
 

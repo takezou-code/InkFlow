@@ -182,7 +182,6 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
-import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.draganddrop.DragAndDropEvent
 import androidx.compose.ui.draganddrop.DragAndDropTarget
@@ -292,14 +291,14 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
                                 return true
                             }
                         }
-                    ).then(if (hazeState != null) Modifier.glassPanel(hazeState, isDarkTheme, ShapeMd) else Modifier),
+                    ).then(if (hazeState != null) Modifier.glassPanel(hazeState, isDarkTheme, ShapeMd) else Modifier.fauxGlassPanel(isDarkTheme, ShapeMd)),
                     shape = ShapeMd,
-                    color = if (hazeState != null) Color.Transparent else if (isDropTargetActive) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f) else MaterialTheme.colorScheme.surface.copy(alpha = 0.78f),
+                    color = if (isDropTargetActive) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f) else Color.Transparent,
                     contentColor = MaterialTheme.colorScheme.onSurface,
-                    border = if (hazeState != null) null else BorderStroke(
+                    border = if (isDropTargetActive) BorderStroke(
                         1.dp,
-                        if (isDropTargetActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.8f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
-                    )
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.8f)
+                    ) else null
                 ) {
                     Column(
                         modifier = Modifier
@@ -382,6 +381,9 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
                         AnimatedDialog(visible = showNewChildFolderDialog) {
                 androidx.compose.material3.AlertDialog(
                     onDismissRequest = { showNewChildFolderDialog = false },
+                    modifier = Modifier.fauxGlassPanel(isDarkTheme, ShapeLg),
+                    containerColor = Color.Transparent,
+                    shape = ShapeLg,
                     title = { Text("建立子資料夾") },
                     text = {
                         androidx.compose.material3.OutlinedTextField(
@@ -389,6 +391,8 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
                             onValueChange = { newChildFolderName = it },
                             singleLine = true,
                             label = { Text("資料夾名稱") },
+                            colors = glassFieldColors(isDarkTheme),
+                            shape = ShapeLg,
                             modifier = Modifier.fillMaxWidth()
                         )
                     },
@@ -410,6 +414,9 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
             AnimatedDialog(visible = showRenameFolderDialog) {
                 androidx.compose.material3.AlertDialog(
                     onDismissRequest = { showRenameFolderDialog = false },
+                    modifier = Modifier.fauxGlassPanel(isDarkTheme, ShapeLg),
+                    containerColor = Color.Transparent,
+                    shape = ShapeLg,
                     title = { Text("重新命名資料夾") },
                     text = {
                         androidx.compose.material3.OutlinedTextField(
@@ -417,6 +424,8 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
                             onValueChange = { renameFolderInput = it },
                             singleLine = true,
                             label = { Text("資料夾名稱") },
+                            colors = glassFieldColors(isDarkTheme),
+                            shape = ShapeLg,
                             modifier = Modifier.fillMaxWidth()
                         )
                     },
@@ -438,6 +447,9 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
             AnimatedDialog(visible = showDeleteFolderDialog) {
                 androidx.compose.material3.AlertDialog(
                     onDismissRequest = { showDeleteFolderDialog = false },
+                    modifier = Modifier.fauxGlassPanel(isDarkTheme, ShapeLg),
+                    containerColor = Color.Transparent,
+                    shape = ShapeLg,
                     title = { Text("刪除資料夾") },
                     text = { Text("確定要刪除「${folder.name}」嗎？子資料夾會一併刪除，內含文件會保留並移到未分類。") },
                     confirmButton = {
@@ -457,6 +469,9 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
             AnimatedDialog(visible = showMoveFolderDialog) {
                 androidx.compose.material3.AlertDialog(
                     onDismissRequest = { showMoveFolderDialog = false },
+                    modifier = Modifier.fauxGlassPanel(isDarkTheme, ShapeLg),
+                    containerColor = Color.Transparent,
+                    shape = ShapeLg,
                     title = { Text("移動資料夾") },
                     text = {
                         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -516,14 +531,14 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
                                 return true
                             }
                         }
-                    ).then(if (hazeState != null) Modifier.glassPanel(hazeState, isDarkTheme, ShapeMd) else Modifier),
+                    ).then(if (hazeState != null) Modifier.glassPanel(hazeState, isDarkTheme, ShapeMd) else Modifier.fauxGlassPanel(isDarkTheme, ShapeMd)),
                 shape = ShapeMd,
-                color = if (hazeState != null) Color.Transparent else if (isFolderDropTargetActive) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f) else MaterialTheme.colorScheme.surface.copy(alpha = 0.78f),
+                color = if (isFolderDropTargetActive) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f) else Color.Transparent,
                 contentColor = MaterialTheme.colorScheme.onSurface,
-                border = if (hazeState != null) null else BorderStroke(
+                border = if (isFolderDropTargetActive) BorderStroke(
                     1.dp,
-                    if (isFolderDropTargetActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.8f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
-                )
+                    MaterialTheme.colorScheme.primary.copy(alpha = 0.8f)
+                ) else null
             ) {
                 Column(
                     modifier = Modifier
@@ -595,7 +610,11 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
                                 }
                                 androidx.compose.material3.DropdownMenu(
                                     expanded = showFolderMenu,
-                                    onDismissRequest = { showFolderMenu = false }
+                                    onDismissRequest = { showFolderMenu = false },
+                                    containerColor = Color.Transparent,
+                                    shadowElevation = 0.dp,
+                                    shape = ShapeMd,
+                                    modifier = Modifier.fauxGlassPanel(isDarkTheme, ShapeMd)
                                 ) {
                                     androidx.compose.material3.DropdownMenuItem(
                                         text = { Text("重新命名") },
@@ -676,12 +695,16 @@ internal fun DocumentCard(
     var showCreateFolderDialog by remember { mutableStateOf(false) }
     var renameInput by remember(document.displayName) { mutableStateOf(document.displayName) }
     var folderInput by remember { mutableStateOf("") }
-    val cardShellColor = MaterialTheme.colorScheme.surface
-    val cardCoverColor = MaterialTheme.colorScheme.surface
+    // 整張卡同一塊玻璃：封面/收藏鈕都只用半透明，不再有實心色塊切開材質
+    val cardCoverVeil = Color.White.copy(alpha = if (isDarkTheme) 0.10f else 0.35f)
+    val favVeil = Color.White.copy(alpha = if (isDarkTheme) 0.18f else 0.55f)
 
     AnimatedDialog(visible = showRenameDialog) {
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { showRenameDialog = false },
+            modifier = Modifier.fauxGlassPanel(isDarkTheme, ShapeLg),
+            containerColor = Color.Transparent,
+            shape = ShapeLg,
             title = { Text("重新命名") },
             text = {
                 androidx.compose.material3.OutlinedTextField(
@@ -689,6 +712,8 @@ internal fun DocumentCard(
                     onValueChange = { renameInput = it },
                     singleLine = true,
                     label = { Text("筆記名稱") },
+                    colors = glassFieldColors(isDarkTheme),
+                    shape = ShapeLg,
                     modifier = Modifier.fillMaxWidth()
                 )
             },
@@ -712,6 +737,9 @@ internal fun DocumentCard(
     AnimatedDialog(visible = showDeleteDialog) {
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { showDeleteDialog = false },
+            modifier = Modifier.fauxGlassPanel(isDarkTheme, ShapeLg),
+            containerColor = Color.Transparent,
+            shape = ShapeLg,
             title = { Text("刪除筆記本") },
             text = {
                 Text("確定要刪除「${document.displayName}」嗎？此操作會一併移除筆跡與標註，且無法復原。")
@@ -737,6 +765,9 @@ internal fun DocumentCard(
     AnimatedDialog(visible = showMoveDialog) {
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { showMoveDialog = false },
+            modifier = Modifier.fauxGlassPanel(isDarkTheme, ShapeLg),
+            containerColor = Color.Transparent,
+            shape = ShapeLg,
             title = { Text("移到資料夾") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -779,6 +810,9 @@ internal fun DocumentCard(
     AnimatedDialog(visible = showCreateFolderDialog) {
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { showCreateFolderDialog = false },
+            modifier = Modifier.fauxGlassPanel(isDarkTheme, ShapeLg),
+            containerColor = Color.Transparent,
+            shape = ShapeLg,
             title = { Text("建立資料夾") },
             text = {
                 androidx.compose.material3.OutlinedTextField(
@@ -786,6 +820,8 @@ internal fun DocumentCard(
                     onValueChange = { folderInput = it },
                     singleLine = true,
                     label = { Text("資料夾名稱") },
+                    colors = glassFieldColors(isDarkTheme),
+                    shape = ShapeLg,
                     modifier = Modifier.fillMaxWidth()
                 )
             },
@@ -826,14 +862,14 @@ internal fun DocumentCard(
         .aspectRatio(0.85f)
         .graphicsLayer { scaleX = cardScale; scaleY = cardScale }
         .documentDragSource(document.uri)
-        .then(if (hazeState != null) Modifier.glassPanel(hazeState, isDarkTheme, ShapeLg) else Modifier)
+        .then(if (hazeState != null) Modifier.glassPanel(hazeState, isDarkTheme, ShapeLg) else Modifier.fauxGlassPanel(isDarkTheme, ShapeLg))
     androidx.compose.material3.Card(
         onClick = onClick,
         modifier = cardModifier,
         shape = ShapeLg,
-        colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = if (hazeState != null) Color.Transparent else cardShellColor),
-        border = if (hazeState != null) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-        elevation = androidx.compose.material3.CardDefaults.cardElevation(defaultElevation = if (hazeState != null) 0.dp else 2.dp),
+        colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = Color.Transparent),
+        border = null,
+        elevation = androidx.compose.material3.CardDefaults.cardElevation(defaultElevation = 0.dp),
         interactionSource = cardInteractionSource
     ) {
         Column(modifier = Modifier.fillMaxSize().padding(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -843,7 +879,7 @@ internal fun DocumentCard(
                     .fillMaxWidth()
                     .weight(0.6f)
                     .clip(ShapeMd)
-                    .background(cardCoverColor),
+                    .background(cardCoverVeil),
                 contentAlignment = Alignment.Center
             ) {
                 Crossfade(
@@ -882,7 +918,7 @@ internal fun DocumentCard(
                     androidx.compose.material3.IconButton(
                         onClick = { onFavoriteToggle(!document.isFavorite) },
                         modifier = Modifier.size(32.dp).background(
-                            MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+                            favVeil,
                             CircleShape
                         )
                     ) {
@@ -920,7 +956,11 @@ internal fun DocumentCard(
                         }
                         androidx.compose.material3.DropdownMenu(
                             expanded = showMenu,
-                            onDismissRequest = { showMenu = false }
+                            onDismissRequest = { showMenu = false },
+                            containerColor = Color.Transparent,
+                            shadowElevation = 0.dp,
+                            shape = ShapeMd,
+                            modifier = Modifier.fauxGlassPanel(isDarkTheme, ShapeMd)
                         ) {
                             androidx.compose.material3.DropdownMenuItem(
                                 text = { Text("移到資料夾") },
@@ -989,12 +1029,6 @@ internal fun DocumentListRow(
     var showCreateFolderDialog by remember { mutableStateOf(false) }
     var renameInput by remember(document.displayName) { mutableStateOf(document.displayName) }
     var folderInput by remember { mutableStateOf("") }
-    val isDarkSurface = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    val rowShellColor = if (isDarkSurface) {
-        MaterialTheme.colorScheme.surface.copy(alpha = 0.84f)
-    } else {
-        MaterialTheme.colorScheme.surface
-    }
 
     val dateStr = remember(document.lastOpenedAt) {
         java.text.SimpleDateFormat("yyyy/MM/dd HH:mm", java.util.Locale.getDefault())
@@ -1007,12 +1041,12 @@ internal fun DocumentListRow(
             .fillMaxWidth()
             .height(88.dp)
             .documentDragSource(document.uri)
-            .then(if (hazeState != null) Modifier.glassPanel(hazeState, isDarkTheme, ShapeMd) else Modifier),
+            .then(if (hazeState != null) Modifier.glassPanel(hazeState, isDarkTheme, ShapeMd) else Modifier.fauxGlassPanel(isDarkTheme, ShapeMd)),
         shape = ShapeMd,
-        color = if (hazeState != null) Color.Transparent else rowShellColor,
+        color = Color.Transparent,
         contentColor = MaterialTheme.colorScheme.onSurface,
-        border = if (hazeState != null) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
-        shadowElevation = if (hazeState != null) 0.dp else 2.dp
+        border = null,
+        shadowElevation = 0.dp
     ) {
         Row(
             modifier = Modifier.fillMaxSize().padding(8.dp),
@@ -1074,7 +1108,11 @@ internal fun DocumentListRow(
                 }
                 androidx.compose.material3.DropdownMenu(
                     expanded = showMenu,
-                    onDismissRequest = { showMenu = false }
+                    onDismissRequest = { showMenu = false },
+                    containerColor = Color.Transparent,
+                    shadowElevation = 0.dp,
+                    shape = ShapeMd,
+                    modifier = Modifier.fauxGlassPanel(isDarkTheme, ShapeMd)
                 ) {
                     androidx.compose.material3.DropdownMenuItem(
                         text = { Text("移到資料夾") },
@@ -1117,6 +1155,9 @@ internal fun DocumentListRow(
     AnimatedDialog(visible = showMoveDialog) {
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { showMoveDialog = false },
+            modifier = Modifier.fauxGlassPanel(isDarkTheme, ShapeLg),
+            containerColor = Color.Transparent,
+            shape = ShapeLg,
             title = { Text("移到資料夾") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1159,13 +1200,19 @@ internal fun DocumentListRow(
     AnimatedDialog(visible = showCreateFolderDialog) {
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { showCreateFolderDialog = false },
+            modifier = Modifier.fauxGlassPanel(isDarkTheme, ShapeLg),
+            containerColor = Color.Transparent,
+            shape = ShapeLg,
             title = { Text("建立資料夾") },
             text = {
                 androidx.compose.material3.OutlinedTextField(
                     value = folderInput,
                     onValueChange = { folderInput = it },
                     singleLine = true,
-                    label = { Text("資料夾名稱") }
+                    label = { Text("資料夾名稱") },
+                    colors = glassFieldColors(isDarkTheme),
+                    shape = ShapeLg,
+                    modifier = Modifier.fillMaxWidth()
                 )
             },
             confirmButton = {
@@ -1190,12 +1237,18 @@ internal fun DocumentListRow(
     AnimatedDialog(visible = showRenameDialog) {
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { showRenameDialog = false },
+            modifier = Modifier.fauxGlassPanel(isDarkTheme, ShapeLg),
+            containerColor = Color.Transparent,
+            shape = ShapeLg,
             title = { Text("重新命名") },
             text = {
                 androidx.compose.material3.OutlinedTextField(
                     value = renameInput,
                     onValueChange = { renameInput = it },
-                    singleLine = true
+                    singleLine = true,
+                    colors = glassFieldColors(isDarkTheme),
+                    shape = ShapeLg,
+                    modifier = Modifier.fillMaxWidth()
                 )
             },
             confirmButton = {
@@ -1215,6 +1268,9 @@ internal fun DocumentListRow(
     AnimatedDialog(visible = showDeleteDialog) {
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { showDeleteDialog = false },
+            modifier = Modifier.fauxGlassPanel(isDarkTheme, ShapeLg),
+            containerColor = Color.Transparent,
+            shape = ShapeLg,
             title = { Text("刪除文件") },
             text = { Text("確定要刪除「${document.displayName}」嗎？此操作無法還原。") },
             confirmButton = {

@@ -244,19 +244,22 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** 套索氣泡的圖示動作鈕：圖示 + 兩字標籤，enabled 反灰走 TextButton 預設。 */
+/** 套索氣泡的圖示動作鈕：全自繪（Box + clickable），不用 TextButton。
+ *  M3 TextButton 自帶 chrome 會在圖示列畫出一條銳利白帶（Bisect A/B 定案），故棄用。 */
 @Composable
 private fun SelectionBubbleAction(
     icon: ImageVector,
     label: String,
     enabled: Boolean,
-    tint: Color = LocalContentColor.current,
+    tint: Color = Color(0xFF1E293B),
     onClick: () -> Unit
 ) {
-    TextButton(
-        onClick = onClick,
-        enabled = enabled,
-        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        contentAlignment = Alignment.Center
     ) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -266,11 +269,13 @@ private fun SelectionBubbleAction(
                 imageVector = icon,
                 contentDescription = label,
                 modifier = Modifier.size(20.dp),
-                tint = tint
+                tint = if (enabled) tint else tint.copy(alpha = 0.38f)
             )
             Text(
                 text = label,
-                style = MaterialTheme.typography.labelSmall
+                style = MaterialTheme.typography.labelSmall,
+                color = if (enabled) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
             )
         }
     }
@@ -415,11 +420,15 @@ internal fun Workspace(
     }
 
     // 渲染刻度跟著可視寬：可視越寬渲染倍率越高（2x–3.5x），旋轉/轉向自動重渲
+    // Fix2b: 防抖 300ms — AI 面板開合/拖曳時寬度連變，只在落定後重渲，避免 evict 風暴
     val renderEpoch by pdfViewModel.renderEpoch.collectAsState()
     val firstSize by pdfViewModel.firstPageSize.collectAsState()
     LaunchedEffect(viewportWpx, firstSize) {
         val w = firstSize?.first ?: 595f
         if (viewportWpx > 0 && w > 0f) {
+            android.util.Log.d("InkFlowDbg", "viewport settled? wpx=$viewportWpx firstW=$w (debouncing)")
+            delay(300)
+            android.util.Log.d("InkFlowDbg", "viewport applied wpx=$viewportWpx")
             pdfViewModel.setDisplayRenderScale(viewportWpx.toFloat() / w)
         }
     }
@@ -636,17 +645,20 @@ internal fun Workspace(
                     targetOffsetY = { it / 3 }
                 )
         ) {
-            Surface(
+            // 最終版：Box + 自繪毛玻璃 + 自繪按鈕，零 M3 Surface/TextButton（白帶兇手，已定案棄用）。
+            // 陰影用 graphicsLayer 打（不經過 Surface，避免 tonal/shadow 附帶圖層）。
+            Box(
                 modifier = Modifier
-                    .smartGlass(hazeState, isDarkSurface, shape = RoundedCornerShape(22.dp), specular = true, prismal = prismalBackdrop)
+                    .graphicsLayer {
+                        shadowElevation = with(density) { 8.dp.toPx() }
+                        shape = RoundedCornerShape(22.dp)
+                        clip = false
+                    }
+                    .bubbleGlass(false, RoundedCornerShape(22.dp))
                     .onSizeChanged {
                         bubbleWidthPx = it.width
                         bubbleHeightPx = it.height
-                    },
-                shape = RoundedCornerShape(22.dp),
-                color = Color.Transparent,
-                contentColor = MaterialTheme.colorScheme.onSurface,
-                shadowElevation = 6.dp
+                    }
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
@@ -734,20 +746,24 @@ internal fun Workspace(
                         icon = Icons.Filled.DeleteOutline,
                         label = "刪除",
                         enabled = hasEditableSelection,
-                        tint = if (hasEditableSelection) MaterialTheme.colorScheme.error else LocalContentColor.current,
+                        tint = if (hasEditableSelection) MaterialTheme.colorScheme.error else Color(0xFF1E293B),
                         onClick = {
                             if (!hasEditableSelection) return@SelectionBubbleAction
                             viewModel.deleteSelection()
                         }
                     )
-                    IconButton(
-                        onClick = { viewModel.clearSelection() },
-                        modifier = Modifier.size(24.dp)
+                    Box(
+                        modifier = Modifier
+                            .size(24.dp)
+                            .clip(CircleShape)
+                            .clickable { viewModel.clearSelection() },
+                        contentAlignment = Alignment.Center
                     ) {
                         Icon(
                             Icons.Outlined.Close,
                             contentDescription = "取消選取",
-                            modifier = Modifier.size(16.dp)
+                            modifier = Modifier.size(16.dp),
+                            tint = Color(0xFF1E293B)
                         )
                     }
                 }

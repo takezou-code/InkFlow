@@ -242,10 +242,15 @@ internal fun DocumentSettingsDialog(
     onInsertPdf: () -> Unit
 ) {
     var selectedBackground by remember { mutableStateOf(currentStyle.background) }
+    // 對話框自判深淺（不改簽名驚動呼叫端）
+    val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    val innerVeil = Color.White.copy(alpha = if (isDark) 0.08f else 0.35f)
 
     androidx.compose.material3.AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = MaterialTheme.colorScheme.surface,
+        modifier = Modifier.fauxGlassPanel(isDark, ShapeLg),
+        containerColor = Color.Transparent,
+        shape = ShapeLg,
         title = { Text("文件設定中心", style = MaterialTheme.typography.titleLarge) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -256,7 +261,7 @@ internal fun DocumentSettingsDialog(
                 )
 
                 Surface(
-                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    color = innerVeil,
                     shape = ShapeLg
                 ) {
                     Column(
@@ -304,6 +309,10 @@ internal fun DocumentSettingsDialog(
                             selected = selectedBackground == bg,
                             onClick = { selectedBackground = bg },
                             label = { Text(label) },
+                            colors = androidx.compose.material3.FilterChipDefaults.filterChipColors(
+                                containerColor = Color.Transparent,
+                                selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
+                            ),
                             leadingIcon = if (selectedBackground == bg) {
                                 { Icon(Icons.Outlined.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
                             } else null
@@ -312,7 +321,7 @@ internal fun DocumentSettingsDialog(
                 }
 
                 Surface(
-                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    color = innerVeil,
                     shape = ShapeLg
                 ) {
                     Row(
@@ -369,6 +378,7 @@ internal fun NewDocPaperSizeDialog(
 ) {
     var selectedWidth by remember { mutableFloatStateOf(595f) }
     var selectedHeight by remember { mutableFloatStateOf(842f) }
+    val isDarkPaper = MaterialTheme.colorScheme.background.luminance() < 0.5f
 
     val paperPresets = remember {
         listOf(
@@ -382,6 +392,9 @@ internal fun NewDocPaperSizeDialog(
 
     androidx.compose.material3.AlertDialog(
         onDismissRequest = onDismiss,
+        modifier = Modifier.fauxGlassPanel(isDarkPaper, ShapeLg),
+        containerColor = Color.Transparent,
+        shape = ShapeLg,
         title = { Text("選擇紙張大小", style = MaterialTheme.typography.titleLarge) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -399,6 +412,10 @@ internal fun NewDocPaperSizeDialog(
                             selected = isPortrait,
                             onClick = { selectedWidth = w; selectedHeight = h },
                             label = { Text("$label 直向") },
+                            colors = androidx.compose.material3.FilterChipDefaults.filterChipColors(
+                                containerColor = Color.Transparent,
+                                selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
+                            ),
                             leadingIcon = if (isPortrait) {
                                 { Icon(Icons.Outlined.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
                             } else null
@@ -407,6 +424,10 @@ internal fun NewDocPaperSizeDialog(
                             selected = isLandscape,
                             onClick = { selectedWidth = h; selectedHeight = w },
                             label = { Text("$label 橫向") },
+                            colors = androidx.compose.material3.FilterChipDefaults.filterChipColors(
+                                containerColor = Color.Transparent,
+                                selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
+                            ),
                             leadingIcon = if (isLandscape) {
                                 { Icon(Icons.Outlined.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
                             } else null

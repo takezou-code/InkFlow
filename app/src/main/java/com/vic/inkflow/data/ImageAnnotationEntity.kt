@@ -25,5 +25,7 @@ data class ImageAnnotationEntity(
     val modelX: Float,
     val modelY: Float,
     val modelWidth: Float,
-    val modelHeight: Float
+    val modelHeight: Float,
+    /** Clockwise degrees about the image center (M5). Scale-free, so canvas/model share it. */
+    val rotation: Float = 0f
 )

@@ -35,7 +35,6 @@ import java.util.zip.ZipOutputStream
 object BackupManager {
     private const val TAG = "BackupManager"
     const val FORMAT_VERSION = 1
-    const val MIME_TYPE = "application/zip"
     private const val MANIFEST_ENTRY = "manifest.json"
     private const val DB_ENTRY = "database.db"
     private const val PDF_PREFIX = "pdfs/"
@@ -65,37 +64,13 @@ object BackupManager {
         }.onFailure { Log.e(TAG, "createBackup failed", it) }
     }
 
-    const val EXPORT_DIR_NAME = "exports"
-    const val MAX_EXPORT_KEEP = 3
-
-    fun exportDir(context: Context): File =
-        File(context.filesDir, EXPORT_DIR_NAME).also { it.mkdirs() }
-
-    /**
-     * 匯出到 App 私有目錄（file://；此裝置上唯一可靠的寫入路徑），呼叫方再用
-     * FileProvider 分享出去（LINE／雲端／檔案管理），由對方 App 落檔。
-     * 傳回 (文件數, 檔案)。只留最新 [MAX_EXPORT_KEEP] 份。
-     */
-    suspend fun exportToShareFile(
-        context: Context,
-        fileName: String,
-        onProgress: (String) -> Unit = {}
-    ): Result<Pair<Int, File>> = withContext(Dispatchers.IO) {
-        runCatching {
-            onProgress("備份trace:進exportDir")
-            val dest = File(exportDir(context), fileName)
-            onProgress("備份trace:開檔案")
-            val count = FileOutputStream(dest).use {
-                onProgress("備份trace:進writeBackupZip")
-                writeBackupZip(context, it, onProgress)
-            }
-            exportDir(context).listFiles { f -> f.isFile && f.name.endsWith(".zip") }
-                ?.sortedByDescending { it.lastModified() }
-                ?.drop(MAX_EXPORT_KEEP)
-                ?.forEach { it.delete() }
-            count to dest
-        }.onFailure { Log.e(TAG, "exportToShareFile failed", it) }
-    }
+    /** 公開備份目錄：檔案管理→文件→InkFlow（自動備份公開軌用）。 */
+    fun publicBackupDir(): File = File(
+        android.os.Environment.getExternalStoragePublicDirectory(
+            android.os.Environment.DIRECTORY_DOCUMENTS
+        ),
+        "InkFlow"
+    )
 
     /** 寫 zip 本體；呼叫方負責開/關 stream。傳回文件數。 */
     suspend fun writeBackupZip(

@@ -22,6 +22,30 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    // Release signing from local.properties (gitignored). If the keystore is absent
+    // (e.g. fresh clone), release builds stay unsigned rather than failing config.
+    // (Manual parse: java.util.* is not on the script classpath.)
+    val ksMap: Map<String, String> = rootProject.file("local.properties")
+        .takeIf { it.exists() }
+        ?.readLines()
+        .orEmpty()
+        .mapNotNull { line ->
+            val i = line.indexOf('=')
+            if (i <= 0) null else line.substring(0, i).trim() to line.substring(i + 1).trim()
+        }
+        .toMap()
+    val ksFile = rootProject.file(ksMap["inkflow.storeFile"] ?: "release.pfx")
+    signingConfigs {
+        if (ksFile.exists() && ksMap.containsKey("inkflow.storePassword")) {
+            create("release") {
+                storeFile = ksFile
+                storePassword = ksMap["inkflow.storePassword"]
+                keyAlias = ksMap["inkflow.keyAlias"] ?: "inkflow"
+                keyPassword = ksMap["inkflow.keyPassword"]
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -29,6 +53,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            signingConfigs.findByName("release")?.let { signingConfig = it }
         }
     }
     compileOptions {
@@ -87,3 +112,4 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
 }
+
