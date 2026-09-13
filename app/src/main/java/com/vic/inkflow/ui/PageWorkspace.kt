@@ -411,12 +411,30 @@ internal fun Workspace(
         if (a.isFinite() && a in 0.2f..5f) a else 1f / 1.414f
     }
 
-    // 卷動跟著走：主列表滑到哪頁，作用頁就換到哪頁（側欄由 EditorScreen 跟著置中）
+    // 卷動跟著走：作用頁 = 可見面積最大的那頁（不是 firstVisible）。
+    // 之前用 firstVisibleItemIndex，第 2 頁要「完整出現、把第 1 頁完全頂掉」才會激活，
+    // 半露出的頁只能看不能寫。改最大可見面積後，露出一半以上就能直接寫。
+    // （側欄置中由 EditorScreen 跟著做）
     LaunchedEffect(mainListState, pageCount) {
-        snapshotFlow { mainListState.firstVisibleItemIndex }
-            .collect { idx ->
-                if (idx in 0 until pageCount) onScrollPage(idx)
+        snapshotFlow {
+            val info = mainListState.layoutInfo
+            val start = info.viewportStartOffset
+            val end = info.viewportEndOffset
+            var best = -1
+            var bestVisible = -1
+            for (item in info.visibleItemsInfo) {
+                val visStart = maxOf(item.offset, start)
+                val visEnd = minOf(item.offset + item.size, end)
+                val visible = (visEnd - visStart).coerceAtLeast(0)
+                if (visible > bestVisible) {
+                    bestVisible = visible
+                    best = item.index
+                }
             }
+            best
+        }.collect { idx ->
+            if (idx in 0 until pageCount) onScrollPage(idx)
+        }
     }
 
     // 渲染刻度跟著可視寬：可視越寬渲染倍率越高（2x–3.5x），旋轉/轉向自動重渲

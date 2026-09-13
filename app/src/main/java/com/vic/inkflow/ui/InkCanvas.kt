@@ -1336,7 +1336,13 @@ fun InkCanvas(
                                 val points = currentPathPoints.subList(fromIndex, currentPathPoints.size)
                                     .map { Offset(it.x, it.y) }
                                 if (points.size >= 2) {
-                                    viewModel.deleteStrokesIntersecting(points)
+                                    // 手勢中途只記命中不切筆（切筆留到手勢結尾，
+                                    // 避免 pointerInput key 變化中途重啟打斷手勢）。
+                                    // quick-swipe 本來就是筆：不記旗不切筆。
+                                    viewModel.deleteStrokesIntersecting(
+                                        points,
+                                        markEraseHit = activeTool == Tool.ERASER
+                                    )
                                     lastEraserDispatchTime = drag.uptimeMillis
                                 }
                             }
@@ -1362,6 +1368,7 @@ fun InkCanvas(
                     activeEnvelopePath.reset()
                     currentPathPoints.clear()
                     activePathVersion++
+                    if (activeTool == Tool.ERASER) viewModel.clearEraseHitPending()
                     return@awaitEachGesture
                 }
 
@@ -1371,6 +1378,7 @@ fun InkCanvas(
                     activeEnvelopePath.reset()
                     currentPathPoints.clear()
                     activePathVersion++
+                    if (activeTool == Tool.ERASER) viewModel.clearEraseHitPending()
                     return@awaitEachGesture
                 }
 
@@ -1391,7 +1399,7 @@ fun InkCanvas(
                                 maxSizeWidthPx  = maxSizeWidthDuring,
                                 maxSizeHeightPx = maxSizeHeightDuring
                             )
-                            viewModel.deleteStrokesIntersecting(points)
+                            viewModel.deleteStrokesIntersecting(points, markEraseHit = false)
                         } else {
                             // A single-point tap produces no drag points; duplicate it so
                             // saveStroke receives ≥2 points and StrokeCap.Round renders a dot.
@@ -1798,7 +1806,35 @@ fun InkCanvas(
                         cvs.drawPath(activeEnvelopePath, hlPreviewPaint)
                     }
                     Tool.LASSO  -> drawPath(activePath, Color.DarkGray, style = Stroke(width = 2f, pathEffect = dashPreview))
-                    Tool.ERASER -> drawPath(activePath, Color.Gray,     style = Stroke(width = 2f))
+                    Tool.ERASER -> {
+                        // 橡皮擦視覺：半透明暖紅寬帶（實際擦除寬度）+ 實線中心 + 頭部游標環。
+                        // 之前是 2px 灰線，擦到哪裡完全看不出來。
+                        // 擦除半徑與命中判定一致：model 10f → 換算成 canvas px。
+                        val modelW = viewModel.modelWidth
+                        val eraserRpx = if (modelW > 0f) 10f * (size.width / modelW) else 24f
+                        val eraserColor = Color(0xFFFF5A5A)
+                        drawPath(
+                            activePath, eraserColor.copy(alpha = 0.28f),
+                            style = Stroke(width = eraserRpx * 2f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                        )
+                        drawPath(
+                            activePath, eraserColor,
+                            style = Stroke(width = 2.5f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                        )
+                        // 頭部游標環：顯示實際擦除範圍，手指/筆尖擋住時也看得到邊緣
+                        currentPathPoints.lastOrNull()?.let { head ->
+                            val c = Offset(head.x, head.y)
+                            drawCircle(
+                                color = Color.White.copy(alpha = 0.30f),
+                                radius = eraserRpx, center = c
+                            )
+                            drawCircle(
+                                color = eraserColor, radius = eraserRpx, center = c,
+                                style = Stroke(width = 2.5f)
+                            )
+                            drawCircle(color = eraserColor, radius = 3f, center = c)
+                        }
+                    }
                     else -> { }
                 }
             }
