@@ -5,8 +5,12 @@ import com.vic.inkflow.ui.theme.ShapeLg
 import android.content.SharedPreferences
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitDragOrCancellation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,8 +18,10 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -54,6 +60,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -61,11 +68,15 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
+import kotlin.math.roundToInt
 import com.vic.inkflow.util.AutoBackupScheduler
 import com.vic.inkflow.util.BackupManager
 import kotlinx.coroutines.launch
@@ -93,11 +104,29 @@ fun GlobalSettingsScreen(
     var defaultPalmThresholdDp by remember { mutableFloatStateOf(prefs.getFloat("default_palm_threshold_dp", 45f)) }
     var defaultStrokeSpeedSensitivity by remember { mutableFloatStateOf(prefs.getFloat("default_stroke_speed_sensitivity", 1f)) }
     var defaultFingerTouchThresholdDp by remember { mutableFloatStateOf(prefs.getFloat("default_finger_touch_threshold_dp", 8f)) }
+    // 手指觸控落筆校正（全域，副廠電容筆專用）：開關＋XY 偏移 dp
+    var touchCalEnabled by remember { mutableStateOf(prefs.getBoolean("default_touch_cal_enabled", false)) }
+    var touchCalDxDp by remember { mutableFloatStateOf(prefs.getFloat("default_touch_cal_dx_dp", 0f)) }
+    var touchCalDyDp by remember { mutableFloatStateOf(prefs.getFloat("default_touch_cal_dy_dp", 0f)) }
+    fun persistTouchCal() {
+        prefs.edit()
+            .putBoolean("default_touch_cal_enabled", touchCalEnabled)
+            .putFloat("default_touch_cal_dx_dp", touchCalDxDp)
+            .putFloat("default_touch_cal_dy_dp", touchCalDyDp)
+            .apply()
+    }
     var defaultPenColor by remember { mutableIntStateOf(prefs.getInt("default_pen_color", 0xFF000000.toInt())) }
     var defaultHighlighterColor by remember { mutableIntStateOf(prefs.getInt("default_highlighter_color", 0xFFFFC700.toInt())) }
     var defaultPenWidth by remember { mutableFloatStateOf(prefs.getFloat("default_pen_width", 4f)) }
     var defaultHighlighterWidth by remember { mutableFloatStateOf(prefs.getFloat("default_highlighter_width", 8f)) }
     var defaultBackground by remember { mutableStateOf(prefs.getString("default_paper_background", PageBackground.BLANK.name) ?: PageBackground.BLANK.name) }
+    // 舊 prefs 若存著已退役的 PALM_REJECTION，一次洗成 STYLUS_ONLY（跟編輯器實際行為一致）
+    LaunchedEffect(Unit) {
+        if (defaultInputMode == InputMode.PALM_REJECTION.name) {
+            defaultInputMode = InputMode.STYLUS_ONLY.name
+            prefs.edit().putString("default_input_mode", InputMode.STYLUS_ONLY.name).apply()
+        }
+    }
 
     var showPenColorPicker by remember { mutableStateOf(false) }
     var showHighlighterColorPicker by remember { mutableStateOf(false) }
@@ -409,6 +438,27 @@ fun GlobalSettingsScreen(
                 SettingsSliderRow("手指/筆接觸面積門檻", defaultFingerTouchThresholdDp, 4f..16f) {
                     defaultFingerTouchThresholdDp = it
                     prefs.edit().putFloat("default_finger_touch_threshold_dp", it).apply()
+                }
+
+                SettingsSwitchRow(
+                    title = "手指觸控落筆校正",
+                    subtitle = "副廠電容筆走手指通道、墨水偏離筆尖時，用搖桿把落筆點拉回筆尖；僅手指模式生效，觸控筆模式不受影響",
+                    checked = touchCalEnabled,
+                    onCheckedChange = {
+                        touchCalEnabled = it
+                        persistTouchCal()
+                    }
+                )
+                if (touchCalEnabled) {
+                    TouchCalibrationBlock(
+                        dxDp = touchCalDxDp,
+                        dyDp = touchCalDyDp,
+                        onOffsetChange = { dx, dy ->
+                            touchCalDxDp = dx
+                            touchCalDyDp = dy
+                            persistTouchCal()
+                        }
+                    )
                 }
             }
 
@@ -736,6 +786,156 @@ private fun PaletteAddTile(onClick: () -> Unit, tileSize: Dp = 68.dp) {
     }
 }
 
+/**
+ * 手指落筆校正區：左校正墊＋右搖桿。
+ * 用法：用筆尖按住校正墊不放，另一手推搖桿——墊上紅十字是系統報點、靛色圈是校正後落筆點，
+ * 把靛圈推到筆尖正下方即可。搖桿在左、校正墊在右；搖桿是低靈敏微調
+ * （拖 4dp 只走 1dp），放開自動回中、偏移保留，可多次疊加到 ±30dp。
+ */
+private const val TOUCH_CAL_RANGE_DP = 30f
+private const val TOUCH_CAL_STICK_SENS = 0.25f
+
+@Composable
+private fun TouchCalibrationBlock(
+    dxDp: Float,
+    dyDp: Float,
+    onOffsetChange: (Float, Float) -> Unit
+) {
+    val density = LocalDensity.current
+    Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+        Text(
+            text = String.format("dx %+.1fdp　dy %+.1fdp（範圍 ±%.0fdp）", dxDp, dyDp, TOUCH_CAL_RANGE_DP),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // --- 搖桿（左）：增量微調 stick，放開回中、偏移保留 ---
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                var knobPx by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+                // 長駐協程讀最新偏移必須走 ref，直讀 dxDp/dyDp 會凍結在首次 composition
+                val dxRef = rememberUpdatedState(dxDp)
+                val dyRef = rememberUpdatedState(dyDp)
+                val maxDeflectPx = with(density) { 36.dp.toPx() }
+                Box(
+                    modifier = Modifier
+                        .size(120.dp)
+                        .pointerInput(Unit) {
+                            awaitEachGesture {
+                                val down = awaitFirstDown(requireUnconsumed = false)
+                                down.consume()
+                                val centerPx = androidx.compose.ui.geometry.Offset(size.width / 2f, size.height / 2f)
+                                // 每個手勢以當下最新偏移為基點累加
+                                val baseDx = dxRef.value
+                                val baseDy = dyRef.value
+                                fun push(pos: androidx.compose.ui.geometry.Offset) {
+                                    val d = pos - centerPx
+                                    val len = kotlin.math.hypot(d.x, d.y)
+                                    val clamped = if (len > maxDeflectPx) d * (maxDeflectPx / len) else d
+                                    knobPx = clamped
+                                    val step = with(density) {
+                                        androidx.compose.ui.geometry.Offset(
+                                            clamped.x / density.density * TOUCH_CAL_STICK_SENS,
+                                            clamped.y / density.density * TOUCH_CAL_STICK_SENS
+                                        )
+                                    }
+                                    onOffsetChange(
+                                        (baseDx + step.x).coerceIn(-TOUCH_CAL_RANGE_DP, TOUCH_CAL_RANGE_DP),
+                                        (baseDy + step.y).coerceIn(-TOUCH_CAL_RANGE_DP, TOUCH_CAL_RANGE_DP)
+                                    )
+                                }
+                                push(down.position)
+                                var drag = awaitDragOrCancellation(down.id)
+                                while (drag != null && drag.pressed) {
+                                    push(drag.position)
+                                    drag.consume()
+                                    drag = awaitDragOrCancellation(drag.id)
+                                }
+                                knobPx = androidx.compose.ui.geometry.Offset.Zero
+                            }
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(120.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape)
+                    )
+                    Box(
+                        modifier = Modifier
+                            .offset {
+                                IntOffset(knobPx.x.roundToInt(), knobPx.y.roundToInt())
+                            }
+                            .size(48.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primary)
+                    )
+                }
+                TextButton(onClick = { onOffsetChange(0f, 0f) }) { Text("歸零") }
+            }
+            // --- 校正墊（右）：按住顯示原始報點（紅）與校正落筆點（靛） ---
+            var rawPosPx by remember { mutableStateOf<androidx.compose.ui.geometry.Offset?>(null) }
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .aspectRatio(1f)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(16.dp))
+                    .pointerInput(Unit) {
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            rawPosPx = down.position
+                            down.consume()
+                            var drag = awaitDragOrCancellation(down.id)
+                            while (drag != null && drag.pressed) {
+                                rawPosPx = drag.position
+                                drag.consume()
+                                drag = awaitDragOrCancellation(drag.id)
+                            }
+                            rawPosPx = null
+                        }
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                if (rawPosPx == null) {
+                    Text(
+                        "用筆尖按住這裡",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                val offPx = with(density) {
+                    androidx.compose.ui.geometry.Offset(dxDp.dp.toPx(), dyDp.dp.toPx())
+                }
+                val primaryColor = MaterialTheme.colorScheme.primary
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    rawPosPx?.let { raw ->
+                        // 原始報點：紅十字
+                        drawLine(Color.Red, raw + androidx.compose.ui.geometry.Offset(-24f, 0f), raw + androidx.compose.ui.geometry.Offset(24f, 0f), strokeWidth = 3f)
+                        drawLine(Color.Red, raw + androidx.compose.ui.geometry.Offset(0f, -24f), raw + androidx.compose.ui.geometry.Offset(0f, 24f), strokeWidth = 3f)
+                        // 校正落筆點：靛色圈
+                        drawCircle(Color.Red.copy(alpha = 0.25f), radius = 6f, center = raw + offPx)
+                        drawCircle(
+                            primaryColor,
+                            radius = 14f,
+                            center = raw + offPx,
+                            style = androidx.compose.ui.graphics.drawscope.Stroke(width = 4f)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun SettingsSliderRow(title: String, value: Float, range: ClosedFloatingPointRange<Float>, onValueChange: (Float) -> Unit) {
     Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
@@ -790,11 +990,14 @@ private fun ThemeModeSelector(current: ThemeMode, onSelect: (ThemeMode) -> Unit)
 @Composable
 private fun InputModeSelector(current: InputMode, onSelect: (InputMode) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
+    // 只剩 2 種活路：PALM_REJECTION 已併入觸控筆模式（cycleInputMode＋VM init 同調），
+    // 選單不再列出；舊 prefs 若還存著它，顯示為觸控筆模式（跟編輯器實際行為一致）。
+    // enum 本體保留，DB 舊文件字串才轉得過去。
     val mapping = mapOf(
         InputMode.FREE to "手動模式 (均可畫)",
-        InputMode.PALM_REJECTION to "防手掌誤觸",
         InputMode.STYLUS_ONLY to "僅限觸控筆"
     )
+    val shown = if (current == InputMode.PALM_REJECTION) InputMode.STYLUS_ONLY else current
 
     Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
@@ -804,14 +1007,14 @@ private fun InputModeSelector(current: InputMode, onSelect: (InputMode) -> Unit)
         Text("觸控模式", style = MaterialTheme.typography.bodyLarge)
         ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }) {
             OutlinedTextField(
-                value = mapping[current] ?: "",
+                value = mapping[shown] ?: "",
                 onValueChange = {},
                 readOnly = true,
                 trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
                 modifier = Modifier.menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable).width(180.dp)
             )
             ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-                InputMode.values().forEach { mode ->
+                mapping.keys.forEach { mode ->
                     DropdownMenuItem(
                         text = { Text(mapping[mode] ?: "") },
                         onClick = { onSelect(mode); expanded = false }

@@ -207,6 +207,9 @@ fun InkCanvas(
     val palmThresholdDp by viewModel.palmThresholdDp.collectAsState()
     val strokeSpeedSensitivity by viewModel.strokeSpeedSensitivity.collectAsState()
     val fingerTouchThresholdDp by viewModel.fingerTouchThresholdDp.collectAsState()
+    val touchCalEnabled by viewModel.touchCalEnabled.collectAsState()
+    val touchCalDxDp by viewModel.touchCalDxDp.collectAsState()
+    val touchCalDyDp by viewModel.touchCalDyDp.collectAsState()
     val textAnnotations by viewModel.currentTextAnnotations.collectAsState()
     val imageAnnotations by viewModel.currentImageAnnotations.collectAsState()
     val selectedImageAnnotationIds by viewModel.selectedImageAnnotationIds.collectAsState()
@@ -277,6 +280,12 @@ fun InkCanvas(
     // Canvas pixel size (updated via onSizeChanged, used for hit-testing in pointer input)
     var canvasPixelSize by remember { mutableStateOf(Size.Zero) }
     val canvasPixelSizeState = rememberUpdatedState(canvasPixelSize)
+
+    // 手指落筆校正（副廠電容筆專用）：refs 進長駐協程，不進 pointerInput key，
+    // 設定頁調整不中斷正在畫的手勢
+    val touchCalEnabledRef = rememberUpdatedState(touchCalEnabled)
+    val touchCalDxRef = rememberUpdatedState(touchCalDxDp)
+    val touchCalDyRef = rememberUpdatedState(touchCalDyDp)
 
     // Text annotation interactive selection / move / resize state
     var selectedTextAnnotationId by remember { mutableStateOf<String?>(null) }
@@ -813,7 +822,23 @@ fun InkCanvas(
                     .forEach { it.consume() }
                 down.consume()
 
-                val startOffset = down.position
+                // 手指落筆校正：僅手指模式(FREE)＋Touch 接觸＋開關開；觸控筆模式零偏移。
+                // 整個手勢同一個偏移（手勢中途改設定不影響本筆，避免線條斷折）。
+                // startOffset 之後所有分支（筆畫/橡皮擦/圖形/套索/文字圖片錨點/命中判定）
+                // 全從校正後座標衍生，視覺與命中自動一致。
+                val calDxPx: Float
+                val calDyPx: Float
+                if (inputMode == InputMode.FREE && touchCalEnabledRef.value && down.type == PointerType.Touch) {
+                    calDxPx = with(density) { touchCalDxRef.value.dp.toPx() }
+                    calDyPx = with(density) { touchCalDyRef.value.dp.toPx() }
+                } else {
+                    calDxPx = 0f
+                    calDyPx = 0f
+                }
+                fun calPos(p: Offset): Offset =
+                    if (calDxPx == 0f && calDyPx == 0f) p else Offset(p.x + calDxPx, p.y + calDyPx)
+
+                val startOffset = calPos(down.position)
 
                 // Text tool: selection, move, resize, or new text placement
                 if (activeTool == Tool.TEXT) {
@@ -1290,14 +1315,14 @@ fun InkCanvas(
                         }
 
                         drag.historical.forEach { historical ->
-                            val hp   = historical.position
+                            val hp   = calPos(historical.position)
                             val prev = currentPathPoints.last()
                             activePath.quadraticTo(prev.x, prev.y, (prev.x + hp.x) / 2f, (prev.y + hp.y) / 2f)
                             val w = calcWidth(hp, historical.uptimeMillis)
                             currentPathPoints.add(StrokePoint(hp.x, hp.y, w))
                             quickSwipeTrace.add(hp)
                         }
-                        val newPoint  = drag.position
+                        val newPoint  = calPos(drag.position)
                         val prevPoint = currentPathPoints.last()
                         activePath.quadraticTo(prevPoint.x, prevPoint.y, (prevPoint.x + newPoint.x) / 2f, (prevPoint.y + newPoint.y) / 2f)
                         val w = calcWidth(newPoint, drag.uptimeMillis)
