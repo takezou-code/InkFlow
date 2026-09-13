@@ -184,6 +184,15 @@ class EditorViewModel(
     private val _fingerTouchThresholdDp = MutableStateFlow(8f)
     val fingerTouchThresholdDp: StateFlow<Float> = _fingerTouchThresholdDp.asStateFlow()
 
+    // 手指觸控落筆校正：只在手指模式(FREE)＋Touch 接觸時生效，觸控筆模式不受影響。
+    // dp 為單位，套用時經 density 轉 px。設定頁寫全域 prefs，這裡隨文件 VM 重建載入。
+    private val _touchCalEnabled = MutableStateFlow(false)
+    val touchCalEnabled: StateFlow<Boolean> = _touchCalEnabled.asStateFlow()
+    private val _touchCalDxDp = MutableStateFlow(0f)
+    val touchCalDxDp: StateFlow<Float> = _touchCalDxDp.asStateFlow()
+    private val _touchCalDyDp = MutableStateFlow(0f)
+    val touchCalDyDp: StateFlow<Float> = _touchCalDyDp.asStateFlow()
+
     private val _selectedShapeSubType = MutableStateFlow(ShapeSubType.RECT)
     val selectedShapeSubType: StateFlow<ShapeSubType> = _selectedShapeSubType.asStateFlow()
 
@@ -214,6 +223,9 @@ class EditorViewModel(
                 _palmThresholdDp.value = prefs.palmThresholdDp
                 _strokeSpeedSensitivity.value = prefs.strokeSpeedSensitivity
                 _fingerTouchThresholdDp.value = prefs.fingerTouchThresholdDp
+                _touchCalEnabled.value = prefs.touchCalEnabled
+                _touchCalDxDp.value = prefs.touchCalDxDp
+                _touchCalDyDp.value = prefs.touchCalDyDp
                 _palette.value = prefs.palette.map { Color(it) }
                 val restoredStyle = _paperStyle.value.copy(
                     background = prefs.background,

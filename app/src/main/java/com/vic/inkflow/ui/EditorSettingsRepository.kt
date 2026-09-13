@@ -21,7 +21,11 @@ data class DrawingPreferences(
     val autoSwitchToPenAfterErase: Boolean,
     val palmThresholdDp: Float,
     val strokeSpeedSensitivity: Float,
-    val fingerTouchThresholdDp: Float
+    val fingerTouchThresholdDp: Float,
+    // 手指觸控落筆校正（副廠電容筆走 Touch 通道時的 XY 偏移，全域共用）
+    val touchCalEnabled: Boolean,
+    val touchCalDxDp: Float,
+    val touchCalDyDp: Float
 )
 
 class EditorSettingsRepository(
@@ -65,6 +69,9 @@ class EditorSettingsRepository(
         } ?: DEFAULT_PALETTE
         val defaultStrokeSpeedSensitivity = prefs.getFloat("default_stroke_speed_sensitivity", DEFAULT_STROKE_SPEED_SENSITIVITY)
         val defaultFingerTouchThresholdDp = prefs.getFloat("default_finger_touch_threshold_dp", DEFAULT_FINGER_TOUCH_THRESHOLD_DP)
+        val defaultTouchCalEnabled = prefs.getBoolean("default_touch_cal_enabled", false)
+        val defaultTouchCalDxDp = prefs.getFloat("default_touch_cal_dx_dp", 0f)
+        val defaultTouchCalDyDp = prefs.getFloat("default_touch_cal_dy_dp", 0f)
 
         return DrawingPreferences(
             tool = local?.tool?.toToolOrNull() ?: Tool.PEN,
@@ -84,7 +91,10 @@ class EditorSettingsRepository(
             autoSwitchToPenAfterErase = defaultAutoSwitchToPenAfterErase,
             palmThresholdDp = local?.palmThresholdDp ?: defaultPalmThresholdDp,
             strokeSpeedSensitivity = local?.strokeSpeedSensitivity ?: defaultStrokeSpeedSensitivity,
-            fingerTouchThresholdDp = local?.fingerTouchThresholdDp ?: defaultFingerTouchThresholdDp
+            fingerTouchThresholdDp = local?.fingerTouchThresholdDp ?: defaultFingerTouchThresholdDp,
+            touchCalEnabled = defaultTouchCalEnabled,
+            touchCalDxDp = defaultTouchCalDxDp,
+            touchCalDyDp = defaultTouchCalDyDp
         )
     }
 
