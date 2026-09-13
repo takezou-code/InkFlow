@@ -169,29 +169,40 @@ fun GlobalSettingsScreen(
                 var privateLine by remember { mutableStateOf("讀取中…") }
                 var publicLine by remember { mutableStateOf("讀取中…") }
                 var allBackups by remember { mutableStateOf(emptyList<AutoBackupScheduler.BackupItem>()) }
-                // 背景任務完成後自動刷新狀態，不用手動按；檔案讀寫走 IO 線程，絕不卡主線程
-                LaunchedEffect(autoEnabled) {
-                    fun lineFor(target: String): String {
-                        val prefs = BackupManager.backupPrefs(appContext)
-                        val runMs = prefs.getLong(AutoBackupScheduler.lastRunKey(target), 0L)
-                        if (runMs == 0L) return "尚未執行過"
-                        val run = SimpleDateFormat("MM/dd HH:mm", java.util.Locale.getDefault()).format(Date(runMs))
-                        val st = prefs.getString(AutoBackupScheduler.lastStatusKey(target), null)
-                        return if (st.isNullOrEmpty()) "上次 $run" else "上次 $run｜$st"
+                var isRefreshing by remember { mutableStateOf(false) }
+                // 新安裝抓不到公開備份，幾乎都是缺「所有檔案存取」權限：
+                // 沒它就讀不到 文件/InkFlow，列表永遠是空的。每次刷新順手更新狀態。
+                var hasAllFilesAccess by remember {
+                    mutableStateOf(android.os.Environment.isExternalStorageManager())
+                }
+                fun lineFor(target: String): String {
+                    val prefs = BackupManager.backupPrefs(appContext)
+                    val runMs = prefs.getLong(AutoBackupScheduler.lastRunKey(target), 0L)
+                    if (runMs == 0L) return "尚未執行過"
+                    val run = SimpleDateFormat("MM/dd HH:mm", java.util.Locale.getDefault()).format(Date(runMs))
+                    val st = prefs.getString(AutoBackupScheduler.lastStatusKey(target), null)
+                    return if (st.isNullOrEmpty()) "上次 $run" else "上次 $run｜$st"
+                }
+                // 手動重新整理跟 8 秒輪詢走同一套載入，檔案讀寫走 IO 線程，絕不卡主線程
+                val reloadBackups: suspend () -> Unit = {
+                    val priv = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        lineFor(AutoBackupScheduler.TARGET_PRIVATE)
                     }
+                    val pub = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        lineFor(AutoBackupScheduler.TARGET_PUBLIC)
+                    }
+                    val files = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        AutoBackupScheduler.listAllBackups(appContext)
+                    }
+                    privateLine = priv
+                    publicLine = pub
+                    allBackups = files
+                    hasAllFilesAccess = android.os.Environment.isExternalStorageManager()
+                }
+                // 背景任務完成後自動刷新狀態，不用手動按
+                LaunchedEffect(autoEnabled) {
                     while (true) {
-                        val priv = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                            lineFor(AutoBackupScheduler.TARGET_PRIVATE)
-                        }
-                        val pub = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                            lineFor(AutoBackupScheduler.TARGET_PUBLIC)
-                        }
-                        val files = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                            AutoBackupScheduler.listAllBackups(appContext)
-                        }
-                        privateLine = priv
-                        publicLine = pub
-                        allBackups = files
+                        reloadBackups()
                         kotlinx.coroutines.delay(8000)
                     }
                 }
@@ -243,12 +254,48 @@ fun GlobalSettingsScreen(
                     }
                 }
 
+                // 新安裝看不到公開備份時，先授權再重新整理（缺權限列表永遠是空的）
+                if (!hasAllFilesAccess) {
+                    Text(
+                        "尚未授權「所有檔案存取」，讀不到 文件/InkFlow 裡的公開備份。按下方授權後再按重新整理。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                    )
+                    androidx.compose.material3.OutlinedButton(
+                        onClick = {
+                            runCatching {
+                                val intent = android.content.Intent(
+                                    android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                    android.net.Uri.parse("package:${appContext.packageName}")
+                                )
+                                appContext.startActivity(intent)
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
+                    ) { Text("授權公開資料夾存取") }
+                }
                 // 搬家用：一鍵還原上面兩區的包；要最新進度按立即備份
-                androidx.compose.material3.OutlinedButton(
-                    onClick = { AutoBackupScheduler.runOnce(appContext) },
-                    enabled = !isBackupBusy,
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)
-                ) { Text("立即備份") }
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    androidx.compose.material3.OutlinedButton(
+                        onClick = { AutoBackupScheduler.runOnce(appContext) },
+                        enabled = !isBackupBusy && !isRefreshing,
+                        modifier = Modifier.weight(1f)
+                    ) { Text("立即備份") }
+                    androidx.compose.material3.OutlinedButton(
+                        onClick = {
+                            coroutineScope.launch {
+                                isRefreshing = true
+                                try { reloadBackups() } finally { isRefreshing = false }
+                            }
+                        },
+                        enabled = !isBackupBusy && !isRefreshing,
+                        modifier = Modifier.weight(1f)
+                    ) { Text(if (isRefreshing) "整理中…" else "重新整理") }
+                }
                 backupStatus?.let {
                     Text(
                         it,

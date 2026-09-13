@@ -166,6 +166,15 @@ class EditorViewModel(
     private val _autoSwitchToPenAfterErase = MutableStateFlow(false)
     val autoSwitchToPenAfterErase: StateFlow<Boolean> = _autoSwitchToPenAfterErase.asStateFlow()
 
+    // 擦除手勢級命中旗標 + 串行鎖：
+    // Live erase（拖曳中每 24ms 一次）和手勢結尾的 final erase 是兩個併發協程，
+    // live 先把墨刪光時 final 會看到「沒東西可刪」→ erasedAnything=false → 不切筆（偶發失效）。
+    // 改手勢級累積：同手勢內任何一次命中都記旗，final 結束時再一次性判定切筆，
+    // 切筆只發生在手勢結束（pointerInput key 不變，手勢不被中途重啟打斷）。
+    // Mutex 保證 final 排在所有 live 之後執行，避免 final 搶先消費舊旗標。
+    private val eraserMutex = Mutex()
+    private val eraseHitPending = java.util.concurrent.atomic.AtomicBoolean(false)
+
     private val _palmThresholdDp = MutableStateFlow(45f)
     val palmThresholdDp: StateFlow<Float> = _palmThresholdDp.asStateFlow()
 
@@ -455,15 +464,21 @@ class EditorViewModel(
         }
     }
 
+    /** 手勢被系統取消/縮放丟棄時清掉本手勢累積的命中，避免污染下次手勢。 */
+    fun clearEraseHitPending() { eraseHitPending.set(false) }
+
     fun deleteStrokesIntersecting(
         eraserPointsCanvas: List<Offset>,
-        switchToPenAfterEraseHit: Boolean = false
-    ) {
-        val cW = canvasW
+        switchToPenAfterEraseHit: Boolean = false,
+        // 同一擦除手勢的中途命中是否計入切筆判定。quick-swipe（畫筆手勢兼職擦除）
+        // 傳 false：它本來就是筆，不參與切筆，否則舊旗標會污染下一次真正的擦除手勢。
+        markEraseHit: Boolean = true
+    ) {        val cW = canvasW
         val cH = canvasH
         // Pass the snapshot of eraser points to the coroutine
         val pointsCopy = eraserPointsCanvas.toList()
         viewModelScope.launch(Dispatchers.Default) {
+            eraserMutex.withLock {
             // Scale eraser points from canvas-pixel space to model space before comparing.
             val scaleX = modelWidth / cW
             val scaleY = modelHeight / cH
@@ -516,18 +531,23 @@ class EditorViewModel(
                 erasedAnything = true
             }
 
-            if (
-                switchToPenAfterEraseHit &&
-                erasedAnything &&
-                _autoSwitchToPenAfterErase.value
-            ) {
-                withContext(Dispatchers.Main) {
-                    // Do not override temporary stylus-button eraser state.
-                    if (_selectedTool.value == Tool.ERASER && toolBeforeStylusButton == null) {
-                        onToolSelected(Tool.PEN)
+            // 手勢級累積：本次命中先記旗（quick-swipe 不記，避免污染下次手勢）
+            if (erasedAnything && markEraseHit) eraseHitPending.set(true)
+
+            // 切筆只在手勢結尾判定一次：本次命中 或 同手勢稍早的 live 命中（Mutex 保證
+            // final 最後執行，旗標一定已就位）。判定完即清旗，不留給下次手勢。
+            if (switchToPenAfterEraseHit && _autoSwitchToPenAfterErase.value) {
+                val hit = eraseHitPending.getAndSet(false)
+                if (hit) {
+                    withContext(Dispatchers.Main) {
+                        // Do not override temporary stylus-button eraser state.
+                        if (_selectedTool.value == Tool.ERASER && toolBeforeStylusButton == null) {
+                            onToolSelected(Tool.PEN)
+                        }
                     }
                 }
             }
+            } // eraserMutex
         }
     }
 

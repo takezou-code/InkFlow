@@ -20,6 +20,7 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        manifestPlaceholders["appLabel"] = "InkFlow"
     }
 
     // Release signing from local.properties (gitignored). If the keystore is absent
@@ -47,6 +48,12 @@ android {
     }
 
     buildTypes {
+        debug {
+            // 跟 release 共存：包名不同，DB/備份/FileProvider 全部分開，互不干擾
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
+            manifestPlaceholders["appLabel"] = "InkFlow Debug"
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(

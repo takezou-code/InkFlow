@@ -269,15 +269,21 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
     val sidebarListState = rememberLazyListState()
     val mainListState = rememberLazyListState()
     val pinchActive by viewModel.pinchActive.collectAsState()
+    // 初次捲到位旗標：PDF 載入前主列表停在第 0 頁，此時 PageWorkspace 的跟隨回報必須忽略，
+    // 否則會把剛從 DB 讀回的頁碼洗回 0（記住上次頁面失效的主因之一）。
+    // 純 remember（不 Saveable）：旋轉重建後回到 false，剛好重捲一次。
+    var initialScrollDone by remember(uri) { mutableStateOf(false) }
     // 點選意圖（側欄/靜態頁）：換作用頁 + 主列表滑過去
+    // 用戶親自點了 = 接管，初次捲動不再搶回去。
     val onRequestPage: (Int) -> Unit = { index ->
+        initialScrollDone = true
         currentPageIndex = index
         viewModel.setActivePage(index)
         scope.launch { runCatching { mainListState.animateScrollToItem(index) } }
     }
     // 卷動跟隨：主列表滑到哪頁就換作用頁（不捲主列表，避免打架；側欄由下方 effect 置中）
     val onScrollPage: (Int) -> Unit = { index ->
-        if (index != currentPageIndex) {
+        if (initialScrollDone && index != currentPageIndex) {
             currentPageIndex = index
             viewModel.setActivePage(index)
         }
@@ -290,34 +296,28 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
     val editorPrismalBackdrop = com.styropyr0.prismal.sources.rememberPrismalGlassLayer()
     val isEditorDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
 
-    // 離開編輯器時刷新書庫封面（否則畫完墨水回主頁封面永遠是舊的）
+    // 離開編輯器時刷新書庫封面（否則畫完墨水回主頁封面永遠是舊的）+ 補寫當前頁
+    // （防抖寫入 150ms 還沒落定就退出時，DB 會停在舊頁碼；這裡用最新值再寫一次兜底）
+    val latestPageRef = androidx.compose.runtime.rememberUpdatedState(currentPageIndex)
     androidx.compose.runtime.DisposableEffect(uri) {
         onDispose {
             docViewModel.updateThumbnail(context, uri.toString())
+            docViewModel.updateLastPage(uri.toString(), latestPageRef.value)
         }
     }
 
     // Restore the last-viewed page from DB on first open; rememberSaveable keeps it
     // true across config changes so we don't reset the page on rotation.
+    // 注意：這裡只讀 DB、不捲動——PDF 此时還沒 open（pageCount=0），捲了也沒用；
+    // 真正的捲動等下方「pageCount > 0」effect 做（修：重開永遠停在第 1 頁）。
     androidx.compose.runtime.LaunchedEffect(uri) {
         if (!initialPageRestored) {
             val stored = docViewModel.getLastPageIndex(uri.toString())
             if (stored > 0) {
                 currentPageIndex = stored
                 viewModel.setActivePage(stored)
-                sidebarListState.scrollToCenter(stored)
             }
             initialPageRestored = true
-            // 陳舊頁碼（刪頁後）+ 空文件都不可直接捲，會閃退
-            runCatching {
-                val count = pdfViewModel.pageCount.value
-                if (count > 0) {
-                    val safe = currentPageIndex.coerceIn(0, count - 1)
-                    currentPageIndex = safe
-                    viewModel.setActivePage(safe)
-                    mainListState.scrollToItem(safe)
-                }
-            }
         }
     }
 
@@ -366,6 +366,19 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
         pdfViewModel.openPdf(uri)
     }
     val pageCount by pdfViewModel.pageCount.collectAsState()
+    // PDF 載入完成後再捲到記憶頁：restore effect 跑時 pageCount 還是 0（openPdf 還沒回來），
+    // 在那裡捲等於沒捲。等首個有效 pageCount 落定、DB 值已讀回，才一次捲到位；
+    // 之後頁數變化（增刪頁）不再亂捲，只做夾取。門由 initialScrollDone 擋跟隨回寫。
+    androidx.compose.runtime.LaunchedEffect(pageCount, initialPageRestored) {
+        if (initialPageRestored && !initialScrollDone && pageCount > 0) {
+            val safe = currentPageIndex.coerceIn(0, pageCount - 1)
+            currentPageIndex = safe
+            viewModel.setActivePage(safe)
+            runCatching { mainListState.scrollToItem(safe) }
+            runCatching { sidebarListState.scrollToCenter(safe) }
+            initialScrollDone = true
+        }
+    }
     val isPageOperationInProgress by pdfViewModel.isPageOperationInProgress.collectAsState()
     val pageOperationMessage by pdfViewModel.pageOperationMessage.collectAsState()
 
