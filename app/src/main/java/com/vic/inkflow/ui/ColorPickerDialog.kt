@@ -4,7 +4,6 @@ import androidx.compose.foundation.shape.CircleShape
 import com.vic.inkflow.ui.theme.ShapeSm
 import com.vic.inkflow.ui.theme.ShapeLg
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Column
@@ -39,8 +38,6 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
-import com.vic.inkflow.ui.theme.ToolbarGlassDark
-import com.vic.inkflow.ui.theme.ToolbarGlassLight
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.min
@@ -58,12 +55,14 @@ fun ColorPickerDialog(
     var brightness by remember(initialColor) { mutableFloatStateOf(initialHsv[2]) }
     var alpha by remember(initialColor) { mutableFloatStateOf(initialColor.alpha) }
     val isDarkSurface = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    val panelColor = if (isDarkSurface) ToolbarGlassDark else ToolbarGlassLight
 
     val pickedColor = Color.hsv(hue, saturation, brightness, alpha)
 
     AlertDialog(
         onDismissRequest = onDismiss,
+        modifier = Modifier.fauxGlassPanel(isDarkSurface, ShapeLg),
+        containerColor = Color.Transparent,
+        shape = ShapeLg,
         title = {
             Column {
                 Text("選擇顏色", style = MaterialTheme.typography.titleLarge)
@@ -85,8 +84,7 @@ fun ColorPickerDialog(
         text = {
             Surface(
                 shape = ShapeLg,
-                color = panelColor,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+                color = Color.White.copy(alpha = if (isDarkSurface) 0.08f else 0.35f)
             ) {
                 Column(
                     modifier = Modifier.padding(16.dp),

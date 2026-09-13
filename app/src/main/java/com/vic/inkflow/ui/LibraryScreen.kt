@@ -238,6 +238,9 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+@Volatile
+private var webViewPrewarmed = false
+
 @Composable
 fun DocumentLibraryScreen(
     navController: NavController,
@@ -257,6 +260,20 @@ fun DocumentLibraryScreen(
     var showNewDocSizeDialog by remember { mutableStateOf(false) }
     var showCreateFolderDialog by remember { mutableStateOf(false) }
     var createFolderInput by rememberSaveable { mutableStateOf("") }
+
+    // Chromium 預熱：編輯器 AI 面板首建 WebView 會卡主執行緒數百毫秒，
+    // 那幾百毫秒正好把玻璃採樣空窗的那幀凍在螢幕上 = 黑閃。書庫閒置 2s 後先建一個即丟，
+    // 之後編輯器裡就是熱的。一個進程只跑一次。
+    val appContext = context.applicationContext
+    LaunchedEffect(Unit) {
+        delay(2000)
+        if (!webViewPrewarmed) {
+            webViewPrewarmed = true
+            runCatching {
+                android.webkit.WebView(appContext).destroy()
+            }
+        }
+    }
 
     LaunchedEffect(folderOperationMessage) {
         val message = folderOperationMessage ?: return@LaunchedEffect
@@ -507,8 +524,6 @@ fun DocumentLibraryScreen(
                 LibraryHeroPanel(
                     searchQuery = searchQuery,
                     onSearchQueryChange = { searchQuery = it },
-                    totalDocuments = documents.size,
-                    visibleDocuments = visibleDocumentCount,
                     isDarkTheme = isDarkTheme,
                     isGridView = isGridView,
                     onToggleGridView = { isGridView = !isGridView },

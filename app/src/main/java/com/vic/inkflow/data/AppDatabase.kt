@@ -22,11 +22,12 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 // v20: Added composite indexes to strokes, text_annotations, and image_annotations.
 // v21: Added strokeSpeedSensitivity and fingerTouchThresholdDp to document_preferences.
 // v22: Added autoSwitchToPenAfterErase to document_preferences.
+// v23: Added rotation column to image_annotations.
 @Database(
     entities = [StrokeEntity::class, PointEntity::class, DocumentEntity::class, FolderEntity::class,
                 TextAnnotationEntity::class, ImageAnnotationEntity::class,
                 DocumentPreferenceEntity::class, BookmarkEntity::class],
-    version = 22
+    version = 23
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun strokeDao(): StrokeDao
@@ -508,6 +509,12 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_22_23 = object : Migration(22, 23) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE image_annotations ADD COLUMN rotation REAL NOT NULL DEFAULT 0.0")
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val appContext = context.applicationContext
@@ -538,7 +545,8 @@ abstract class AppDatabase : RoomDatabase() {
                     MIGRATION_18_19,
                     MIGRATION_19_20,
                     MIGRATION_20_21,
-                    MIGRATION_21_22
+                    MIGRATION_21_22,
+                    MIGRATION_22_23
                 )
                 // Only allow destructive migration on downgrade (e.g. user reverts to an
                 // older APK). Unknown *upgrade* paths surface as a hard crash rather than

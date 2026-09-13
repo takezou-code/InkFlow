@@ -46,4 +46,22 @@ class MainActivity : ComponentActivity() {
             InkLayerApp(db = db)
         }
     }
+
+    // P0-0 PROBE: log every hardware key (stylus buttons may arrive as PAGE_UP/DOWN).
+    override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent?): Boolean {
+        if (com.vic.inkflow.BuildConfig.DEBUG) {
+            android.util.Log.d(
+                "PROBE_KEY",
+                "DOWN keyCode=$keyCode repeat=${event?.repeatCount} source=${event?.source}"
+            )
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onKeyUp(keyCode: Int, event: android.view.KeyEvent?): Boolean {
+        if (com.vic.inkflow.BuildConfig.DEBUG) {
+            android.util.Log.d("PROBE_KEY", "UP keyCode=$keyCode")
+        }
+        return super.onKeyUp(keyCode, event)
+    }
 }

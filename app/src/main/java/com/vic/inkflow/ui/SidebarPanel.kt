@@ -539,57 +539,107 @@ internal fun Sidebar(
                 androidx.compose.foundation.layout.BoxWithConstraints(modifier = Modifier.weight(1f).fillMaxWidth()) {
                     val halfHeight = maxHeight / 2
                     // 當在收合模式 (30dp) 與展開模式 (70dp) 時，我們一律讓原點對齊到 item 高度的「中心」，以維持視覺的絕對置中。
-                    val approximateItemHalfHeight = if (sidebarMode == SidebarMode.NORMAL) 70.dp else 40.dp
+                    // 收合行高是死值：PageIcon 48dp + 上下 padding 各 8dp = 64dp，半高 32dp；
+                    // 之前猜 40dp，首末頁會各偏 8dp（中間頁靠 snap 置中不受影響）。
+                    val approximateItemHalfHeight = if (sidebarMode == SidebarMode.NORMAL) 70.dp else 32.dp
                     val verticalPadding = (halfHeight - approximateItemHalfHeight).coerceAtLeast(0.dp)
 
-                    // 滑動玻璃丸：畫在列表下層，數字浮在玻璃上才看得清。
-                    // 一顆常駐模糊，換頁時彈一下；位置死算（行高64dp），不追蹤不脫鉤。
+                    // 定錨玻璃丸：畫在列表下層，數字浮在玻璃上才看得清。
+                    // 丸子釘死 viewport 中央不跟頁碼跑（snap 置中保證當前頁永遠停在這）；
+                    // 頁碼撞進來的那一下：壓扁再彈簧回彈（帶過衝 wobble）+ 漣漪擴散，像東西砸進泡泡。
+                    // 丸子常駐不藏：捲動時頁碼從它後面滑過去正是要看的效果，藏了反而像泡泡在閃。
                     if (sidebarMode != SidebarMode.NORMAL) {
                         val density = LocalDensity.current
-                        val rowHPx = with(density) { 64.dp.toPx() }
-                        val padTopPx = with(density) { verticalPadding.toPx() }
-                        val viewportHPx = with(density) { maxHeight.toPx() }
-                        // currentPageIndex 是普通 Int 參數，快照系統看不見，
-                        // 不加 key 的話 derivedStateOf 永遠不重算、丸就黏在 1 號。
-                        val pillTargetY by androidx.compose.runtime.remember(currentPageIndex) {
+                        // 定值中央：跟 snap 置中同一點，不追蹤不脫鉤
+                        val fixedY = with(density) { maxHeight.toPx() / 2f - 24.dp.toPx() }
+                        val sqX = remember { Animatable(1f) }
+                        val sqY = remember { Animatable(1f) }
+                        val ripple = remember { Animatable(0f) }
+                        var splashedIndex by remember { mutableStateOf(-1) }
+                        // 經過偵測：誰的中心滑過丸子中心線（viewport 中央），就是誰撞進來。
+                        // 直接讀 layoutInfo，不等頁碼提交、不等停穩——1 滑到 5 就抖五次。
+                        val passingIndex by remember {
                             androidx.compose.runtime.derivedStateOf {
-                                padTopPx + currentPageIndex * rowHPx + rowHPx / 2f -
-                                    (listState.firstVisibleItemIndex * rowHPx +
-                                        listState.firstVisibleItemScrollOffset)
+                                val info = listState.layoutInfo
+                                if (info.visibleItemsInfo.isEmpty()) return@derivedStateOf null
+                                val center = (info.viewportStartOffset + info.viewportEndOffset) / 2
+                                val nearest = info.visibleItemsInfo.minByOrNull { item ->
+                                    kotlin.math.abs((item.offset + item.size / 2) - center)
+                                } ?: return@derivedStateOf null
+                                val dist = kotlin.math.abs((nearest.offset + nearest.size / 2) - center)
+                                if (dist < nearest.size) nearest.index else null
                             }
                         }
-                        val pillInView = pillTargetY in -48f..(viewportHPx + 48f)
-                        // 到位彈跳：位置永遠直給（精確不脫鉤），換頁時丸縮一下再彈回。
-                        val pop = remember { Animatable(1f) }
-                        androidx.compose.runtime.LaunchedEffect(currentPageIndex) {
-                            pop.snapTo(0.72f)
-                            pop.animateTo(
-                                1f,
-                                spring(
-                                    dampingRatio = Spring.DampingRatioMediumBouncy,
-                                    stiffness = Spring.StiffnessMedium
+                        androidx.compose.runtime.LaunchedEffect(passingIndex) {
+                            val idx = passingIndex ?: return@LaunchedEffect
+                            if (idx == splashedIndex) return@LaunchedEffect
+                            splashedIndex = idx
+                            // 雙相壓扁：先花 160ms 看得見地壓下去，再彈簧回彈帶過衝。
+                            // 之前 snapTo 是瞬間到位，眼睛只剩彈回那段，看起來像沒壓過。
+                            // 連續快速滑過時直接重啟（取消上一次），每一下都跟手。
+                            launch {
+                                sqX.animateTo(
+                                    1.18f,
+                                    tween(160, easing = androidx.compose.animation.core.FastOutSlowInEasing)
                                 )
-                            )
+                                sqX.animateTo(
+                                    1f,
+                                    spring(
+                                        dampingRatio = Spring.DampingRatioMediumBouncy,
+                                        stiffness = Spring.StiffnessMediumLow
+                                    )
+                                )
+                            }
+                            launch {
+                                sqY.animateTo(
+                                    0.82f,
+                                    tween(160, easing = androidx.compose.animation.core.FastOutSlowInEasing)
+                                )
+                                sqY.animateTo(
+                                    1f,
+                                    spring(
+                                        dampingRatio = Spring.DampingRatioMediumBouncy,
+                                        stiffness = Spring.StiffnessMediumLow
+                                    )
+                                )
+                            }
+                            launch {
+                                // 漣漪不重啟：上一圈還沒散就讓它散完，不然環會疊成常駐外框卡住。
+                                if (ripple.isRunning) return@launch
+                                ripple.snapTo(0f)
+                                ripple.animateTo(1f, tween(650))
+                            }
                         }
-                    // 停穩才出現：任一邊在捲就藏起來，定位自然是對的，不用追
-                    val settled = !listState.isScrollInProgress && !isMainScrolling
-                    val pillAlpha by animateFloatAsState(
-                        targetValue = if (pillInView && settled) 1f else 0f,
-                        animationSpec = tween(180),
-                        label = "GlassPillAlpha"
-                    )
                         Box(
                             modifier = Modifier.fillMaxSize(),
                             contentAlignment = Alignment.TopCenter
                         ) {
+                            // 漣漪環（下層）：從中心出發往外擴（0.3→1.7 倍），淡出
                             Box(
                                 modifier = Modifier
-                                    .offset { IntOffset(0, (pillTargetY - with(density) { 24.dp.toPx() }).roundToInt()) }
+                                    .offset { IntOffset(0, fixedY.roundToInt()) }
                                     .size(48.dp)
                                     .graphicsLayer {
-                                        alpha = pillAlpha
-                                        scaleX = pop.value
-                                        scaleY = pop.value
+                                        val r = ripple.value
+                                        val s = 0.3f + r * 1.4f
+                                        scaleX = s
+                                        scaleY = s
+                                        alpha = (1f - r) * 0.6f
+                                    }
+                                    .border(
+                                        1.5.dp,
+                                        Color.White.copy(alpha = 0.55f),
+                                        CircleShape
+                                    )
+                            )
+                            // 丸子本體（上層）：玻璃 + 碰撞壓扁回彈
+                            Box(
+                                modifier = Modifier
+                                    .offset { IntOffset(0, fixedY.roundToInt()) }
+                                    .size(48.dp)
+                                    .graphicsLayer {
+                                        scaleX = sqX.value
+                                        scaleY = sqY.value
                                     }
                                     .glassPanel(hazeState, isDarkTheme, CircleShape)
                             )
@@ -938,14 +988,14 @@ internal fun PageThumbnail(
                     )
                 }
             }
-            // 頁碼徽：常駐左上，選中上色，未選中半透明（去中央大框）
+            // 頁碼徽：常駐左上，選中上色，未選中半透明罩（不再有實心底）
             Box(
                 modifier = Modifier
                     .align(Alignment.TopStart)
                     .padding(6.dp)
                     .background(
                         if (isSelected) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.surface.copy(alpha = 0.78f),
+                        else Color.White.copy(alpha = 0.35f),
                         CircleShape
                     )
                     .padding(horizontal = 8.dp, vertical = 4.dp),

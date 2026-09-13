@@ -13,3 +13,9 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# Release signing key (never commit; back it up separately)
+*.pfx
+*.p12
+*.jks
+*.keystore

@@ -74,7 +74,11 @@ object TouchEventLogger {
         nativeToolType: Int,
         pointerCount: Int,
         posX: Float,
-        posY: Float
+        posY: Float,
+        // P0-0 PROBE: raw stylus axes captured in pointerInteropFilter (-1 = unavailable)
+        tiltDeg: Float = -1f,
+        orientationDeg: Float = -1f,
+        axisPressure: Float = -1f
     ) {
         if (!BuildConfig.DEBUG) return
         Log.d(
@@ -86,8 +90,16 @@ object TouchEventLogger {
             " | touchMajor=${"%.1f".format(touchMajorPx)} touchMinor=${"%.1f".format(touchMinorPx)}" +
             " | toolMajor=${"%.1f".format(toolMajorPx)}" +
             " | pointers=$pointerCount" +
-            " | pos=(${posX.toInt()},${posY.toInt()})"
+            " | pos=(${posX.toInt()},${posY.toInt()})" +
+            " | tilt=${"%.1f".format(tiltDeg)} orient=${"%.2f".format(orientationDeg)}" +
+            " | axisPressure=${"%.3f".format(axisPressure)}"
         )
+    }
+
+    /** P0-0 PROBE: free-form stylus probe line (hover, keys). No-op in release. */
+    fun logProbe(msg: String) {
+        if (!BuildConfig.DEBUG) return
+        Log.d("PROBE_PEN", msg)
     }
 
     /**

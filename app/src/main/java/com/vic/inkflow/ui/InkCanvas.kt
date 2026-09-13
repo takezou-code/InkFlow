@@ -64,6 +64,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.PointerInputChange
@@ -294,6 +295,8 @@ fun InkCanvas(
     var imageMovePreview   by remember { mutableStateOf(Offset.Zero) }
     var imageResizeScale   by remember { mutableFloatStateOf(1f) }
     var imageResizeAnchor  by remember { mutableStateOf<Offset?>(null) }
+    // M5: in-flight rotation delta in degrees (0 = none); committed value lives in the entity.
+    var imageRotatePreview by remember { mutableFloatStateOf(0f) }
 
     // Latest snapshot of image annotations for use inside pointer-input coroutines
     val imageAnnotationsRef    = rememberUpdatedState(imageAnnotations)
@@ -436,6 +439,7 @@ fun InkCanvas(
                 imageMovePreview = Offset.Zero
                 imageResizeScale = 1f
                 imageResizeAnchor = null
+                imageRotatePreview = 0f
             }
         }
         // Stay in IMAGE tool so the user can immediately adjust the placed image
@@ -454,6 +458,7 @@ fun InkCanvas(
             imageMovePreview = Offset.Zero
             imageResizeScale = 1f
             imageResizeAnchor = null
+            imageRotatePreview = 0f
         }
     }
 
@@ -484,11 +489,43 @@ fun InkCanvas(
     var lastNativeToolType by remember { mutableIntStateOf(0) }
     var lastPointerCount by remember { mutableIntStateOf(1) }
     var stylusButtonPressed by remember { mutableStateOf(false) }
+    // P0-0 PROBE: raw stylus axes captured at DOWN (tilt/orientation/pressure)
+    var lastTiltDeg by remember { mutableFloatStateOf(-1f) }
+    var lastOrientationDeg by remember { mutableFloatStateOf(-1f) }
+    var lastAxisPressure by remember { mutableFloatStateOf(-1f) }
     // MotionEvent pointer ID → getTouchMajor(). Updated for every pointer down event.
     // Lets awaitEachGesture identify the stylus among simultaneous palm+stylus contacts.
     val pointerTouchMajors = remember { mutableStateMapOf<Int, Float>() }
 
     // ---- Modifier chain ----
+
+    // P0-0 PROBE-ONLY hover logger: remove after probe. Observes, never consumes.
+    androidx.compose.runtime.DisposableEffect(view) {
+        var hoverMoves = 0
+        val listener = android.view.View.OnHoverListener { _, event ->
+            val isHover = event.actionMasked == MotionEvent.ACTION_HOVER_ENTER ||
+                event.actionMasked == MotionEvent.ACTION_HOVER_MOVE ||
+                event.actionMasked == MotionEvent.ACTION_HOVER_EXIT
+            if (isHover && event.getToolType(0) == MotionEvent.TOOL_TYPE_STYLUS) {
+                hoverMoves++
+                if (event.actionMasked != MotionEvent.ACTION_HOVER_MOVE || hoverMoves % 30 == 0) {
+                    val actionName = when (event.actionMasked) {
+                        MotionEvent.ACTION_HOVER_ENTER -> "ENTER"
+                        MotionEvent.ACTION_HOVER_MOVE -> "MOVE"
+                        else -> "EXIT"
+                    }
+                    com.vic.inkflow.util.TouchEventLogger.logProbe(
+                        "HOVER $actionName pos=(${event.x.toInt()},${event.y.toInt()})" +
+                            " pressure=${"%.3f".format(event.pressure)}" +
+                            " tilt=${"%.1f".format(event.getAxisValue(MotionEvent.AXIS_TILT))}"
+                    )
+                }
+            }
+            false
+        }
+        view.setOnHoverListener(listener)
+        onDispose { view.setOnHoverListener(null) }
+    }
 
     // 手勢凍結槽：draw 階段讀寫普通物件（非 State），不觸發重組
     val pinchReuse = remember { object { var bmp: ImageBitmap? = null } }
@@ -556,6 +593,11 @@ fun InkCanvas(
                     lastToolMajorPx    = motionEvent.getToolMajor(0)
                     lastNativeToolType = motionEvent.getToolType(0)
                     lastPointerCount   = motionEvent.pointerCount
+                    // P0-0 PROBE: stylus axes (tilt 0=直立; orientation 方向; pressure 原生壓感)
+                    val axisIdx = if (motionEvent.actionMasked == MotionEvent.ACTION_POINTER_DOWN) motionEvent.actionIndex else 0
+                    lastTiltDeg        = motionEvent.getAxisValue(MotionEvent.AXIS_TILT, axisIdx)
+                    lastOrientationDeg = motionEvent.getAxisValue(MotionEvent.AXIS_ORIENTATION, axisIdx)
+                    lastAxisPressure   = motionEvent.getAxisValue(MotionEvent.AXIS_PRESSURE, axisIdx)
                 }
                 MotionEvent.ACTION_BUTTON_PRESS -> {
                     // Fallback path for devices that do emit explicit button events.
@@ -687,7 +729,10 @@ fun InkCanvas(
                     nativeToolType   = nativeToolType,
                     pointerCount     = nativePointers,
                     posX             = down.position.x,
-                    posY             = down.position.y
+                    posY             = down.position.y,
+                    tiltDeg          = lastTiltDeg,
+                    orientationDeg   = lastOrientationDeg,
+                    axisPressure     = lastAxisPressure
                 )
 
                 // --- STYLUS_ONLY: any Touch-type contact → pass through for pan (Box handles) ---
@@ -876,34 +921,73 @@ fun InkCanvas(
                     val selAnn = if (selId != null) annotations.firstOrNull { it.id == selId } else null
 
                     if (selAnn != null) {
-                        // Effective image rect in canvas space (committed + in-flight move/resize)
-                        val imgRect = effectiveImageRect(
-                            imageAnnotationRect(selAnn, sx, sy),
-                            imageMovePreview, imageResizeAnchor, imageResizeScale
+                        // Local (unrotated) rect in canvas space: committed + in-flight move/resize.
+                        // Rotation pivot is the committed(+move) center, fixed for the whole gesture.
+                        val baseRect = imageAnnotationRect(selAnn, sx, sy).translate(imageMovePreview)
+                        val pivot = baseRect.center
+                        val localRect = if (imageResizeAnchor != null && abs(imageResizeScale - 1f) > 0.0001f)
+                            scaleRectAbout(baseRect, imageResizeAnchor!!, imageResizeScale)
+                        else baseRect
+                        val theta = selAnn.rotation + imageRotatePreview
+                        val localCorners = listOf(
+                            localRect.topLeft, localRect.topRight,
+                            localRect.bottomLeft, localRect.bottomRight
                         )
-                        // Four corner handles: uniform resize about the opposite corner
-                        val corners = listOf(
-                            imgRect.topLeft, imgRect.topRight,
-                            imgRect.bottomLeft, imgRect.bottomRight
-                        )
-                        val hitCorner = corners.firstOrNull { imageResizeHandleRect(it).contains(startOffset) }
+                        val screenCorners = localCorners.map { rotatePoint(it, pivot, theta) }
+                        // Rotation handle floats above the (rotated) top edge
+                        val rotHandleLocal = Offset(localRect.center.x, localRect.top - IMAGE_ROT_HANDLE_GAP_PX)
+                        val rotHandle = rotatePoint(rotHandleLocal, pivot, theta)
 
-                        // — Resize: tap on any corner handle (aspect locked) —
-                        if (hitCorner != null) {
+                        // — Rotate: tap on the top handle first (may overlap a corner on tiny images) —
+                        if (imageResizeHandleRect(rotHandle).contains(startOffset)) {
                             down.consume()
-                            val anchor = when (hitCorner) {
-                                imgRect.topLeft -> imgRect.bottomRight
-                                imgRect.topRight -> imgRect.bottomLeft
-                                imgRect.bottomLeft -> imgRect.topRight
-                                else -> imgRect.topLeft
+                            val grabAngle = atan2(startOffset.y - pivot.y, startOffset.x - pivot.x) *
+                                (180f / Math.PI.toFloat())
+                            imageRotatePreview = 0f
+                            fun commitRotated() {
+                                viewModel.commitImageAnnotationRotation(
+                                    selAnn.id, selAnn.rotation + imageRotatePreview
+                                )
+                                imageRotatePreview = 0f
+                                activePathVersion++
                             }
-                            val grabVec = startOffset - anchor
-                            val grabLenSq = grabVec.getDistanceSquared().coerceAtLeast(1f)
-                            imageResizeAnchor = anchor
+                            var drag = awaitDragOrCancellation(down.id)
+                            while (drag != null && drag.pressed) {
+                                if (pinchActive) {
+                                    commitRotated()
+                                    return@awaitEachGesture
+                                }
+                                val a = atan2(drag.position.y - pivot.y, drag.position.x - pivot.x) *
+                                    (180f / Math.PI.toFloat())
+                                var d = a - grabAngle
+                                while (d > 180f) d -= 360f
+                                while (d < -180f) d += 360f
+                                imageRotatePreview = d
+                                activePathVersion++
+                                drag.consume()
+                                drag = awaitDragOrCancellation(drag.id)
+                            }
+                            commitRotated()
+                            return@awaitEachGesture
+                        }
+
+                        // — Resize: tap on any corner handle (aspect locked, rotation-aware) —
+                        val hitIdx = screenCorners.indexOfFirst {
+                            imageResizeHandleRect(it).contains(startOffset)
+                        }
+                        if (hitIdx >= 0) {
+                            down.consume()
+                            // All resize math happens in local (unrotated) space about the fixed pivot.
+                            val oppIdx = when (hitIdx) { 0 -> 3; 1 -> 2; 2 -> 1; else -> 0 }
+                            val anchorLocal = localCorners[oppIdx]
+                            val startLocal = rotatePoint(startOffset, pivot, -theta)
+                            val grabVec = startLocal - anchorLocal
+                            val grabLenSq = (grabVec.x * grabVec.x + grabVec.y * grabVec.y).coerceAtLeast(1f)
+                            imageResizeAnchor = anchorLocal
                             imageResizeScale = 1f
                             fun commitScaled() {
                                 val sc = StrokeTransformUtils.clampUniformScale(imageResizeScale)
-                                val r = scaleRectAbout(imageAnnotationRect(selAnn, sx, sy), anchor, sc)
+                                val r = scaleRectAbout(imageAnnotationRect(selAnn, sx, sy), anchorLocal, sc)
                                 viewModel.commitImageAnnotationResize(
                                     selAnn.id, r.left / sx, r.top / sy, r.width / sx, r.height / sy
                                 )
@@ -918,8 +1002,9 @@ fun InkCanvas(
                                     return@awaitEachGesture
                                 }
                                 // Project finger travel onto the grab vector → uniform scale
-                                val fingerVec = drag.position - anchor
-                                imageResizeScale = (fingerVec.x * grabVec.x + fingerVec.y * grabVec.y) / grabLenSq
+                                val fingerLocal = rotatePoint(drag.position, pivot, -theta)
+                                val v = fingerLocal - anchorLocal
+                                imageResizeScale = (v.x * grabVec.x + v.y * grabVec.y) / grabLenSq
                                 activePathVersion++
                                 drag.consume()
                                 drag = awaitDragOrCancellation(drag.id)
@@ -929,7 +1014,7 @@ fun InkCanvas(
                         }
 
                         // — Move: tap inside the image body —
-                        if (imgRect.contains(startOffset)) {
+                        if (rotatedRectContains(localRect, theta, startOffset)) {
                             down.consume()
                             var totalDelta = Offset.Zero
                             var drag = awaitDragOrCancellation(down.id)
@@ -954,15 +1039,16 @@ fun InkCanvas(
                         }
                     }
 
-                    // Tap on another image to select it
+                    // Tap on another image to select it (rotation-aware hit)
                     val hitAnn = annotations.firstOrNull { ann ->
-                        imageAnnotationRect(ann, sx, sy).contains(startOffset)
+                        rotatedRectContains(imageAnnotationRect(ann, sx, sy), ann.rotation, startOffset)
                     }
                     if (hitAnn != null) {
                         selectedImageAnnotationId = hitAnn.id
                         imageMovePreview = Offset.Zero
                         imageResizeScale = 1f
                         imageResizeAnchor = null
+                        imageRotatePreview = 0f
                         down.consume()
                         activePathVersion++
                         return@awaitEachGesture
@@ -1508,11 +1594,22 @@ fun InkCanvas(
                             )
                         }
                     }
-                    drawImage(
-                        image     = bmp,
-                        dstOffset = IntOffset(canvasRect.left.toInt(), canvasRect.top.toInt()),
-                        dstSize   = IntSize(canvasRect.width.toInt().coerceAtLeast(2), canvasRect.height.toInt().coerceAtLeast(2))
-                    )
+                    // M5: rotation pivot is the unscaled base center (= gesture pivot); the
+                    // in-flight rotate delta only applies to the IMAGE-tool-selected image.
+                    val imgTheta = ann.rotation +
+                        (if (isSelectedInImageTool) imageRotatePreview else 0f)
+                    val imgPivot = if (isSelectedInSelectionTool) canvasRect.center else run {
+                        val bx = ann.modelX * sx + (if (isSelectedInImageTool) imageMovePreview.x else 0f)
+                        val by = ann.modelY * sy + (if (isSelectedInImageTool) imageMovePreview.y else 0f)
+                        Offset(bx + ann.modelWidth * sx / 2f, by + ann.modelHeight * sy / 2f)
+                    }
+                    rotate(imgTheta, imgPivot) {
+                        drawImage(
+                            image     = bmp,
+                            dstOffset = IntOffset(canvasRect.left.toInt(), canvasRect.top.toInt()),
+                            dstSize   = IntSize(canvasRect.width.toInt().coerceAtLeast(2), canvasRect.height.toInt().coerceAtLeast(2))
+                        )
+                    }
                 }
             }
 
@@ -1598,13 +1695,28 @@ fun InkCanvas(
                     val imgSelRect = effectiveImageRect(
                         r, imageMovePreview, imageResizeAnchor, imageResizeScale
                     )
-                    drawLiquidGlassSelectionFrame(
-                        rect = imgSelRect,
-                        handleCenters = listOf(
-                            imgSelRect.topLeft, imgSelRect.topRight,
-                            imgSelRect.bottomLeft, imgSelRect.bottomRight
+                    // M5: frame + handles live in local space, rotated about the same pivot
+                    // the gesture uses (committed+move center).
+                    val imgTheta = selImgAnn.rotation + imageRotatePreview
+                    val imgPivot = r.translate(imageMovePreview).center
+                    val rotTopLocal = Offset(imgSelRect.center.x, imgSelRect.top)
+                    val rotHandleLocal = rotTopLocal + Offset(0f, -IMAGE_ROT_HANDLE_GAP_PX)
+                    rotate(imgTheta, imgPivot) {
+                        drawLine(
+                            color = BrandIndigo.copy(alpha = 0.6f),
+                            start = rotTopLocal,
+                            end = rotHandleLocal,
+                            strokeWidth = 2f
                         )
-                    )
+                        drawLiquidGlassSelectionFrame(
+                            rect = imgSelRect,
+                            handleCenters = listOf(
+                                imgSelRect.topLeft, imgSelRect.topRight,
+                                imgSelRect.bottomLeft, imgSelRect.bottomRight,
+                                rotHandleLocal
+                            )
+                        )
+                    }
                 }
 
                 // Text annotations — apply move/resize delta for the selected annotation
@@ -1797,6 +1909,26 @@ private fun effectiveImageRect(base: Rect, move: Offset, anchor: Offset?, scale:
     val moved = base.translate(move)
     return if (anchor != null && abs(scale - 1f) > 0.0001f) scaleRectAbout(moved, anchor, scale)
     else moved
+}
+
+// ---- M5: image rotation helpers (canvas space; positive degrees = clockwise, matches DrawScope.rotate) ----
+private const val IMAGE_ROT_HANDLE_GAP_PX = 56f
+
+/** Rotates canvas point [p] about [center] by [degrees] clockwise. */
+private fun rotatePoint(p: Offset, center: Offset, degrees: Float): Offset {
+    if (degrees == 0f) return p
+    val rad = Math.toRadians(degrees.toDouble())
+    val cos = cos(rad).toFloat()
+    val sin = sin(rad).toFloat()
+    val dx = p.x - center.x
+    val dy = p.y - center.y
+    return Offset(center.x + dx * cos - dy * sin, center.y + dx * sin + dy * cos)
+}
+
+/** Hit-tests a possibly-rotated rect by unrotating the point about the rect center first. */
+private fun rotatedRectContains(rect: Rect, degrees: Float, point: Offset): Boolean {
+    if (degrees == 0f) return rect.contains(point)
+    return rect.contains(rotatePoint(point, rect.center, -degrees))
 }
 
 private enum class StrokeSelectionHandle {

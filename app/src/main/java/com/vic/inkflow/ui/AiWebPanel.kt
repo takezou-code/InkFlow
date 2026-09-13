@@ -177,6 +177,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.draganddrop.DragAndDropEvent
 import androidx.compose.ui.draganddrop.DragAndDropTarget
 import androidx.compose.ui.draganddrop.DragAndDropTransferData
@@ -245,6 +246,8 @@ fun AiWebPanel(
         }
     }
     
+    // Fix2d: WebView 原生底預設透明→首幀前是黑洞；先鋪主題 surface 色頂著
+    val webViewBgArgb = androidx.compose.material3.MaterialTheme.colorScheme.surface.toArgb()
     androidx.compose.foundation.layout.Box(
         modifier = modifier
             .fillMaxSize()
@@ -252,12 +255,14 @@ fun AiWebPanel(
     ) {
         androidx.compose.ui.viewinterop.AndroidView(
             factory = { ctx ->
+                android.util.Log.d("InkFlowDbg", "WebView factory start ${System.currentTimeMillis()}")
                 android.webkit.WebView(ctx).apply {
                     // 重要：手動設置 LayoutParams 填滿父容器，避免 Compose 與 WebView 測量時發生高度坍塌(黑畫面主因之一)
                     layoutParams = android.view.ViewGroup.LayoutParams(
                         android.view.ViewGroup.LayoutParams.MATCH_PARENT,
                         android.view.ViewGroup.LayoutParams.MATCH_PARENT
                     )
+                    setBackgroundColor(webViewBgArgb)
                     
                     webView = this
                     settings.apply {

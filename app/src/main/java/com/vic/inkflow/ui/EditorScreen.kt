@@ -284,6 +284,8 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
     }
     // 編輯器共用玻璃狀態：根 Aurora 當 source，TopBar/側欄/氣泡當 effect。
     // 真折射用同一個 Aurora 當 backdrop（haze 照用，小元件不受影響）。
+    // Fix1 REVERTED: 紙層當 haze/prismal source 會凍結（氣泡 effect 與紙 source 同樹→重採樣迴圈；
+    // 開 AI 面板改寬時巨型圖層重抓直接全黑）。氣泡暫回 Aurora 源（黑洞但穩定），另想辦法。
     val editorHaze = rememberHazeState()
     val editorPrismalBackdrop = com.styropyr0.prismal.sources.rememberPrismalGlassLayer()
     val isEditorDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
@@ -423,7 +425,9 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
             onDismissRequest = {
                 if (!isExportingPdf) showExportConfirmDialog = false
             },
-            containerColor = MaterialTheme.colorScheme.surface,
+            modifier = Modifier.fauxGlassPanel(isEditorDark, ShapeLg),
+            containerColor = Color.Transparent,
+            shape = ShapeLg,
             title = { Text("確認輸出 PDF") },
             text = {
                 Text(
@@ -726,10 +730,14 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
 
         Box(Modifier.weight(1f).fillMaxHeight()) {
             Row(Modifier.fillMaxSize()) {
-                // Left Panel: AI Parser View
+                // Left Panel: AI Parser View — fade only. Size animation remeasures the whole
+                // Row every frame → glass capture reallocs every frame → sustained black glass.
+                // Instant layout (1 remeasure) + fade = single invisible frame; bitmaps persist via Fix2c.
                 androidx.compose.animation.AnimatedVisibility(
                     visible = showAiPanel,
-                    modifier = Modifier.weight(aiPanelWeight).fillMaxHeight()
+                    modifier = Modifier.weight(aiPanelWeight).fillMaxHeight(),
+                    enter = fadeIn(tween(220)),
+                    exit = fadeOut(tween(180))
                 ) {
                     AiWebPanel(
                         fileUri = aiFileUri,
