@@ -9,6 +9,8 @@ import com.vic.inkflow.ui.theme.ShapeLg
 import com.vic.inkflow.ui.theme.ShapeXl
 import com.vic.inkflow.util.reorderable
 import com.vic.inkflow.util.reorderableItem
+import com.vic.inkflow.util.EnvelopeUtils
+import com.vic.inkflow.util.StrokePoint
 
 import android.content.ClipData
 import android.content.ClipDescription
@@ -65,6 +67,7 @@ import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -187,6 +190,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
@@ -330,6 +334,30 @@ internal fun Workspace(
     val bubbleSidePaddingPx = with(density) { 12.dp.toPx() }
     val bubbleTopSafePx = with(density) { 12.dp.toPx() }
 
+    // 橫移狀態（空白區單指＋雙指全域寫入，放手停留、跨頁保持）：
+    // 鉗制保證至少一半紙留在區內（KEEP=1/2，驗收可放寬到 1/4）。
+    // 用 fun 即時重算（讀 State delegate 即時值），不 remember，避免快照訂閱地雷。
+    val panOffsetX by viewModel.panOffsetX.collectAsState()
+    fun paperWpxForPan(): Float {
+        val zoom = viewModel.docZoom.value.coerceAtMost(1f)
+        val side = with(density) { 40.dp.toPx() }
+        return ((viewportWpx * zoom) - side).coerceAtLeast(0f)
+    }
+    fun clampPan(raw: Float): Float {
+        val max = paperWpxForPan() * 0.5f
+        return raw.coerceIn(-max, max)
+    }
+    fun isBlankX(x: Float): Boolean {
+        if (viewModel.docZoom.value > 1f) return false
+        val paperLeft = (viewportWpx - paperWpxForPan()) / 2f
+        return x < paperLeft || x > viewportWpx - paperLeft
+    }
+    val clampedPanX = clampPan(panOffsetX)
+    // zoom/旋轉導致邊界縮小：直接設回邊界（直給，不用 spring 追移動目標）。
+    LaunchedEffect(clampedPanX) {
+        if (clampedPanX != panOffsetX) viewModel.setPanOffsetX(clampedPanX)
+    }
+
     // 雙指仲裁手勢：PAN 交給原生卷動，PINCH 寫 shared docZoom + 卷動錨定
     val pinchModifier = Modifier.pointerInput(Unit) {
         val arbitrator = TwoFingerArbitrator(touchSlopPx = viewConfiguration.touchSlop)
@@ -397,6 +425,70 @@ internal fun Workspace(
     }
 
     val regionBoundsModel = remember(activeRegionPolygon) { polygonBounds(activeRegionPolygon) }
+
+    // 二維平移（轉正）：空白區單指＋雙指全域，pinchModifier 完全不動。
+    // (1) 空白區單指左右拖 → panOffsetX；紙上單指一律放過（繪圖/直捲不受影響）。
+    // (2) 雙指全域 Pan（紙上＋空白）→ dx 寫 panOffsetX，dy 走 mainListState.scrollBy；
+    //     Pinch/未定幀不 consume，留給 pinchModifier 照常縮放；單指垂直完全不碰，原生 LazyColumn 接手。
+    // 順序：twoFinger 先裝、blankH 後裝——雙指接管時 consume 會取消單指拖，避免雙重施加。
+    val debugTwoFingerPanModifier = Modifier.pointerInput(Unit) {
+        val arbitrator = TwoFingerArbitrator(touchSlopPx = viewConfiguration.touchSlop)
+        awaitEachGesture {
+            awaitFirstDown(requireUnconsumed = false)
+            var lastIds: Set<PointerId> = emptySet()
+            while (true) {
+                val event = awaitPointerEvent()
+                val pressedAll = event.changes.filter { it.pressed }
+                if (pressedAll.isEmpty()) {
+                    arbitrator.reset()
+                    lastIds = emptySet()
+                    break
+                }
+                // 只算觸控手指：觸控筆書寫時不參與
+                val touch = pressedAll.filter { it.type == PointerType.Touch }
+                if (touch.size >= 2) {
+                    val ids = touch.map { it.id }.toSet()
+                    val cx = touch.sumOf { it.position.x.toDouble() }.toFloat() / touch.size
+                    val cy = touch.sumOf { it.position.y.toDouble() }.toFloat() / touch.size
+                    val span = (touch[0].position - touch[1].position).getDistance()
+                    if (ids != lastIds) {
+                        arbitrator.rebaseline(cx, cy, span)
+                        lastIds = ids
+                    }
+                    when (val decision = arbitrator.onFrame(cx, cy, span)) {
+                        is TwoFingerDecision.Pan -> {
+                            event.changes.forEach { it.consume() }
+                            if (decision.dx != 0f) {
+                                viewModel.setPanOffsetX(clampPan(viewModel.panOffsetX.value + decision.dx))
+                            }
+                            if (decision.dy != 0f) {
+                                val dy = decision.dy
+                                scope.launch { mainListState.scrollBy(-dy) }
+                            }
+                        }
+                        else -> Unit // Pinch / 未定：不 consume，pinchModifier 照常接手
+                    }
+                } else {
+                    arbitrator.reset()
+                    lastIds = emptySet()
+                }
+            }
+        }
+    }
+    val debugBlankHModifier = Modifier.pointerInput(Unit) {
+        var blankDrag = false
+        detectHorizontalDragGestures(
+            onDragStart = { blankDrag = isBlankX(it.x) },
+            onDragEnd = { blankDrag = false },
+            onDragCancel = { blankDrag = false },
+            onHorizontalDrag = { change, dx ->
+                if (blankDrag && !change.isConsumed) {
+                    change.consume()
+                    viewModel.setPanOffsetX(clampPan(viewModel.panOffsetX.value + dx))
+                }
+            }
+        )
+    }
     val showSelectionBubble = activeTool == Tool.LASSO && hasSelection && !isExtracting
 
     // pdfViewModel and LaunchedEffect(uri) are owned by TabletEditorScreen
@@ -456,6 +548,8 @@ internal fun Workspace(
         modifier = modifier
             .background(Color.Transparent)
             .onSizeChanged { viewportWpx = it.width }
+            .then(debugTwoFingerPanModifier)
+            .then(debugBlankHModifier)
     ) {
         // 列表恒满视口宽（无死角）；纸在 item 内按比例缩、居中
         val listWdp = with(density) { (viewportWpx.toFloat() * maxOf(docZoom, 1f)).toDp() }
@@ -469,7 +563,9 @@ internal fun Workspace(
                 state = mainListState,
                 modifier = Modifier
                     .width(listWdp.coerceAtLeast(1.dp))
-                    .fillMaxHeight(),
+                    .fillMaxHeight()
+                    // 橫移：整列水平位移（offset 直給，無大圖層、無 spring）
+                    .offset { IntOffset(clampedPanX.roundToInt(), 0) },
                 contentPadding = PaddingValues(vertical = 18.dp),
                 verticalArrangement = Arrangement.spacedBy(18.dp)
             ) {
@@ -991,17 +1087,10 @@ private fun StaticPageOverlay(
             } else {
                 val pts = swp.points
                 if (pts.size >= 2) {
-                    val path = androidx.compose.ui.graphics.Path()
-                    path.moveTo(pts.first().x * sx, pts.first().y * sy)
-                    for (i in 1 until pts.size) {
-                        val p1 = pts[i - 1]; val p2 = pts[i]
-                        path.quadraticTo(
-                            p1.x * sx, p1.y * sy,
-                            (p1.x + p2.x) / 2f * sx, (p1.y + p2.y) / 2f * sy
-                        )
-                    }
-                    pts.lastOrNull()?.let { path.lineTo(it.x * sx, it.y * sy) }
-                    drawPath(path, strokeColor.copy(alpha = alpha), style = paintStyle)
+                    // 與 InkCanvas 即時層同畫法（包絡填充，逐點寬），消除換頁/切換門線感跳變。
+                    val env = EnvelopeUtils.generateEnvelopePath(
+                        pts.map { StrokePoint(it.x, it.y, it.width) })
+                    scale(sx, sy) { drawPath(env, strokeColor.copy(alpha = alpha)) }
                 }
             }
         }

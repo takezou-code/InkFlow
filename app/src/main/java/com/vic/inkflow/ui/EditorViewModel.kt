@@ -160,6 +160,12 @@ class EditorViewModel(
     val pinchActive: StateFlow<Boolean> = _pinchActive.asStateFlow()
     fun setPinchActive(active: Boolean) { _pinchActive.value = active }
 
+    // 二維平移的水平分量（px）：空白區單指＋雙指全域寫入，
+    // 放手停留、跨頁保持；Workspace 負責鉗制（至少留一半紙在區內），這裡只存原始值。
+    private val _panOffsetX = MutableStateFlow(0f)
+    val panOffsetX: StateFlow<Float> = _panOffsetX.asStateFlow()
+    fun setPanOffsetX(px: Float) { _panOffsetX.value = px }
+
     private val _quickSwipeEraserEnabled = MutableStateFlow(false)
     val quickSwipeEraserEnabled: StateFlow<Boolean> = _quickSwipeEraserEnabled.asStateFlow()
 
@@ -175,14 +181,13 @@ class EditorViewModel(
     private val eraserMutex = Mutex()
     private val eraseHitPending = java.util.concurrent.atomic.AtomicBoolean(false)
 
-    private val _palmThresholdDp = MutableStateFlow(45f)
-    val palmThresholdDp: StateFlow<Float> = _palmThresholdDp.asStateFlow()
-
     private val _strokeSpeedSensitivity = MutableStateFlow(1f)
     val strokeSpeedSensitivity: StateFlow<Float> = _strokeSpeedSensitivity.asStateFlow()
 
-    private val _fingerTouchThresholdDp = MutableStateFlow(8f)
-    val fingerTouchThresholdDp: StateFlow<Float> = _fingerTouchThresholdDp.asStateFlow()
+    // 粗細靈敏度（全域偏好，0=鈍 → 1=靈）：設定頁寫入，隨文件 VM 重建載入。
+    // 映射到跟隨濾波 smoothOld = 0.95 - 0.45*r（預設 0.33 → 0.80）。
+    private val _widthResponsiveness = MutableStateFlow(0.33f)
+    val widthResponsiveness: StateFlow<Float> = _widthResponsiveness.asStateFlow()
 
     // 手指觸控落筆校正：只在手指模式(FREE)＋Touch 接觸時生效，觸控筆模式不受影響。
     // dp 為單位，套用時經 density 轉 px。設定頁寫全域 prefs，這裡隨文件 VM 重建載入。
@@ -220,9 +225,8 @@ class EditorViewModel(
                 }
                 _quickSwipeEraserEnabled.value = prefs.quickSwipeEraserEnabled
                 _autoSwitchToPenAfterErase.value = prefs.autoSwitchToPenAfterErase
-                _palmThresholdDp.value = prefs.palmThresholdDp
                 _strokeSpeedSensitivity.value = prefs.strokeSpeedSensitivity
-                _fingerTouchThresholdDp.value = prefs.fingerTouchThresholdDp
+                _widthResponsiveness.value = settingsRepository.getWidthResponsiveness()
                 _touchCalEnabled.value = prefs.touchCalEnabled
                 _touchCalDxDp.value = prefs.touchCalDxDp
                 _touchCalDyDp.value = prefs.touchCalDyDp
@@ -269,24 +273,10 @@ class EditorViewModel(
         }
     }
 
-    fun setPalmThresholdDp(thresholdDp: Float) {
-        _palmThresholdDp.value = thresholdDp
-        viewModelScope.launch(Dispatchers.IO) {
-            settingsRepository.setPalmThresholdDp(documentUri, thresholdDp)
-        }
-    }
-
     fun setStrokeSpeedSensitivity(sensitivity: Float) {
         _strokeSpeedSensitivity.value = sensitivity
         viewModelScope.launch(Dispatchers.IO) {
             settingsRepository.setStrokeSpeedSensitivity(documentUri, sensitivity)
-        }
-    }
-
-    fun setFingerTouchThresholdDp(thresholdDp: Float) {
-        _fingerTouchThresholdDp.value = thresholdDp
-        viewModelScope.launch(Dispatchers.IO) {
-            settingsRepository.setFingerTouchThresholdDp(documentUri, thresholdDp)
         }
     }
 
@@ -432,8 +422,11 @@ class EditorViewModel(
         // from the active layer to the pending layer without a visible gap on stylus lift.
         val scaleX = modelWidth / cW
         val scaleY = modelHeight / cH
+        // 寬度用 zoom=1 基準歸一（× docZoom 還原）：座標仍用實際 canvas 尺寸映射，
+        // 新墨在任何縮放下存入同樣的 model 寬，放大等比變粗。
+        val widthScaleX = scaleX * _docZoom.value.coerceAtLeast(0.1f)
         val normalizedPoints = points.map {
-            StrokePoint(it.x * scaleX, it.y * scaleY, it.width * scaleX)
+            StrokePoint(it.x * scaleX, it.y * scaleY, it.width * widthScaleX)
         }
         val path = EnvelopeUtils.generateEnvelopePath(normalizedPoints)
         val bounds = path.getBounds()
@@ -444,7 +437,8 @@ class EditorViewModel(
             color = color.toArgb(),
             // Store the user-selected base width (normalized to model space) so PDF export
             // uses the correct line thickness rather than the velocity-derived per-point width.
-            strokeWidth = baseWidth * scaleX,
+            // 寬度同上用 zoom=1 基準。
+            strokeWidth = baseWidth * widthScaleX,
             boundsLeft = bounds.left,
             boundsTop = bounds.top,
             boundsRight = bounds.right,
@@ -572,6 +566,8 @@ class EditorViewModel(
             val strokeId = UUID.randomUUID().toString()
             val scaleX = modelWidth / cW
             val scaleY = modelHeight / cH
+            // 寬度用 zoom=1 基準歸一（× docZoom 還原），座標映射不動。
+            val shapeWidthScale = scaleX * _docZoom.value.coerceAtLeast(0.1f)
             val p0 = Offset(startPoint.x * scaleX, startPoint.y * scaleY)
             val p1 = Offset(endPoint.x * scaleX, endPoint.y * scaleY)
             val strokeEntity = StrokeEntity(
@@ -579,7 +575,7 @@ class EditorViewModel(
                 documentUri = documentUri,
                 pageIndex = pageIndex.value,
                 color = color.toArgb(),
-                strokeWidth = strokeWidth * scaleX,
+                strokeWidth = strokeWidth * shapeWidthScale,
                 boundsLeft = minOf(p0.x, p1.x),
                 boundsTop = minOf(p0.y, p1.y),
                 boundsRight = maxOf(p0.x, p1.x),

@@ -96,7 +96,9 @@ import com.vic.inkflow.ui.theme.BrandIndigo
 import com.vic.inkflow.util.PalmRejectionFilter
 import com.vic.inkflow.util.TouchEventLogger
 import com.vic.inkflow.util.EnvelopeUtils
+import com.vic.inkflow.util.smoothCenterline
 import com.vic.inkflow.util.StrokePoint
+import androidx.compose.ui.graphics.FilterQuality
 import com.vic.inkflow.util.StrokeTransformUtils
 import java.util.UUID
 import android.view.MotionEvent
@@ -204,9 +206,8 @@ fun InkCanvas(
     val selectedStrokeResizeAnchor by viewModel.selectedStrokeResizeAnchor.collectAsState()
     val inputMode by viewModel.inputMode.collectAsState()
     val quickSwipeEraserEnabled by viewModel.quickSwipeEraserEnabled.collectAsState()
-    val palmThresholdDp by viewModel.palmThresholdDp.collectAsState()
     val strokeSpeedSensitivity by viewModel.strokeSpeedSensitivity.collectAsState()
-    val fingerTouchThresholdDp by viewModel.fingerTouchThresholdDp.collectAsState()
+    val widthResponsiveness by viewModel.widthResponsiveness.collectAsState()
     val touchCalEnabled by viewModel.touchCalEnabled.collectAsState()
     val touchCalDxDp by viewModel.touchCalDxDp.collectAsState()
     val touchCalDyDp by viewModel.touchCalDyDp.collectAsState()
@@ -651,30 +652,38 @@ fun InkCanvas(
                 var downEvent = firstEvent
 
                 // Resolve which pointer to track for drawing.
+                // STYLUS_ONLY + multi-touch（手掌著屏＋筆落下）：原廠判斷優先——
+                // 直接認 PointerType.Stylus（OEM tool type 直透），手掌 Touch 不擋筆；
+                // 全是 Touch（雙指縮放/平移）才放行。全程不用 touchMajor 猜。
                 // PALM_REJECTION + multi-touch: locate the stylus among all contacts
                 //   (smallest touchMajor ≤ STYLUS_TOUCH_MAJOR_THRESHOLD).
-                // All other modes: block multi-touch entirely (existing behaviour).
+                // FREE: block multi-touch entirely (existing behaviour).
                 val down = if (firstEvent.changes.size > 1) {
-                    if (inputMode != InputMode.PALM_REJECTION) return@awaitEachGesture
+                    if (inputMode == InputMode.STYLUS_ONLY) {
+                        firstEvent.changes.firstOrNull { it.type == PointerType.Stylus }
+                            ?: return@awaitEachGesture
+                    } else {
+                        if (inputMode != InputMode.PALM_REJECTION) return@awaitEachGesture
                     val candidate = firstEvent.changes.minByOrNull { c ->
                         pointerTouchMajors[c.id.value.toInt()] ?: Float.MAX_VALUE
                     } ?: return@awaitEachGesture
                     val cMajor = pointerTouchMajors[candidate.id.value.toInt()] ?: Float.MAX_VALUE
                     when {
                         // All contacts are palms
-                        PalmRejectionFilter.shouldReject(cMajor, 1f, 1, density, palmThresholdDp.dp) ->
+                        PalmRejectionFilter.shouldReject(cMajor, 1f, 1, density) ->
                             return@awaitEachGesture
                         // All contacts are fingers — pass through for pan
-                        PalmRejectionFilter.isFinger(cMajor, density, fingerTouchThresholdDp.dp) ->
+                        PalmRejectionFilter.isFinger(cMajor, density) ->
                             return@awaitEachGesture
                         // Stylus found — use it for drawing; ignore palm/finger sibling pointers
                         else -> candidate
+                    }
                     }
                 } else {
                     val singleMajor =
                         pointerTouchMajors[firstContactDown.id.value.toInt()] ?: lastTouchMajorPx
                     if (inputMode == InputMode.PALM_REJECTION &&
-                        PalmRejectionFilter.shouldReject(singleMajor, 1f, 1, density, palmThresholdDp.dp)
+                        PalmRejectionFilter.shouldReject(singleMajor, 1f, 1, density)
                     ) {
                         // Palm is the first (and only) contact. In PALM_REJECTION mode, do NOT
                         // return immediately — that would let awaitAllPointersUp() swallow the
@@ -697,8 +706,8 @@ fun InkCanvas(
                                 val major =
                                     pointerTouchMajors[change.id.value.toInt()] ?: Float.MAX_VALUE
                                 palmDebugLog("GESTURE while-loop candidate id=${change.id.value} major=$major")
-                                if (!PalmRejectionFilter.shouldReject(major, 1f, 1, density, palmThresholdDp.dp) &&
-                                    !PalmRejectionFilter.isFinger(major, density, fingerTouchThresholdDp.dp)
+                                if (!PalmRejectionFilter.shouldReject(major, 1f, 1, density) &&
+                                    !PalmRejectionFilter.isFinger(major, density)
                                 ) {
                                     downEvent = evt
                                     stylusDown = change
@@ -756,8 +765,7 @@ fun InkCanvas(
                         touchMajorPx = touchMajorPx,
                         pressure = down.pressure,
                         concurrentPointers = downEvent.changes.size,
-                        density = density,
-                        maxTouchMajorDp = palmThresholdDp.dp
+                        density = density
                     )
                 ) {
                     TouchEventLogger.logOutcome(
@@ -774,7 +782,7 @@ fun InkCanvas(
                 // --- PALM_REJECTION only: finger zone → pass through for single-finger pan ---
                 // FREE mode: finger (non-palm) falls through and draws — no zone filtering needed.
                 if (inputMode == InputMode.PALM_REJECTION && down.type == PointerType.Touch) {
-                    if (PalmRejectionFilter.isFinger(touchMajorPx, density, fingerTouchThresholdDp.dp)) {
+                    if (PalmRejectionFilter.isFinger(touchMajorPx, density)) {
                         // Finger: do NOT consume — bubbles up to Workspace Box for pan.
                         // Exception: Eraser works with finger contacts; let it fall through.
                         if (activeTool != Tool.ERASER) {
@@ -1244,6 +1252,24 @@ fun InkCanvas(
                 var lastEraserDispatchTime = down.uptimeMillis
                 val baseWidth = if (activeTool == Tool.HIGHLIGHTER) strokeWidth * 3f else strokeWidth
                 var currentW = baseWidth
+                // 觸控筆直讀壓力：Stylus 落筆才進壓力路徑；手指維持速度路徑。
+                // down.pressure / drag.pressure 由 Compose 直透 MotionEvent 壓感。
+                val isStylusPen = down.type == PointerType.Stylus
+                var minPressureSeen = down.pressure
+                var maxPressureSeen = down.pressure
+                // 壓力模式整筆鎖定一次：前 8 點只觀察，第 8 點起鎖定用壓力還是速度。
+                // （之前是逐點閾值切換 → 寫到一半突然從細變粗的「綻開」。）
+                var pressureModeLatched = false
+                var usePressureMode = false
+                var smoothPressure = down.pressure.coerceIn(0f, 1f)
+                var lastSmoothPressure = smoothPressure
+                // 單點 tap：壓力看似合理（0.05..0.95）才用落筆壓力定寬，否則維持 baseWidth。
+                if (isStylusPen && activeTool == Tool.PEN &&
+                    down.pressure in 0.05f..0.95f
+                ) {
+                    val pSeed = down.pressure.coerceIn(0f, 1f)
+                    currentW = baseWidth * 0.25f + (baseWidth * 1.7f - baseWidth * 0.25f) * pSeed
+                }
 
                 currentPathPoints.clear()
                 currentPathPoints.add(StrokePoint(startOffset.x, startOffset.y, currentW))
@@ -1283,6 +1309,18 @@ fun InkCanvas(
                         }
                         // Track peak pressure for outcome log
                         maxPressureDuring = maxOf(maxPressureDuring, drag.pressure)
+                        // 觸控筆壓力追蹤：historical 無 pressure 欄位，用同批 drag.pressure 近似。
+                        minPressureSeen = minOf(minPressureSeen, drag.pressure)
+                        maxPressureSeen = maxOf(maxPressureSeen, drag.pressure)
+                        // 壓力本身先做 EMA 去抖（副廠筆壓感跳動大，直接映射會爆粗細）。
+                        lastSmoothPressure = smoothPressure
+                        smoothPressure = smoothPressure * 0.85f +
+                            drag.pressure.coerceIn(0f, 1f) * 0.15f
+                        // 前 8 點觀察，之後鎖定整筆模式，不再切換。
+                        if (!pressureModeLatched && currentPathPoints.size >= 8) {
+                            pressureModeLatched = true
+                            usePressureMode = (maxPressureSeen - minPressureSeen) >= 0.05f
+                        }
 
                         // Pressure spike mid-stroke (same threshold reasoning as above)
                         if (drag.type == PointerType.Touch && drag.pressure > 1.5f) {
@@ -1290,7 +1328,7 @@ fun InkCanvas(
                             break
                         }
 
-                        val calcWidth = { pos: Offset, time: Long ->
+                        val calcWidth = { pos: Offset, time: Long, pressure: Float ->
                             val prevPt = currentPathPoints.last()
                             val dist = kotlin.math.hypot(pos.x - prevPt.x, pos.y - prevPt.y)
                             val dt = (time - lastPointTime).coerceAtLeast(1L)
@@ -1300,14 +1338,28 @@ fun InkCanvas(
                             val w = if (activeTool == Tool.HIGHLIGHTER) {
                                 baseWidth // For highlighter, do NOT apply variable thickness
                             } else {
-                                    val maxW = baseWidth * 1.3f   // 最粗：稍微放大即可，不需要誇張
-                                    val minW = baseWidth * 0.4f   // 最細
+                                    // 範圍 0.25x–1.7x（最粗最細對比更像壓感筆），跟隨由設定頁
+                                    // 「粗細跟手速度」控制（0=鈍 0.95 → 1=靈 0.50，預設 0.80）。
+                                    val maxW = baseWidth * 1.7f
+                                    val minW = baseWidth * 0.25f
+                                    val smoothOld =
+                                        0.95f - 0.45f * widthResponsiveness.coerceIn(0f, 1f)
                                     // Sensitivity > 1.0 makes thinning happen sooner; < 1.0 makes it slower.
                                     val velocityThreshold = 0.7f / sensitivity
                                     val vMapped = (velocity / velocityThreshold).coerceIn(0f, 1f)
-                                val targetW = minW + (maxW - minW) * (1f - vMapped)
-                                // 加重前一點的權重 (0.85f)，讓粗細過渡更平滑，消除竹節突變
-                                prevPt.width * 0.85f + targetW * 0.15f
+                                val velocityTarget = minW + (maxW - minW) * (1f - vMapped)
+                                // 觸控筆直讀壓力：只用鎖定後的模式。整手勢壓力幾乎不變
+                                // （<0.05，即副廠無壓感筆）→ 整筆退回速度路徑，不中途跳變。
+                                // 鎖定前一律速度，避免開頭在兩種模式間橫跳。
+                                val usePressure = isStylusPen &&
+                                    pressureModeLatched && usePressureMode
+                                val targetW = if (usePressure) {
+                                    minW + (maxW - minW) * pressure.coerceIn(0f, 1f)
+                                } else {
+                                    velocityTarget
+                                }
+                                // 加重前一點的權重，讓粗細過渡更平滑，消除竹節突變
+                                prevPt.width * smoothOld + targetW * (1f - smoothOld)
                             }
                             
                             lastPointTime = time
@@ -1318,14 +1370,14 @@ fun InkCanvas(
                             val hp   = calPos(historical.position)
                             val prev = currentPathPoints.last()
                             activePath.quadraticTo(prev.x, prev.y, (prev.x + hp.x) / 2f, (prev.y + hp.y) / 2f)
-                            val w = calcWidth(hp, historical.uptimeMillis)
+                            val w = calcWidth(hp, historical.uptimeMillis, lastSmoothPressure)
                             currentPathPoints.add(StrokePoint(hp.x, hp.y, w))
                             quickSwipeTrace.add(hp)
                         }
                         val newPoint  = calPos(drag.position)
                         val prevPoint = currentPathPoints.last()
                         activePath.quadraticTo(prevPoint.x, prevPoint.y, (prevPoint.x + newPoint.x) / 2f, (prevPoint.y + newPoint.y) / 2f)
-                        val w = calcWidth(newPoint, drag.uptimeMillis)
+                        val w = calcWidth(newPoint, drag.uptimeMillis, smoothPressure)
                         currentPathPoints.add(StrokePoint(newPoint.x, newPoint.y, w))
                         quickSwipeTrace.add(newPoint)
 
@@ -1342,7 +1394,9 @@ fun InkCanvas(
                         }
                         
                         if (!quickSwipeTriggered && (activeTool == Tool.PEN || activeTool == Tool.HIGHLIGHTER)) {
-                            val newPath = EnvelopeUtils.generateEnvelopePath(currentPathPoints)
+                            // 預覽包絡先過中心線平滑（入庫點列不動，匯出零影響）。
+                            val previewPts = smoothCenterline(currentPathPoints)
+                            val newPath = EnvelopeUtils.generateEnvelopePath(previewPts)
                             activeEnvelopePath.reset()
                             activeEnvelopePath.addPath(newPath)
                         }
@@ -1483,7 +1537,9 @@ fun InkCanvas(
             // 筆跡快取封頂：縮放時畫布可達上萬 px，原尺寸建圖會超過
             // RecordingCanvas 上限直接閃退（321MB 事件），且每幀重建巨圖就是卡頓主因；
             // 改固定上限，繪製時再放大回全尺寸（GPU 做，免費）
-            val cacheScale = (2048f / maxOf(bmpWidth, bmpHeight)).coerceAtMost(1f)
+            // 筆跡快取上限 3072（transient 約 27MB 內，largeHeap 平板可承受）。
+            val cacheCap = 3072f
+            val cacheScale = (cacheCap / maxOf(bmpWidth, bmpHeight)).coerceAtMost(1f)
             val cacheW = (bmpWidth * cacheScale).toInt().coerceAtLeast(1)
             val cacheH = (bmpHeight * cacheScale).toInt().coerceAtLeast(1)
             // P1 手勢凍結：pinchActive 時沿用上次的快取圖（不配置不重畫），
@@ -1653,7 +1709,9 @@ fun InkCanvas(
                 dstSize = IntSize(
                     size.width.toInt().coerceAtLeast(1),
                     size.height.toInt().coerceAtLeast(1)
-                )
+                ),
+                // 放大用 High 品質，歷史墨不糊。
+                filterQuality = FilterQuality.High
             )
 
             val preview = commitPreview
