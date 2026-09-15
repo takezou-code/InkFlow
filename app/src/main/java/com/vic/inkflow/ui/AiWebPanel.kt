@@ -760,10 +760,8 @@ private fun buildPickJs(): String {
                     if (!window.__inkpick) return;
                     var t = (ev.target && ev.target.closest) ? ev.target.closest('p, li, h1, h2, h3, h4, pre, blockquote') : null;
                     if (!t) return;
-                    var box = findContainer();
-                    if (!box) return;
-                    if (t !== box.el && !box.el.contains(t)) return;
-                    if (box.fb && inChrome(t)) return;
+                    // 自癒：串流中重渲染導致容器換新時，不卡容器歸屬、有字就地標記（chrome 區除外）
+                    if (inChrome(t)) return;
                     if (!t.hasAttribute('data-inkpick')) {
                         if (!t.innerText || t.innerText.trim().length === 0) return;
                         t.setAttribute('data-inkpick', '0');
