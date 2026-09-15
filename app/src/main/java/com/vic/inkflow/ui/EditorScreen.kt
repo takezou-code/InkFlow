@@ -269,8 +269,10 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
     var aiPanelWeight by rememberSaveable { mutableFloatStateOf(0.4f) }
     var aiFileUri by remember { mutableStateOf<android.net.Uri?>(null) }
     var aiPrompt by remember { mutableStateOf<String?>(null) }
-    // M2：引入抓取 — grabId 遞增觸發 AiWebPanel 抓 Gemini 文字，結果分塊後進勾選面板
-    var aiGrabId by remember { mutableStateOf(0) }
+    // M2b-2：聰明圈選 — 引入鈕兩段式：①進圈選模式（段落打勾）②收集打勾段落
+    var aiPickMode by remember { mutableStateOf(false) }
+    var aiPickEnterId by remember { mutableStateOf(0) }
+    var aiPickCollectId by remember { mutableStateOf(0) }
     var aiChunks by remember { mutableStateOf<List<AiTextChunk>>(emptyList()) }
     var checkedChunkIds by remember { mutableStateOf(setOf<String>()) }
     var showChunkPicker by remember { mutableStateOf(false) }
@@ -781,12 +783,14 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                         fileUri = aiFileUri,
                         prompt = aiPrompt,
                         onPromptConsumed = { aiPrompt = null },
-                        grabRequestId = aiGrabId,
+                        pickEnterId = aiPickEnterId,
+                        pickCollectId = aiPickCollectId,
                         onTextGrabbed = { text ->
                             scope.launch {
                                 if (text.isBlank()) {
-                                    android.widget.Toast.makeText(context, "請先在 Gemini 長按選取文字", android.widget.Toast.LENGTH_SHORT).show()
+                                    android.widget.Toast.makeText(context, "沒抓到文字：請在 Gemini 回覆中點段落打勾後再按引入", android.widget.Toast.LENGTH_SHORT).show()
                                 } else {
+                                    aiPickMode = false
                                     aiChunks = chunkAiText(text)
                                     checkedChunkIds = aiChunks.map { it.id }.toSet()
                                     showChunkPicker = true
@@ -797,6 +801,7 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                             showAiPanel = false
                             aiFileUri = null
                             aiPrompt = null
+                            aiPickMode = false
                         }
                     )
                 }
@@ -822,6 +827,7 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                                 showAiPanel = false
                                 aiFileUri = null
                                 aiPrompt = null
+                                aiPickMode = false
                             },
                             modifier = Modifier
                                 .padding(top = 8.dp)
@@ -834,15 +840,26 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                                 tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                             )
                         }
+                        // 引入鈕兩段式：①進圈選模式（段落打勾）②收集打勾段落（沒勾則取最後回覆全文）
                         IconButton(
-                            onClick = { aiGrabId++ },
+                            onClick = {
+                                if (!aiPickMode) {
+                                    aiPickMode = true
+                                    aiPickEnterId++
+                                    android.widget.Toast.makeText(context, "點 Gemini 回覆的段落打勾，再按一次引入抓取", android.widget.Toast.LENGTH_SHORT).show()
+                                } else {
+                                    aiPickMode = false
+                                    aiPickCollectId++
+                                }
+                            },
                             modifier = Modifier.size(24.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Filled.Download,
-                                contentDescription = "引入 Gemini 文字",
+                                contentDescription = if (aiPickMode) "抓取打勾段落" else "引入 Gemini 文字",
                                 modifier = Modifier.size(16.dp),
-                                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                                tint = if (aiPickMode) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                             )
                         }
                         Box(
