@@ -696,6 +696,23 @@ class EditorViewModel(
         }
     }
 
+    /** M3：引入文字寫入 — 直接給 model 座標與目標頁（排版引擎已算好，不經 canvas 換算）。 */
+    fun insertImportedText(docUri: String, targetPage: Int, text: String, modelX: Float, modelY: Float, fontSize: Float) {
+        if (text.isBlank()) return
+        val ann = TextAnnotationEntity(
+            documentUri = docUri,
+            pageIndex = targetPage,
+            text = text,
+            modelX = modelX,
+            modelY = modelY,
+            fontSize = fontSize
+        )
+        viewModelScope.launch(Dispatchers.IO) {
+            textAnnotationDao.insert(ann)
+            withContext(Dispatchers.Main) { pushUndo(DrawCommand.AddTextAnnotation(ann)) }
+        }
+    }
+
     fun commitTextAnnotationContent(id: String, newText: String) {
         val old = currentTextAnnotations.value.firstOrNull { it.id == id } ?: return
         if (old.text == newText || newText.isBlank()) return

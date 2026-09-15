@@ -1266,14 +1266,20 @@ private fun StaticPageOverlay(
                         isAntiAlias = true
                         typeface    = android.graphics.Typeface.DEFAULT_BOLD
                     }
-                    composeCanvas.nativeCanvas.drawText(
-                        ann.text, ann.modelX * sx, ann.modelY * sy, paint
-                    )
+                    // Multiline：與 InkCanvas 同畫法（modelY=首行 baseline 逐行下移），否則 \n 疊成一行
+                    val lineHeight = with(paint.fontMetrics) { -ascent + descent + leading }
+                    ann.text.split("\n").forEachIndexed { i, line ->
+                        composeCanvas.nativeCanvas.drawText(
+                            line, ann.modelX * sx, ann.modelY * sy + i * lineHeight, paint
+                        )
+                    }
                 }
             }
         }
     })
 }
+
+internal fun polygonBounds(points: List<Offset>): Rect? {
 
 internal fun polygonBounds(points: List<Offset>): Rect? {
     if (points.isEmpty()) return null

@@ -230,6 +230,7 @@ import kotlin.math.sin
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -302,6 +303,62 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
         currentPageIndex = index
         viewModel.setActivePage(index)
         scope.launch { runCatching { mainListState.animateScrollToItem(index) } }
+    }
+
+    // M3：引入文字插入 — 分頁排版 → 來源頁後串行開新頁 → 寫入 → 跳到首個新頁。
+    // insertBlankPage 同一時間只接受一頁（進行中會直接丟棄），故用 pageCount 逐頁確認。
+    suspend fun insertOnePageAfter(afterIndex: Int): Boolean {
+        repeat(5) {
+            val before = pdfViewModel.pageCount.value
+            if (!pdfViewModel.isPageOperationInProgress.value) {
+                pdfViewModel.insertBlankPage(
+                    context, uri.toString(), afterIndex,
+                    pageWidthPt = viewModel.modelWidth,
+                    pageHeightPt = viewModel.modelHeight
+                )
+            }
+            val done = kotlinx.coroutines.withTimeoutOrNull(30000) {
+                pdfViewModel.pageCount.filter { it == before + 1 }.first()
+            }
+            if (done != null) return true
+            kotlinx.coroutines.withTimeoutOrNull(10000) {
+                pdfViewModel.isPageOperationInProgress.filter { !it }.first()
+            }
+        }
+        return false
+    }
+
+    fun importSelectedChunks() {
+        val selected = aiChunks.filter { it.id in checkedChunkIds }
+        if (selected.isEmpty()) return
+        showChunkPicker = false
+        scope.launch {
+            val pages = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                paginateAiChunks(selected, viewModel.modelWidth, viewModel.modelHeight)
+            }
+            if (pages.isEmpty()) {
+                android.widget.Toast.makeText(context, "沒有可插入的文字", android.widget.Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            val sourcePage = currentPageIndex
+            var after = sourcePage
+            var placed = 0
+            for (page in pages) {
+                if (!insertOnePageAfter(after)) break
+                after += 1
+                val pageIdx = after
+                page.forEach { pt ->
+                    viewModel.insertImportedText(uri.toString(), pageIdx, pt.text, pt.modelX, pt.modelY, pt.fontSize)
+                }
+                placed++
+            }
+            if (placed > 0) {
+                onRequestPage(sourcePage + 1)
+                android.widget.Toast.makeText(context, "已插入 ${selected.size} 塊（${placed} 頁）", android.widget.Toast.LENGTH_SHORT).show()
+            } else {
+                android.widget.Toast.makeText(context, "開新頁失敗，請稍後再試", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }
     }
     // 卷動跟隨：主列表滑到哪頁就換作用頁（不捲主列表，避免打架；側欄由下方 effect 置中）
     val onScrollPage: (Int) -> Unit = { index ->
@@ -951,10 +1008,8 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                         },
                         confirmButton = {
                             TextButton(
-                                onClick = {
-                                    showChunkPicker = false
-                                    android.widget.Toast.makeText(context, "排版插入 M3 實作（已選 ${checkedChunkIds.size} 塊）", android.widget.Toast.LENGTH_SHORT).show()
-                                }
+                                onClick = { importSelectedChunks() },
+                                enabled = checkedChunkIds.isNotEmpty()
                             ) {
                                 Text("插入 ${checkedChunkIds.size} 塊")
                             }

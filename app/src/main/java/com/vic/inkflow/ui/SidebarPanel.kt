@@ -966,9 +966,13 @@ internal fun PageThumbnail(
                                 isAntiAlias = true
                                 typeface    = android.graphics.Typeface.DEFAULT_BOLD
                             }
-                            composeCanvas.nativeCanvas.drawText(
-                                ann.text, ann.modelX * sx, ann.modelY * sy, paint
-                            )
+                            // Multiline：與 InkCanvas 同畫法，否則 \n 疊成一行
+                            val lineHeight = with(paint.fontMetrics) { -ascent + descent + leading }
+                            ann.text.split("\n").forEachIndexed { i, line ->
+                                composeCanvas.nativeCanvas.drawText(
+                                    line, ann.modelX * sx, ann.modelY * sy + i * lineHeight, paint
+                                )
+                            }
                         }
                     }
                 }

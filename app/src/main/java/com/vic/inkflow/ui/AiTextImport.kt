@@ -74,3 +74,88 @@ private fun splitProse(seg: String, maxChars: Int, out: MutableList<String>) {
         }
     }
 }
+
+/** M3：排版輸出（一塊 = 一個 TextAnnotationEntity，文字已按寬折好行，modelY=首行 baseline）。 */
+data class PlacedText(
+    val text: String,
+    val modelX: Float,
+    val modelY: Float,
+    val fontSize: Float
+)
+
+/**
+ * M3 流式分頁：每塊用 StaticLayout 按內容寬折行（取其斷行、高度仍用渲染器的
+ * fontMetrics 行高，保證量畫一致），由上往下放，放不下就開新頁。
+ * 全部放新頁 → 與原文/墨水零重疊（永不疊字）。
+ */
+fun paginateAiChunks(
+    chunks: List<AiTextChunk>,
+    modelW: Float,
+    modelH: Float,
+    fontSize: Float = 16f,
+    marginH: Float = 48f,
+    marginTop: Float = 64f,
+    marginBottom: Float = 64f,
+    blockGap: Float = 14f
+): List<List<PlacedText>> {
+    // 與 InkCanvas 同字體/字號量測（DEFAULT_BOLD），行高公式與渲染器一致
+    val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        typeface = android.graphics.Typeface.DEFAULT_BOLD
+        textSize = fontSize
+    }
+    val fm = paint.fontMetrics
+    val lineH = -fm.ascent + fm.descent + fm.leading
+    if (lineH <= 0f) return emptyList()
+    val contentW = (modelW - marginH * 2).coerceAtLeast(100f).toInt().coerceAtLeast(1)
+    val textPaint = android.text.TextPaint(paint)
+
+    val pages = mutableListOf<MutableList<PlacedText>>()
+    var cur = mutableListOf<PlacedText>()
+    var cursorTop = marginTop
+    fun newPage() {
+        if (cur.isNotEmpty()) pages.add(cur)
+        cur = mutableListOf()
+        cursorTop = marginTop
+    }
+    // lines：已折好的行；必要時跨頁切段（一段一 annotation）
+    fun emit(lines: List<String>) {
+        var idx = 0
+        while (idx < lines.size) {
+            val room = modelH - marginBottom - cursorTop
+            val fit = (room / lineH).toInt()
+            if (fit <= 0) {
+                newPage()
+                continue
+            }
+            val take = minOf(fit, lines.size - idx)
+            val seg = lines.subList(idx, idx + take)
+            cur.add(
+                PlacedText(
+                    text = seg.joinToString("\n") { it.trimEnd() },
+                    modelX = marginH,
+                    modelY = cursorTop - fm.ascent,
+                    fontSize = fontSize
+                )
+            )
+            cursorTop += take * lineH + blockGap
+            idx += take
+        }
+    }
+
+    for (chunk in chunks) {
+        val body = chunk.body.trim()
+        if (body.isEmpty()) continue
+        val layout = android.text.StaticLayout.Builder.obtain(body, 0, body.length, textPaint, contentW)
+            .setAlignment(android.text.Layout.Alignment.ALIGN_NORMAL)
+            .setLineSpacing(0f, 1f)
+            .setIncludePad(false)
+            .build()
+        val lines = (0 until layout.lineCount).map { i ->
+            body.substring(layout.getLineStart(i), layout.getLineEnd(i)).trimEnd()
+        }.filter { it.isNotEmpty() }
+        if (lines.isEmpty()) continue
+        emit(lines)
+    }
+    if (cur.isNotEmpty()) pages.add(cur)
+    return pages
+}
