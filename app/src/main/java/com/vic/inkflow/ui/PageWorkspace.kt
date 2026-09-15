@@ -517,7 +517,11 @@ internal fun Workspace(
             val end = info.viewportEndOffset
             var best = -1
             var bestVisible = -1
+            var first = Int.MAX_VALUE
+            var last = Int.MIN_VALUE
             for (item in info.visibleItemsInfo) {
+                if (item.index < first) first = item.index
+                if (item.index > last) last = item.index
                 val visStart = maxOf(item.offset, start)
                 val visEnd = minOf(item.offset + item.size, end)
                 val visible = (visEnd - visStart).coerceAtLeast(0)
@@ -526,8 +530,12 @@ internal fun Workspace(
                     best = item.index
                 }
             }
-            best
-        }.collect { idx ->
+            Triple(best, first, last)
+        }.collect { (idx, first, last) ->
+            // 可視範圍預取：未露臉的鄰頁先查好，快取當初始值，第一幀就有墨
+            if (first != Int.MAX_VALUE && last != Int.MIN_VALUE) {
+                viewModel.prefetchPages(first, last)
+            }
             // 頁鎖期間（跨頁手勢中）：忽略自動捲帶來的作用頁切換，
             // 手勢結束由 InkCanvas.onCrossPageEnd 激活目標頁，避免 InkCanvas 中途被替換斷筆
             if (!viewModel.isPageLocked() && idx in 0 until pageCount) onScrollPage(idx)
@@ -583,15 +591,12 @@ internal fun Workspace(
             // （之前翻頁閃光的主因：分支內各自 remember，切換必重載 + Crossfade 重播）
             val bitmapFlow = remember(index, renderEpoch) { pdfViewModel.getPageBitmap(index) }
             val pageBitmap by bitmapFlow.collectAsState()
-            val pageStrokes by remember(index, documentUri) {
-                db.strokeDao().getStrokesForPage(documentUri, index)
-            }.collectAsState(initial = viewModel.cachedNeighbor(index)?.strokes ?: emptyList())
-            val pageImages by remember(index, documentUri) {
-                db.imageAnnotationDao().getForPage(documentUri, index)
-            }.collectAsState(initial = viewModel.cachedNeighbor(index)?.images ?: emptyList())
-            val pageTexts by remember(index, documentUri) {
-                db.textAnnotationDao().getForPage(documentUri, index)
-            }.collectAsState(initial = viewModel.cachedNeighbor(index)?.texts ?: emptyList())
+            // 常駐熱流不斷線：捲動中反覆組成只換訂閱不重查；初始值吃預取快取，第一幀就有墨
+            val pageData by remember(index) { viewModel.pageDataFlow(index) }
+                .collectAsState(initial = viewModel.cachedNeighbor(index) ?: EditorViewModel.NeighborPageData())
+            val pageStrokes = pageData.strokes
+            val pageImages = pageData.images
+            val pageTexts = pageData.texts
             if (index == pageIndex) {
                 var itemWidthPx by remember { mutableIntStateOf(0) }
                 val itemTargetOffset = remember(
