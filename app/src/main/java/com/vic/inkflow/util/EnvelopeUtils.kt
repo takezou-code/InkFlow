@@ -10,6 +10,20 @@ import kotlin.math.sin
 
 data class StrokePoint(val x: Float, val y: Float, val width: Float)
 
+/**
+ * 預覽用中心線平滑：3 點滑動平均 x/y（寬度保留），只餵給即時預覽包絡，
+ * 入庫點列不動 → 匯出零影響。消除電容筆高頻抖動的毛邊。
+ */
+fun smoothCenterline(points: List<StrokePoint>): List<StrokePoint> {
+    if (points.size < 3) return points
+    val last = points.size - 1
+    return points.mapIndexed { i, p ->
+        val a = points[(i - 1).coerceAtLeast(0)]
+        val b = points[(i + 1).coerceAtMost(last)]
+        StrokePoint((a.x + p.x + b.x) / 3f, (a.y + p.y + b.y) / 3f, p.width)
+    }
+}
+
 object EnvelopeUtils {
     /**
      * Generates a filled polygon (Envelope) path from a list of stroke points with individual widths.

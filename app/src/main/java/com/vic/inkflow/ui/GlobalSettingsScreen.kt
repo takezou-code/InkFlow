@@ -101,9 +101,9 @@ fun GlobalSettingsScreen(
     var defaultInputMode by remember { mutableStateOf(prefs.getString("default_input_mode", InputMode.FREE.name) ?: InputMode.FREE.name) }
     var defaultQuickSwipe by remember { mutableStateOf(prefs.getBoolean("default_quick_swipe_eraser_enabled", false)) }
     var defaultAutoSwitchToPenAfterErase by remember { mutableStateOf(prefs.getBoolean("default_auto_switch_to_pen_after_erase", false)) }
-    var defaultPalmThresholdDp by remember { mutableFloatStateOf(prefs.getFloat("default_palm_threshold_dp", 45f)) }
     var defaultStrokeSpeedSensitivity by remember { mutableFloatStateOf(prefs.getFloat("default_stroke_speed_sensitivity", 1f)) }
-    var defaultFingerTouchThresholdDp by remember { mutableFloatStateOf(prefs.getFloat("default_finger_touch_threshold_dp", 8f)) }
+    // 粗細靈敏度（全域）：0=鈍（跟隨慢、穩）→1=靈（跟隨快、活），預設 0.33
+    var defaultWidthResponsiveness by remember { mutableFloatStateOf(prefs.getFloat("default_width_responsiveness", 0.33f)) }
     // 手指觸控落筆校正（全域，副廠電容筆專用）：開關＋XY 偏移 dp
     var touchCalEnabled by remember { mutableStateOf(prefs.getBoolean("default_touch_cal_enabled", false)) }
     var touchCalDxDp by remember { mutableFloatStateOf(prefs.getFloat("default_touch_cal_dx_dp", 0f)) }
@@ -425,19 +425,14 @@ fun GlobalSettingsScreen(
                     }
                 )
 
-                SettingsSliderRow("手掌偵測敏感度 (Palm Detection Threshold)", defaultPalmThresholdDp, 20f..60f) {
-                    defaultPalmThresholdDp = it
-                    prefs.edit().putFloat("default_palm_threshold_dp", it).apply()
-                }
-
-                SettingsSliderRow("筆畫速度感應 (Stroke Speed Sensitivity)", defaultStrokeSpeedSensitivity, 0.5f..2.0f) {
+                SettingsSliderRow("提筆變細強度（手指/無壓感筆有效）", defaultStrokeSpeedSensitivity, 0.5f..2.0f) {
                     defaultStrokeSpeedSensitivity = it
                     prefs.edit().putFloat("default_stroke_speed_sensitivity", it).apply()
                 }
 
-                SettingsSliderRow("手指/筆接觸面積門檻", defaultFingerTouchThresholdDp, 4f..16f) {
-                    defaultFingerTouchThresholdDp = it
-                    prefs.edit().putFloat("default_finger_touch_threshold_dp", it).apply()
+                SettingsSliderRow("粗細跟手速度（鈍穩←→靈活）", defaultWidthResponsiveness, 0f..1f) {
+                    defaultWidthResponsiveness = it
+                    prefs.edit().putFloat("default_width_responsiveness", it).apply()
                 }
 
                 SettingsSwitchRow(

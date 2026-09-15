@@ -19,9 +19,7 @@ data class DrawingPreferences(
     val paperHeightPt: Float?,
     val quickSwipeEraserEnabled: Boolean,
     val autoSwitchToPenAfterErase: Boolean,
-    val palmThresholdDp: Float,
     val strokeSpeedSensitivity: Float,
-    val fingerTouchThresholdDp: Float,
     // 手指觸控落筆校正（副廠電容筆走 Touch 通道時的 XY 偏移，全域共用）
     val touchCalEnabled: Boolean,
     val touchCalDxDp: Float,
@@ -36,9 +34,9 @@ class EditorSettingsRepository(
     companion object {
         private const val DEFAULT_PEN_STROKE_WIDTH = 4f
         private const val DEFAULT_HIGHLIGHTER_STROKE_WIDTH = 8f
-        private const val DEFAULT_PALM_THRESHOLD_DP = 45f
         private const val DEFAULT_STROKE_SPEED_SENSITIVITY = 1f
-        private const val DEFAULT_FINGER_TOUCH_THRESHOLD_DP = 8f
+        // 粗細靈敏度（全域，不進 DB）：0=鈍 → 1=靈
+        private const val DEFAULT_WIDTH_RESPONSIVENESS = 0.33f
         private const val DEFAULT_HIGHLIGHTER_COLOR_ARGB = 0xFFFFC700.toInt()
         private val DEFAULT_PALETTE = listOf(
             0xFF000000.toInt(),
@@ -62,13 +60,11 @@ class EditorSettingsRepository(
         val defaultBackground = PageBackground.values().find { it.name == defaultBackgroundStr } ?: PageBackground.BLANK
         val defaultQuickSwipe = prefs.getBoolean("default_quick_swipe_eraser_enabled", false)
         val defaultAutoSwitchToPenAfterErase = prefs.getBoolean("default_auto_switch_to_pen_after_erase", false)
-        val defaultPalmThresholdDp = prefs.getFloat("default_palm_threshold_dp", DEFAULT_PALM_THRESHOLD_DP)
         val defaultPaletteCsv = prefs.getString("default_recent_colors", null)
         val defaultPalette = defaultPaletteCsv?.let { csv ->
             csv.split(',').mapNotNull { it.toIntOrNull() }.takeIf { it.isNotEmpty() }
         } ?: DEFAULT_PALETTE
         val defaultStrokeSpeedSensitivity = prefs.getFloat("default_stroke_speed_sensitivity", DEFAULT_STROKE_SPEED_SENSITIVITY)
-        val defaultFingerTouchThresholdDp = prefs.getFloat("default_finger_touch_threshold_dp", DEFAULT_FINGER_TOUCH_THRESHOLD_DP)
         val defaultTouchCalEnabled = prefs.getBoolean("default_touch_cal_enabled", false)
         val defaultTouchCalDxDp = prefs.getFloat("default_touch_cal_dx_dp", 0f)
         val defaultTouchCalDyDp = prefs.getFloat("default_touch_cal_dy_dp", 0f)
@@ -89,9 +85,7 @@ class EditorSettingsRepository(
             paperHeightPt = local?.paperHeightPt,
             quickSwipeEraserEnabled = defaultQuickSwipe,
             autoSwitchToPenAfterErase = defaultAutoSwitchToPenAfterErase,
-            palmThresholdDp = local?.palmThresholdDp ?: defaultPalmThresholdDp,
             strokeSpeedSensitivity = local?.strokeSpeedSensitivity ?: defaultStrokeSpeedSensitivity,
-            fingerTouchThresholdDp = local?.fingerTouchThresholdDp ?: defaultFingerTouchThresholdDp,
             touchCalEnabled = defaultTouchCalEnabled,
             touchCalDxDp = defaultTouchCalDxDp,
             touchCalDyDp = defaultTouchCalDyDp
@@ -142,33 +136,13 @@ class EditorSettingsRepository(
         prefs.edit().putBoolean("default_auto_switch_to_pen_after_erase", enabled).apply()
     }
 
-    suspend fun setPalmThresholdDp(documentUri: String, thresholdDp: Float) {
-        upsertDocument(documentUri) { copy(palmThresholdDp = thresholdDp) }
-    }
-
     suspend fun setStrokeSpeedSensitivity(documentUri: String, sensitivity: Float) {
         upsertDocument(documentUri) { copy(strokeSpeedSensitivity = sensitivity) }
     }
 
-    suspend fun setFingerTouchThresholdDp(documentUri: String, thresholdDp: Float) {
-        upsertDocument(documentUri) { copy(fingerTouchThresholdDp = thresholdDp) }
-    }
-
-    fun setDefaultPalmThresholdDp(thresholdDp: Float) {
-        prefs.edit().putFloat("default_palm_threshold_dp", thresholdDp).apply()
-    }
-
-    fun setDefaultStrokeSpeedSensitivity(sensitivity: Float) {
-        prefs.edit().putFloat("default_stroke_speed_sensitivity", sensitivity).apply()
-    }
-
-    fun setDefaultFingerTouchThresholdDp(thresholdDp: Float) {
-        prefs.edit().putFloat("default_finger_touch_threshold_dp", thresholdDp).apply()
-    }
-
-    suspend fun resetDocument(documentUri: String) {
-        documentPreferenceDao.deleteByDocumentUri(documentUri)
-    }
+    /** 粗細靈敏度是純全域偏好（不進 DB、不遷移），編輯器開啟時讀取。 */
+    fun getWidthResponsiveness(): Float =
+        prefs.getFloat("default_width_responsiveness", DEFAULT_WIDTH_RESPONSIVENESS)
 
     private suspend fun upsertDocument(
         documentUri: String,
