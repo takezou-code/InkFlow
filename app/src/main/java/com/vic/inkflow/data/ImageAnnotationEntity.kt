@@ -13,7 +13,8 @@ import java.util.UUID
 @Entity(
     tableName = "image_annotations",
     indices = [
-        Index(value = ["documentUri", "pageIndex"])
+        Index(value = ["documentUri", "pageIndex"]),
+        Index(value = ["documentUri", "docY"])
     ]
 )
 data class ImageAnnotationEntity(

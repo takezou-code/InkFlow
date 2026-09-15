@@ -19,7 +19,8 @@ data class PointF(val x: Float, val y: Float)
 @Entity(
     tableName = "strokes",
     indices = [
-        Index(value = ["documentUri", "pageIndex"])
+        Index(value = ["documentUri", "pageIndex"]),
+        Index(value = ["documentUri", "docY"])
     ]
 )
 data class StrokeEntity(
