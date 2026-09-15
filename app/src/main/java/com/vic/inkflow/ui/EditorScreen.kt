@@ -324,21 +324,6 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
         return false
     }
 
-    // 按②收集後直接插入（不經勾選面板）：切塊 → KaTeX 渲染數學（Main）→ 混合排版 → 串行開新頁寫入
-    fun importRawText(raw: String) {
-        if (raw.isBlank()) return
-        scope.launch {
-            try {
-                importRawTextInner(raw)
-            } catch (t: Throwable) {
-                android.util.Log.e("InkFlowDbg", "import failed", t)
-                try {
-                    android.widget.Toast.makeText(context, "插入失敗：${t.message}", android.widget.Toast.LENGTH_LONG).show()
-                } catch (_: Throwable) { }
-            }
-        }
-    }
-
     suspend fun importRawTextInner(raw: String) {
             val blocks = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
                 splitAiBlocks(raw)
@@ -406,6 +391,22 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
             } else {
                 android.widget.Toast.makeText(context, "開新頁失敗，請稍後再試", android.widget.Toast.LENGTH_SHORT).show()
             }
+    }
+
+    // 按②收集後直接插入（不經勾選面板）：切塊 → KaTeX 渲染數學（Main）→ 混合排版 → 串行開新頁寫入。
+    // 包 try/catch：管線任何一步炸了都 Toast，不閃退。
+    fun importRawText(raw: String) {
+        if (raw.isBlank()) return
+        scope.launch {
+            try {
+                importRawTextInner(raw)
+            } catch (t: Throwable) {
+                android.util.Log.e("InkFlowDbg", "import failed", t)
+                try {
+                    android.widget.Toast.makeText(context, "插入失敗：${t.message}", android.widget.Toast.LENGTH_LONG).show()
+                } catch (_: Throwable) { }
+            }
+        }
     }
     // 卷動跟隨：主列表滑到哪頁就換作用頁（不捲主列表，避免打架；側欄由下方 effect 置中）
     val onScrollPage: (Int) -> Unit = { index ->
