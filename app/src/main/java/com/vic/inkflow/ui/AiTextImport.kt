@@ -25,12 +25,12 @@ fun chunkAiText(raw: String, maxChars: Int = AI_CHUNK_MAX_CHARS): List<AiTextChu
     val fence = Regex("```[\\s\\S]*?(?:```|$)")
     var cursor = 0
     for (m in fence.findAll(text)) {
-        splitProse(text.substring(cursor, m.range.first), maxChars, bodies)
+        splitProse(convertLatexInProse(text.substring(cursor, m.range.first)), maxChars, bodies)
         val code = m.value.trim()
         if (code.isNotEmpty()) bodies.add(code)
         cursor = m.range.last + 1
     }
-    splitProse(text.substring(cursor), maxChars, bodies)
+    splitProse(convertLatexInProse(text.substring(cursor)), maxChars, bodies)
     return bodies.mapIndexed { i, b ->
         val firstLine = b.lineSequence().firstOrNull()?.trim().orEmpty()
         AiTextChunk(
@@ -158,4 +158,135 @@ fun paginateAiChunks(
     }
     if (cur.isNotEmpty()) pages.add(cur)
     return pages
+}
+
+// ---- M4b：LaTeX → Unicode 可讀版（免渲染引擎、離線即時；程式碼 fence 不進這裡） ----
+
+private val LATEX_GREEK = mapOf(
+    "alpha" to "α", "beta" to "β", "gamma" to "γ", "delta" to "δ",
+    "epsilon" to "ε", "varepsilon" to "ε", "zeta" to "ζ", "eta" to "η",
+    "theta" to "θ", "vartheta" to "θ", "iota" to "ι", "kappa" to "κ",
+    "lambda" to "λ", "mu" to "μ", "nu" to "ν", "xi" to "ξ", "pi" to "π",
+    "varpi" to "ϖ", "rho" to "ρ", "varrho" to "ϱ", "sigma" to "σ",
+    "varsigma" to "ς", "tau" to "τ", "upsilon" to "υ", "phi" to "φ",
+    "varphi" to "φ", "chi" to "χ", "psi" to "ψ", "omega" to "ω",
+    "Gamma" to "Γ", "Delta" to "Δ", "Theta" to "Θ", "Lambda" to "Λ",
+    "Xi" to "Ξ", "Pi" to "Π", "Sigma" to "Σ", "Upsilon" to "Υ",
+    "Phi" to "Φ", "Psi" to "Ψ", "Omega" to "Ω"
+)
+
+private val LATEX_SYM = mapOf(
+    "pm" to "±", "mp" to "∓", "times" to "×", "div" to "÷", "cdot" to "·",
+    "neq" to "≠", "ne" to "≠", "approx" to "≈", "leq" to "≤", "le" to "≤",
+    "geq" to "≥", "ge" to "≥", "infty" to "∞", "sum" to "∑", "prod" to "∏",
+    "int" to "∫", "iint" to "∬", "partial" to "∂", "nabla" to "∇",
+    "to" to "→", "rightarrow" to "→", "leftarrow" to "←",
+    "Rightarrow" to "⇒", "Leftarrow" to "⇐", "Leftrightarrow" to "⇔",
+    "leftrightarrow" to "↔", "in" to "∈", "notin" to "∉",
+    "subset" to "⊂", "supset" to "⊃", "subseteq" to "⊆", "supseteq" to "⊇",
+    "cup" to "∪", "cap" to "∩", "forall" to "∀", "exists" to "∃",
+    "emptyset" to "∅", "angle" to "∠", "perp" to "⊥", "propto" to "∝",
+    "sim" to "∼", "cong" to "≅", "equiv" to "≡", "ldots" to "…",
+    "cdots" to "⋯", "vdots" to "⋮", "ddots" to "⋱", "ast" to "∗",
+    "circ" to "∘", "bullet" to "•", "hbar" to "ℏ", "ell" to "ℓ",
+    "aleph" to "ℵ", "prime" to "′", "dagger" to "†", "star" to "★"
+)
+
+private val SUP_MAP = mapOf(
+    '0' to '⁰', '1' to '¹', '2' to '²', '3' to '³', '4' to '⁴',
+    '5' to '⁵', '6' to '⁶', '7' to '⁷', '8' to '⁸', '9' to '⁹',
+    '+' to '⁺', '-' to '⁻', '=' to '⁼', '(' to '⁽', ')' to '⁾',
+    'a' to 'ᵃ', 'b' to 'ᵇ', 'c' to 'ᶜ', 'd' to 'ᵈ', 'e' to 'ᵉ',
+    'f' to 'ᶠ', 'g' to 'ᵍ', 'h' to 'ʰ', 'i' to 'ⁱ', 'j' to 'ʲ',
+    'k' to 'ᵏ', 'l' to 'ˡ', 'm' to 'ᵐ', 'n' to 'ⁿ', 'o' to 'ᵒ',
+    'p' to 'ᵖ', 'r' to 'ʳ', 's' to 'ˢ', 't' to 'ᵗ', 'u' to 'ᵘ',
+    'v' to 'ᵛ', 'w' to 'ʷ', 'x' to 'ˣ', 'y' to 'ʸ', 'z' to 'ᶻ',
+    'A' to 'ᴬ', 'B' to 'ᴮ', 'D' to 'ᴰ', 'E' to 'ᴱ', 'G' to 'ᴳ',
+    'H' to 'ᴴ', 'I' to 'ᴵ', 'J' to 'ᴶ', 'K' to 'ᴷ', 'L' to 'ᴸ',
+    'M' to 'ᴹ', 'N' to 'ᴺ', 'O' to 'ᴼ', 'P' to 'ᴾ', 'R' to 'ᴿ',
+    'T' to 'ᵀ', 'U' to 'ᵁ', 'V' to 'ⱽ', 'W' to 'ᵂ'
+)
+
+private val SUB_MAP = mapOf(
+    '0' to '₀', '1' to '₁', '2' to '₂', '3' to '₃', '4' to '₄',
+    '5' to '₅', '6' to '₆', '7' to '₇', '8' to '₈', '9' to '₉',
+    '+' to '₊', '-' to '₋', '=' to '₌', '(' to '₍', ')' to '₎',
+    'a' to 'ₐ', 'e' to 'ₑ', 'h' to 'ₕ', 'i' to 'ᵢ', 'j' to 'ⱼ',
+    'k' to 'ₖ', 'l' to 'ₗ', 'm' to 'ₘ', 'n' to 'ₙ', 'o' to 'ₒ',
+    'p' to 'ₚ', 'r' to 'ᵣ', 's' to 'ₛ', 't' to 'ₜ', 'u' to 'ᵤ',
+    'v' to 'ᵥ', 'x' to 'ₓ'
+)
+
+private fun supOf(s: String): String =
+    if (s.isNotEmpty() && s.all { it in SUP_MAP }) s.map { SUP_MAP.getValue(it) }.joinToString("")
+    else "^($s)"
+
+private fun subOf(s: String): String =
+    if (s.isNotEmpty() && s.all { it in SUB_MAP }) s.map { SUB_MAP.getValue(it) }.joinToString("")
+    else "_($s)"
+
+/** 單段數學轉 Unicode（不含 $ 殼）。未知指令保留原樣，不破壞內容。 */
+fun convertLatexMath(m0: String): String {
+    var m = m0.trim()
+    if (m.isEmpty()) return m
+    // 轉義大括號先佔位（最後還原），避免被分組括號清理吃掉
+    m = m.replace("\\{", "\u0001").replace("\\}", "\u0002")
+    m = m.replace(Regex("\\\\begin\\{[^{}]*\\}"), "")
+    m = m.replace(Regex("\\\\end\\{[^{}]*\\}"), "")
+    // 跳脫字元先還原（要在 & 清理之前）
+    m = m.replace(Regex("\\\\([%$#_&])"), "$1")
+    m = m.replace("&", "")
+    m = m.replace("\\\\", "\n")
+    m = m.replace(Regex("\\\\label\\{[^{}]*\\}"), "")
+    m = m.replace(Regex("\\\\tag\\{[^{}]*\\}"), "")
+    var guard = 0
+    while (guard++ < 20) {
+        val next = m.replace(Regex("\\\\text(?:bf|it|rm|sf|tt)?\\{([^{}]*)\\}"), "$1")
+        if (next == m) break
+        m = next
+    }
+    guard = 0
+    while (guard++ < 20) {
+        val next = m.replace(Regex("\\\\d?frac\\{([^{}]*)\\}\\{([^{}]*)\\}"), "($1)/($2)")
+        if (next == m) break
+        m = next
+    }
+    m = m.replace(Regex("\\\\sqrt\\[([^{}]*)\\]\\{([^{}]*)\\}"), "$1√($2)")
+    m = m.replace(Regex("\\\\sqrt\\{([^{}]*)\\}"), "√($1)")
+    m = Regex("\\^\\{([^{}]*)\\}").replace(m) { r -> supOf(r.groupValues[1]) }
+    m = Regex("_\\{([^{}]*)\\}").replace(m) { r -> subOf(r.groupValues[1]) }
+    m = Regex("\\^([^\\s{}])").replace(m) { r -> supOf(r.groupValues[1]) }
+    m = Regex("_([^\\s{}])").replace(m) { r -> subOf(r.groupValues[1]) }
+    m = m.replace(Regex("\\\\(?:left|right|big|Big|bigg|Bigg)\\s?"), "")
+    m = m.replace(Regex("\\\\(?:quad|qquad|displaystyle|limits|nonumber)"), " ")
+    m = m.replace(Regex("\\\\[,;:! ]"), " ")
+    m = Regex("\\\\([A-Za-z]+)").replace(m) { r ->
+        val name = r.groupValues[1]
+        LATEX_GREEK[name] ?: LATEX_SYM[name] ?: r.value
+    }
+    m = m.replace("{", "").replace("}", "")
+    return m.split("\n").joinToString("\n") { it.replace(Regex("[ \\t]+"), " ").trim() }.trim()
+        .replace("\u0001", "{").replace("\u0002", "}")
+}
+
+private val DISPLAY_DOLLAR = Regex("\\$\\$([\\s\\S]*?)\\$\\$")
+private val DISPLAY_BRACK = Regex("\\\\\\[([\\s\\S]*?)\\\\\\]")
+private val INLINE_PAREN = Regex("\\\\\\(([\\s\\S]*?)\\\\\\)")
+private val INLINE_DOLLAR = Regex("\\$([^\\$\n]+?)\\$")
+
+/**
+ * 散文區 LaTeX 轉換：$$..$$ 與 \[..\] 獨立成段，\(..\) 行內轉，
+ * $..$ 只有含 \ ^ _ 才當數學（避開金額如 $100）。
+ */
+fun convertLatexInProse(seg: String): String {
+    var s = seg
+    s = DISPLAY_DOLLAR.replace(s) { "\n" + convertLatexMath(it.groupValues[1]) + "\n" }
+    s = DISPLAY_BRACK.replace(s) { "\n" + convertLatexMath(it.groupValues[1]) + "\n" }
+    s = INLINE_PAREN.replace(s) { convertLatexMath(it.groupValues[1]) }
+    s = INLINE_DOLLAR.replace(s) { r ->
+        val inner = r.groupValues[1]
+        if (inner.contains('\\') || inner.contains('^') || inner.contains('_')) convertLatexMath(inner)
+        else r.value
+    }
+    return s
 }

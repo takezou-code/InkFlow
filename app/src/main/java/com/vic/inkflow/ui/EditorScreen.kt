@@ -77,7 +77,6 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -274,9 +273,6 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
     var aiPickMode by remember { mutableStateOf(false) }
     var aiPickEnterId by remember { mutableStateOf(0) }
     var aiPickCollectId by remember { mutableStateOf(0) }
-    var aiChunks by remember { mutableStateOf<List<AiTextChunk>>(emptyList()) }
-    var checkedChunkIds by remember { mutableStateOf(setOf<String>()) }
-    var showChunkPicker by remember { mutableStateOf(false) }
     val sidebarListState = rememberLazyListState()
     val mainListState = rememberLazyListState()
     val pinchActive by viewModel.pinchActive.collectAsState()
@@ -328,10 +324,9 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
         return false
     }
 
-    fun importSelectedChunks() {
-        val selected = aiChunks.filter { it.id in checkedChunkIds }
+    // 按②收集後直接插入（不經勾選面板，整批全插）
+    fun importChunks(selected: List<AiTextChunk>) {
         if (selected.isEmpty()) return
-        showChunkPicker = false
         scope.launch {
             val pages = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
                 paginateAiChunks(selected, viewModel.modelWidth, viewModel.modelHeight)
@@ -848,9 +843,7 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                                     android.widget.Toast.makeText(context, "沒抓到文字：請在 Gemini 回覆中點段落打勾後再按引入", android.widget.Toast.LENGTH_SHORT).show()
                                 } else {
                                     aiPickMode = false
-                                    aiChunks = chunkAiText(text)
-                                    checkedChunkIds = aiChunks.map { it.id }.toSet()
-                                    showChunkPicker = true
+                                    importChunks(chunkAiText(text))
                                 }
                             }
                         },
@@ -939,87 +932,6 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                             )
                         }
                     }
-                }
-
-                // M2：Gemini 引入分塊勾選（插入排版 M3）
-                if (showChunkPicker) {
-                    androidx.compose.material3.AlertDialog(
-                        onDismissRequest = { showChunkPicker = false },
-                        title = { Text("引入 Gemini 文字（${checkedChunkIds.size}/${aiChunks.size} 塊）") },
-                        text = {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .heightIn(max = 400.dp)
-                                    .verticalScroll(rememberScrollState())
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    TextButton(onClick = { checkedChunkIds = aiChunks.map { it.id }.toSet() }) {
-                                        Text("全選")
-                                    }
-                                    TextButton(onClick = { checkedChunkIds = emptySet() }) {
-                                        Text("全不選")
-                                    }
-                                }
-                                aiChunks.forEach { chunk ->
-                                    val checked = chunk.id in checkedChunkIds
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clip(RoundedCornerShape(8.dp))
-                                            .clickable {
-                                                checkedChunkIds =
-                                                    if (checked) checkedChunkIds - chunk.id
-                                                    else checkedChunkIds + chunk.id
-                                            }
-                                            .padding(vertical = 4.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        androidx.compose.material3.Checkbox(
-                                            checked = checked,
-                                            onCheckedChange = null
-                                        )
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(
-                                                text = chunk.title,
-                                                style = MaterialTheme.typography.titleSmall,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                            Text(
-                                                text = chunk.body,
-                                                style = MaterialTheme.typography.bodySmall,
-                                                maxLines = 2,
-                                                overflow = TextOverflow.Ellipsis,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                            Text(
-                                                text = "${chunk.charCount} 字",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        },
-                        confirmButton = {
-                            TextButton(
-                                onClick = { importSelectedChunks() },
-                                enabled = checkedChunkIds.isNotEmpty()
-                            ) {
-                                Text("插入 ${checkedChunkIds.size} 塊")
-                            }
-                        },
-                        dismissButton = {
-                            TextButton(onClick = { showChunkPicker = false }) {
-                                Text("取消")
-                            }
-                        }
-                    )
                 }
 
                 // Main Workspace
