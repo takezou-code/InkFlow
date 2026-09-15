@@ -65,9 +65,8 @@ import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.calculateCentroidSize
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -337,7 +336,7 @@ internal fun Workspace(
     val bubbleTopSafePx = with(density) { 12.dp.toPx() }
 
     // 橫移狀態（空白區單指＋雙指全域寫入，放手停留、跨頁保持）：
-    // 鉗制保證至少一半紙留在區內（KEEP=1/2，驗收可放寬到 1/4）。
+    // 鉗制保證至少 1/4 紙留在區內（KEEP=1/4）。
     // 用 fun 即時重算（讀 State delegate 即時值），不 remember，避免快照訂閱地雷。
     val panOffsetX by viewModel.panOffsetX.collectAsState()
     fun paperWpxForPan(): Float {
@@ -346,7 +345,7 @@ internal fun Workspace(
         return ((viewportWpx * zoom) - side).coerceAtLeast(0f)
     }
     fun clampPan(raw: Float): Float {
-        val max = paperWpxForPan() * 0.5f
+        val max = paperWpxForPan() * 0.25f
         return raw.coerceIn(-max, max)
     }
     fun isBlankX(x: Float): Boolean {
@@ -355,13 +354,23 @@ internal fun Workspace(
         return x < paperLeft || x > viewportWpx - paperLeft
     }
     val clampedPanX = clampPan(panOffsetX)
-    // zoom/旋轉導致邊界縮小：直接設回邊界（直給，不用 spring 追移動目標）。
-    LaunchedEffect(clampedPanX) {
-        if (clampedPanX != panOffsetX) viewModel.setPanOffsetX(clampedPanX)
+    // zoom/旋轉導致邊界縮小：只在 viewport/zoom 變化時收斂一次（直給，不用 spring 追移動目標）。
+    // 不以 clampedPanX 為 key——手勢寫入的值出場已鉗制，放手後不再有外力寫回。
+    LaunchedEffect(viewportWpx, docZoom) {
+        val cur = viewModel.panOffsetX.value
+        val fixed = clampPan(cur)
+        if (fixed != cur) viewModel.setPanOffsetX(fixed)
     }
 
-    // 雙指仲裁手勢：PAN 交給原生卷動，PINCH 寫 shared docZoom + 卷動錨定
-    val pinchModifier = Modifier.pointerInput(Unit) {
+    val regionBoundsModel = remember(activeRegionPolygon) { polygonBounds(activeRegionPolygon) }
+
+    // 雙指全域手勢（紙上＋空白＋跨頁，單一仲裁器，同時是唯一的縮放入口）：
+    // PAN → dx 寫 panOffsetX、dy 同步 dispatchRawDelta；PINCH → 寫 shared docZoom＋水平錨定。
+    // 掛外層 Box：兩指分落上下頁時 centroid/span 仍是同一座標系，跨頁捏合/平移都能動
+    // （之前 pinch 掛每頁 Box 內，跨頁雙指每頁只見 1 指 → 跨頁捏合永遠觸發不了）。
+    // 同步施加、無協程排隊：放手即停（之前每幀 scope.launch scrollBy，放手後還在消化佇列＝彈走主因）。
+    // 順序：twoFinger 先裝、blankPan 後裝——雙指接管時 consume 會取消單指拖，避免雙重施加。
+    val twoFingerModifier = Modifier.pointerInput(Unit) {
         val arbitrator = TwoFingerArbitrator(touchSlopPx = viewConfiguration.touchSlop)
         awaitEachGesture {
             awaitFirstDown(requireUnconsumed = false)
@@ -372,6 +381,7 @@ internal fun Workspace(
                 val pressedAll = event.changes.filter { it.pressed }
                 if (pressedAll.isEmpty()) {
                     arbitrator.reset()
+                    lastIds = emptySet()
                     if (wasPinching) {
                         viewModel.setPinchActive(false)
                         wasPinching = false
@@ -390,6 +400,15 @@ internal fun Workspace(
                         lastIds = ids
                     }
                     when (val decision = arbitrator.onFrame(cx, cy, span)) {
+                        is TwoFingerDecision.Pan -> {
+                            event.changes.forEach { it.consume() }
+                            if (decision.dx != 0f) {
+                                viewModel.setPanOffsetX(clampPan(viewModel.panOffsetX.value + decision.dx))
+                            }
+                            if (decision.dy != 0f) {
+                                mainListState.dispatchRawDelta(-decision.dy)
+                            }
+                        }
                         is TwoFingerDecision.Pinch -> {
                             event.changes.forEach { it.consume() }
                             if (!wasPinching) {
@@ -412,7 +431,7 @@ internal fun Workspace(
                                 }
                             }
                         }
-                        else -> Unit // PAN / 未定：原生卷動接手，不 consume
+                        else -> Unit // 未定：不 consume
                     }
                 } else {
                     arbitrator.reset()
@@ -425,68 +444,24 @@ internal fun Workspace(
             }
         }
     }
-
-    val regionBoundsModel = remember(activeRegionPolygon) { polygonBounds(activeRegionPolygon) }
-
-    // 二維平移（轉正）：空白區單指＋雙指全域，pinchModifier 完全不動。
-    // (1) 空白區單指左右拖 → panOffsetX；紙上單指一律放過（繪圖/直捲不受影響）。
-    // (2) 雙指全域 Pan（紙上＋空白）→ dx 寫 panOffsetX，dy 走 mainListState.scrollBy；
-    //     Pinch/未定幀不 consume，留給 pinchModifier 照常縮放；單指垂直完全不碰，原生 LazyColumn 接手。
-    // 順序：twoFinger 先裝、blankH 後裝——雙指接管時 consume 會取消單指拖，避免雙重施加。
-    val debugTwoFingerPanModifier = Modifier.pointerInput(Unit) {
-        val arbitrator = TwoFingerArbitrator(touchSlopPx = viewConfiguration.touchSlop)
-        awaitEachGesture {
-            awaitFirstDown(requireUnconsumed = false)
-            var lastIds: Set<PointerId> = emptySet()
-            while (true) {
-                val event = awaitPointerEvent()
-                val pressedAll = event.changes.filter { it.pressed }
-                if (pressedAll.isEmpty()) {
-                    arbitrator.reset()
-                    lastIds = emptySet()
-                    break
-                }
-                // 只算觸控手指：觸控筆書寫時不參與
-                val touch = pressedAll.filter { it.type == PointerType.Touch }
-                if (touch.size >= 2) {
-                    val ids = touch.map { it.id }.toSet()
-                    val cx = touch.sumOf { it.position.x.toDouble() }.toFloat() / touch.size
-                    val cy = touch.sumOf { it.position.y.toDouble() }.toFloat() / touch.size
-                    val span = (touch[0].position - touch[1].position).getDistance()
-                    if (ids != lastIds) {
-                        arbitrator.rebaseline(cx, cy, span)
-                        lastIds = ids
-                    }
-                    when (val decision = arbitrator.onFrame(cx, cy, span)) {
-                        is TwoFingerDecision.Pan -> {
-                            event.changes.forEach { it.consume() }
-                            if (decision.dx != 0f) {
-                                viewModel.setPanOffsetX(clampPan(viewModel.panOffsetX.value + decision.dx))
-                            }
-                            if (decision.dy != 0f) {
-                                val dy = decision.dy
-                                scope.launch { mainListState.scrollBy(-dy) }
-                            }
-                        }
-                        else -> Unit // Pinch / 未定：不 consume，pinchModifier 照常接手
-                    }
-                } else {
-                    arbitrator.reset()
-                    lastIds = emptySet()
-                }
-            }
-        }
-    }
-    val debugBlankHModifier = Modifier.pointerInput(Unit) {
+    // 空白區單指二維拖曳：起點在空白才接管（紙上單指一律放過，繪圖/直捲不受影響），
+    // 之後 dx→panOffsetX、dy→主列表同步位移——斜上斜下自然支援，與雙指 Pan 同一語義。
+    // consume 擋掉原生捲動同幀重複施加；雙指接管時 consume 會取消本拖曳，不雙重施加。
+    val blankPanModifier = Modifier.pointerInput(Unit) {
         var blankDrag = false
-        detectHorizontalDragGestures(
+        detectDragGestures(
             onDragStart = { blankDrag = isBlankX(it.x) },
             onDragEnd = { blankDrag = false },
             onDragCancel = { blankDrag = false },
-            onHorizontalDrag = { change, dx ->
+            onDrag = { change, dragAmount ->
                 if (blankDrag && !change.isConsumed) {
                     change.consume()
-                    viewModel.setPanOffsetX(clampPan(viewModel.panOffsetX.value + dx))
+                    if (dragAmount.x != 0f) {
+                        viewModel.setPanOffsetX(clampPan(viewModel.panOffsetX.value + dragAmount.x))
+                    }
+                    if (dragAmount.y != 0f) {
+                        mainListState.dispatchRawDelta(-dragAmount.y)
+                    }
                 }
             }
         )
@@ -552,8 +527,8 @@ internal fun Workspace(
         modifier = modifier
             .background(Color.Transparent)
             .onSizeChanged { viewportWpx = it.width }
-            .then(debugTwoFingerPanModifier)
-            .then(debugBlankHModifier)
+            .then(twoFingerModifier)
+            .then(blankPanModifier)
     ) {
         // 列表恒满视口宽（无死角）；纸在 item 内按比例缩、居中
         val listWdp = with(density) { (viewportWpx.toFloat() * maxOf(docZoom, 1f)).toDp() }
@@ -627,8 +602,7 @@ internal fun Workspace(
                 }
                 Box(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .then(pinchModifier),
+                        .fillMaxWidth(),
                     contentAlignment = Alignment.Center
                 ) {
                     Surface(
@@ -736,7 +710,8 @@ internal fun Workspace(
                     pageIndex = index,
                     pageGapPx = pageGapPx,
                     onEdgeAutoScroll = { dy ->
-                        scope.launch { runCatching { mainListState.scrollBy(dy) } }
+                        // 同步施加：寫筆中邊緣捲不斷流，提筆即停（不經協程排隊）
+                        mainListState.dispatchRawDelta(dy)
                     },
                     onCrossPageEnd = { target ->
                         if (target != index) onRequestPage(target)
@@ -901,8 +876,7 @@ internal fun Workspace(
                     // 數據沿用 item 頂的共用流（身份互換不斷線）
                     Box(
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .then(pinchModifier),
+                            .fillMaxWidth(),
                         contentAlignment = Alignment.Center
                     ) {
                         Surface(
@@ -1145,44 +1119,4 @@ internal fun polygonBounds(points: List<Offset>): Rect? {
     val maxY = points.maxOf { it.y }
     if (maxX <= minX || maxY <= minY) return null
     return Rect(minX, minY, maxX, maxY)
-}
-
-internal fun transformedPaperRect(
-    containerWidth: Int,
-    containerHeight: Int,
-    paperWidthPx: Int,
-    paperHeightPx: Int,
-    scale: Float,
-    offsetX: Float,
-    offsetY: Float
-): Rect? {
-    if (containerWidth <= 0 || containerHeight <= 0 || paperWidthPx <= 0 || paperHeightPx <= 0) {
-        return null
-    }
-    val paperLeft = (containerWidth - paperWidthPx) / 2f
-    val paperTop = (containerHeight - paperHeightPx) / 2f
-    val baseRect = Rect(
-        left = paperLeft,
-        top = paperTop,
-        right = paperLeft + paperWidthPx,
-        bottom = paperTop + paperHeightPx
-    )
-    val centerX = containerWidth / 2f
-    val centerY = containerHeight / 2f
-    fun transformPoint(point: Offset): Offset {
-        val dx = point.x - centerX
-        val dy = point.y - centerY
-        return Offset(
-            x = centerX + dx * scale + offsetX,
-            y = centerY + dy * scale + offsetY
-        )
-    }
-    val transformedTopLeft = transformPoint(baseRect.topLeft)
-    val transformedBottomRight = transformPoint(baseRect.bottomRight)
-    return Rect(
-        left = minOf(transformedTopLeft.x, transformedBottomRight.x),
-        top = minOf(transformedTopLeft.y, transformedBottomRight.y),
-        right = maxOf(transformedTopLeft.x, transformedBottomRight.x),
-        bottom = maxOf(transformedTopLeft.y, transformedBottomRight.y)
-    )
 }
