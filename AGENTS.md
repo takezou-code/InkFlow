@@ -27,6 +27,7 @@
 
 ## 雙軌常駐（debug + release 同機）
 - 包名：release `com.vic.inkflow`／debug `.debug` 後綴；名稱 `InkFlow`／`InkFlow Debug`；圖示 `app/src/debug/res/drawable/ic_launcher_background.xml`（橘底，main 綠底不動）。
+- **一律 debug**：預設只 `assembleDebug`、只裝 `InkFlow Debug`；`assembleRelease`／動正式包必須 user 明確開口，agent 不得自行決定打 release、不得拿 release APK 覆蓋正式版。
 - `install -r` 前先認 APK 路徑（debug/release），禁覆蓋錯邊；裝置 `1d985f84`。
 - 測試走私有軌，禁碰 `Documents/InkFlow` 公開備份；目錄／歷史面板凍結不動。
-- 手勢新規：空白區單指＋雙指全域二維平移（`panOffsetX`，已轉正）；`offset` 直給、禁大圖層、禁 spring 追；至少留一半紙在區內；垂直一律走原生 `LazyColumn`。
+- 手勢新規：空白區單指＋雙指全域二維平移（`panOffsetX`，已轉正）；`offset` 直給、禁大圖層、禁 spring 追；至少留 1/4 紙在區內；垂直一律走原生 `LazyColumn`。

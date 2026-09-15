@@ -273,10 +273,22 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
     // 否則會把剛從 DB 讀回的頁碼洗回 0（記住上次頁面失效的主因之一）。
     // 純 remember（不 Saveable）：旋轉重建後回到 false，剛好重捲一次。
     var initialScrollDone by remember(uri) { mutableStateOf(false) }
+    // 程式化捲動目標：點按/增刪頁觸發主列表動畫時記下目標頁，
+    // 動畫中途經過的中間頁一律忽略（不改 currentPageIndex），到位才認。
+    // 否則中間頁會觸發跟隨 effect 回拉側欄、側欄滑動又推回主列表 → 兩邊互推、
+    // 放手後主列表還被 animateScrollToItem 拽走（彈跳感）。2.5s 超時自清，避免動畫被取消時卡住。
+    var programmaticTarget by remember { mutableStateOf<Int?>(null) }
+    androidx.compose.runtime.LaunchedEffect(programmaticTarget) {
+        if (programmaticTarget != null) {
+            kotlinx.coroutines.delay(2500)
+            programmaticTarget = null
+        }
+    }
     // 點選意圖（側欄/靜態頁）：換作用頁 + 主列表滑過去
     // 用戶親自點了 = 接管，初次捲動不再搶回去。
     val onRequestPage: (Int) -> Unit = { index ->
         initialScrollDone = true
+        programmaticTarget = index
         currentPageIndex = index
         viewModel.setActivePage(index)
         scope.launch { runCatching { mainListState.animateScrollToItem(index) } }
@@ -284,8 +296,12 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
     // 卷動跟隨：主列表滑到哪頁就換作用頁（不捲主列表，避免打架；側欄由下方 effect 置中）
     val onScrollPage: (Int) -> Unit = { index ->
         if (initialScrollDone && index != currentPageIndex) {
-            currentPageIndex = index
-            viewModel.setActivePage(index)
+            val target = programmaticTarget
+            if (target == null || index == target) {
+                if (index == target) programmaticTarget = null
+                currentPageIndex = index
+                viewModel.setActivePage(index)
+            }
         }
     }
     // 編輯器共用玻璃狀態：根 Aurora 當 source，TopBar/側欄/氣泡當 effect。
@@ -548,6 +564,7 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
         androidx.compose.runtime.LaunchedEffect(lastInsertedPage) {
             val idx = lastInsertedPage ?: return@LaunchedEffect
             if (initialPageRestored) {
+                programmaticTarget = idx
                 currentPageIndex = idx
                 viewModel.setActivePage(idx)
                 sidebarListState.animateScrollToCenter(idx)
@@ -566,6 +583,7 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                 pageCountAfter = pageCount
             )
             currentPageIndex = clamped
+            programmaticTarget = clamped
             viewModel.setActivePage(clamped)
             sidebarListState.animateScrollToCenter(clamped)
             runCatching { mainListState.scrollToItem(clamped) }
@@ -640,7 +658,6 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                 hazeState = editorHaze,
                 isDarkTheme = isEditorDark,
                 isFollowingSidebar = sidebarFollowActive,
-                isMainScrolling = mainListState.isScrollInProgress,
                 prismalBackdrop = editorPrismalBackdrop
             )
 

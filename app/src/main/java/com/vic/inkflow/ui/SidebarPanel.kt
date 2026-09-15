@@ -256,8 +256,6 @@ internal fun Sidebar(
     isDarkTheme: Boolean,
     // 跟隨門衛：主列表推側欄時為 true，這時側欄推主列表必須讓路，不准回推
     isFollowingSidebar: Boolean = false,
-    // 主列表捲動中：側欄自己也在動，丸先藏起來
-    isMainScrolling: Boolean = false,
     prismalBackdrop: com.styropyr0.prismal.PrismalBackdrop? = null
 ) {
     var deleteConfirmIndices by remember { mutableStateOf<List<Int>>(emptyList()) }
