@@ -235,7 +235,8 @@ fun AiWebPanel(
     fileUri: android.net.Uri?,
     prompt: String?,
     onPromptConsumed: () -> Unit,
-    grabRequestId: Int = 0,
+    pickEnterId: Int = 0,
+    pickCollectId: Int = 0,
     onTextGrabbed: (String) -> Unit = {},
     onClose: () -> Unit,
     modifier: androidx.compose.ui.Modifier = androidx.compose.ui.Modifier
@@ -264,11 +265,20 @@ fun AiWebPanel(
         }
     }
     
-    // M2：拉桿「引入」鈕遞增 grabRequestId → 抓 Gemini 選取文字（無選取則取最後一個 AI 回覆）。
-    androidx.compose.runtime.LaunchedEffect(grabRequestId) {
-        if (grabRequestId > 0) {
+    // M2b-2：拉桿「引入」鈕兩段式 — ①進圈選模式（段落打勾）②收集打勾段落（無勾選則取最後回覆全文）。
+    androidx.compose.runtime.LaunchedEffect(pickEnterId) {
+        if (pickEnterId > 0) {
             try {
-                webView?.evaluateJavascript(buildGrabTextJs(), null)
+                webView?.evaluateJavascript(buildPickJs(), null)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+    androidx.compose.runtime.LaunchedEffect(pickCollectId) {
+        if (pickCollectId > 0) {
+            try {
+                webView?.evaluateJavascript(buildCollectJs(), null)
             } catch (e: Exception) {
                 e.printStackTrace()
             }
@@ -671,32 +681,157 @@ private fun buildPromptSendJs(promptQuoted: String): String {
 }
 
 /**
- * M2 引入抓取腳本：優先取頁面選取文字，無選取則取最後一個 AI 回覆，全空回傳空字串。
- * 結果經 AndroidBridge.onTextGrabbed 回傳（上限 20000 字）。
+ * M2b-2 圈選模式腳本：找最後一個 AI 回覆容器，內部段落逐段掛打勾開關（點一下 toggle）。
+ * 結果經 AndroidBridge.onPasteResult 回報 PICK_MODE_ON:N（N=可點段落數）。
  */
-private fun buildGrabTextJs(): String {
+private fun buildPickJs(): String {
     return """
         (function() {
+            function note(s) {
+                try { if (window.AndroidBridge && window.AndroidBridge.onPasteResult) window.AndroidBridge.onPasteResult(s); } catch(e){}
+            }
+            function deepAll(root, sel, out) {
+                try {
+                    var found = root.querySelectorAll(sel);
+                    for (var i = 0; i < found.length; i++) out.push(found[i]);
+                    var all = root.querySelectorAll('*');
+                    for (var j = 0; j < all.length; j++) {
+                        try { if (all[j].shadowRoot) deepAll(all[j].shadowRoot, sel, out); } catch(e){}
+                    }
+                } catch(e){}
+                return out;
+            }
+            function inChrome(el) {
+                try { return !!el.closest('header, nav, button, [role="navigation"], [role="button"]'); }
+                catch(e){ return false; }
+            }
+            try {
+                document.querySelectorAll('[data-inkpick]').forEach(function(el) {
+                    el.removeAttribute('data-inkpick');
+                    el.style.outline = '';
+                    el.style.background = '';
+                    var b = el.querySelector('.inkpick-badge');
+                    if (b) b.remove();
+                });
+            } catch(e){}
+            var chains = ['div[data-message-author-role="model"]', 'message-content', '.response-container', '[class*="model-response"]', '[class*="response-content"]'];
+            var container = null;
+            for (var c = 0; c < chains.length; c++) {
+                var hits = deepAll(document, chains[c], []);
+                if (hits.length > 0) { container = hits[hits.length - 1]; break; }
+            }
+            var fallbackMain = false;
+            if (!container) {
+                try { container = document.querySelector('main') || document.body; } catch(e){}
+                fallbackMain = true;
+            }
+            if (!container) { note('PICK_NO_CONTAINER'); return; }
+            var parts = container.querySelectorAll('p, li, h1, h2, h3, h4, pre, blockquote');
+            if (parts.length === 0) parts = [container];
+            var n = 0;
+            parts.forEach(function(el) {
+                try {
+                    if (!el.innerText || el.innerText.trim().length === 0) return;
+                    if (el.hasAttribute('data-inkpick')) return;
+                    if (fallbackMain && inChrome(el)) return;
+                    el.setAttribute('data-inkpick', '0');
+                    el.style.outline = '2px dashed #1a73e8';
+                    el.style.outlineOffset = '2px';
+                    el.addEventListener('click', function(ev) {
+                        try {
+                            ev.stopPropagation();
+                            ev.preventDefault();
+                            var on = el.getAttribute('data-inkpick') === '1';
+                            el.setAttribute('data-inkpick', on ? '0' : '1');
+                            el.style.background = on ? '' : 'rgba(26,115,232,0.15)';
+                            var badge = el.querySelector(':scope > .inkpick-badge');
+                            if (!on && !badge) {
+                                var s = document.createElement('span');
+                                s.className = 'inkpick-badge';
+                                s.textContent = '✓ ';
+                                s.style.cssText = 'color:#1a73e8;font-weight:bold;';
+                                el.insertBefore(s, el.firstChild);
+                            }
+                            if (on && badge) badge.remove();
+                        } catch(e){}
+                    }, true);
+                    n++;
+                } catch(e){}
+            });
+            note('PICK_MODE_ON:' + n);
+        })();
+    """.trimIndent()
+}
+
+/**
+ * M2b-2 收集腳本：照文件順序收打勾段落；一個都沒勾則退回最後回覆全文。
+ * 結果經 AndroidBridge.onTextGrabbed 回傳（上限 20000 字），並清掉全部標記。
+ */
+private fun buildCollectJs(): String {
+    return """
+        (function() {
+            function note(s) {
+                try { if (window.AndroidBridge && window.AndroidBridge.onPasteResult) window.AndroidBridge.onPasteResult(s); } catch(e){}
+            }
             function report(t) {
                 try { if (window.AndroidBridge && window.AndroidBridge.onTextGrabbed) window.AndroidBridge.onTextGrabbed(t); } catch(e){}
             }
-            var sel = '';
-            try { sel = window.getSelection ? window.getSelection().toString() : ''; } catch(e){}
-            if (sel && sel.trim().length > 0) {
-                report(sel.slice(0, 20000));
-                return;
+            function deepAll(root, sel, out) {
+                try {
+                    var found = root.querySelectorAll(sel);
+                    for (var i = 0; i < found.length; i++) out.push(found[i]);
+                    var all = root.querySelectorAll('*');
+                    for (var j = 0; j < all.length; j++) {
+                        try { if (all[j].shadowRoot) deepAll(all[j].shadowRoot, sel, out); } catch(e){}
+                    }
+                } catch(e){}
+                return out;
             }
-            try {
-                var models = document.querySelectorAll('div[data-message-author-role="model"]');
-                if (models && models.length > 0) {
-                    var last = models[models.length - 1].innerText || '';
-                    if (last.trim().length > 0) {
-                        report(last.slice(0, 20000));
-                        return;
+            function lastReply() {
+                var chains = ['div[data-message-author-role="model"]', 'message-content', '.response-container', '[class*="model-response"]', '[class*="response-content"]'];
+                for (var c = 0; c < chains.length; c++) {
+                    var hits = deepAll(document, chains[c], []);
+                    if (hits.length > 0) {
+                        var t = hits[hits.length - 1].innerText || '';
+                        if (t.trim().length > 0) return t;
                     }
                 }
+                try {
+                    var blocks = document.querySelectorAll('main p, main li, article p, article li');
+                    var acc = [];
+                    for (var k = 0; k < blocks.length; k++) {
+                        var bt = blocks[k].innerText || '';
+                        if (bt.trim().length > 0) acc.push(bt.trim());
+                    }
+                    if (acc.length > 0) return acc.join('\n\n');
+                } catch(e){}
+                return '';
+            }
+            var els = document.querySelectorAll('[data-inkpick="1"]');
+            var out = [];
+            els.forEach(function(el) {
+                var t = el.innerText || '';
+                if (t.trim().length > 0) out.push(t.trim());
+            });
+            var src = 'picked x' + out.length;
+            if (out.length === 0) {
+                var fb = lastReply();
+                if (fb.trim().length > 0) {
+                    out = [fb];
+                    src = 'fallback-full';
+                }
+            }
+            try {
+                document.querySelectorAll('[data-inkpick]').forEach(function(el) {
+                    el.removeAttribute('data-inkpick');
+                    el.style.outline = '';
+                    el.style.background = '';
+                    var b = el.querySelector('.inkpick-badge');
+                    if (b) b.remove();
+                });
             } catch(e){}
-            report('');
+            note('COLLECT src=' + src);
+            report(out.join('\n\n').slice(0, 20000));
         })();
     """.trimIndent()
 }
