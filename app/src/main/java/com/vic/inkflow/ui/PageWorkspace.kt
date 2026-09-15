@@ -1280,8 +1280,6 @@ private fun StaticPageOverlay(
 }
 
 internal fun polygonBounds(points: List<Offset>): Rect? {
-
-internal fun polygonBounds(points: List<Offset>): Rect? {
     if (points.isEmpty()) return null
     val minX = points.minOf { it.x }
     val minY = points.minOf { it.y }
