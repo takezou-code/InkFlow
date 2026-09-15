@@ -235,6 +235,8 @@ fun AiWebPanel(
     fileUri: android.net.Uri?,
     prompt: String?,
     onPromptConsumed: () -> Unit,
+    grabRequestId: Int = 0,
+    onTextGrabbed: (String) -> Unit = {},
     onClose: () -> Unit,
     modifier: androidx.compose.ui.Modifier = androidx.compose.ui.Modifier
 ) {
@@ -243,6 +245,7 @@ fun AiWebPanel(
     val currentFileUri = androidx.compose.runtime.rememberUpdatedState(fileUri)
     val currentPrompt = androidx.compose.runtime.rememberUpdatedState(prompt)
     val promptConsumedCallback = androidx.compose.runtime.rememberUpdatedState(onPromptConsumed)
+    val grabbedCallback = androidx.compose.runtime.rememberUpdatedState(onTextGrabbed)
     val uploadState = androidx.compose.runtime.remember { 
         object {
             var lastProcessedUri: android.net.Uri? = null
@@ -261,6 +264,17 @@ fun AiWebPanel(
         }
     }
     
+    // M2：拉桿「引入」鈕遞增 grabRequestId → 抓 Gemini 選取文字（無選取則取最後一個 AI 回覆）。
+    androidx.compose.runtime.LaunchedEffect(grabRequestId) {
+        if (grabRequestId > 0) {
+            try {
+                webView?.evaluateJavascript(buildGrabTextJs(), null)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
     // Fix2d: WebView 原生底預設透明→首幀前是黑洞；先鋪主題 surface 色頂著
     val webViewBgArgb = androidx.compose.material3.MaterialTheme.colorScheme.surface.toArgb()
     androidx.compose.foundation.layout.Box(
@@ -307,12 +321,19 @@ fun AiWebPanel(
                     cookieManager.setAcceptCookie(true)
                     cookieManager.setAcceptThirdPartyCookies(this, true)
 
-                    // JavaScript bridge: allow JS to notify Android about paste/click results
+                    // JavaScript bridge: allow JS to notify Android about paste/click results + grabbed text
                     val jsBridge = object {
                         @android.webkit.JavascriptInterface
                         fun onPasteResult(result: String) {
                             try {
                                 android.util.Log.d("AiWebPanel", "onPasteResult: $result")
+                            } catch (t: Throwable) { }
+                        }
+                        @android.webkit.JavascriptInterface
+                        fun onTextGrabbed(text: String) {
+                            try {
+                                android.util.Log.d("AiWebPanel", "onTextGrabbed len=${text.length}")
+                                grabbedCallback.value(text)
                             } catch (t: Throwable) { }
                         }
                     }
@@ -645,6 +666,37 @@ private fun buildPromptSendJs(promptQuoted: String): String {
                     }
                 }
             }, 500);
+        })();
+    """.trimIndent()
+}
+
+/**
+ * M2 引入抓取腳本：優先取頁面選取文字，無選取則取最後一個 AI 回覆，全空回傳空字串。
+ * 結果經 AndroidBridge.onTextGrabbed 回傳（上限 20000 字）。
+ */
+private fun buildGrabTextJs(): String {
+    return """
+        (function() {
+            function report(t) {
+                try { if (window.AndroidBridge && window.AndroidBridge.onTextGrabbed) window.AndroidBridge.onTextGrabbed(t); } catch(e){}
+            }
+            var sel = '';
+            try { sel = window.getSelection ? window.getSelection().toString() : ''; } catch(e){}
+            if (sel && sel.trim().length > 0) {
+                report(sel.slice(0, 20000));
+                return;
+            }
+            try {
+                var models = document.querySelectorAll('div[data-message-author-role="model"]');
+                if (models && models.length > 0) {
+                    var last = models[models.length - 1].innerText || '';
+                    if (last.trim().length > 0) {
+                        report(last.slice(0, 20000));
+                        return;
+                    }
+                }
+            } catch(e){}
+            report('');
         })();
     """.trimIndent()
 }

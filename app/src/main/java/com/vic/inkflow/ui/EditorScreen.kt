@@ -77,6 +77,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -267,6 +268,11 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
     var aiPanelWeight by rememberSaveable { mutableFloatStateOf(0.4f) }
     var aiFileUri by remember { mutableStateOf<android.net.Uri?>(null) }
     var aiPrompt by remember { mutableStateOf<String?>(null) }
+    // M2：引入抓取 — grabId 遞增觸發 AiWebPanel 抓 Gemini 文字，結果分塊後進勾選面板
+    var aiGrabId by remember { mutableStateOf(0) }
+    var aiChunks by remember { mutableStateOf<List<AiTextChunk>>(emptyList()) }
+    var checkedChunkIds by remember { mutableStateOf(setOf<String>()) }
+    var showChunkPicker by remember { mutableStateOf(false) }
     val sidebarListState = rememberLazyListState()
     val mainListState = rememberLazyListState()
     val pinchActive by viewModel.pinchActive.collectAsState()
@@ -774,6 +780,18 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                         fileUri = aiFileUri,
                         prompt = aiPrompt,
                         onPromptConsumed = { aiPrompt = null },
+                        grabRequestId = aiGrabId,
+                        onTextGrabbed = { text ->
+                            scope.launch {
+                                if (text.isBlank()) {
+                                    android.widget.Toast.makeText(context, "請先在 Gemini 長按選取文字", android.widget.Toast.LENGTH_SHORT).show()
+                                } else {
+                                    aiChunks = chunkAiText(text)
+                                    checkedChunkIds = aiChunks.map { it.id }.toSet()
+                                    showChunkPicker = true
+                                }
+                            }
+                        },
                         onClose = {
                             showAiPanel = false
                             aiFileUri = null
@@ -815,6 +833,17 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                                 tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                             )
                         }
+                        IconButton(
+                            onClick = { aiGrabId++ },
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Icon(
+                                imageVector = androidx.compose.material.icons.filled.Download,
+                                contentDescription = "引入 Gemini 文字",
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                            )
+                        }
                         Box(
                             modifier = Modifier
                                 .weight(1f)
@@ -835,6 +864,89 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                             )
                         }
                     }
+                }
+
+                // M2：Gemini 引入分塊勾選（插入排版 M3）
+                if (showChunkPicker) {
+                    androidx.compose.material3.AlertDialog(
+                        onDismissRequest = { showChunkPicker = false },
+                        title = { Text("引入 Gemini 文字（${checkedChunkIds.size}/${aiChunks.size} 塊）") },
+                        text = {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 400.dp)
+                                    .verticalScroll(rememberScrollState())
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    TextButton(onClick = { checkedChunkIds = aiChunks.map { it.id }.toSet() }) {
+                                        Text("全選")
+                                    }
+                                    TextButton(onClick = { checkedChunkIds = emptySet() }) {
+                                        Text("全不選")
+                                    }
+                                }
+                                aiChunks.forEach { chunk ->
+                                    val checked = chunk.id in checkedChunkIds
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .clickable {
+                                                checkedChunkIds =
+                                                    if (checked) checkedChunkIds - chunk.id
+                                                    else checkedChunkIds + chunk.id
+                                            }
+                                            .padding(vertical = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        androidx.compose.material3.Checkbox(
+                                            checked = checked,
+                                            onCheckedChange = null
+                                        )
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = chunk.title,
+                                                style = MaterialTheme.typography.titleSmall,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                text = chunk.body,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                maxLines = 2,
+                                                overflow = TextOverflow.Ellipsis,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                            Text(
+                                                text = "${chunk.charCount} 字",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        confirmButton = {
+                            TextButton(
+                                onClick = {
+                                    showChunkPicker = false
+                                    android.widget.Toast.makeText(context, "排版插入 M3 實作（已選 ${checkedChunkIds.size} 塊）", android.widget.Toast.LENGTH_SHORT).show()
+                                }
+                            ) {
+                                Text("插入 ${checkedChunkIds.size} 塊")
+                            }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showChunkPicker = false }) {
+                                Text("取消")
+                            }
+                        }
+                    )
                 }
 
                 // Main Workspace
