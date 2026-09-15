@@ -143,17 +143,19 @@ function renderBlock(b64){
             w.layout(0, 0, RENDER_W_PX, h)
             val done = CompletableDeferred<Bitmap?>()
             try {
-                w.postVisualStateCallback(reqId++) { _ ->
-                    try {
-                        val bmp = Bitmap.createBitmap(RENDER_W_PX, h, Bitmap.Config.ARGB_8888)
-                        val c = Canvas(bmp)
-                        c.drawColor(Color.WHITE)
-                        (w as View).draw(c)
-                        done.complete(bmp)
-                    } catch (t: Throwable) {
-                        done.complete(null)
+                w.postVisualStateCallback(reqId++, object : WebView.VisualStateCallback() {
+                    override fun onComplete(requestId: Long) {
+                        try {
+                            val bmp = Bitmap.createBitmap(RENDER_W_PX, h, Bitmap.Config.ARGB_8888)
+                            val c = Canvas(bmp)
+                            c.drawColor(Color.WHITE)
+                            (w as View).draw(c)
+                            done.complete(bmp)
+                        } catch (t: Throwable) {
+                            done.complete(null)
+                        }
                     }
-                }
+                })
             } catch (t: Throwable) {
                 done.complete(null)
             }
