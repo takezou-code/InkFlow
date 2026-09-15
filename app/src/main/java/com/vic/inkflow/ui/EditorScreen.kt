@@ -113,6 +113,7 @@ import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.CropSquare
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Image
@@ -838,7 +839,7 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                             modifier = Modifier.size(24.dp)
                         ) {
                             Icon(
-                                imageVector = androidx.compose.material.icons.filled.Download,
+                                imageVector = Icons.Filled.Download,
                                 contentDescription = "引入 Gemini 文字",
                                 modifier = Modifier.size(16.dp),
                                 tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
