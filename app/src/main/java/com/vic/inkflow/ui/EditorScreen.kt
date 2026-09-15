@@ -778,10 +778,11 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                     )
                 }
                 if (showAiPanel) {
-                    Box(
+                    // AI 拉桿一體式：上方關閉鈕 + 下方分隔線/握把，整條都可橫拖調寬
+                    Column(
                         modifier = Modifier
                             .fillMaxHeight()
-                            .width(10.dp)
+                            .width(24.dp)
                             .background(Color.Transparent)
                             .pointerInput(Unit) {
                                 detectHorizontalDragGestures { change, dragAmount ->
@@ -791,20 +792,43 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                                     aiPanelWeight = (aiPanelWeight + deltaWeight).coerceIn(0.2f, 0.8f)
                                 }
                             },
-                        contentAlignment = Alignment.Center
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        androidx.compose.material3.VerticalDivider(
-                            modifier = Modifier.fillMaxHeight(),
-                            thickness = 0.5.dp,
-                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
-                        )
+                        IconButton(
+                            onClick = {
+                                showAiPanel = false
+                                aiFileUri = null
+                            },
+                            modifier = Modifier
+                                .padding(top = 8.dp)
+                                .size(24.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Close,
+                                contentDescription = "關閉 AI 面板",
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                            )
+                        }
                         Box(
                             modifier = Modifier
-                                .width(4.dp)
-                                .height(32.dp)
-                                .clip(RoundedCornerShape(2.dp))
-                                .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f))
-                        )
+                                .weight(1f)
+                                .width(10.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            androidx.compose.material3.VerticalDivider(
+                                modifier = Modifier.fillMaxHeight(),
+                                thickness = 0.5.dp,
+                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .width(4.dp)
+                                    .height(32.dp)
+                                    .clip(RoundedCornerShape(2.dp))
+                                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f))
+                            )
+                        }
                     }
                 }
 

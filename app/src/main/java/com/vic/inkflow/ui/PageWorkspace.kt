@@ -52,6 +52,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.pointer.PointerType
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.runtime.withFrameNanos
 import com.vic.inkflow.util.TwoFingerArbitrator
 import com.vic.inkflow.util.TwoFingerDecision
@@ -331,6 +332,8 @@ internal fun Workspace(
     val density = LocalDensity.current
     // 頁間隙 px：必須與下方 LazyColumn 的 Arrangement.spacedBy(18.dp) 一致（跨頁分段用）
     val pageGapPx = with(density) { 18.dp.toPx() }
+    // 列表上下內距 px：與下方 LazyColumn 的 contentPadding(vertical = 18.dp) 一致（縮放垂直錨定用）
+    val listPadTopPx = with(density) { 18.dp.toPx() }
     val bubbleGapPx = with(density) { 12.dp.toPx() }
     val bubbleSidePaddingPx = with(density) { 12.dp.toPx() }
     val bubbleTopSafePx = with(density) { 12.dp.toPx() }
@@ -420,13 +423,28 @@ internal fun Workspace(
                                 val new = (old * decision.zoomFactor).coerceIn(0.4f, 4f)
                                 if (new.isFinite() && !new.isNaN() && new != old) {
                                     val ratio = new / old
+                                    // 錨定在雙指中心 (cx, cy) 下——內容點跟著手指，不漂移。
+                                    // 水平：內容點 = scrollX + cx - panX（整列被 panOffsetX 平移過，必須扣掉）。
+                                    val panX = clampPan(viewModel.panOffsetX.value)
                                     val currentScrollX = hScrollState.value
                                     val maxScrollX = maxOf(0f, viewportWpx * (new - 1f))
-                                    val targetScrollX = ((currentScrollX + cx) * ratio - cx).coerceIn(0f, maxScrollX)
-                                    val deltaX = targetScrollX - currentScrollX
+                                    val targetScrollX = ((currentScrollX + cx - panX) * ratio - cx + panX)
+                                        .coerceIn(0f, maxScrollX)
+                                    // 垂直：各頁等高 H，內容點 P = S + cy 縮放後保持 → S' = S + P * (ratio - 1)。
+                                    val firstItem = mainListState.layoutInfo.visibleItemsInfo.firstOrNull()
+                                    val anchorDy = if (firstItem != null && firstItem.size > 0) {
+                                        val scrollS = listPadTopPx +
+                                            firstItem.index * (firstItem.size + pageGapPx) +
+                                            mainListState.firstVisibleItemScrollOffset
+                                        (scrollS + cy) * (ratio - 1f)
+                                    } else 0f
                                     viewModel.setDocZoom(new)
+                                    val deltaX = targetScrollX - currentScrollX
                                     if (kotlin.math.abs(deltaX) > 0.5f) {
                                         hScrollState.dispatchRawDelta(deltaX)
+                                    }
+                                    if (anchorDy.isFinite() && kotlin.math.abs(anchorDy) > 0.5f) {
+                                        mainListState.dispatchRawDelta(anchorDy)
                                     }
                                 }
                             }
@@ -456,6 +474,9 @@ internal fun Workspace(
             if (!isBlankX(down.position.x)) return@awaitEachGesture
             while (true) {
                 val event = awaitPointerEvent()
+                // 第二根手指出現：整段手勢作廢，交給雙指修飾——
+                // 否則雙指放開剩一指時，殘留位移會被這裡吃掉（＝放手後還在動）。
+                if (event.changes.count { it.pressed } > 1) return@awaitEachGesture
                 val change = event.changes.firstOrNull { it.id == down.id } ?: break
                 if (!change.pressed) break // up/cancel：tap 原樣放過，不消耗
                 val delta = change.positionChange()
@@ -551,10 +572,7 @@ internal fun Workspace(
                     // 橫移：整列水平位移（offset 直給，無大圖層、無 spring）
                     .offset { IntOffset(clampedPanX.roundToInt(), 0) },
                 contentPadding = PaddingValues(vertical = 18.dp),
-                verticalArrangement = Arrangement.spacedBy(18.dp),
-                // 上下頁預渲染：前後各多組一頁，筆跡/點陣提前就緒，
-                // 滑入視口時直接顯示，不再「進一半才長出墨」。
-                beyondViewportItemCount = 1
+                verticalArrangement = Arrangement.spacedBy(18.dp)
             ) {
         items(pageCount, key = { it }) { index ->
             val aspect = uniformAspect
@@ -567,13 +585,13 @@ internal fun Workspace(
             val pageBitmap by bitmapFlow.collectAsState()
             val pageStrokes by remember(index, documentUri) {
                 db.strokeDao().getStrokesForPage(documentUri, index)
-            }.collectAsState(initial = emptyList())
+            }.collectAsState(initial = viewModel.cachedNeighbor(index)?.strokes ?: emptyList())
             val pageImages by remember(index, documentUri) {
                 db.imageAnnotationDao().getForPage(documentUri, index)
-            }.collectAsState(initial = emptyList())
+            }.collectAsState(initial = viewModel.cachedNeighbor(index)?.images ?: emptyList())
             val pageTexts by remember(index, documentUri) {
                 db.textAnnotationDao().getForPage(documentUri, index)
-            }.collectAsState(initial = emptyList())
+            }.collectAsState(initial = viewModel.cachedNeighbor(index)?.texts ?: emptyList())
             if (index == pageIndex) {
                 var itemWidthPx by remember { mutableIntStateOf(0) }
                 val itemTargetOffset = remember(

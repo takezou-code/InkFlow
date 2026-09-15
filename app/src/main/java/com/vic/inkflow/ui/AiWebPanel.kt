@@ -347,7 +347,7 @@ fun AiWebPanel(
                                                                 }
                                                                 const byteArray = new Uint8Array(byteNumbers);
                                                                 const blob = new Blob([byteArray], { type: 'image/png' });
-                                                                const file = new File([blob], "pasted_image.png", { type: 'image/png' });
+                                                                const uniqueName = "inkflow_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8) + ".png"; const file = new File([blob], uniqueName, { type: 'image/png' });
 
                                                                 const dataTransfer = new DataTransfer();
                                                                 dataTransfer.items.add(file);
@@ -454,7 +454,7 @@ fun AiWebPanel(
                                             }
                                             const byteArray = new Uint8Array(byteNumbers);
                                             const blob = new Blob([byteArray], { type: 'image/png' });
-                                            const file = new File([blob], "pasted_image.png", { type: 'image/png' });
+                                            const uniqueName = "inkflow_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8) + ".png"; const file = new File([blob], uniqueName, { type: 'image/png' });
 
                                             const dataTransfer = new DataTransfer();
                                             dataTransfer.items.add(file);
@@ -536,23 +536,5 @@ fun AiWebPanel(
             },
             modifier = androidx.compose.ui.Modifier.fillMaxSize()
         )
-
-        // 懸浮的半透明關閉按鈕
-        androidx.compose.material3.IconButton(
-            onClick = onClose,
-            modifier = androidx.compose.ui.Modifier
-                .align(androidx.compose.ui.Alignment.TopEnd)
-                .padding(16.dp)
-                .background(
-                    color = androidx.compose.material3.MaterialTheme.colorScheme.surface.copy(alpha = 0.6f),
-                    shape = androidx.compose.foundation.shape.CircleShape
-                )
-        ) {
-            androidx.compose.material3.Icon(
-                imageVector = androidx.compose.material.icons.Icons.Outlined.Close,
-                contentDescription = "Close",
-                tint = androidx.compose.material3.MaterialTheme.colorScheme.onSurface
-            )
-        }
     }
 }
