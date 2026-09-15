@@ -681,8 +681,9 @@ private fun buildPromptSendJs(promptQuoted: String): String {
 }
 
 /**
- * M2b-2 圈選模式腳本：找最後一個 AI 回覆容器，內部段落逐段掛打勾開關（點一下 toggle）。
- * 結果經 AndroidBridge.onPasteResult 回報 PICK_MODE_ON:N（N=可點段落數）。
+ * M2b-2 圈選模式 v2：事件委派（document 級 capture listener，串流中新增/重渲染的段落照樣可點），
+ * 打勾樣式走 <style> + ::before（不插入 DOM，innerText 永遠乾淨）。
+ * 回報 PICK_MODE_ON:N（N=當下可點段落數）。
  */
 private fun buildPickJs(): String {
     return """
@@ -705,67 +706,84 @@ private fun buildPickJs(): String {
                 try { return !!el.closest('header, nav, button, [role="navigation"], [role="button"]'); }
                 catch(e){ return false; }
             }
-            try {
-                document.querySelectorAll('[data-inkpick]').forEach(function(el) {
-                    el.removeAttribute('data-inkpick');
-                    el.style.outline = '';
-                    el.style.background = '';
-                    var b = el.querySelector('.inkpick-badge');
-                    if (b) b.remove();
-                });
-            } catch(e){}
-            var chains = ['div[data-message-author-role="model"]', 'message-content', '.response-container', '[class*="model-response"]', '[class*="response-content"]'];
-            var container = null;
-            for (var c = 0; c < chains.length; c++) {
-                var hits = deepAll(document, chains[c], []);
-                if (hits.length > 0) { container = hits[hits.length - 1]; break; }
-            }
-            var fallbackMain = false;
-            if (!container) {
-                try { container = document.querySelector('main') || document.body; } catch(e){}
-                fallbackMain = true;
-            }
-            if (!container) { note('PICK_NO_CONTAINER'); return; }
-            var parts = container.querySelectorAll('p, li, h1, h2, h3, h4, pre, blockquote');
-            if (parts.length === 0) parts = [container];
-            var n = 0;
-            parts.forEach(function(el) {
+            function findContainer() {
+                var chains = ['div[data-message-author-role="model"]', 'message-content', '.response-container', '[class*="model-response"]', '[class*="response-content"]'];
+                for (var c = 0; c < chains.length; c++) {
+                    var hits = deepAll(document, chains[c], []);
+                    if (hits.length > 0) return { el: hits[hits.length - 1], fb: false };
+                }
                 try {
-                    if (!el.innerText || el.innerText.trim().length === 0) return;
-                    if (el.hasAttribute('data-inkpick')) return;
-                    if (fallbackMain && inChrome(el)) return;
-                    el.setAttribute('data-inkpick', '0');
-                    el.style.outline = '2px dashed #1a73e8';
-                    el.style.outlineOffset = '2px';
-                    el.addEventListener('click', function(ev) {
-                        try {
-                            ev.stopPropagation();
-                            ev.preventDefault();
-                            var on = el.getAttribute('data-inkpick') === '1';
-                            el.setAttribute('data-inkpick', on ? '0' : '1');
-                            el.style.background = on ? '' : 'rgba(26,115,232,0.15)';
-                            var badge = el.querySelector(':scope > .inkpick-badge');
-                            if (!on && !badge) {
-                                var s = document.createElement('span');
-                                s.className = 'inkpick-badge';
-                                s.textContent = '✓ ';
-                                s.style.cssText = 'color:#1a73e8;font-weight:bold;';
-                                el.insertBefore(s, el.firstChild);
-                            }
-                            if (on && badge) badge.remove();
-                        } catch(e){}
-                    }, true);
-                    n++;
+                    var m = document.querySelector('main') || document.body;
+                    if (m) return { el: m, fb: true };
                 } catch(e){}
-            });
+                return null;
+            }
+            try {
+                window.__inkpick = false;
+                if (window.__inkpickHandler) document.removeEventListener('click', window.__inkpickHandler, true);
+                window.__inkpickHandler = null;
+                var oldStyle = document.getElementById('inkpick-style');
+                if (oldStyle) oldStyle.remove();
+                document.querySelectorAll('[data-inkpick]').forEach(function(el) { el.removeAttribute('data-inkpick'); });
+            } catch(e){}
+            var found = findContainer();
+            if (!found) { note('PICK_NO_CONTAINER'); return; }
+            var container = found.el;
+            var fallbackMain = found.fb;
+            window.__inkpick = true;
+            try {
+                var st = document.createElement('style');
+                st.id = 'inkpick-style';
+                st.textContent = '[data-inkpick="0"]{outline:2px dashed #1a73e8 !important;outline-offset:2px !important;cursor:pointer !important;}'
+                    + '[data-inkpick="1"]{outline:2px solid #1a73e8 !important;outline-offset:2px !important;background:rgba(26,115,232,0.15) !important;cursor:pointer !important;}'
+                    + '[data-inkpick="1"]::before{content:"✓ ";color:#1a73e8;font-weight:bold;}';
+                document.documentElement.appendChild(st);
+            } catch(e){}
+            function mark(el) {
+                try {
+                    if (!el || el.hasAttribute('data-inkpick')) return false;
+                    if (!el.innerText || el.innerText.trim().length === 0) return false;
+                    if (fallbackMain && inChrome(el)) return false;
+                    el.setAttribute('data-inkpick', '0');
+                    return true;
+                } catch(e){ return false; }
+            }
+            var parts = container.querySelectorAll('p, li, h1, h2, h3, h4, pre, blockquote');
+            var n = 0;
+            if (parts.length === 0) {
+                if (mark(container)) n = 1;
+            } else {
+                parts.forEach(function(el) { if (mark(el)) n++; });
+            }
+            window.__inkpickHandler = function(ev) {
+                try {
+                    if (!window.__inkpick) return;
+                    var t = (ev.target && ev.target.closest) ? ev.target.closest('p, li, h1, h2, h3, h4, pre, blockquote') : null;
+                    if (!t) return;
+                    var box = findContainer();
+                    if (!box) return;
+                    if (t !== box.el && !box.el.contains(t)) return;
+                    if (box.fb && inChrome(t)) return;
+                    if (!t.hasAttribute('data-inkpick')) {
+                        if (!t.innerText || t.innerText.trim().length === 0) return;
+                        t.setAttribute('data-inkpick', '0');
+                    }
+                    ev.stopPropagation();
+                    ev.preventDefault();
+                    var on = t.getAttribute('data-inkpick') === '1';
+                    t.setAttribute('data-inkpick', on ? '0' : '1');
+                } catch(e){}
+            };
+            document.addEventListener('click', window.__inkpickHandler, true);
             note('PICK_MODE_ON:' + n);
         })();
     """.trimIndent()
 }
 
 /**
- * M2b-2 收集腳本：照文件順序收打勾段落；一個都沒勾則退回最後回覆全文。
- * 結果經 AndroidBridge.onTextGrabbed 回傳（上限 20000 字），並清掉全部標記。
+ * M2b-2 收集腳本 v2：照文件順序收打勾段落（排除被包在已勾段落內的子段，避免重複）；
+ * 一個都沒勾則退回最後回覆全文。清掉委派 listener、樣式與全部標記。
+ * 結果經 AndroidBridge.onTextGrabbed 回傳（上限 20000 字）。
  */
 private fun buildCollectJs(): String {
     return """
@@ -807,11 +825,28 @@ private fun buildCollectJs(): String {
                 } catch(e){}
                 return '';
             }
-            var els = document.querySelectorAll('[data-inkpick="1"]');
+            try {
+                window.__inkpick = false;
+                if (window.__inkpickHandler) document.removeEventListener('click', window.__inkpickHandler, true);
+                window.__inkpickHandler = null;
+                var st = document.getElementById('inkpick-style');
+                if (st) st.remove();
+            } catch(e){}
+            var all = Array.prototype.slice.call(document.querySelectorAll('[data-inkpick="1"]'));
+            var roots = all.filter(function(el) {
+                var p = el.parentElement;
+                while (p) {
+                    if (p.getAttribute && p.getAttribute('data-inkpick') === '1') return false;
+                    p = p.parentElement;
+                }
+                return true;
+            });
             var out = [];
-            els.forEach(function(el) {
-                var t = el.innerText || '';
-                if (t.trim().length > 0) out.push(t.trim());
+            roots.forEach(function(el) {
+                try {
+                    var t = el.innerText || '';
+                    if (t.trim().length > 0) out.push(t.trim());
+                } catch(e){}
             });
             var src = 'picked x' + out.length;
             if (out.length === 0) {
@@ -822,13 +857,7 @@ private fun buildCollectJs(): String {
                 }
             }
             try {
-                document.querySelectorAll('[data-inkpick]').forEach(function(el) {
-                    el.removeAttribute('data-inkpick');
-                    el.style.outline = '';
-                    el.style.background = '';
-                    var b = el.querySelector('.inkpick-badge');
-                    if (b) b.remove();
-                });
+                document.querySelectorAll('[data-inkpick]').forEach(function(el) { el.removeAttribute('data-inkpick'); });
             } catch(e){}
             note('COLLECT src=' + src);
             report(out.join('\n\n').slice(0, 20000));
