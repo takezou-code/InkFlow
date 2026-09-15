@@ -65,7 +65,6 @@ import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.calculateCentroidSize
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -209,6 +208,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
+import com.vic.inkflow.ui.theme.BrandIndigo
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
 import androidx.navigation.NavType
@@ -446,25 +446,30 @@ internal fun Workspace(
     }
     // 空白區單指二維拖曳：起點在空白才接管（紙上單指一律放過，繪圖/直捲不受影響），
     // 之後 dx→panOffsetX、dy→主列表同步位移——斜上斜下自然支援，與雙指 Pan 同一語義。
-    // consume 擋掉原生捲動同幀重複施加；雙指接管時 consume 會取消本拖曳，不雙重施加。
+    // 零 slop 接管：第一個 move 像素即 consume，內層 LazyColumn 的 slop 永遠湊不滿、
+    // 整段手勢只有這裡在施加——之前用 detectDragGestures 跟原生捲動跑 slop 競賽，
+    // 原生先過的那次整段垂直被獨佔（consume 不分軸，dx 全死），就是「有時只能走直線」。
+    // 手寫 awaitPointerEvent 迴圈：被別人 consume 的幀只跳過不死（雙指接管時自動讓路，不雙重施加）。
     val blankPanModifier = Modifier.pointerInput(Unit) {
-        var blankDrag = false
-        detectDragGestures(
-            onDragStart = { blankDrag = isBlankX(it.x) },
-            onDragEnd = { blankDrag = false },
-            onDragCancel = { blankDrag = false },
-            onDrag = { change, dragAmount ->
-                if (blankDrag && !change.isConsumed) {
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false)
+            if (!isBlankX(down.position.x)) return@awaitEachGesture
+            while (true) {
+                val event = awaitPointerEvent()
+                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                if (!change.pressed) break // up/cancel：tap 原樣放過，不消耗
+                val delta = change.positionChange()
+                if (delta != Offset.Zero && !change.isConsumed) {
                     change.consume()
-                    if (dragAmount.x != 0f) {
-                        viewModel.setPanOffsetX(clampPan(viewModel.panOffsetX.value + dragAmount.x))
+                    if (delta.x != 0f) {
+                        viewModel.setPanOffsetX(clampPan(viewModel.panOffsetX.value + delta.x))
                     }
-                    if (dragAmount.y != 0f) {
-                        mainListState.dispatchRawDelta(-dragAmount.y)
+                    if (delta.y != 0f) {
+                        mainListState.dispatchRawDelta(-delta.y)
                     }
                 }
             }
-        )
+        }
     }
     val showSelectionBubble = activeTool == Tool.LASSO && hasSelection && !isExtracting
 
@@ -546,10 +551,15 @@ internal fun Workspace(
                     // 橫移：整列水平位移（offset 直給，無大圖層、無 spring）
                     .offset { IntOffset(clampedPanX.roundToInt(), 0) },
                 contentPadding = PaddingValues(vertical = 18.dp),
-                verticalArrangement = Arrangement.spacedBy(18.dp)
+                verticalArrangement = Arrangement.spacedBy(18.dp),
+                // 上下頁預渲染：前後各多組一頁，筆跡/點陣提前就緒，
+                // 滑入視口時直接顯示，不再「進一半才長出墨」。
+                beyondViewportItemCount = 1
             ) {
         items(pageCount, key = { it }) { index ->
             val aspect = uniformAspect
+            // 套索跨頁拖曳中：overlay 接手選取預覽（本 item 需配合置頂）
+            val dragActive by viewModel.dragPreviewActive.collectAsState()
             // 數據上提：bitmap + 三路註記流放在分支外面，作用頁/靜態頁身份互換時
             // remember 不重建、Flow 不重訂、實例不變 —— 翻頁不再有空窗白閃。
             // （之前翻頁閃光的主因：分支內各自 remember，切換必重載 + Crossfade 重播）
@@ -602,7 +612,9 @@ internal fun Workspace(
                 }
                 Box(
                     modifier = Modifier
-                        .fillMaxWidth(),
+                        .fillMaxWidth()
+                        // 拖曳 overlay 置頂：溢出紙界的框/墨不被後頁蓋住
+                        .zIndex(if (dragActive && index == pageIndex) 1f else 0f),
                     contentAlignment = Alignment.Center
                 ) {
                     Surface(
@@ -729,6 +741,19 @@ internal fun Workspace(
             }
                         } // 作用頁內容 Box
                     } // 紙 Surface
+                    // 跨頁拖曳 overlay：框+墨畫在紙上層、可溢出紙界（clip=false），
+                    // InkCanvas 側同時讓位（同像素只畫一次）；放開提交後清旗接回。
+                    if (dragActive && itemWidthPx > 0) {
+                        DragPreviewOverlay(
+                            viewModel = viewModel,
+                            paperWpx = itemWidthPx.toFloat(),
+                            aspect = aspect,
+                            modifier = Modifier
+                                .width(with(density) { itemWidthPx.toDp() })
+                                .aspectRatio(aspect)
+                                .graphicsLayer { clip = false }
+                        )
+                    }
                     // 套索氣泡：作用頁內定位（任何縮放都可見；定位已用實測 item 寬換算，縮放自洽）
                     androidx.compose.animation.AnimatedVisibility(
                         visible = showSelectionBubble,
@@ -987,6 +1012,75 @@ internal fun Workspace(
         }
     }
 }
+}
+
+/**
+ * 套索跨頁拖曳 overlay：與 InkCanvas 紙內選取預覽同像素、同畫法，
+ * 但畫在紙上層且可溢出紙界（clip=false）+ item 置頂，
+ * 拖出紙界的框/墨全程可見，不被後頁蓋住。
+ * 顯示期間 InkCanvas 側讓位（見 dragPreviewActive），同像素只畫一次。
+ */
+@Composable
+private fun DragPreviewOverlay(
+    viewModel: EditorViewModel,
+    paperWpx: Float,
+    aspect: Float,
+    modifier: Modifier = Modifier
+) {
+    val preview by viewModel.selectedStrokePreview.collectAsState()
+    if (preview.isEmpty()) return
+    val moveOffset by viewModel.lassoMoveOffset.collectAsState()
+    val scale by viewModel.selectedStrokeScale.collectAsState()
+    val anchorState by viewModel.selectedStrokeResizeAnchor.collectAsState()
+    val bounds by viewModel.selectedStrokePreviewBounds.collectAsState()
+    val framePolygon by viewModel.selectionFramePolygon.collectAsState()
+    val modelW = viewModel.modelWidth
+    val modelH = viewModel.modelHeight
+    if (modelW <= 0f || modelH <= 0f || paperWpx <= 0f) return
+    val sx = paperWpx / modelW
+    val paperHpx = paperWpx / aspect
+    val sy = if (paperHpx > 0f) paperHpx / modelH else sx
+    val anchor = anchorState ?: bounds?.center ?: androidx.compose.ui.geometry.Offset.Zero
+    // 路徑只隨選取內容重建，拖曳位移只走 draw（不重建包絡，不卡）
+    val pathData = remember(preview) {
+        preview.map { swp ->
+            swp to if (swp.stroke.shapeType == null) swp.points.toComposePath() else null
+        }
+    }
+    androidx.compose.foundation.Canvas(modifier = modifier) {
+        drawIntoCanvas { cvs ->
+            cvs.save()
+            cvs.scale(sx, sy)
+            applySelectionTransform(cvs, moveOffset, scale, anchor)
+            pathData.forEach { (swp, path) ->
+                if (swp.stroke.shapeType != null) {
+                    drawShapeOnCanvas(cvs, swp.stroke, swp.points, tintColor = BrandIndigo)
+                } else if (path != null) {
+                    drawPathOnCanvas(
+                        cvs, path, BrandIndigo,
+                        swp.stroke.strokeWidth, swp.stroke.isHighlighter
+                    )
+                }
+            }
+            cvs.restore()
+        }
+        val rect = modelTransformedPolygonBoundsToCanvasRect(
+            polygon = framePolygon,
+            translation = moveOffset,
+            scale = scale,
+            anchor = anchor,
+            sx = sx,
+            sy = sy
+        )
+        if (rect != null && !rect.isEmpty) {
+            drawLassoSelectionFrame(
+                selectionRect = rect,
+                showHandles = true,
+                dashPhase = 0f,
+                animateDash = false
+            )
+        }
+    }
 }
 
 @Composable
