@@ -27,6 +27,11 @@ data class StrokeEntity(
     val id: String = UUID.randomUUID().toString(),
     val documentUri: String,   // scopes this stroke to a specific document
     val pageIndex: Int,
+    /**
+     * S1 單畫布：文件座標錨點 = pageIndex × stride + boundsTop（stride = 當時 modelH）。
+     * null = 尚未回填（v24 前舊資料，開文件時懶回填）。S1 只寫不讀；讀切換在 S2。
+     */
+    val docY: Float? = null,
     val color: Int,
     val strokeWidth: Float,
 

@@ -20,6 +20,8 @@ data class TextAnnotationEntity(
     val id: String = UUID.randomUUID().toString(),
     val documentUri: String,
     val pageIndex: Int,
+    /** S1 單畫布：文件座標 = pageIndex × stride + modelY（null = 未回填，見 StrokeEntity）。 */
+    val docY: Float? = null,
     val text: String,
     val modelX: Float,
     val modelY: Float,

@@ -48,4 +48,26 @@ interface ImageAnnotationDao {
 
     @Query("DELETE FROM image_annotations WHERE documentUri = :documentUri")
     suspend fun deleteForDocument(documentUri: String)
+
+    // ── S1 單畫布：docY = pageIndex × stride + modelY（只寫不讀，見 StrokeDao）──
+
+    @Query("""
+        SELECT * FROM image_annotations
+        WHERE documentUri = :documentUri
+          AND docY IS NOT NULL AND docY <= :y1
+          AND (docY + modelHeight) >= :y0
+    """)
+    suspend fun getForRange(documentUri: String, y0: Float, y1: Float): List<ImageAnnotationEntity>
+
+    @Query("UPDATE image_annotations SET docY = docY + :dy WHERE documentUri = :documentUri AND docY IS NOT NULL AND docY >= :yThreshold")
+    suspend fun shiftDocYBelow(documentUri: String, yThreshold: Float, dy: Float): Int
+
+    @Query("SELECT COUNT(*) FROM image_annotations WHERE documentUri = :documentUri AND docY IS NULL")
+    suspend fun countMissingDocY(documentUri: String): Int
+
+    @Query("UPDATE image_annotations SET docY = pageIndex * :stride + modelY WHERE documentUri = :documentUri")
+    suspend fun backfillImageDocY(documentUri: String, stride: Float): Int
+
+    @Query("SELECT COUNT(*) FROM image_annotations WHERE documentUri = :documentUri AND ABS(docY - (pageIndex * :stride + modelY)) > 0.01")
+    suspend fun countImageDocMismatch(documentUri: String, stride: Float): Int
 }

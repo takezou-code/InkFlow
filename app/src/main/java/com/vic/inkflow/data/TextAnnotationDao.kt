@@ -48,4 +48,27 @@ interface TextAnnotationDao {
 
     @Query("DELETE FROM text_annotations WHERE documentUri = :documentUri")
     suspend fun deleteForDocument(documentUri: String)
+
+    // ── S1 單畫布：docY = pageIndex × stride + modelY（只寫不讀，見 StrokeDao）──
+
+    /** 高度取 fontSize×2 寬容估計（多行不漏接；精確裁切在 S2 讀側）。 */
+    @Query("""
+        SELECT * FROM text_annotations
+        WHERE documentUri = :documentUri
+          AND docY IS NOT NULL AND docY <= :y1
+          AND (docY + fontSize * 2) >= :y0
+    """)
+    suspend fun getForRange(documentUri: String, y0: Float, y1: Float): List<TextAnnotationEntity>
+
+    @Query("UPDATE text_annotations SET docY = docY + :dy WHERE documentUri = :documentUri AND docY IS NOT NULL AND docY >= :yThreshold")
+    suspend fun shiftDocYBelow(documentUri: String, yThreshold: Float, dy: Float): Int
+
+    @Query("SELECT COUNT(*) FROM text_annotations WHERE documentUri = :documentUri AND docY IS NULL")
+    suspend fun countMissingDocY(documentUri: String): Int
+
+    @Query("UPDATE text_annotations SET docY = pageIndex * :stride + modelY WHERE documentUri = :documentUri")
+    suspend fun backfillTextDocY(documentUri: String, stride: Float): Int
+
+    @Query("SELECT COUNT(*) FROM text_annotations WHERE documentUri = :documentUri AND ABS(docY - (pageIndex * :stride + modelY)) > 0.01")
+    suspend fun countTextDocMismatch(documentUri: String, stride: Float): Int
 }
