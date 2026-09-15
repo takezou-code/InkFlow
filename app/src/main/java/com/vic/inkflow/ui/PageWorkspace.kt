@@ -139,6 +139,9 @@ import androidx.compose.material.icons.filled.LibraryAdd
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.QuestionAnswer
+import androidx.compose.material.icons.filled.Summarize
+import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.material.icons.rounded.Brush
@@ -248,6 +251,13 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/** AI 快捷指令 prompt（繁體中文）：圈選氣泡第二排使用，按下後隨圈選圖一起送進 Gemini 自動送出。 */
+internal object AiQuickPrompt {
+    const val EXPLAIN = "請用繁體中文詳細解釋這張圖片中的內容，包含重點與關鍵概念。"
+    const val SUMMARIZE = "請用繁體中文總結這張圖片內容的重點，條列不超過5點。"
+    const val TRANSLATE = "請將這張圖片中的文字翻譯成繁體中文，只輸出譯文。"
+}
+
 /** 套索氣泡的圖示動作鈕：全自繪（Box + clickable），不用 TextButton。
  *  M3 TextButton 自帶 chrome 會在圖示列畫出一條銳利白帶（Bisect A/B 定案），故棄用。 */
 @Composable
@@ -293,7 +303,7 @@ internal fun Workspace(
     modifier: Modifier = Modifier,
     pageAspectRatio: Float = 1f / 1.414f,
     documentUri: String,
-    onAiFileReady: (android.net.Uri) -> Unit,
+    onAiFileReady: (android.net.Uri, String?) -> Unit,
     hazeState: dev.chrisbanes.haze.HazeState = rememberHazeState(),
     isDarkTheme: Boolean = false,
     prismalBackdrop: com.styropyr0.prismal.PrismalBackdrop? = null,
@@ -319,6 +329,35 @@ internal fun Workspace(
     val activeRegionPolygon = if (lassoPolygon.isNotEmpty()) lassoPolygon else lastLassoPolygon
     val hasRegionSnapshot = activeRegionPolygon.isNotEmpty()
     var isExtracting by remember { mutableStateOf(false) }
+
+    // 圈選送 AI 共用管線：擷取套索區 → 分享檔 → FileProvider Uri → 交給 AI 面板（附可選快捷 prompt）。
+    fun sendRegionToAi(prompt: String?, pageIdx: Int) {
+        if (isExtracting || !hasSelection || !hasRegionSnapshot) return
+        isExtracting = true
+        scope.launch {
+            try {
+                val sourceBitmap = kotlinx.coroutines.withTimeoutOrNull(1200) {
+                    pdfViewModel.getPageBitmap(pageIdx).filterNotNull().first()
+                } ?: pdfViewModel.getPageBitmap(pageIdx).value
+
+                val file = viewModel.extractRegionToShareFile(
+                    context = context,
+                    sourcePageIndex = pageIdx,
+                    pdfPageBitmap = sourceBitmap
+                )
+                if (file != null) {
+                    val fileUri = androidx.core.content.FileProvider.getUriForFile(
+                        context,
+                        "${context.packageName}.fileprovider",
+                        file
+                    )
+                    onAiFileReady(fileUri, prompt)
+                }
+            } finally {
+                isExtracting = false
+            }
+        }
+    }
 
     var bubbleWidthPx by remember { mutableIntStateOf(0) }
     var bubbleHeightPx by remember { mutableIntStateOf(0) }
@@ -809,8 +848,12 @@ internal fun Workspace(
                         bubbleHeightPx = it.height
                     }
             ) {
-                Row(
+                Column(
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                Row(
                     horizontalArrangement = Arrangement.spacedBy(2.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -853,34 +896,7 @@ internal fun Workspace(
                         icon = Icons.Filled.AutoAwesome,
                         label = "AI 解析",
                         enabled = !isExtracting && hasSelection && hasRegionSnapshot,
-                        onClick = {
-                            if (isExtracting || !hasSelection || !hasRegionSnapshot) return@SelectionBubbleAction
-                            isExtracting = true
-                            scope.launch {
-                                try {
-                                    val sourcePageIndex = pageIndex
-                                    val sourceBitmap = kotlinx.coroutines.withTimeoutOrNull(1200) {
-                                        pdfViewModel.getPageBitmap(sourcePageIndex).filterNotNull().first()
-                                    } ?: pdfViewModel.getPageBitmap(sourcePageIndex).value
-
-                                    val file = viewModel.extractRegionToShareFile(
-                                        context = context,
-                                        sourcePageIndex = sourcePageIndex,
-                                        pdfPageBitmap = sourceBitmap
-                                    )
-                                    if (file != null) {
-                                        val fileUri = androidx.core.content.FileProvider.getUriForFile(
-                                            context,
-                                            "${context.packageName}.fileprovider",
-                                            file
-                                        )
-                                        onAiFileReady(fileUri)
-                                    }
-                                } finally {
-                                    isExtracting = false
-                                }
-                            }
-                        }
+                        onClick = { sendRegionToAi(null, pageIndex) }
                     )
                     SelectionBubbleAction(
                         icon = Icons.Filled.ContentCopy,
@@ -914,6 +930,33 @@ internal fun Workspace(
                             modifier = Modifier.size(16.dp),
                             tint = Color(0xFF1E293B)
                         )
+                    }
+                    } // 氣泡第一排
+                    // 快捷指令第二排：有圈選區才出現，按下後送圖 + prompt 自動送出
+                    if (hasRegionSnapshot && hasSelection) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(2.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            SelectionBubbleAction(
+                                icon = Icons.Filled.QuestionAnswer,
+                                label = "解釋",
+                                enabled = !isExtracting,
+                                onClick = { sendRegionToAi(AiQuickPrompt.EXPLAIN, pageIndex) }
+                            )
+                            SelectionBubbleAction(
+                                icon = Icons.Filled.Summarize,
+                                label = "總結",
+                                enabled = !isExtracting,
+                                onClick = { sendRegionToAi(AiQuickPrompt.SUMMARIZE, pageIndex) }
+                            )
+                            SelectionBubbleAction(
+                                icon = Icons.Filled.Translate,
+                                label = "翻譯",
+                                enabled = !isExtracting,
+                                onClick = { sendRegionToAi(AiQuickPrompt.TRANSLATE, pageIndex) }
+                            )
+                        }
                     }
                 }
             }

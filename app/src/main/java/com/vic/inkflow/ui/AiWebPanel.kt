@@ -233,16 +233,31 @@ import kotlinx.coroutines.withContext
 @androidx.compose.runtime.Composable
 fun AiWebPanel(
     fileUri: android.net.Uri?,
+    prompt: String?,
+    onPromptConsumed: () -> Unit,
     onClose: () -> Unit,
     modifier: androidx.compose.ui.Modifier = androidx.compose.ui.Modifier
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var webView by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<android.webkit.WebView?>(null) }
     val currentFileUri = androidx.compose.runtime.rememberUpdatedState(fileUri)
+    val currentPrompt = androidx.compose.runtime.rememberUpdatedState(prompt)
+    val promptConsumedCallback = androidx.compose.runtime.rememberUpdatedState(onPromptConsumed)
     val uploadState = androidx.compose.runtime.remember { 
         object {
             var lastProcessedUri: android.net.Uri? = null
             var isPageLoaded: Boolean = false
+        }
+    }
+
+    // 快捷指令 prompt：圖貼上後另一下 JS 輪詢輸入框、填字自動送出（與貼圖腳本並行，內部延遲等圖先附著）。
+    fun injectPromptIfNeeded(target: android.webkit.WebView?, uri: android.net.Uri) {
+        val p = currentPrompt.value ?: return
+        try {
+            target?.evaluateJavascript(buildPromptSendJs(org.json.JSONObject.quote(p)), null)
+            promptConsumedCallback.value()
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
     
@@ -422,6 +437,7 @@ fun AiWebPanel(
                                                     })();
                                                 """.trimIndent()
                                                 view?.evaluateJavascript(js, null)
+                                                injectPromptIfNeeded(view, uri)
                                             }
                                         } catch (e: Exception) {
                                             e.printStackTrace()
@@ -528,6 +544,7 @@ fun AiWebPanel(
                                 })();
                             """.trimIndent()
                             view.evaluateJavascript(js, null)
+                            injectPromptIfNeeded(view, fileUri)
                         }
                     } catch (e: Exception) {
                         e.printStackTrace()
@@ -537,4 +554,97 @@ fun AiWebPanel(
             modifier = androidx.compose.ui.Modifier.fillMaxSize()
         )
     }
+}
+
+/**
+ * 快捷指令送出腳本：獨立輪詢 Gemini 輸入框（穿一層 shadow DOM），填入 prompt 並自動送出。
+ * 與貼圖腳本並行執行，內部延遲 2.5s 等圖片先附著，避免圖文分家。
+ * 執行結果透過 AndroidBridge.onPasteResult 回報（PROMPT_SENT / PROMPT_SENT_ENTER / …），可用 logcat 觀察。
+ */
+private fun buildPromptSendJs(promptQuoted: String): String {
+    return """
+        (function() {
+            var PROMPT = $promptQuoted;
+            function report(s) {
+                try { if (window.AndroidBridge && window.AndroidBridge.onPasteResult) window.AndroidBridge.onPasteResult(s); } catch(e){}
+            }
+            function deepInput(root) {
+                try {
+                    var el = root.querySelector('div[contenteditable="true"], div[role="textbox"]');
+                    if (el) return el;
+                    var all = root.querySelectorAll('*');
+                    for (var i = 0; i < all.length; i++) {
+                        try {
+                            if (all[i].shadowRoot) {
+                                var f = deepInput(all[i].shadowRoot);
+                                if (f) return f;
+                            }
+                        } catch(e){}
+                    }
+                } catch(e){}
+                return null;
+            }
+            function findChatInput() {
+                return deepInput(document) || document.querySelector('rich-textarea');
+            }
+            function fillAndSend(text) {
+                try {
+                    var el = findChatInput();
+                    if (!el) return 'PROMPT_NO_INPUT';
+                    try { el.focus(); } catch(e){}
+                    try {
+                        var range = document.createRange();
+                        range.selectNodeContents(el);
+                        range.collapse(false);
+                        var sel = window.getSelection();
+                        sel.removeAllRanges();
+                        sel.addRange(range);
+                    } catch(e){}
+                    var ok = false;
+                    try { ok = document.execCommand('insertText', false, text); } catch(e){}
+                    if (!ok) {
+                        try {
+                            el.textContent = text;
+                            el.dispatchEvent(new InputEvent('input', { bubbles: true }));
+                            el.dispatchEvent(new Event('change', { bubbles: true }));
+                            ok = true;
+                        } catch(e){}
+                    }
+                    if (!ok) return 'PROMPT_INSERT_FAILED';
+                    var sendBtn = document.querySelector('button[aria-label*="Send"]')
+                        || document.querySelector('button[aria-label*="傳送"]')
+                        || document.querySelector('button[aria-label*="发送"]');
+                    if (sendBtn) {
+                        sendBtn.click();
+                        return 'PROMPT_SENT';
+                    }
+                    var ev;
+                    try {
+                        ev = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true });
+                    } catch(e) {
+                        ev = document.createEvent('Event');
+                        ev.initEvent('keydown', true, true);
+                    }
+                    (document.activeElement || el).dispatchEvent(ev);
+                    return 'PROMPT_SENT_ENTER';
+                } catch(err) {
+                    return 'PROMPT_EXCEPTION';
+                }
+            }
+            var attempts = 0;
+            var interval = setInterval(function() {
+                var el = findChatInput();
+                if (el) {
+                    clearInterval(interval);
+                    setTimeout(function() { report(fillAndSend(PROMPT)); }, 2500);
+                } else {
+                    attempts++;
+                    if (attempts >= 20) {
+                        clearInterval(interval);
+                        report('PROMPT_NO_INPUT_FOUND');
+                    }
+                }
+            }, 500);
+        })();
+    """.trimIndent()
 }
