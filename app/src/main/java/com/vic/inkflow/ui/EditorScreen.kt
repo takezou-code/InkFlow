@@ -266,6 +266,7 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
     var showAiPanel by rememberSaveable { mutableStateOf(false) }
     var aiPanelWeight by rememberSaveable { mutableFloatStateOf(0.4f) }
     var aiFileUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    var aiPrompt by remember { mutableStateOf<String?>(null) }
     val sidebarListState = rememberLazyListState()
     val mainListState = rememberLazyListState()
     val pinchActive by viewModel.pinchActive.collectAsState()
@@ -771,9 +772,12 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                 ) {
                     AiWebPanel(
                         fileUri = aiFileUri,
+                        prompt = aiPrompt,
+                        onPromptConsumed = { aiPrompt = null },
                         onClose = {
                             showAiPanel = false
                             aiFileUri = null
+                            aiPrompt = null
                         }
                     )
                 }
@@ -798,6 +802,7 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                             onClick = {
                                 showAiPanel = false
                                 aiFileUri = null
+                                aiPrompt = null
                             },
                             modifier = Modifier
                                 .padding(top = 8.dp)
@@ -842,8 +847,9 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                         modifier = Modifier.fillMaxSize(),
                         pageAspectRatio = pageAspectRatio,
                         documentUri = uri.toString(),
-                        onAiFileReady = { fileUri ->
+                        onAiFileReady = { fileUri, prompt ->
                             aiFileUri = fileUri
+                            aiPrompt = prompt
                             showAiPanel = true
                         },
                         hazeState = editorHaze,
