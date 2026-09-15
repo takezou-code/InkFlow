@@ -324,32 +324,73 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
         return false
     }
 
-    // 按②收集後直接插入（不經勾選面板，整批全插）
-    fun importChunks(selected: List<AiTextChunk>) {
-        if (selected.isEmpty()) return
+    // 按②收集後直接插入（不經勾選面板）：切塊 → KaTeX 渲染數學（Main）→ 混合排版 → 串行開新頁寫入
+    fun importRawText(raw: String) {
+        if (raw.isBlank()) return
         scope.launch {
+            val blocks = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                splitAiBlocks(raw)
+            }
+            if (blocks.isEmpty()) {
+                android.widget.Toast.makeText(context, "沒有可插入的內容", android.widget.Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            // 數學渲染（WebView 必須 Main thread；失敗的塊退回 Unicode 文字）
+            val mathBlocks = blocks.filterIsInstance<AiMathBlock>()
+            val rendered = mutableMapOf<String, RenderedMath>()
+            if (mathBlocks.isNotEmpty()) {
+                val act = context as? android.app.Activity
+                if (act != null) MathSnapshot.ensure(act)
+                for (mb in mathBlocks) {
+                    try {
+                        val bmp = MathSnapshot.render(mathBlockHtml(mb.html))
+                        if (bmp != null) {
+                            val f = java.io.File(context.filesDir, "math_${System.currentTimeMillis()}_${mb.id}.png")
+                            java.io.FileOutputStream(f).use { out ->
+                                bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
+                            }
+                            rendered[mb.id] = RenderedMath(f, bmp.width, bmp.height)
+                            bmp.recycle()
+                        }
+                    } catch (t: Throwable) {
+                        android.util.Log.w("InkFlowDbg", "math render failed ${mb.id}: $t")
+                    }
+                }
+            }
+            val resolved = resolveAiBlocks(blocks, rendered)
             val pages = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-                paginateAiChunks(selected, viewModel.modelWidth, viewModel.modelHeight)
+                paginateAiBlocks(resolved, rendered, viewModel.modelWidth, viewModel.modelHeight)
             }
             if (pages.isEmpty()) {
-                android.widget.Toast.makeText(context, "沒有可插入的文字", android.widget.Toast.LENGTH_SHORT).show()
+                android.widget.Toast.makeText(context, "沒有可插入的內容", android.widget.Toast.LENGTH_SHORT).show()
                 return@launch
             }
             val sourcePage = currentPageIndex
             var after = sourcePage
             var placed = 0
+            var mathCount = 0
             for (page in pages) {
                 if (!insertOnePageAfter(after)) break
                 after += 1
                 val pageIdx = after
-                page.forEach { pt ->
-                    viewModel.insertImportedText(uri.toString(), pageIdx, pt.text, pt.modelX, pt.modelY, pt.fontSize)
+                page.forEach { pl ->
+                    when (pl) {
+                        is Placed.T -> viewModel.insertImportedText(uri.toString(), pageIdx, pl.t.text, pl.t.modelX, pl.t.modelY, pl.t.fontSize)
+                        is Placed.I -> {
+                            viewModel.insertImportedImage(
+                                uri.toString(), pageIdx,
+                                android.net.Uri.fromFile(pl.file).toString(),
+                                pl.modelX, pl.modelY, pl.modelW, pl.modelH
+                            )
+                            mathCount++
+                        }
+                    }
                 }
                 placed++
             }
             if (placed > 0) {
                 onRequestPage(sourcePage + 1)
-                android.widget.Toast.makeText(context, "已插入 ${selected.size} 塊（${placed} 頁）", android.widget.Toast.LENGTH_SHORT).show()
+                android.widget.Toast.makeText(context, "已插入 ${pages.sumOf { it.size }} 段（公式圖 ${mathCount}，${placed} 頁）", android.widget.Toast.LENGTH_SHORT).show()
             } else {
                 android.widget.Toast.makeText(context, "開新頁失敗，請稍後再試", android.widget.Toast.LENGTH_SHORT).show()
             }
@@ -843,7 +884,7 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                                     android.widget.Toast.makeText(context, "沒抓到文字：請在 Gemini 回覆中點段落打勾後再按引入", android.widget.Toast.LENGTH_SHORT).show()
                                 } else {
                                     aiPickMode = false
-                                    importChunks(chunkAiText(text))
+                                    importRawText(text)
                                 }
                             }
                         },

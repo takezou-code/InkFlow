@@ -84,12 +84,150 @@ data class PlacedText(
 )
 
 /**
- * M3 流式分頁：每塊用 StaticLayout 按內容寬折行（取其斷行、高度仍用渲染器的
- * fontMetrics 行高，保證量畫一致），由上往下放，放不下就開新頁。
- * 全部放新頁 → 與原文/墨水零重疊（永不疊字）。
+ * M3/M5 文字量測：StaticLayout 只取斷行，行高用渲染器 fontMetrics 公式，保證量畫一致。
  */
-fun paginateAiChunks(
-    chunks: List<AiTextChunk>,
+private fun layoutLines(body: String, textPaint: android.text.TextPaint, contentW: Int): List<String> {
+    if (body.isEmpty()) return emptyList()
+    val layout = android.text.StaticLayout.Builder.obtain(body, 0, body.length, textPaint, contentW)
+        .setAlignment(android.text.Layout.Alignment.ALIGN_NORMAL)
+        .setLineSpacing(0f, 1f)
+        .setIncludePad(false)
+        .build()
+    return (0 until layout.lineCount).map { i ->
+        body.substring(layout.getLineStart(i), layout.getLineEnd(i)).trimEnd()
+    }.filter { it.isNotEmpty() }
+}
+
+// ---- M5：圖文混合排版（文字 + KaTeX 數學圖） ----
+
+/** 數學渲染結果（已存檔 PNG）。 */
+data class RenderedMath(val file: java.io.File, val pxW: Int, val pxH: Int)
+
+/** 排版輸出：文字或數學圖。 */
+sealed interface Placed {
+    data class T(val t: PlacedText) : Placed
+    data class I(val file: java.io.File, val modelX: Float, val modelY: Float, val modelW: Float, val modelH: Float) : Placed
+}
+
+/** 引入內容塊：純文字或數學（待渲染），保原文順序。 */
+sealed interface AiBlock { val id: String }
+data class AiTextBlock(val chunk: AiTextChunk) : AiBlock { override val id: String get() = chunk.id }
+data class AiMathBlock(val id: String, val html: String, val display: Boolean, val fallback: String) : AiBlock
+
+private val DISPLAY_MATH = Regex("\\$\\$[\\s\\S]*?\\$\\$|\\\\\\[[\\s\\S]*?\\\\\\]|\\\\begin\\{(equation|align|gather|multline|alignat|flalign|matrix|pmatrix|bmatrix|vmatrix|cases|aligned|array)\\}[\\s\\S]*?\\\\end\\{\\2\\}")
+private val COMPLEX_CMD = Regex("\\\\(frac|d?frac|sum|prod|int|iint|oint|sqrt|lim|begin|overline|underline|hat|check|vec|dot|ddot|tilde|bar|mathbb|mathcal|operatorname)\\b")
+
+private fun chunkTitleOf(s: String): String {
+    val first = s.lineSequence().firstOrNull()?.trim().orEmpty()
+    return when {
+        first.isEmpty() -> "（空塊）"
+        first.length <= 20 -> first
+        else -> first.take(20) + "…"
+    }
+}
+
+private fun stripDisplayShell(s: String): String {
+    val t = s.trim()
+    if (t.startsWith("$$") && t.endsWith("$$") && t.length > 4) return t.substring(2, t.length - 2)
+    if (t.startsWith("\\[") && t.endsWith("\\]") && t.length > 4) return t.substring(2, t.length - 2)
+    return t
+}
+
+private fun isComplexPara(p: String): Boolean {
+    if (DISPLAY_MATH.containsMatchIn(p)) return true
+    for (m in INLINE_PAREN.findAll(p)) if (COMPLEX_CMD.containsMatchIn(m.groupValues[1])) return true
+    for (m in INLINE_DOLLAR.findAll(p)) {
+        val inner = m.groupValues[1]
+        if ((inner.contains('\\') || inner.contains('^') || inner.contains('_')) && COMPLEX_CMD.containsMatchIn(inner)) return true
+    }
+    return false
+}
+
+/** 把原文切成保序的文字/數學塊（code fence 內不找數學）。 */
+fun splitAiBlocks(raw: String, maxChars: Int = AI_CHUNK_MAX_CHARS): List<AiBlock> {
+    val text = raw.replace("\r\n", "\n").trim()
+    if (text.isEmpty()) return emptyList()
+    val out = mutableListOf<AiBlock>()
+    var ti = 0
+    fun textBlocksOf(seg: String): List<AiTextBlock> {
+        val bodies = mutableListOf<String>()
+        splitProse(convertLatexInProse(seg), maxChars, bodies)
+        return bodies.map { b -> ti++; AiTextBlock(AiTextChunk(id = "c$ti", title = chunkTitleOf(b), body = b)) }
+    }
+    fun paraBlocks(seg: String) {
+        for (para in seg.split(Regex("\n\\s*\n"))) {
+            val p = para.trim()
+            if (p.isEmpty()) continue
+            if (isComplexPara(p)) {
+                ti++
+                out.add(AiMathBlock(id = "m$ti", html = p, display = DISPLAY_MATH.containsMatchIn(p), fallback = convertLatexInProse(p)))
+            } else {
+                out.addAll(textBlocksOf(p))
+            }
+        }
+    }
+    fun pushOutside(seg: String) {
+        var rest = seg
+        while (true) {
+            val m = DISPLAY_MATH.find(rest) ?: break
+            if (m.range.first > 0) paraBlocks(rest.substring(0, m.range.first))
+            ti++
+            val rawMath = m.value
+            out.add(AiMathBlock(id = "m$ti", html = rawMath, display = true, fallback = convertLatexMath(stripDisplayShell(rawMath))))
+            rest = rest.substring(m.range.last + 1)
+        }
+        paraBlocks(rest)
+    }
+    val fence = Regex("```[\\s\\S]*?(?:```|$)")
+    var cursor = 0
+    for (m in fence.findAll(text)) {
+        pushOutside(text.substring(cursor, m.range.first))
+        val code = m.value.trim()
+        if (code.isNotEmpty()) { ti++; out.add(AiTextBlock(AiTextChunk(id = "c$ti", title = chunkTitleOf(code), body = code))) }
+        cursor = m.range.last + 1
+    }
+    pushOutside(text.substring(cursor))
+    return out
+}
+
+/** $..$ 行內數學（有 \ ^ _ 才認，避開金額）轉 \(..\)，供 KaTeX auto-render（不配單 $ delimiter）。 */
+fun normalizeDollarMath(seg: String): String =
+    INLINE_DOLLAR.replace(seg) { r ->
+        val inner = r.groupValues[1]
+        if (inner.contains('\\') || inner.contains('^') || inner.contains('_')) "\\(" + inner + "\\)"
+        else r.value
+    }
+
+fun escHtml(s: String): String =
+    s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
+
+/** 數學塊轉渲染用 HTML（原文 delimiter 保留，auto-render 處理）。 */
+fun mathBlockHtml(source: String): String = "<div>" + escHtml(normalizeDollarMath(source)) + "</div>"
+
+/** 未渲染成功的數學塊退回 Unicode 文字塊（保序 splice 用）。 */
+fun mathFallbackBlocks(b: AiMathBlock, maxChars: Int = AI_CHUNK_MAX_CHARS): List<AiTextBlock> {
+    val bodies = mutableListOf<String>()
+    splitProse(b.fallback, maxChars, bodies)
+    return bodies.mapIndexed { i, s -> AiTextBlock(AiTextChunk(id = "${b.id}f$i", title = chunkTitleOf(s), body = s)) }
+}
+
+/** 把未渲染的數學換成 fallback 文字，保序。 */
+fun resolveAiBlocks(blocks: List<AiBlock>, rendered: Map<String, RenderedMath>, maxChars: Int = AI_CHUNK_MAX_CHARS): List<AiBlock> {
+    val out = mutableListOf<AiBlock>()
+    for (b in blocks) {
+        if (b is AiMathBlock && b.id !in rendered) out.addAll(mathFallbackBlocks(b, maxChars))
+        else out.add(b)
+    }
+    return out
+}
+
+/**
+ * M3/M5 流式分頁（圖文混合）：文字用 StaticLayout 折行，數學圖按寬等比，
+ * 由上往下放，放不下就開新頁。全部放新頁 → 與原文/墨水零重疊（永不疊字）。
+ */
+fun paginateAiBlocks(
+    blocks: List<AiBlock>,
+    rendered: Map<String, RenderedMath>,
     modelW: Float,
     modelH: Float,
     fontSize: Float = 16f,
@@ -97,7 +235,7 @@ fun paginateAiChunks(
     marginTop: Float = 64f,
     marginBottom: Float = 64f,
     blockGap: Float = 14f
-): List<List<PlacedText>> {
+): List<List<Placed>> {
     // 與 InkCanvas 同字體/字號量測（DEFAULT_BOLD），行高公式與渲染器一致
     val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
         typeface = android.graphics.Typeface.DEFAULT_BOLD
@@ -106,11 +244,13 @@ fun paginateAiChunks(
     val fm = paint.fontMetrics
     val lineH = -fm.ascent + fm.descent + fm.leading
     if (lineH <= 0f) return emptyList()
-    val contentW = (modelW - marginH * 2).coerceAtLeast(100f).toInt().coerceAtLeast(1)
+    val contentWpt = modelW - marginH * 2
+    if (contentWpt <= 100f) return emptyList()
+    val contentW = contentWpt.toInt().coerceAtLeast(1)
     val textPaint = android.text.TextPaint(paint)
 
-    val pages = mutableListOf<MutableList<PlacedText>>()
-    var cur = mutableListOf<PlacedText>()
+    val pages = mutableListOf<MutableList<Placed>>()
+    var cur = mutableListOf<Placed>()
     var cursorTop = marginTop
     fun newPage() {
         if (cur.isNotEmpty()) pages.add(cur)
@@ -118,7 +258,7 @@ fun paginateAiChunks(
         cursorTop = marginTop
     }
     // lines：已折好的行；必要時跨頁切段（一段一 annotation）
-    fun emit(lines: List<String>) {
+    fun emitLines(lines: List<String>) {
         var idx = 0
         while (idx < lines.size) {
             val room = modelH - marginBottom - cursorTop
@@ -130,31 +270,43 @@ fun paginateAiChunks(
             val take = minOf(fit, lines.size - idx)
             val seg = lines.subList(idx, idx + take)
             cur.add(
-                PlacedText(
-                    text = seg.joinToString("\n") { it.trimEnd() },
-                    modelX = marginH,
-                    modelY = cursorTop - fm.ascent,
-                    fontSize = fontSize
+                Placed.T(
+                    PlacedText(
+                        text = seg.joinToString("\n") { it.trimEnd() },
+                        modelX = marginH,
+                        modelY = cursorTop - fm.ascent,
+                        fontSize = fontSize
+                    )
                 )
             )
             cursorTop += take * lineH + blockGap
             idx += take
         }
     }
+    fun emitImage(rm: RenderedMath) {
+        var w = contentWpt
+        var h = if (rm.pxW > 0 && rm.pxH > 0) rm.pxH.toFloat() / rm.pxW * w else contentWpt * 0.3f
+        val maxH = modelH - marginTop - marginBottom
+        if (h > maxH && h > 0f) {
+            h = maxH
+            w = rm.pxW.toFloat() / rm.pxH * h
+        }
+        if (modelH - marginBottom - cursorTop < h) newPage()
+        cur.add(Placed.I(rm.file, marginH + (contentWpt - w) / 2f, cursorTop, w, h))
+        cursorTop += h + blockGap
+    }
 
-    for (chunk in chunks) {
-        val body = chunk.body.trim()
-        if (body.isEmpty()) continue
-        val layout = android.text.StaticLayout.Builder.obtain(body, 0, body.length, textPaint, contentW)
-            .setAlignment(android.text.Layout.Alignment.ALIGN_NORMAL)
-            .setLineSpacing(0f, 1f)
-            .setIncludePad(false)
-            .build()
-        val lines = (0 until layout.lineCount).map { i ->
-            body.substring(layout.getLineStart(i), layout.getLineEnd(i)).trimEnd()
-        }.filter { it.isNotEmpty() }
-        if (lines.isEmpty()) continue
-        emit(lines)
+    for (b in blocks) {
+        when (b) {
+            is AiTextBlock -> {
+                val lines = layoutLines(b.chunk.body.trim(), textPaint, contentW)
+                if (lines.isNotEmpty()) emitLines(lines)
+            }
+            is AiMathBlock -> {
+                val rm = rendered[b.id] ?: continue
+                emitImage(rm)
+            }
+        }
     }
     if (cur.isNotEmpty()) pages.add(cur)
     return pages
