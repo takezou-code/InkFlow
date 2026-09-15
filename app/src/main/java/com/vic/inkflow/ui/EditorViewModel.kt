@@ -90,8 +90,50 @@ class EditorViewModel(
             // dimensions of the InkCanvas composable (set by setCanvasSize/onSizeChanged).
             // Overwriting them with PDF point values (e.g. 595) would break the
             // canvas-pixel ↔ model-space normalisation that every tool relies on.
+            // S1 單畫布：此處的 (w,h) 是回填 stride 唯一可信來源（真 PDF 尺寸），順手觸發。
+            ensureDocSpaceMigrated(h)
         }
     }
+
+    /**
+     * S1 單畫布回填：v24 前舊資料的 docY 欄是 NULL，在此用開文件時的 live modelH
+     * 當 stride 全量重算（無 NULL 守衛：每次開文件跑一次，頁增刪/改紙的陳舊值自動修正）。
+     * S1 只寫不讀，UI 零變化。斷言失敗即拋異常 → withTransaction 回滾（S0 備份是第二道鎖）。
+     */
+    private val docSpaceMutex = Mutex()
+    private var docSpaceMigrationDone = false
+    private fun ensureDocSpaceMigrated(modelH: Float) {
+        viewModelScope.launch(Dispatchers.IO) {
+            docSpaceMutex.withLock {
+                if (docSpaceMigrationDone) return@withLock
+                docSpaceMigrationDone = true
+                val stride = modelH.coerceAtLeast(1f)
+                db.withTransaction {
+                    val ns = strokeDao.backfillStrokeDocY(documentUri, stride)
+                    val nt = textAnnotationDao.backfillTextDocY(documentUri, stride)
+                    val ni = imageAnnotationDao.backfillImageDocY(documentUri, stride)
+                    check(strokeDao.countMissingDocY(documentUri) == 0) { "docY backfill incomplete: strokes" }
+                    check(textAnnotationDao.countMissingDocY(documentUri) == 0) { "docY backfill incomplete: texts" }
+                    check(imageAnnotationDao.countMissingDocY(documentUri) == 0) { "docY backfill incomplete: images" }
+                    check(strokeDao.countStrokeDocMismatch(documentUri, stride) == 0) { "docY invariant broken: strokes" }
+                    check(textAnnotationDao.countTextDocMismatch(documentUri, stride) == 0) { "docY invariant broken: texts" }
+                    check(imageAnnotationDao.countImageDocMismatch(documentUri, stride) == 0) { "docY invariant broken: images" }
+                    // 範圍查vs頁查一致性抽查（第 0 頁同頁列必須完全一致）
+                    val page0 = strokeDao.getStrokesForPageSync(documentUri, 0).map { it.stroke.id }.toSet()
+                    val range0 = strokeDao.getStrokesForRange(documentUri, -1f, stride + 1)
+                        .filter { it.stroke.pageIndex == 0 }.map { it.stroke.id }.toSet()
+                    check(page0 == range0) { "range/page parity broken: strokes page 0" }
+                    android.util.Log.i(
+                        "DocSpace",
+                        "backfilled doc=$documentUri stride=$stride strokes=$ns texts=$nt images=$ni"
+                    )
+                }
+            }
+        }
+    }
+
+    /** S1 雙寫步幅：live modelH（與回填同源；紙改尺寸後 S2 接 rebase）。 */
+    private val docStride: Float get() = modelHeight.coerceAtLeast(1f)
 
     /** Updates the paper style (size + background template). */
     fun setPaperStyle(style: PaperStyle) {
@@ -506,10 +548,13 @@ class EditorViewModel(
         }
         val path = EnvelopeUtils.generateEnvelopePath(normalizedPoints)
         val bounds = path.getBounds()
+        // S1 雙寫：頁空間照舊，docY 錨點同步存（S2 才讀）。
+        val strokePage = targetPage ?: pageIndex.value
         val strokeEntity = StrokeEntity(
             id = strokeId,
             documentUri = documentUri,
-            pageIndex = targetPage ?: pageIndex.value,
+            pageIndex = strokePage,
+            docY = strokePage * docStride + bounds.top,
             color = color.toArgb(),
             // Store the user-selected base width (normalized to model space) so PDF export
             // uses the correct line thickness rather than the velocity-derived per-point width.
@@ -657,14 +702,18 @@ class EditorViewModel(
             val shapeWidthScale = scaleX * _docZoom.value.coerceAtLeast(0.1f)
             val p0 = Offset(startPoint.x * scaleX, startPoint.y * scaleY)
             val p1 = Offset(endPoint.x * scaleX, endPoint.y * scaleY)
+            // S1 雙寫：頁空間照舊，docY 錨點同步存。
+            val shapePage = targetPage ?: pageIndex.value
+            val shapeEntityTop = minOf(p0.y, p1.y)
             val strokeEntity = StrokeEntity(
                 id = strokeId,
                 documentUri = documentUri,
-                pageIndex = targetPage ?: pageIndex.value,
+                pageIndex = shapePage,
+                docY = shapePage * modelHeight.coerceAtLeast(1f) + shapeEntityTop,
                 color = color.toArgb(),
                 strokeWidth = strokeWidth * shapeWidthScale,
                 boundsLeft = minOf(p0.x, p1.x),
-                boundsTop = minOf(p0.y, p1.y),
+                boundsTop = shapeEntityTop,
                 boundsRight = maxOf(p0.x, p1.x),
                 boundsBottom = maxOf(p0.y, p1.y),
                 isHighlighter = false,
@@ -694,12 +743,16 @@ class EditorViewModel(
         targetPage: Int? = null
     ) {
         if (text.isBlank()) return
+        val textPage = targetPage ?: pageIndex.value
+        val textModelY = canvasY * modelHeight / canvasH
         val ann = TextAnnotationEntity(
             documentUri = documentUri,
-            pageIndex = targetPage ?: pageIndex.value,
+            pageIndex = textPage,
+            // S1 雙寫：docY 錨點同步存。
+            docY = textPage * docStride + textModelY,
             text = text,
             modelX = canvasX * modelWidth / canvasW,
-            modelY = canvasY * modelHeight / canvasH,
+            modelY = textModelY,
             fontSize = fontSize * modelWidth / canvasW,
             colorArgb = color.toArgb(),
             isStamp = isStamp
@@ -716,6 +769,8 @@ class EditorViewModel(
         val ann = TextAnnotationEntity(
             documentUri = docUri,
             pageIndex = targetPage,
+            // S1 雙寫：docY 錨點同步存（他 AI 的 M3 寫入路徑一併帶上）。
+            docY = targetPage * docStride + modelY,
             text = text,
             modelX = modelX,
             modelY = modelY,
@@ -733,6 +788,8 @@ class EditorViewModel(
         val ann = ImageAnnotationEntity(
             documentUri = docUri,
             pageIndex = targetPage,
+            // S1 雙寫：docY 錨點同步存。
+            docY = targetPage * docStride + modelY,
             uri = fileUri,
             modelX = modelX,
             modelY = modelY,
@@ -767,9 +824,12 @@ class EditorViewModel(
         val old = findTextAnnotation(id) ?: return
         val scaleX = modelWidth / canvasW
         val scaleY = modelHeight / canvasH
+        val newModelY = old.modelY + canvasDeltaY * scaleY
         val updated = old.copy(
             modelX = old.modelX + canvasDeltaX * scaleX,
-            modelY = old.modelY + canvasDeltaY * scaleY
+            modelY = newModelY,
+            // S1 雙寫：docY 與座標同步算。
+            docY = old.pageIndex * docStride + newModelY
         )
         viewModelScope.launch(Dispatchers.IO) {
             textAnnotationDao.update(updated)
@@ -783,10 +843,15 @@ class EditorViewModel(
      */
     fun commitTextAnnotationMoveToPage(id: String, targetPage: Int, modelX: Float, modelY: Float) {
         val old = findTextAnnotation(id) ?: return
+        // S1 雙寫：docY 與座標同步算。
+        val newPage = targetPage.coerceAtLeast(0)
+        val newModelX = modelX.coerceIn(0f, modelWidth)
+        val newModelY = modelY.coerceIn(0f, modelHeight)
         val updated = old.copy(
-            pageIndex = targetPage.coerceAtLeast(0),
-            modelX = modelX.coerceIn(0f, modelWidth),
-            modelY = modelY.coerceIn(0f, modelHeight)
+            pageIndex = newPage,
+            modelX = newModelX,
+            modelY = newModelY,
+            docY = newPage * docStride + newModelY
         )
         if (updated == old) return
         viewModelScope.launch(Dispatchers.IO) {
@@ -801,7 +866,9 @@ class EditorViewModel(
         val updated = old.copy(
             modelX = newX,
             modelY = newY,
-            fontSize = clamped
+            fontSize = clamped,
+            // S1 雙寫：docY 與座標同步算。
+            docY = old.pageIndex * docStride + newY
         )
         viewModelScope.launch(Dispatchers.IO) {
             textAnnotationDao.update(updated)
@@ -817,14 +884,18 @@ class EditorViewModel(
         canvasHeight: Float,
         targetPage: Int? = null
     ) {
-        val scaleX = modelWidth / canvasW
-        val scaleY = modelHeight / canvasH
-        val ann = ImageAnnotationEntity(
-            documentUri = documentUri,
-            pageIndex = targetPage ?: pageIndex.value,
-            uri = uri,
-            modelX = canvasX * scaleX,
-            modelY = canvasY * scaleY,
+    val scaleX = modelWidth / canvasW
+    val scaleY = modelHeight / canvasH
+    // S1 雙寫：docY 錨點同步存。
+    val imgPage = targetPage ?: pageIndex.value
+    val imgModelY = canvasY * scaleY
+    val ann = ImageAnnotationEntity(
+        documentUri = documentUri,
+        pageIndex = imgPage,
+        docY = imgPage * docStride + imgModelY,
+        uri = uri,
+        modelX = canvasX * scaleX,
+        modelY = imgModelY,
             modelWidth = canvasWidth * scaleX,
             modelHeight = canvasHeight * scaleY
         )
@@ -868,6 +939,8 @@ class EditorViewModel(
         return ImageAnnotationEntity(
             documentUri = documentUri,
             pageIndex = targetPageIndex,
+            // S1 雙寫：docY 錨點同步存。
+            docY = targetPageIndex * docStride + modelY,
             uri = uri,
             modelX = modelX,
             modelY = modelY,
@@ -913,9 +986,12 @@ class EditorViewModel(
         val old = findImageAnnotation(id) ?: return
         val scaleX = modelWidth / canvasW
         val scaleY = modelHeight / canvasH
+        val newModelY = old.modelY + canvasDeltaY * scaleY
         val updated = old.copy(
             modelX = old.modelX + canvasDeltaX * scaleX,
-            modelY = old.modelY + canvasDeltaY * scaleY
+            modelY = newModelY,
+            // S1 雙寫：docY 與座標同步算。
+            docY = old.pageIndex * docStride + newModelY
         )
         viewModelScope.launch(Dispatchers.IO) {
             imageAnnotationDao.update(updated)
@@ -933,13 +1009,17 @@ class EditorViewModel(
         modelX: Float,
         modelY: Float
     ) {
-        val old = findImageAnnotation(id) ?: return
-        val updated = old.copy(
-            pageIndex = targetPage.coerceAtLeast(0),
-            modelX = modelX.coerceIn(0f, modelWidth),
-            modelY = modelY.coerceIn(0f, modelHeight)
-        )
-        if (updated == old) return
+    val old = findImageAnnotation(id) ?: return
+    // S1 雙寫：docY 與座標同步算。
+    val newImgPage = targetPage.coerceAtLeast(0)
+    val newImgModelY = modelY.coerceIn(0f, modelHeight)
+    val updated = old.copy(
+        pageIndex = newImgPage,
+        modelX = modelX.coerceIn(0f, modelWidth),
+        modelY = newImgModelY,
+        docY = newImgPage * docStride + newImgModelY
+    )
+    if (updated == old) return
         viewModelScope.launch(Dispatchers.IO) {
             imageAnnotationDao.update(updated)
             withContext(Dispatchers.Main) { pushUndo(DrawCommand.MoveImageAnnotation(old, updated)) }
@@ -952,7 +1032,9 @@ class EditorViewModel(
             modelX = newX,
             modelY = newY,
             modelWidth  = newModelWidth.coerceAtLeast(30f),
-            modelHeight = newModelHeight.coerceAtLeast(30f)
+            modelHeight = newModelHeight.coerceAtLeast(30f),
+            // S1 雙寫：docY 與座標同步算。
+            docY = old.pageIndex * docStride + newY
         )
         viewModelScope.launch(Dispatchers.IO) {
             imageAnnotationDao.update(updated)
@@ -1108,12 +1190,15 @@ class EditorViewModel(
                             val shiftedPoints = swp.points.map { pt ->
                                 PointEntity(strokeId = swp.stroke.id, x = pt.x + command.delta.x, y = pt.y + command.delta.y, width = pt.width)
                             }
-                            val shiftedStroke = swp.stroke.copy(
-                                boundsLeft   = swp.stroke.boundsLeft   + command.delta.x,
-                                boundsTop    = swp.stroke.boundsTop    + command.delta.y,
-                                boundsRight  = swp.stroke.boundsRight  + command.delta.x,
-                                boundsBottom = swp.stroke.boundsBottom + command.delta.y
-                            )
+                        val shiftedStroke = swp.stroke.copy(
+                            boundsLeft   = swp.stroke.boundsLeft   + command.delta.x,
+                            boundsTop    = swp.stroke.boundsTop    + command.delta.y,
+                            boundsRight  = swp.stroke.boundsRight  + command.delta.x,
+                            boundsBottom = swp.stroke.boundsBottom + command.delta.y
+                        ).let {
+                            // S1 雙寫：redo 重建的實體把 docY 重算。
+                            it.copy(docY = it.pageIndex * docStride + it.boundsTop)
+                        }
                             db.withTransaction {
                                 strokeDao.deletePointsForStroke(swp.stroke.id)
                                 strokeDao.insertStroke(shiftedStroke)
@@ -1246,12 +1331,29 @@ class EditorViewModel(
 
     // 座標/多邊形/命中測試見 SelectionGeometry.kt
 
+    /**
+     * S1 雙寫：把頁空間實體的 docY 重算（docY = pageIndex × stride + 頁內頂邊）。
+     * transformStrokes/copy 會攜帶陳舊 docY，所有落庫前必經此處（replaceStrokeSnapshots
+     * 是移動提交的唯一 choke；新建在構造時直接填）。
+     */
+    private fun StrokeWithPoints.redoc(): StrokeWithPoints {
+        val s = stroke
+        return copy(stroke = s.copy(docY = s.pageIndex * docStride + s.boundsTop))
+    }
+
+    private fun TextAnnotationEntity.redoc(): TextAnnotationEntity =
+        copy(docY = pageIndex * docStride + modelY)
+
+    private fun ImageAnnotationEntity.redoc(): ImageAnnotationEntity =
+        copy(docY = pageIndex * docStride + modelY)
+
     private suspend fun replaceStrokeSnapshots(strokes: List<StrokeWithPoints>) {
         db.withTransaction {
             strokes.forEach { swp ->
-                strokeDao.deletePointsForStroke(swp.stroke.id)
-                strokeDao.insertStroke(swp.stroke)
-                strokeDao.insertPoints(swp.points)
+                val fixed = swp.redoc()
+                strokeDao.deletePointsForStroke(fixed.stroke.id)
+                strokeDao.insertStroke(fixed.stroke)
+                strokeDao.insertPoints(fixed.points)
             }
         }
     }
@@ -1389,6 +1491,10 @@ class EditorViewModel(
             }
         }
 
+        // S1 雙寫：落庫/入 undo 指令前把 docY 重算（冪等；replaceStrokeSnapshots 會再算一次也無妨）
+        movedStrokes = movedStrokes.map { it.redoc() }
+        movedImages = movedImages.map { it.redoc() }
+
         // Apply new DB state but keep the selection active for further edits.
         _selectedStrokes.value = movedStrokes
         _selectedStrokePreview.value = movedStrokes
@@ -1475,9 +1581,13 @@ class EditorViewModel(
             )
         }
 
+        // S1 雙寫：落庫/入 undo 指令前把 docY 重算（resize 不跨頁，頁不變只算值）
+        val redocUpdated = updated.map { it.redoc() }
+        val redocUpdatedImages = updatedImages.map { it.redoc() }
+
         // Keep selection active
-        _selectedStrokes.value = updated
-        _selectedStrokePreview.value = updated
+        _selectedStrokes.value = redocUpdated
+        _selectedStrokePreview.value = redocUpdated
         _lassoMoveOffset.value = Offset.Zero
         _selectedStrokeScale.value = 1f
         _selectedStrokeResizeAnchor.value = null
@@ -1490,26 +1600,26 @@ class EditorViewModel(
         _lassoPolygon.value = committedSelectionPolygon
         _selectionFramePolygon.value = committedSelectionPolygon
         _lastLassoPolygon.value = committedSelectionPolygon
-        _selectedStrokePreviewBounds.value = StrokeTransformUtils.computeSelectionBounds(updated)
+        _selectedStrokePreviewBounds.value = StrokeTransformUtils.computeSelectionBounds(redocUpdated)
 
-        _commitPreview.value = updated.takeIf { it.isNotEmpty() }
+        _commitPreview.value = redocUpdated.takeIf { it.isNotEmpty() }
         viewModelScope.launch(Dispatchers.IO) {
-            if (updated.isNotEmpty()) {
-                replaceStrokeSnapshots(updated)
+            if (redocUpdated.isNotEmpty()) {
+                replaceStrokeSnapshots(redocUpdated)
             }
-            updatedImages.forEach { imageAnnotationDao.update(it) }
+            redocUpdatedImages.forEach { imageAnnotationDao.update(it) }
             withContext(Dispatchers.Main) {
-                if (_commitPreview.value === updated) {
+                if (_commitPreview.value === redocUpdated) {
                     _commitPreview.value = null
                 }
                 when {
-                    images.isEmpty() -> pushUndo(DrawCommand.ResizeStrokes(originals, updated))
+                    images.isEmpty() -> pushUndo(DrawCommand.ResizeStrokes(originals, redocUpdated))
                     else -> pushUndo(
                         DrawCommand.ResizeSelectionMixed(
                             strokeOriginals = originals,
-                            strokeUpdated = updated,
+                            strokeUpdated = redocUpdated,
                             imageOriginals = images,
-                            imageUpdated = updatedImages
+                            imageUpdated = redocUpdatedImages
                         )
                     )
                 }
@@ -1818,12 +1928,14 @@ class EditorViewModel(
             val newModelX = ((modelWidth - finalW) / 2f).coerceAtLeast(0f)
             val newModelY = topMarginPt
 
-            val newImage = ImageAnnotationEntity(
-                id          = java.util.UUID.randomUUID().toString(),
-                documentUri = documentUri,
-                pageIndex   = targetPageIndex,
-                modelX      = newModelX,
-                modelY      = newModelY,
+        val newImage = ImageAnnotationEntity(
+            id          = java.util.UUID.randomUUID().toString(),
+            documentUri = documentUri,
+            pageIndex   = targetPageIndex,
+            // S1 雙寫：docY 錨點同步存。
+            docY        = targetPageIndex * docStride + newModelY,
+            modelX      = newModelX,
+            modelY      = newModelY,
                 modelWidth  = finalW,
                 modelHeight = finalH,
                 uri         = android.net.Uri.fromFile(file).toString()

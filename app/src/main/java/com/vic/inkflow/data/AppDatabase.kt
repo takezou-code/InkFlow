@@ -23,11 +23,13 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 // v21: Added strokeSpeedSensitivity and fingerTouchThresholdDp to document_preferences.
 // v22: Added autoSwitchToPenAfterErase to document_preferences.
 // v23: Added rotation column to image_annotations.
+// v24: S1 單畫布：strokes/text_annotations/image_annotations 加 docY（文件座標錨點，
+//      nullable；舊資料懶回填，不在此搬運）＋ (documentUri, docY) 索引。
 @Database(
     entities = [StrokeEntity::class, PointEntity::class, DocumentEntity::class, FolderEntity::class,
                 TextAnnotationEntity::class, ImageAnnotationEntity::class,
                 DocumentPreferenceEntity::class, BookmarkEntity::class],
-    version = 23
+    version = 24
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun strokeDao(): StrokeDao
@@ -515,6 +517,19 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_23_24 = object : Migration(23, 24) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // 只加欄＋索引；資料回填由 EditorViewModel.ensureDocSpaceMigrated 懶做
+                //（回填 stride 必須用開文件時的 live modelH，遷移期拿不到，硬搬會錯）。
+                db.execSQL("ALTER TABLE strokes ADD COLUMN docY REAL DEFAULT NULL")
+                db.execSQL("ALTER TABLE text_annotations ADD COLUMN docY REAL DEFAULT NULL")
+                db.execSQL("ALTER TABLE image_annotations ADD COLUMN docY REAL DEFAULT NULL")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_strokes_documentUri_docY` ON `strokes` (`documentUri`, `docY`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_text_annotations_documentUri_docY` ON `text_annotations` (`documentUri`, `docY`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_image_annotations_documentUri_docY` ON `image_annotations` (`documentUri`, `docY`)")
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val appContext = context.applicationContext
@@ -546,7 +561,8 @@ abstract class AppDatabase : RoomDatabase() {
                     MIGRATION_19_20,
                     MIGRATION_20_21,
                     MIGRATION_21_22,
-                    MIGRATION_22_23
+                    MIGRATION_22_23,
+                    MIGRATION_23_24
                 )
                 // Only allow destructive migration on downgrade (e.g. user reverts to an
                 // older APK). Unknown *upgrade* paths surface as a hard crash rather than

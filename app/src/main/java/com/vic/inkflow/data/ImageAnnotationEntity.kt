@@ -21,6 +21,8 @@ data class ImageAnnotationEntity(
     val id: String = UUID.randomUUID().toString(),
     val documentUri: String,
     val pageIndex: Int,
+    /** S1 單畫布：文件座標 = pageIndex × stride + modelY（null = 未回填）。 */
+    val docY: Float? = null,
     val uri: String,
     val modelX: Float,
     val modelY: Float,
