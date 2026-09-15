@@ -300,6 +300,15 @@ class EditorViewModel(
     fun isPageLocked(): Boolean = _pageLock.value
     fun setPageLock(locked: Boolean) { _pageLock.value = locked }
 
+    /**
+     * 套索拖曳預覽旗標：LASSO 移動手勢進行中為 true。
+     * Workspace 在此期間把作用頁 item 置頂（zIndex）並用 overlay 繪製選取預覽，
+     * 拖出紙界的框/墨不會被後頁蓋住，放開提交後清旗。
+     */
+    private val _dragPreviewActive = MutableStateFlow(false)
+    val dragPreviewActive: StateFlow<Boolean> = _dragPreviewActive.asStateFlow()
+    fun setDragPreviewActive(active: Boolean) { _dragPreviewActive.value = active }
+
     private val _pendingStrokes = MutableStateFlow<Map<String, StrokeWithPoints>>(emptyMap())
 
     val currentStrokes: StateFlow<List<StrokeWithPoints>> = kotlinx.coroutines.flow.combine(

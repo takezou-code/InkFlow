@@ -167,6 +167,8 @@ fun InkCanvas(
     val pageCountRef = rememberUpdatedState(pageCount)
     val onEdgeAutoScrollRef = rememberUpdatedState(onEdgeAutoScroll)
     val onCrossPageEndRef = rememberUpdatedState(onCrossPageEnd)
+    // 拖曳 overlay 接手時，紙內選取預覽讓位（同像素只畫一次，螢光筆疊色會變深）
+    val dragPreviewActive by viewModel.dragPreviewActive.collectAsState()
     // 套索虛線動畫按需組成：無選取時不跑 choreographer，省常駐喚醒
     val needLassoAnim = activeTool == Tool.LASSO && selectedStrokePreview.isNotEmpty()
     val lassoDashPhase = if (needLassoAnim) {
@@ -781,6 +783,7 @@ fun InkCanvas(
                 down.consume()
                 // 頁鎖兜底：上個手勢若異常退出（未走提交/丟棄），在此清除，不污染新手勢
                 viewModel.setPageLock(false)
+                viewModel.setDragPreviewActive(false)
 
                 // 手指落筆校正：僅手指模式(FREE)＋Touch 接觸＋開關開；觸控筆模式零偏移。
                 // 整個手勢同一個偏移（手勢中途改設定不影響本筆，避免線條斷折）。
@@ -1158,11 +1161,13 @@ fun InkCanvas(
                         if (selectionRect.contains(startOffset)) {
                             down.consume()
                             viewModel.setPageLock(true)
+                            viewModel.setDragPreviewActive(true)
                             var drag = awaitDragOrCancellation(down.id)
                             while (drag != null && drag.pressed) {
                                 if (pinchActive) {
                                     viewModel.commitMovedStrokes()
                                     viewModel.setPageLock(false)
+                                    viewModel.setDragPreviewActive(false)
                                     return@awaitEachGesture
                                 }
                                 val delta = drag.positionChange()
@@ -1177,6 +1182,7 @@ fun InkCanvas(
                             val maxPage = (pageCountRef.value - 1).coerceAtLeast(0)
                             val crossTarget = viewModel.commitMovedStrokes(maxPage)
                             viewModel.setPageLock(false)
+                            viewModel.setDragPreviewActive(false)
                             if (crossTarget != null) {
                                 onCrossPageEndRef.value(crossTarget)
                             }
@@ -1504,10 +1510,13 @@ fun InkCanvas(
                         } else {
                             // A single-point tap produces no drag points; duplicate it so
                             // saveStroke receives ≥2 points and StrokeCap.Round renders a dot.
-                            val pts = if (currentPathPoints.size == 1)
+                            val rawPts = if (currentPathPoints.size == 1)
                                 listOf(currentPathPoints[0], currentPathPoints[0])
                             else
                                 currentPathPoints.toList()
+                            // 提筆零形變：提交與最後一幀預覽完全相同的平滑點列
+                            //（預覽包絡吃 smoothCenterline，入庫若用原始點列，鬆筆瞬間形狀跳變）。
+                            val pts = smoothCenterline(rawPts)
                             TouchEventLogger.logOutcome(
                                 sessionId       = sessionId,
                                 outcome         = "ACCEPTED",
@@ -1593,8 +1602,18 @@ fun InkCanvas(
             val cachedImage = if (frozen) {
                 pinchReuse.bmp!!
             } else {
-                ImageBitmap(cacheW, cacheH, ImageBitmapConfig.Argb8888).also {
-                    pinchReuse.bmp = it
+                val reuse = pinchReuse.bmp
+                if (reuse != null && reuse.width == cacheW && reuse.height == cacheH) {
+                    // 同尺寸重用：清掉舊墨再重畫，提筆不再配置數十 MB（卡頓主因）
+                    androidx.compose.ui.graphics.Canvas(reuse).drawRect(
+                        0f, 0f, cacheW.toFloat(), cacheH.toFloat(),
+                        Paint().apply { blendMode = BlendMode.Clear }
+                    )
+                    reuse
+                } else {
+                    ImageBitmap(cacheW, cacheH, ImageBitmapConfig.Argb8888).also {
+                        pinchReuse.bmp = it
+                    }
                 }
             }
             val cacheCanvas = androidx.compose.ui.graphics.Canvas(cachedImage)
@@ -1778,7 +1797,8 @@ fun InkCanvas(
             }
 
             // Selected strokes (highlighted with current preview transform applied).
-            if (selectedPathData.isNotEmpty()) {
+            // dragPreviewActive 時由 Workspace overlay 繪製（可溢出紙界、置頂），此處讓位。
+            if (selectedPathData.isNotEmpty() && !dragPreviewActive) {
                 drawIntoCanvas { cvs ->
                     cvs.save()
                     cvs.scale(sx, sy)
