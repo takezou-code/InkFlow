@@ -403,10 +403,10 @@ class EditorViewModel(
 
     fun setActivePage(index: Int) {
         _pageIndex.value = index
-        prefetchNeighbors(index)
+        prefetchPages(index, index)
     }
 
-    /** 鄰頁預渲染快取：作用頁 ±1 的已查筆跡，給 Workspace item 當 Flow 初始值，
+    /** 鄰頁預渲染快取：可視範圍 ±1 的已查筆跡，給 Workspace item 當 Flow 初始值，
      * 滑入視口第一幀就有墨，不再空白閃一下。版號守衛防亂序覆蓋，視窗外自動丟棄。 */
     data class NeighborPageData(
         val strokes: List<StrokeWithPoints> = emptyList(),
@@ -416,11 +416,30 @@ class EditorViewModel(
     private val _neighborCache = MutableStateFlow<Map<Int, NeighborPageData>>(emptyMap())
     fun cachedNeighbor(page: Int): NeighborPageData? = _neighborCache.value[page]
 
+    /**
+     * 各頁常駐熱流：同一頁在捲動中反覆組成/拆掉時不斷線、不重查，
+     * 上游在無人訂閱 5 秒後自動停，有人回來即時吐舊值（無空白幀）。
+     * 主線程調用（composition / setActivePage），map 增減只在主線程。
+     */
+    private val pageFlows = mutableMapOf<Int, StateFlow<NeighborPageData>>()
+    fun pageDataFlow(page: Int): StateFlow<NeighborPageData> = pageFlows.getOrPut(page) {
+        kotlinx.coroutines.flow.combine(
+            strokeDao.getStrokesForPage(documentUri, page),
+            textAnnotationDao.getForPage(documentUri, page),
+            imageAnnotationDao.getForPage(documentUri, page)
+        ) { s, t, i -> NeighborPageData(s, t, i) }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), cachedNeighbor(page) ?: NeighborPageData())
+    }
+
     private var prefetchGen = 0
-    private fun prefetchNeighbors(center: Int) {
+    fun prefetchPages(firstVisible: Int, lastVisible: Int) {
+        val lo = (minOf(firstVisible, lastVisible) - 1).coerceAtLeast(0)
+        val hi = maxOf(firstVisible, lastVisible) + 1
+        // 熱流只留可視附近 ±3：滑走的頁放掉引用（已組成的 item 手上引用不受影響），記憶體有界
+        pageFlows.keys.retainAll { it in lo - 2..hi + 2 }
         val gen = ++prefetchGen
         viewModelScope.launch(Dispatchers.IO) {
-            val window = (center - 1..center + 1).filter { it >= 0 }
+            val window = (lo..hi).filter { it >= 0 }
             val fresh = window.associateWith { p ->
                 NeighborPageData(
                     strokes = strokeDao.getStrokesForPageSync(documentUri, p),

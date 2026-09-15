@@ -7,7 +7,7 @@ import com.vic.inkflow.util.StrokePoint
 // 全文件 model 空間統一（見 EditorViewModel.MODEL_W/H），各頁同尺寸，
 // 跨頁 = 同一座標系往上下頁平移 modelHeight（筆）或整顆換頁（圖/字/套索）。
 
-/** 邊緣自動捲：手指拖出紙上下界時，按溢出量回傳期望捲動 px（正=往後頁）。界內回傳 0。 */
+/** 邊緣自動捲（拖曳專用極慢速）：手指拖出紙上下界才捲，死區內不動，比例極小好微控。 */
 internal fun edgeAutoScrollDy(y: Float, canvasH: Float): Float {
     if (canvasH <= 0f) return 0f
     val overshoot = when {
@@ -15,9 +15,14 @@ internal fun edgeAutoScrollDy(y: Float, canvasH: Float): Float {
         y < 0f -> y // 負值=往上捲
         else -> return 0f
     }
-    if (overshoot == 0f) return 0f
-    // 拖曳專用慢速：係數減半、上限 30px/事件，避免畫面暴衝
-    return (overshoot * 0.15f).coerceIn(-30f, 30f)
+    // 死區：紙界外 8px 內不捲，手指搭邊不飄移
+    val dead = 8f
+    val eff = when {
+        overshoot > dead -> overshoot - dead
+        overshoot < -dead -> overshoot + dead
+        else -> return 0f
+    }
+    return (eff * 0.05f).coerceIn(-8f, 8f)
 }
 
 /**
