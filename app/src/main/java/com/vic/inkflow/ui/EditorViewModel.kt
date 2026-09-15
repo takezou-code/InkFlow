@@ -727,6 +727,24 @@ class EditorViewModel(
         }
     }
 
+    /** M5：引入數學圖寫入 — KaTeX 渲染 PNG 直接給 model 矩形與目標頁。 */
+    fun insertImportedImage(docUri: String, targetPage: Int, fileUri: String, modelX: Float, modelY: Float, modelW: Float, modelH: Float) {
+        if (modelW <= 0f || modelH <= 0f) return
+        val ann = ImageAnnotationEntity(
+            documentUri = docUri,
+            pageIndex = targetPage,
+            uri = fileUri,
+            modelX = modelX,
+            modelY = modelY,
+            modelWidth = modelW,
+            modelHeight = modelH
+        )
+        viewModelScope.launch(Dispatchers.IO) {
+            imageAnnotationDao.insert(ann)
+            withContext(Dispatchers.Main) { pushUndo(DrawCommand.AddImageAnnotation(ann)) }
+        }
+    }
+
     fun commitTextAnnotationContent(id: String, newText: String) {
         val old = findTextAnnotation(id) ?: return
         if (old.text == newText || newText.isBlank()) return
