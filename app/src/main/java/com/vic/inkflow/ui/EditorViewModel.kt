@@ -554,9 +554,14 @@ class EditorViewModel(
         switchToPenAfterEraseHit: Boolean = false,
         // 同一擦除手勢的中途命中是否計入切筆判定。quick-swipe（畫筆手勢兼職擦除）
         // 傳 false：它本來就是筆，不參與切筆，否則舊旗標會污染下一次真正的擦除手勢。
-        markEraseHit: Boolean = true
+        markEraseHit: Boolean = true,
+        /** 橡皮擦所在紙。null = 作用頁（舊行為）；全活頁下 InkCanvas 傳自己。 */
+        page: Int? = null
     ) {        val cW = canvasW
         val cH = canvasH
+        val targetPage = page ?: pageIndex.value
+        // 主線程一次快照：熱流建流（動 map）+ 讀值都在這裡，協程內只用快照
+        val targetData = pageDataFlow(targetPage).value
         // Pass the snapshot of eraser points to the coroutine
         val pointsCopy = eraserPointsCanvas.toList()
         viewModelScope.launch(Dispatchers.Default) {
@@ -567,7 +572,7 @@ class EditorViewModel(
             val modelEraserPoints = pointsCopy.map { Offset(it.x * scaleX, it.y * scaleY) }
             val intersectingStrokes = IntersectionUtils.findIntersectingStrokes(
                 eraserPoints = modelEraserPoints,
-                strokes = currentStrokes.value
+                strokes = targetData.strokes
             )
             var erasedAnything = false
             if (intersectingStrokes.isNotEmpty()) {
@@ -592,7 +597,7 @@ class EditorViewModel(
             // 10f is eraser radius
             val eraserBounds = android.graphics.RectF(eMinX - 10f, eMinY - 10f, eMaxX + 10f, eMaxY + 10f)
 
-            val hitTexts = currentTextAnnotations.value.filter { ann ->
+            val hitTexts = targetData.texts.filter { ann ->
                 // Estimate the bounding box of the text in model space.
                 // isStamp = oversized emoji: treat as a square of fontSize × fontSize.
                 // Regular text: width ≈ charCount × fontSize × 0.6, height ≈ fontSize × 1.2.
@@ -678,11 +683,20 @@ class EditorViewModel(
         }
     }
 
-    fun addTextAnnotation(text: String, canvasX: Float, canvasY: Float, fontSize: Float, color: Color, isStamp: Boolean = false) {
+    fun addTextAnnotation(
+        text: String,
+        canvasX: Float,
+        canvasY: Float,
+        fontSize: Float,
+        color: Color,
+        isStamp: Boolean = false,
+        /** 落點紙。null = 作用頁（舊行為）；全活頁下 InkCanvas 傳自己。 */
+        targetPage: Int? = null
+    ) {
         if (text.isBlank()) return
         val ann = TextAnnotationEntity(
             documentUri = documentUri,
-            pageIndex = pageIndex.value,
+            pageIndex = targetPage ?: pageIndex.value,
             text = text,
             modelX = canvasX * modelWidth / canvasW,
             modelY = canvasY * modelHeight / canvasH,
@@ -714,7 +728,7 @@ class EditorViewModel(
     }
 
     fun commitTextAnnotationContent(id: String, newText: String) {
-        val old = currentTextAnnotations.value.firstOrNull { it.id == id } ?: return
+        val old = findTextAnnotation(id) ?: return
         if (old.text == newText || newText.isBlank()) return
         val updated = old.copy(text = newText)
         viewModelScope.launch(Dispatchers.IO) {
@@ -723,7 +737,7 @@ class EditorViewModel(
         }
     }
     fun deleteTextAnnotation(id: String) {
-        val ann = currentTextAnnotations.value.firstOrNull { it.id == id } ?: return
+        val ann = findTextAnnotation(id) ?: return
         viewModelScope.launch(Dispatchers.IO) {
             textAnnotationDao.deleteById(id)
             withContext(Dispatchers.Main) { pushUndo(DrawCommand.RemoveTextAnnotation(ann)) }
@@ -732,7 +746,7 @@ class EditorViewModel(
 
     fun commitTextAnnotationMove(id: String, canvasDeltaX: Float, canvasDeltaY: Float) {
         if (canvasDeltaX == 0f && canvasDeltaY == 0f) return
-        val old = currentTextAnnotations.value.firstOrNull { it.id == id } ?: return
+        val old = findTextAnnotation(id) ?: return
         val scaleX = modelWidth / canvasW
         val scaleY = modelHeight / canvasH
         val updated = old.copy(
@@ -750,7 +764,7 @@ class EditorViewModel(
      * MoveTextAnnotation 存完整實體（含 pageIndex），undo/redo 天然支援跨頁。
      */
     fun commitTextAnnotationMoveToPage(id: String, targetPage: Int, modelX: Float, modelY: Float) {
-        val old = currentTextAnnotations.value.firstOrNull { it.id == id } ?: return
+        val old = findTextAnnotation(id) ?: return
         val updated = old.copy(
             pageIndex = targetPage.coerceAtLeast(0),
             modelX = modelX.coerceIn(0f, modelWidth),
@@ -764,7 +778,7 @@ class EditorViewModel(
     }
 
     fun commitTextAnnotationResize(id: String, newX: Float, newY: Float, newFontSizeModel: Float) {
-        val old = currentTextAnnotations.value.firstOrNull { it.id == id } ?: return
+        val old = findTextAnnotation(id) ?: return
         val clamped = newFontSizeModel.coerceAtLeast(4f)
         val updated = old.copy(
             modelX = newX,
@@ -777,12 +791,19 @@ class EditorViewModel(
         }
     }
 
-    fun addImageAnnotation(uri: String, canvasX: Float, canvasY: Float, canvasWidth: Float, canvasHeight: Float) {
+    fun addImageAnnotation(
+        uri: String,
+        canvasX: Float,
+        canvasY: Float,
+        canvasWidth: Float,
+        canvasHeight: Float,
+        targetPage: Int? = null
+    ) {
         val scaleX = modelWidth / canvasW
         val scaleY = modelHeight / canvasH
         val ann = ImageAnnotationEntity(
             documentUri = documentUri,
-            pageIndex = pageIndex.value,
+            pageIndex = targetPage ?: pageIndex.value,
             uri = uri,
             modelX = canvasX * scaleX,
             modelY = canvasY * scaleY,
@@ -855,8 +876,13 @@ class EditorViewModel(
     }
 
     /** Places an image at the center of the model canvas (used when picked via gallery). Returns the new annotation ID. */
-    fun placeImageAnnotation(uri: String, imagePixelWidth: Int = 0, imagePixelHeight: Int = 0): String {
-        val ann = buildPlacedImageAnnotation(uri, pageIndex.value, imagePixelWidth, imagePixelHeight)
+    fun placeImageAnnotation(
+        uri: String,
+        imagePixelWidth: Int = 0,
+        imagePixelHeight: Int = 0,
+        targetPage: Int? = null
+    ): String {
+        val ann = buildPlacedImageAnnotation(uri, targetPage ?: pageIndex.value, imagePixelWidth, imagePixelHeight)
         viewModelScope.launch(Dispatchers.IO) {
             imageAnnotationDao.insert(ann)
             withContext(Dispatchers.Main) { pushUndo(DrawCommand.AddImageAnnotation(ann)) }
@@ -866,7 +892,7 @@ class EditorViewModel(
 
     fun commitImageAnnotationMove(id: String, canvasDeltaX: Float, canvasDeltaY: Float) {
         if (canvasDeltaX == 0f && canvasDeltaY == 0f) return
-        val old = currentImageAnnotations.value.firstOrNull { it.id == id } ?: return
+        val old = findImageAnnotation(id) ?: return
         val scaleX = modelWidth / canvasW
         val scaleY = modelHeight / canvasH
         val updated = old.copy(
@@ -889,7 +915,7 @@ class EditorViewModel(
         modelX: Float,
         modelY: Float
     ) {
-        val old = currentImageAnnotations.value.firstOrNull { it.id == id } ?: return
+        val old = findImageAnnotation(id) ?: return
         val updated = old.copy(
             pageIndex = targetPage.coerceAtLeast(0),
             modelX = modelX.coerceIn(0f, modelWidth),
@@ -903,7 +929,7 @@ class EditorViewModel(
     }
 
     fun commitImageAnnotationResize(id: String, newX: Float, newY: Float, newModelWidth: Float, newModelHeight: Float) {
-        val old = currentImageAnnotations.value.firstOrNull { it.id == id } ?: return
+        val old = findImageAnnotation(id) ?: return
         val updated = old.copy(
             modelX = newX,
             modelY = newY,
@@ -918,7 +944,7 @@ class EditorViewModel(
 
     /** M5: commits a rotation (clockwise degrees). Rides ResizeImageAnnotation for undo/redo. */
     fun commitImageAnnotationRotation(id: String, degrees: Float) {
-        val old = currentImageAnnotations.value.firstOrNull { it.id == id } ?: return
+        val old = findImageAnnotation(id) ?: return
         val normalized = ((degrees % 360f) + 360f) % 360f
         if (old.rotation == normalized) return
         val updated = old.copy(rotation = normalized)
@@ -929,7 +955,7 @@ class EditorViewModel(
     }
 
     fun deleteImageAnnotation(id: String) {
-        val ann = currentImageAnnotations.value.firstOrNull { it.id == id } ?: return
+        val ann = findImageAnnotation(id) ?: return
         viewModelScope.launch(Dispatchers.IO) {
             imageAnnotationDao.deleteById(id)
             withContext(Dispatchers.Main) { pushUndo(DrawCommand.RemoveImageAnnotation(ann)) }
@@ -1232,9 +1258,11 @@ class EditorViewModel(
         _selectedStrokePreviewBounds.value = StrokeTransformUtils.computeSelectionBounds(originals)
     }
 
-    fun selectStrokesInLasso(polygon: List<Offset>) {
+    fun selectStrokesInLasso(polygon: List<Offset>, page: Int? = null) {
         val cW = canvasW
         val cH = canvasH
+        // 主線程一次快照：圈選所在紙的資料（全活頁下 InkCanvas 傳自己）
+        val targetData = pageDataFlow(page ?: pageIndex.value).value
 
         // Compose already applies the graphicsLayer inverse transform when routing
         // screen-space touches to InkCanvas (a child of the graphicsLayer-modified
@@ -1246,8 +1274,8 @@ class EditorViewModel(
         _selectionFramePolygon.value = normalizedPolygon
         _lastLassoPolygon.value = normalizedPolygon
         viewModelScope.launch(Dispatchers.Default) {
-            val selected = IntersectionUtils.findStrokesInLasso(normalizedPolygon, currentStrokes.value)
-            val selectedImages = currentImageAnnotations.value.filter { ann ->
+            val selected = IntersectionUtils.findStrokesInLasso(normalizedPolygon, targetData.strokes)
+            val selectedImages = targetData.images.filter { ann ->
                 isImageSelectedByLasso(ann, normalizedPolygon)
             }
             withContext(Dispatchers.Main) {
@@ -1287,7 +1315,8 @@ class EditorViewModel(
 
     /**
      * 提交套索移動。整體選取中心被拖出本頁上下界時整組換頁（y 繞回新頁），
-     * 並回傳目標頁（供 Workspace 激活）；未跨頁回傳 null（舊行為）。
+     * 並回傳目標頁（供呼叫方結算跨頁）；未跨頁回傳 null（舊行為）。
+     * 源頁取自選取歸屬（selectionPage），不讀作用頁——全活頁下選取可在任意紙上。
      */
     fun commitMovedStrokes(maxPageIndex: Int = Int.MAX_VALUE): Int? {
         val strokes = _selectedStrokes.value
@@ -1315,7 +1344,7 @@ class EditorViewModel(
         StrokeTransformUtils.computeSelectionBounds(movedStrokes)?.let { centerSamples.add(it.center.y) }
         movedImages.forEach { centerSamples.add(it.modelY + it.modelHeight / 2f) }
         val centerY = if (centerSamples.isNotEmpty()) centerSamples.average().toFloat() else modelHeight / 2f
-        val sourcePage = pageIndex.value
+        val sourcePage = selectionPage()
         val targetPage = (sourcePage + kotlin.math.floor(centerY / modelHeight).toInt())
             .coerceIn(0, maxPageIndex.coerceAtLeast(0))
         val appliedShift = targetPage - sourcePage
@@ -1470,9 +1499,47 @@ class EditorViewModel(
         }
     }
 
+    /**
+     * 全活頁查找：在常駐熱流裡按 id 找註解（跨紙可用），找不到才退回作用頁流。
+     * M1 全活頁基礎：InkCanvas 只認自己的紙，不再假設東西都在作用頁。
+     */
+    private fun findTextAnnotation(id: String): TextAnnotationEntity? {
+        for (flow in pageFlows.values) {
+            flow.value.texts.firstOrNull { it.id == id }?.let { return it }
+        }
+        return currentTextAnnotations.value.firstOrNull { it.id == id }
+    }
+
+    private fun findImageAnnotation(id: String): ImageAnnotationEntity? {
+        for (flow in pageFlows.values) {
+            flow.value.images.firstOrNull { it.id == id }?.let { return it }
+        }
+        return currentImageAnnotations.value.firstOrNull { it.id == id }
+    }
+
+    /** 選取歸屬頁：筆看第一筆的頁，純圖選看圖所在頁，無選取退回作用頁。 */
+    fun selectionPage(): Int {
+        _selectedStrokes.value.firstOrNull()?.let { return it.stroke.pageIndex }
+        val ids = _selectedImageAnnotationIds.value
+        if (ids.isNotEmpty()) {
+            for (flow in pageFlows.values) {
+                if (flow.value.images.any { it.id in ids }) {
+                    return flow.value.images.first { it.id in ids }.pageIndex
+                }
+            }
+            currentImageAnnotations.value.firstOrNull { it.id in ids }?.let { return it.pageIndex }
+        }
+        return pageIndex.value
+    }
+
     private fun selectedImagesSnapshot(): List<ImageAnnotationEntity> {
         val ids = _selectedImageAnnotationIds.value
         if (ids.isEmpty()) return emptyList()
+        val found = mutableListOf<ImageAnnotationEntity>()
+        for (flow in pageFlows.values) {
+            found += flow.value.images.filter { it.id in ids }
+        }
+        if (found.isNotEmpty()) return found
         return currentImageAnnotations.value.filter { it.id in ids }
     }
 

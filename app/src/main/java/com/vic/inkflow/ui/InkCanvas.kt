@@ -127,14 +127,22 @@ fun InkCanvas(
     documentUri: String,
     /** 本頁在文件中的索引（跨頁分段/換頁歸屬用）。 */
     pageIndex: Int = 0,
+    /** 本頁筆跡（Workspace 熱流傳入）：畫布只認自己的紙，不讀作用頁流。 */
+    strokes: List<StrokeWithPoints> = emptyList(),
+    /** 本頁文字註解（同上）。 */
+    texts: List<TextAnnotationEntity> = emptyList(),
+    /** 本頁圖片註解（同上）。 */
+    images: List<ImageAnnotationEntity> = emptyList(),
     /** 頁間隙 px（Workspace 的 Arrangement.spacedBy，需與列表一致）。 */
     pageGapPx: Float = 0f,
     /** 邊緣自動捲：手指拖出紙上下界時回傳期望捲動量 px（正=往後頁）。 */
-    onEdgeAutoScroll: (Float) -> Unit = {},
-    /** 跨頁提交完成：回傳應激活的目標頁（與本頁不同才回調）。 */
-    onCrossPageEnd: (Int) -> Unit = {}
+    onEdgeAutoScroll: (Float) -> Unit = {}
 ) {
-    val committedStrokes by viewModel.currentStrokes.collectAsState()
+    // 全活頁：筆/字/圖吃傳入的本頁資料（Workspace 熱流），不再訂閱作用頁流；
+    // 工具/顏色/設定等全域態照舊。
+    val committedStrokes = strokes
+    val textAnnotations = texts
+    val imageAnnotations = images
     val selectedStrokePreview by viewModel.selectedStrokePreview.collectAsState()
     val selectedStrokePreviewBounds by viewModel.selectedStrokePreviewBounds.collectAsState()
     val commitPreview by viewModel.commitPreview.collectAsState()
@@ -154,8 +162,6 @@ fun InkCanvas(
     val touchCalEnabled by viewModel.touchCalEnabled.collectAsState()
     val touchCalDxDp by viewModel.touchCalDxDp.collectAsState()
     val touchCalDyDp by viewModel.touchCalDyDp.collectAsState()
-    val textAnnotations by viewModel.currentTextAnnotations.collectAsState()
-    val imageAnnotations by viewModel.currentImageAnnotations.collectAsState()
     val selectedImageAnnotationIds by viewModel.selectedImageAnnotationIds.collectAsState()
     val paperStyle by viewModel.paperStyle.collectAsState()
     // 雙指縮放進行中：各畫筆迴圈見此即棄筆（由 Workspace 仲裁器寫入）
@@ -166,7 +172,6 @@ fun InkCanvas(
     val pageGapPxRef = rememberUpdatedState(pageGapPx)
     val pageCountRef = rememberUpdatedState(pageCount)
     val onEdgeAutoScrollRef = rememberUpdatedState(onEdgeAutoScroll)
-    val onCrossPageEndRef = rememberUpdatedState(onCrossPageEnd)
     // 拖曳 overlay 接手時，紙內選取預覽讓位（同像素只畫一次，螢光筆疊色會變深）
     val dragPreviewActive by viewModel.dragPreviewActive.collectAsState()
     // 套索虛線動畫按需組成：無選取時不跑 choreographer，省常駐喚醒
@@ -227,7 +232,10 @@ fun InkCanvas(
         keyboardController?.hide()
         if (v.isBlank()) return
         if (editId != null) viewModel.commitTextAnnotationContent(editId, v)
-        else if (newPos != null) viewModel.addTextAnnotation(v, newPos.x, newPos.y, defaultTextFontPx, inlineTextColor)
+        else if (newPos != null) viewModel.addTextAnnotation(
+            v, newPos.x, newPos.y, defaultTextFontPx, inlineTextColor,
+            targetPage = pageIndex
+        )
     }
 
     // Canvas pixel size (updated via onSizeChanged, used for hit-testing in pointer input)
@@ -355,13 +363,13 @@ fun InkCanvas(
                 val item = imported.first()
                 lastInsertedImageId = viewModel.placeImageAnnotationOnPage(
                     uri = item.localUriString,
-                    targetPageIndex = viewModel.pageIndex.value,
+                    targetPageIndex = pageIndex,
                     imagePixelWidth = item.imagePixelWidth,
                     imagePixelHeight = item.imagePixelHeight,
                     anchorModel = tapAnchor
                 )
             } else {
-                val currentPageIndex = viewModel.pageIndex.value
+                val currentPageIndex = pageIndex
                 var insertAfterIndex = currentPageIndex
                 imported.forEachIndexed { index, item ->
                     if (index == 0) {
@@ -767,7 +775,8 @@ fun InkCanvas(
                         else if (newPos != null) {
                             viewModel.addTextAnnotation(
                                 v, newPos.x, newPos.y,
-                                with(density) { 20.sp.toPx() }, inlineTextColorRef.value
+                                with(density) { 20.sp.toPx() }, inlineTextColorRef.value,
+                                targetPage = pageIndexRef.value
                             )
                         }
                     }
@@ -894,9 +903,10 @@ fun InkCanvas(
                                         selAnn.id, wrapped.first, newModelX, wrapped.second
                                     )
                                     viewModel.setPageLock(false)
+                                    // M1 全活頁：不激活不跳轉；脫選（M2 改框跟內容走）
+                                    selectedTextAnnotationId = null
                                     textMoveDelta = Offset.Zero
                                     activePathVersion++
-                                    onCrossPageEndRef.value(wrapped.first)
                                     return@awaitEachGesture
                                 }
                                 viewModel.commitTextAnnotationMove(selAnn.id, totalDelta.x, totalDelta.y)
@@ -1077,9 +1087,10 @@ fun InkCanvas(
                                     selAnn.modelX + totalDelta.x * scaleX, wrapped.second
                                 )
                                 viewModel.setPageLock(false)
+                                // M1 全活頁：不激活不跳轉；脫選（M2 改框跟內容走）
+                                selectedImageAnnotationId = null
                                 imageMovePreview = Offset.Zero
                                 activePathVersion++
-                                onCrossPageEndRef.value(wrapped.first)
                                 return@awaitEachGesture
                             }
                             viewModel.commitImageAnnotationMove(selAnn.id, totalDelta.x, totalDelta.y)
@@ -1201,7 +1212,8 @@ fun InkCanvas(
                             viewModel.setPageLock(false)
                             viewModel.setDragPreviewActive(false)
                             if (crossTarget != null) {
-                                onCrossPageEndRef.value(crossTarget)
+                                // M1 全活頁：跨頁落地即脫選（M2 改框跟內容走），不激活不跳轉
+                                viewModel.clearSelection()
                             }
                             return@awaitEachGesture
                         }
@@ -1257,9 +1269,12 @@ fun InkCanvas(
                                 } else {
                                     listOf(startOffset, end)
                                 }
-                                viewModel.deleteStrokesIntersecting(points)
+                                viewModel.deleteStrokesIntersecting(points, page = pageIndexRef.value)
                             } else {
-                                viewModel.saveShape(startOffset, end, selectedColor, strokeWidth)
+                                viewModel.saveShape(
+                                    startOffset, end, selectedColor, strokeWidth,
+                                    targetPage = pageIndexRef.value
+                                )
                             }
                         } else if (activeTool == Tool.LASSO) {
                             val pts = listOf(
@@ -1268,7 +1283,7 @@ fun InkCanvas(
                                 Offset(end.x, end.y),
                                 Offset(startOffset.x, end.y)
                             )
-                            viewModel.selectStrokesInLasso(pts)
+                            viewModel.selectStrokesInLasso(pts, page = pageIndexRef.value)
                         }
                     }
                     activeShapeStart = null
@@ -1463,7 +1478,8 @@ fun InkCanvas(
                                     // quick-swipe 本來就是筆：不記旗不切筆。
                                     viewModel.deleteStrokesIntersecting(
                                         points,
-                                        markEraseHit = activeTool == Tool.ERASER
+                                        markEraseHit = activeTool == Tool.ERASER,
+                                        page = pageIndexRef.value
                                     )
                                     lastEraserDispatchTime = drag.uptimeMillis
                                 }
@@ -1523,7 +1539,7 @@ fun InkCanvas(
                                 maxSizeWidthPx  = maxSizeWidthDuring,
                                 maxSizeHeightPx = maxSizeHeightDuring
                             )
-                            viewModel.deleteStrokesIntersecting(points, markEraseHit = false)
+                            viewModel.deleteStrokesIntersecting(points, markEraseHit = false, page = pageIndexRef.value)
                         } else {
                             // A single-point tap produces no drag points; duplicate it so
                             // saveStroke receives ≥2 points and StrokeCap.Round renders a dot.
@@ -1562,12 +1578,15 @@ fun InkCanvas(
                                 }
                             }
                             viewModel.setPageLock(false)
-                            if (lastPage != srcPage) onCrossPageEndRef.value(lastPage)
+                            // M1 全活頁：目標紙本來就活著，無需激活（提筆零跳轉）
                         }
                     }
                     Tool.LASSO -> {
                         activePath.close()
-                        viewModel.selectStrokesInLasso(currentPathPoints.map { Offset(it.x, it.y) })
+                        viewModel.selectStrokesInLasso(
+                            currentPathPoints.map { Offset(it.x, it.y) },
+                            page = pageIndexRef.value
+                        )
                     }
                     Tool.ERASER -> {
                         // Fire one final erasure at end of the gesture so that:
@@ -1581,7 +1600,8 @@ fun InkCanvas(
                         }
                         viewModel.deleteStrokesIntersecting(
                             eraserPointsCanvas = points,
-                            switchToPenAfterEraseHit = true
+                            switchToPenAfterEraseHit = true,
+                            page = pageIndexRef.value
                         )
                     }
                     else -> { }
@@ -1795,13 +1815,15 @@ fun InkCanvas(
             )
 
             val preview = commitPreview
+            // 全活頁：只畫歸屬本紙的提交預覽（跨紙移動的另一段由歸屬紙畫）
+            val ownPreview = preview?.filter { it.stroke.pageIndex == pageIndex }
             // While a commitPreview is active (DB write in flight after a move), draw the preview layer separately.
-            if (preview != null) {
+            if (!ownPreview.isNullOrEmpty()) {
                 drawIntoCanvas { cvs ->
                     cvs.save()
                     cvs.scale(sx, sy)
                     // Preview layer: moved strokes at their committed (new) position.
-                    preview.forEach { swp ->
+                    ownPreview.forEach { swp ->
                         if (swp.stroke.shapeType != null) {
                             drawShapeOnCanvas(cvs, swp.stroke, swp.points)
                         } else {
@@ -1815,7 +1837,9 @@ fun InkCanvas(
 
             // Selected strokes (highlighted with current preview transform applied).
             // dragPreviewActive 時由 Workspace overlay 繪製（可溢出紙界、置頂），此處讓位。
-            if (selectedPathData.isNotEmpty() && !dragPreviewActive) {
+            // 全活頁：只畫歸屬本紙的選取（跨紙選取由歸屬紙畫）。
+            val previewOwnPage = selectedStrokePreview.all { it.stroke.pageIndex == pageIndex }
+            if (selectedPathData.isNotEmpty() && !dragPreviewActive && previewOwnPage) {
                 drawIntoCanvas { cvs ->
                     cvs.save()
                     cvs.scale(sx, sy)

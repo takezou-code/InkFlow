@@ -640,8 +640,9 @@ internal fun Workspace(
             val pageStrokes = pageData.strokes
             val pageImages = pageData.images
             val pageTexts = pageData.texts
-            if (index == pageIndex) {
-                var itemWidthPx by remember { mutableIntStateOf(0) }
+            // M1 全活頁：每張紙都掛 InkCanvas，以下即本體（原作用頁分支）；
+            // 作用頁概念僅剩側欄指示器＋落筆記憶。靜態分支已删除。
+            var itemWidthPx by remember { mutableIntStateOf(0) }
                 val itemTargetOffset = remember(
                     regionBoundsModel, itemWidthPx, bubbleWidthPx, bubbleHeightPx,
                     aspect, bubbleGapPx, bubbleSidePaddingPx, bubbleTopSafePx
@@ -679,8 +680,9 @@ internal fun Workspace(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        // 拖曳 overlay 置頂：溢出紙界的框/墨不被後頁蓋住
-                        .zIndex(if (dragActive && index == pageIndex) 1f else 0f),
+                        // 拖曳 overlay 置頂：溢出紙界的框/墨不被後頁蓋住；
+                        // 全活頁下只頂選取歸屬紙（其餘紙的 overlay 不畫，見下）
+                        .zIndex(if (dragActive && viewModel.selectionPage() == index) 1f else 0f),
                     contentAlignment = Alignment.Center
                 ) {
                     Surface(
@@ -768,48 +770,29 @@ internal fun Workspace(
                     }
                 }
             }
-            // Ink active layer (top)，帶新鮮度門：
-            // ViewModel 的 currentStrokes 是 flatMapLatest，換頁瞬間還吐著上頁的墨
-            // （這就是「上頁東西殘留」的鬼影）。門只放行「全部屬於本頁」的數據；
-            // 沒過門時顯示跟靜態頁一模一樣的疊層（數據同源、像素一致，無縫交接）。
-            // 空集合視為過門（新開空白頁本來就沒墨）。
-            val liveStrokes by viewModel.currentStrokes.collectAsState()
-            val liveTexts by viewModel.currentTextAnnotations.collectAsState()
-            val liveImages by viewModel.currentImageAnnotations.collectAsState()
-            val liveMatches = liveStrokes.all { it.stroke.pageIndex == index } &&
-                liveTexts.all { it.pageIndex == index } &&
-                liveImages.all { it.pageIndex == index }
-            if (liveMatches) {
-                InkCanvas(
-                    modifier = Modifier.fillMaxSize(),
-                    viewModel = viewModel,
-                    pdfViewModel = pdfViewModel,
-                    documentUri = documentUri,
-                    pageIndex = index,
-                    pageGapPx = pageGapPx,
-                    onEdgeAutoScroll = { dy ->
-                        // 同步施加：寫筆中邊緣捲不斷流，提筆即停（不經協程排隊）
-                        mainListState.dispatchRawDelta(dy)
-                    },
-                    onCrossPageEnd = { target ->
-                        if (target != index) onRequestPage(target)
-                    }
-                )
-            } else {
-                StaticPageOverlay(
-                    modifier = Modifier.fillMaxSize(),
-                    strokes = pageStrokes,
-                    imageAnnotations = pageImages,
-                    textAnnotations = pageTexts,
-                    modelWidth = viewModel.modelWidth,
-                    modelHeight = viewModel.modelHeight
-                )
-            }
+            // M1 全活頁：InkCanvas 只吃本頁熱流，不讀作用頁流；
+            // 新鮮度門隨單活頁一起退役（每頁數據自洽，無跨頁鬼影可言）。
+            InkCanvas(
+                modifier = Modifier.fillMaxSize(),
+                viewModel = viewModel,
+                pdfViewModel = pdfViewModel,
+                documentUri = documentUri,
+                pageIndex = index,
+                strokes = pageStrokes,
+                texts = pageTexts,
+                images = pageImages,
+                pageGapPx = pageGapPx,
+                onEdgeAutoScroll = { dy ->
+                    // 同步施加：寫筆中邊緣捲不斷流，提筆即停（不經協程排隊）
+                    mainListState.dispatchRawDelta(dy)
+                }
+            )
                         } // 作用頁內容 Box
                     } // 紙 Surface
                     // 跨頁拖曳 overlay：框+墨畫在紙上層、可溢出紙界（clip=false），
                     // InkCanvas 側同時讓位（同像素只畫一次）；放開提交後清旗接回。
-                    if (dragActive && itemWidthPx > 0) {
+                    // 全活頁下只在選取歸屬紙畫（他紙同像素會重影，螢光筆疊色）。
+                    if (dragActive && itemWidthPx > 0 && viewModel.selectionPage() == index) {
                         DragPreviewOverlay(
                             viewModel = viewModel,
                             paperWpx = itemWidthPx.toFloat(),
@@ -820,9 +803,9 @@ internal fun Workspace(
                                 .graphicsLayer { clip = false }
                         )
                     }
-                    // 套索氣泡：作用頁內定位（任何縮放都可見；定位已用實測 item 寬換算，縮放自洽）
+                    // 套索氣泡：只在選取歸屬紙顯示（全活頁下選取可落任意紙）
                     androidx.compose.animation.AnimatedVisibility(
-                        visible = showSelectionBubble,
+                        visible = showSelectionBubble && viewModel.selectionPage() == index,
                         modifier = Modifier
                             .align(Alignment.TopStart)
                             .offset { itemTargetOffset },
@@ -870,7 +853,8 @@ internal fun Workspace(
                             isExtracting = true
                             scope.launch {
                                 try {
-                                    val sourcePageIndex = pageIndex
+                                    // 提取源 = 選取歸屬紙（全活頁下未必是作用頁）
+                                    val sourcePageIndex = viewModel.selectionPage()
                                     val sourceBitmap = kotlinx.coroutines.withTimeoutOrNull(1200) {
                                         pdfViewModel.getPageBitmap(sourcePageIndex)
                                             .filterNotNull()
@@ -946,138 +930,26 @@ internal fun Workspace(
                                 icon = Icons.Filled.QuestionAnswer,
                                 label = "解釋",
                                 enabled = !isExtracting,
-                                onClick = { sendRegionToAi(AiQuickPrompt.EXPLAIN, pageIndex) }
+                                onClick = { sendRegionToAi(AiQuickPrompt.EXPLAIN, viewModel.selectionPage()) }
                             )
                             SelectionBubbleAction(
                                 icon = Icons.Filled.Summarize,
                                 label = "總結",
                                 enabled = !isExtracting,
-                                onClick = { sendRegionToAi(AiQuickPrompt.SUMMARIZE, pageIndex) }
+                                onClick = { sendRegionToAi(AiQuickPrompt.SUMMARIZE, viewModel.selectionPage()) }
                             )
                             SelectionBubbleAction(
                                 icon = Icons.Filled.Translate,
                                 label = "翻譯",
                                 enabled = !isExtracting,
-                                onClick = { sendRegionToAi(AiQuickPrompt.TRANSLATE, pageIndex) }
+                                onClick = { sendRegionToAi(AiQuickPrompt.TRANSLATE, viewModel.selectionPage()) }
                             )
                         }
                     }
                 }
             }
                     }
-                    } // 作用頁 item Box
-                } else {
-                    // ===== 靜態頁：點了變作用頁，尺寸樣式與作用頁完全一致 =====
-                    // 數據沿用 item 頂的共用流（身份互換不斷線）
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Surface(
-                            modifier = Modifier
-                                .fillMaxWidth(docZoom.coerceAtMost(1f))
-                                .padding(horizontal = 20.dp)
-                                .aspectRatio(aspect)
-                                .clip(ShapeSm)
-                                .clickable(
-                                    interactionSource = remember { MutableInteractionSource() },
-                                    indication = null
-                                ) { onRequestPage(index) },
-                            shape = ShapeSm,
-                            shadowElevation = 18.dp,
-                            color = paperColor
-                        ) {
-                            Box(modifier = Modifier.fillMaxSize()) {
-                                val currentBmp = pageBitmap
-                                if (currentBmp != null) {
-                                    androidx.compose.foundation.Image(
-                                        bitmap = currentBmp.asImageBitmap(),
-                                        contentDescription = "PDF Page $index",
-                                        modifier = Modifier.fillMaxSize(),
-                                        contentScale = androidx.compose.ui.layout.ContentScale.Fit
-                                    )
-                                } else {
-                                    // 紙色佔位：bitmap 到之前不轉圈。
-                                    // 轉圈+白紙+後長出的墨水，正是「閃+鬼影」的體感來源。
-                                    Box(
-                                        Modifier
-                                            .fillMaxSize()
-                                            .background(paperColor)
-                                    )
-                                }
-                                val paperStyle by viewModel.paperStyle.collectAsState()
-                                if (paperStyle.background != PageBackground.BLANK) {
-                                    val lineColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
-                                    androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
-                                        val modelW = viewModel.modelWidth
-                                        val modelH = viewModel.modelHeight
-                                        if (modelW > 0f && modelH > 0f) {
-                                            val sx = size.width / modelW
-                                            val sy = size.height / modelH
-                                            val step = when (paperStyle.background) {
-                                                PageBackground.NARROW_RULED -> 18f
-                                                PageBackground.WIDE_RULED   -> 42f
-                                                else                        -> 28f
-                                            }
-                                            val drawHLines = paperStyle.background == PageBackground.RULED ||
-                                                paperStyle.background == PageBackground.NARROW_RULED ||
-                                                paperStyle.background == PageBackground.WIDE_RULED ||
-                                                paperStyle.background == PageBackground.GRID
-                                            if (drawHLines) {
-                                                var y = step
-                                                while (y < modelH) {
-                                                    drawLine(
-                                                        color = lineColor,
-                                                        start = androidx.compose.ui.geometry.Offset(0f, y * sy),
-                                                        end = androidx.compose.ui.geometry.Offset(size.width, y * sy),
-                                                        strokeWidth = 1f
-                                                    )
-                                                    y += step
-                                                }
-                                            }
-                                            if (paperStyle.background == PageBackground.GRID) {
-                                                var x = step
-                                                while (x < modelW) {
-                                                    drawLine(
-                                                        color = lineColor,
-                                                        start = androidx.compose.ui.geometry.Offset(x * sx, 0f),
-                                                        end = androidx.compose.ui.geometry.Offset(x * sx, size.height),
-                                                        strokeWidth = 1f
-                                                    )
-                                                    x += step
-                                                }
-                                            }
-                                            if (paperStyle.background == PageBackground.DOT_GRID) {
-                                                var y = step
-                                                while (y < modelH) {
-                                                    var x = step
-                                                    while (x < modelW) {
-                                                        drawCircle(
-                                                            color = lineColor,
-                                                            radius = 1.5f,
-                                                            center = androidx.compose.ui.geometry.Offset(x * sx, y * sy)
-                                                        )
-                                                        x += step
-                                                    }
-                                                    y += step
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                StaticPageOverlay(
-                                    modifier = Modifier.fillMaxSize(),
-                                    strokes = pageStrokes,
-                                    imageAnnotations = pageImages,
-                                    textAnnotations = pageTexts,
-                                    modelWidth = viewModel.modelWidth,
-                                    modelHeight = viewModel.modelHeight
-                                )
-                            }
-                        }
-                    }
-                }
+                    } // 全活頁 item Box（靜態分支已删除，每紙常駐 InkCanvas）
             }
         }
     }
