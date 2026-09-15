@@ -1423,12 +1423,6 @@ fun InkCanvas(
 
                         activePathVersion++
                         drag.consume()
-                        // 連貫畫布：筆/螢光筆拖出紙界自動捲（橡皮擦/套索圈選不捲，保持舊行為）
-                        if (activeTool == Tool.PEN || activeTool == Tool.HIGHLIGHTER) {
-                            val csH = canvasPixelSizeState.value.height
-                            val autoDy = edgeAutoScrollDy(drag.position.y, csH)
-                            if (autoDy != 0f) onEdgeAutoScrollRef.value(autoDy)
-                        }
 
                         if (activeTool == Tool.ERASER || quickSwipeTriggered) {
                             // Live erase: send only a recent window and throttle dispatches.

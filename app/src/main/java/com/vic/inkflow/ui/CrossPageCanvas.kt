@@ -16,7 +16,8 @@ internal fun edgeAutoScrollDy(y: Float, canvasH: Float): Float {
         else -> return 0f
     }
     if (overshoot == 0f) return 0f
-    return (overshoot * 0.3f).coerceIn(-60f, 60f)
+    // 拖曳專用慢速：係數減半、上限 30px/事件，避免畫面暴衝
+    return (overshoot * 0.15f).coerceIn(-30f, 30f)
 }
 
 /**

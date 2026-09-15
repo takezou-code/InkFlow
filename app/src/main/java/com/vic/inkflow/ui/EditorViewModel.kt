@@ -1275,12 +1275,20 @@ class EditorViewModel(
         _lassoMoveOffset.value = Offset.Zero
         _selectedStrokeScale.value = 1f
         _selectedStrokeResizeAnchor.value = null
-        val committedSelectionPolygon = transformPolygon(
+        val movedPolygon = transformPolygon(
             polygon = _lassoPolygon.value,
             translation = delta,
             scale = 1f,
             anchor = Offset.Zero
         ).ifEmpty { _lassoPolygon.value }
+        // 跨頁：框多邊形與筆跡同幅繞回新頁，否則框留在源頁座標、顯示錯位
+        //（如下頁拖往上頁，框會跑到上頁紙的上方）。
+        val committedSelectionPolygon = if (crossPage) {
+            val wrapY = appliedShift * modelHeight
+            movedPolygon.map { Offset(it.x, it.y - wrapY) }
+        } else {
+            movedPolygon
+        }
         _lassoPolygon.value = committedSelectionPolygon
         _selectionFramePolygon.value = committedSelectionPolygon
         _lastLassoPolygon.value = committedSelectionPolygon
