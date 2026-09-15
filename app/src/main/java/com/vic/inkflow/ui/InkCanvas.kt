@@ -848,8 +848,20 @@ fun InkCanvas(
                             down.consume()
                             viewModel.setPageLock(true)
                             var totalDelta = Offset.Zero
+                            // 跟手絕對式：指位相對起點 + 已施加捲動量，每幀重算不積差
+                            //（觸控微抖讓事件不斷流，紙多走的量必須補進累計，否則被紙帶跑）
+                            var autoY = 0f
                             var drag = awaitDragOrCancellation(down.id)
                             while (drag != null && drag.pressed) {
+                                // 連貫畫布：拖出紙界自動捲（Workspace 程式化捲動，不搶原生手勢）
+                                val csH = canvasPixelSizeState.value.height
+                                val autoDy = edgeAutoScrollDy(drag.position.y, csH)
+                                if (autoDy != 0f) {
+                                    onEdgeAutoScrollRef.value(autoDy)
+                                    autoY += autoDy
+                                }
+                                totalDelta = (drag.position - startOffset) + Offset(0f, autoY)
+                                textMoveDelta = totalDelta
                                 if (pinchActive) {
                                     viewModel.commitTextAnnotationMove(selAnn.id, totalDelta.x, totalDelta.y)
                                     textMoveDelta = Offset.Zero
@@ -857,15 +869,8 @@ fun InkCanvas(
                                     viewModel.setPageLock(false)
                                     return@awaitEachGesture
                                 }
-                                val delta = drag.positionChange()
-                                totalDelta += delta
-                                textMoveDelta += delta
                                 activePathVersion++
                                 drag.consume()
-                                // 連貫畫布：拖出紙界自動捲（Workspace 程式化捲動，不搶原生手勢）
-                                val csH = canvasPixelSizeState.value.height
-                                val autoDy = edgeAutoScrollDy(drag.position.y, csH)
-                                if (autoDy != 0f) onEdgeAutoScrollRef.value(autoDy)
                                 drag = awaitDragOrCancellation(drag.id)
                             }
                             if (totalDelta == Offset.Zero) {
@@ -1034,8 +1039,19 @@ fun InkCanvas(
                             down.consume()
                             viewModel.setPageLock(true)
                             var totalDelta = Offset.Zero
+                            // 跟手絕對式：同文字分支，捲動量補進累計防漂移
+                            var autoY = 0f
                             var drag = awaitDragOrCancellation(down.id)
                             while (drag != null && drag.pressed) {
+                                // 連貫畫布：拖出紙界自動捲
+                                val csH = canvasPixelSizeState.value.height
+                                val autoDy = edgeAutoScrollDy(drag.position.y, csH)
+                                if (autoDy != 0f) {
+                                    onEdgeAutoScrollRef.value(autoDy)
+                                    autoY += autoDy
+                                }
+                                totalDelta = (drag.position - startOffset) + Offset(0f, autoY)
+                                imageMovePreview = totalDelta
                                 if (pinchActive) {
                                     viewModel.commitImageAnnotationMove(selAnn.id, totalDelta.x, totalDelta.y)
                                     imageMovePreview = Offset.Zero
@@ -1043,15 +1059,8 @@ fun InkCanvas(
                                     viewModel.setPageLock(false)
                                     return@awaitEachGesture
                                 }
-                                val delta = drag.positionChange()
-                                totalDelta += delta
-                                imageMovePreview += delta
                                 activePathVersion++
                                 drag.consume()
-                                // 連貫畫布：拖出紙界自動捲
-                                val csH = canvasPixelSizeState.value.height
-                                val autoDy = edgeAutoScrollDy(drag.position.y, csH)
-                                if (autoDy != 0f) onEdgeAutoScrollRef.value(autoDy)
                                 drag = awaitDragOrCancellation(drag.id)
                             }
                             // 跨頁：推出本頁 → 整顆換頁（旋轉角保留）；否則舊提交
@@ -1162,21 +1171,29 @@ fun InkCanvas(
                             down.consume()
                             viewModel.setPageLock(true)
                             viewModel.setDragPreviewActive(true)
+                            // 跟手絕對式：相對位移每幀重算，增量餵 VM（telescoping 精確，不積差）
+                            var autoY = 0f
+                            var prevAbs = Offset.Zero
                             var drag = awaitDragOrCancellation(down.id)
                             while (drag != null && drag.pressed) {
+                                // 連貫畫布：拖出紙界自動捲（先捲，位移公式含已捲量）
+                                val csH = canvasPixelSizeState.value.height
+                                val autoDy = edgeAutoScrollDy(drag.position.y, csH)
+                                if (autoDy != 0f) {
+                                    onEdgeAutoScrollRef.value(autoDy)
+                                    autoY += autoDy
+                                }
+                                val abs = (drag.position - startOffset) + Offset(0f, autoY)
+                                val step = abs - prevAbs
+                                prevAbs = abs
                                 if (pinchActive) {
                                     viewModel.commitMovedStrokes()
                                     viewModel.setPageLock(false)
                                     viewModel.setDragPreviewActive(false)
                                     return@awaitEachGesture
                                 }
-                                val delta = drag.positionChange()
-                                if (delta != Offset.Zero) viewModel.moveSelectedStrokes(delta)
+                                if (step != Offset.Zero) viewModel.moveSelectedStrokes(step)
                                 drag.consume()
-                                // 連貫畫布：拖出紙界自動捲
-                                val csH = canvasPixelSizeState.value.height
-                                val autoDy = edgeAutoScrollDy(drag.position.y, csH)
-                                if (autoDy != 0f) onEdgeAutoScrollRef.value(autoDy)
                                 drag = awaitDragOrCancellation(drag.id)
                             }
                             val maxPage = (pageCountRef.value - 1).coerceAtLeast(0)

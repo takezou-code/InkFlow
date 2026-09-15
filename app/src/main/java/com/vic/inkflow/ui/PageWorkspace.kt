@@ -392,8 +392,10 @@ internal fun Workspace(
     }
     fun isBlankX(x: Float): Boolean {
         if (viewModel.docZoom.value > 1f) return false
-        val paperLeft = (viewportWpx - paperWpxForPan()) / 2f
-        return x < paperLeft || x > viewportWpx - paperLeft
+        // 紙的實際位置＝置中＋當前橫移：推到底後空出來的地方整條都是活區，點哪都能拉回。
+        // （之前沒加 pan，空出來的 [L, L+pan] 被誤判成紙，推到底只剩 20dp 縫能起手＝卡死。）
+        val paperLeft = (viewportWpx - paperWpxForPan()) / 2f + clampPan(viewModel.panOffsetX.value)
+        return x < paperLeft || x > paperLeft + paperWpxForPan()
     }
     val clampedPanX = clampPan(panOffsetX)
     // zoom/旋轉導致邊界縮小：只在 viewport/zoom 變化時收斂一次（直給，不用 spring 追移動目標）。
@@ -574,6 +576,8 @@ internal fun Workspace(
             // 可視範圍預取：未露臉的鄰頁先查好，快取當初始值，第一幀就有墨
             if (first != Int.MAX_VALUE && last != Int.MIN_VALUE) {
                 viewModel.prefetchPages(first, last)
+                // 點陣預熱：可視 ±1 底先渲好，滑入直接顯示（API 自帶邊界守衛＋渲染排隊）
+                for (p in first - 1..last + 1) pdfViewModel.prefetchPage(p)
             }
             // 頁鎖期間（跨頁手勢中）：忽略自動捲帶來的作用頁切換，
             // 手勢結束由 InkCanvas.onCrossPageEnd 激活目標頁，避免 InkCanvas 中途被替換斷筆
