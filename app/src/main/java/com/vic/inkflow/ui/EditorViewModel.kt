@@ -403,6 +403,33 @@ class EditorViewModel(
 
     fun setActivePage(index: Int) {
         _pageIndex.value = index
+        prefetchNeighbors(index)
+    }
+
+    /** 鄰頁預渲染快取：作用頁 ±1 的已查筆跡，給 Workspace item 當 Flow 初始值，
+     * 滑入視口第一幀就有墨，不再空白閃一下。版號守衛防亂序覆蓋，視窗外自動丟棄。 */
+    data class NeighborPageData(
+        val strokes: List<StrokeWithPoints> = emptyList(),
+        val texts: List<TextAnnotationEntity> = emptyList(),
+        val images: List<ImageAnnotationEntity> = emptyList()
+    )
+    private val _neighborCache = MutableStateFlow<Map<Int, NeighborPageData>>(emptyMap())
+    fun cachedNeighbor(page: Int): NeighborPageData? = _neighborCache.value[page]
+
+    private var prefetchGen = 0
+    private fun prefetchNeighbors(center: Int) {
+        val gen = ++prefetchGen
+        viewModelScope.launch(Dispatchers.IO) {
+            val window = (center - 1..center + 1).filter { it >= 0 }
+            val fresh = window.associateWith { p ->
+                NeighborPageData(
+                    strokes = strokeDao.getStrokesForPageSync(documentUri, p),
+                    texts = textAnnotationDao.getForPageSync(documentUri, p),
+                    images = imageAnnotationDao.getForPageSync(documentUri, p)
+                )
+            }
+            if (gen == prefetchGen) _neighborCache.value = fresh
+        }
     }
 
     fun onColorSelected(color: Color) {
