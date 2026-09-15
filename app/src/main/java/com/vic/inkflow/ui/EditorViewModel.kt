@@ -433,8 +433,9 @@ class EditorViewModel(
 
     private var prefetchGen = 0
     fun prefetchPages(firstVisible: Int, lastVisible: Int) {
-        val lo = (minOf(firstVisible, lastVisible) - 1).coerceAtLeast(0)
-        val hi = maxOf(firstVisible, lastVisible) + 1
+        // 窗口 ±2：慢速拖時，進視口的前一站已查好，快取當初始值第一幀即畫
+        val lo = (minOf(firstVisible, lastVisible) - 2).coerceAtLeast(0)
+        val hi = maxOf(firstVisible, lastVisible) + 2
         // 熱流只留可視附近 ±3：滑走的頁放掉引用（已組成的 item 手上引用不受影響），記憶體有界
         pageFlows.keys.retainAll { it in lo - 2..hi + 2 }
         val gen = ++prefetchGen
