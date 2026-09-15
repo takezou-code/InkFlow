@@ -328,12 +328,24 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
     fun importRawText(raw: String) {
         if (raw.isBlank()) return
         scope.launch {
+            try {
+                importRawTextInner(raw)
+            } catch (t: Throwable) {
+                android.util.Log.e("InkFlowDbg", "import failed", t)
+                try {
+                    android.widget.Toast.makeText(context, "插入失敗：${t.message}", android.widget.Toast.LENGTH_LONG).show()
+                } catch (_: Throwable) { }
+            }
+        }
+    }
+
+    suspend fun importRawTextInner(raw: String) {
             val blocks = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
                 splitAiBlocks(raw)
             }
             if (blocks.isEmpty()) {
                 android.widget.Toast.makeText(context, "沒有可插入的內容", android.widget.Toast.LENGTH_SHORT).show()
-                return@launch
+                return
             }
             // 數學渲染（WebView 必須 Main thread；失敗的塊退回 Unicode 文字）
             val mathBlocks = blocks.filterIsInstance<AiMathBlock>()
@@ -363,7 +375,7 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
             }
             if (pages.isEmpty()) {
                 android.widget.Toast.makeText(context, "沒有可插入的內容", android.widget.Toast.LENGTH_SHORT).show()
-                return@launch
+                return
             }
             val sourcePage = currentPageIndex
             var after = sourcePage
@@ -394,7 +406,6 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
             } else {
                 android.widget.Toast.makeText(context, "開新頁失敗，請稍後再試", android.widget.Toast.LENGTH_SHORT).show()
             }
-        }
     }
     // 卷動跟隨：主列表滑到哪頁就換作用頁（不捲主列表，避免打架；側欄由下方 effect 置中）
     val onScrollPage: (Int) -> Unit = { index ->

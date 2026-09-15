@@ -114,7 +114,7 @@ sealed interface AiBlock { val id: String }
 data class AiTextBlock(val chunk: AiTextChunk) : AiBlock { override val id: String get() = chunk.id }
 data class AiMathBlock(override val id: String, val html: String, val display: Boolean, val fallback: String) : AiBlock
 
-private val DISPLAY_MATH = Regex("\\$\\$[\\s\\S]*?\\$\\$|\\\\\\[[\\s\\S]*?\\\\\\]|\\\\begin\\{(equation|align|gather|multline|alignat|flalign|matrix|pmatrix|bmatrix|vmatrix|cases|aligned|array)\\}[\\s\\S]*?\\\\end\\{\\2\\}")
+private val DISPLAY_MATH = Regex("\\$\\$[\\s\\S]*?\\$\\$|\\\\\\[[\\s\\S]*?\\\\\\]|\\\\begin\\{(equation|align|gather|multline|alignat|flalign|matrix|pmatrix|bmatrix|vmatrix|cases|aligned|array)\\}[\\s\\S]*?\\\\end\\{\\1\\}")
 private val COMPLEX_CMD = Regex("\\\\(frac|d?frac|sum|prod|int|iint|oint|sqrt|lim|begin|overline|underline|hat|check|vec|dot|ddot|tilde|bar|mathbb|mathcal|operatorname)\\b")
 
 private fun chunkTitleOf(s: String): String {
