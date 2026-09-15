@@ -8,7 +8,12 @@ import com.vic.inkflow.data.TextAnnotationEntity
 sealed class DrawCommand {
     data class AddStroke(val stroke: StrokeWithPoints) : DrawCommand()
     data class RemoveStrokes(val strokes: List<StrokeWithPoints>) : DrawCommand()
-    data class MoveStrokes(val originals: List<StrokeWithPoints>, val delta: Offset) : DrawCommand()
+    data class MoveStrokes(
+        val originals: List<StrokeWithPoints>,
+        val delta: Offset,
+        /** 跨頁移動後的完整快照（含新 pageIndex）。單頁移動為 null，走 delta 重放。 */
+        val updated: List<StrokeWithPoints>? = null
+    ) : DrawCommand()
     data class ResizeStrokes(val originals: List<StrokeWithPoints>, val updated: List<StrokeWithPoints>) : DrawCommand()
     data class AddTextAnnotation(val annotation: TextAnnotationEntity) : DrawCommand()
     data class RemoveTextAnnotation(val annotation: TextAnnotationEntity) : DrawCommand()

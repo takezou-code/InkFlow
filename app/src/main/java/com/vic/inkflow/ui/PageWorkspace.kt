@@ -330,6 +330,8 @@ internal fun Workspace(
     var viewportWpx by remember { mutableIntStateOf(0) }
 
     val density = LocalDensity.current
+    // 頁間隙 px：必須與下方 LazyColumn 的 Arrangement.spacedBy(18.dp) 一致（跨頁分段用）
+    val pageGapPx = with(density) { 18.dp.toPx() }
     val bubbleGapPx = with(density) { 12.dp.toPx() }
     val bubbleSidePaddingPx = with(density) { 12.dp.toPx() }
     val bubbleTopSafePx = with(density) { 12.dp.toPx() }
@@ -525,7 +527,9 @@ internal fun Workspace(
             }
             best
         }.collect { idx ->
-            if (idx in 0 until pageCount) onScrollPage(idx)
+            // 頁鎖期間（跨頁手勢中）：忽略自動捲帶來的作用頁切換，
+            // 手勢結束由 InkCanvas.onCrossPageEnd 激活目標頁，避免 InkCanvas 中途被替換斷筆
+            if (!viewModel.isPageLocked() && idx in 0 until pageCount) onScrollPage(idx)
         }
     }
 
@@ -728,7 +732,15 @@ internal fun Workspace(
                     modifier = Modifier.fillMaxSize(),
                     viewModel = viewModel,
                     pdfViewModel = pdfViewModel,
-                    documentUri = documentUri
+                    documentUri = documentUri,
+                    pageIndex = index,
+                    pageGapPx = pageGapPx,
+                    onEdgeAutoScroll = { dy ->
+                        scope.launch { runCatching { mainListState.scrollBy(dy) } }
+                    },
+                    onCrossPageEnd = { target ->
+                        if (target != index) onRequestPage(target)
+                    }
                 )
             } else {
                 StaticPageOverlay(

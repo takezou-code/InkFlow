@@ -290,6 +290,16 @@ class EditorViewModel(
     private val _pageIndex = MutableStateFlow(0)
     val pageIndex: StateFlow<Int> = _pageIndex.asStateFlow()
 
+    /**
+     * 跨頁手勢鎖：InkCanvas 在筆/拖曳手勢 consume 後置 true，
+     * Workspace 的 onScrollPage 在此期間忽略自動捲動帶來的作用頁切換，
+     * 避免 InkCanvas 在手勢中途被 StaticPageOverlay 替換導致斷筆。
+     * 手勢結束（提交/丟棄）必須清鎖；新手勢入口也會清鎖兜底。
+     */
+    private val _pageLock = MutableStateFlow(false)
+    fun isPageLocked(): Boolean = _pageLock.value
+    fun setPageLock(locked: Boolean) { _pageLock.value = locked }
+
     private val _pendingStrokes = MutableStateFlow<Map<String, StrokeWithPoints>>(emptyMap())
 
     val currentStrokes: StateFlow<List<StrokeWithPoints>> = kotlinx.coroutines.flow.combine(
@@ -301,7 +311,10 @@ class EditorViewModel(
         if (resolvedIds.isNotEmpty()) {
             _pendingStrokes.value = _pendingStrokes.value - resolvedIds
         }
+        // 跨頁筆分段暫存時，只顯示屬於作用頁的那段，避免 B 頁的墨鬼影到 A 頁
+        val activePage = pageIndex.value
         val unresolved = pending.filterKeys { it !in dbIds }.values
+            .filter { it.stroke.pageIndex == activePage }
         dbStrokes + unresolved
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
@@ -412,7 +425,14 @@ class EditorViewModel(
         else -> penStrokeWidth
     }
 
-    fun saveStroke(points: List<StrokePoint>, color: Color, tool: Tool = Tool.PEN, baseWidth: Float = 5f) {
+    fun saveStroke(
+        points: List<StrokePoint>,
+        color: Color,
+        tool: Tool = Tool.PEN,
+        baseWidth: Float = 5f,
+        /** 跨頁筆分段歸屬。null = 作用頁（舊行為）。 */
+        targetPage: Int? = null
+    ) {
         if (points.size < 2) return
         val cW = canvasW
         val cH = canvasH
@@ -433,7 +453,7 @@ class EditorViewModel(
         val strokeEntity = StrokeEntity(
             id = strokeId,
             documentUri = documentUri,
-            pageIndex = pageIndex.value,
+            pageIndex = targetPage ?: pageIndex.value,
             color = color.toArgb(),
             // Store the user-selected base width (normalized to model space) so PDF export
             // uses the correct line thickness rather than the velocity-derived per-point width.
@@ -558,7 +578,13 @@ class EditorViewModel(
     }
 
     /** Save a geometric shape (RECT / CIRCLE / LINE / ARROW) as a StrokeEntity. */
-    fun saveShape(startPoint: Offset, endPoint: Offset, color: Color, strokeWidth: Float) {
+    fun saveShape(
+        startPoint: Offset,
+        endPoint: Offset,
+        color: Color,
+        strokeWidth: Float,
+        targetPage: Int? = null
+    ) {
         val cW = canvasW
         val cH = canvasH
         val shapeType = _selectedShapeSubType.value.name
@@ -573,7 +599,7 @@ class EditorViewModel(
             val strokeEntity = StrokeEntity(
                 id = strokeId,
                 documentUri = documentUri,
-                pageIndex = pageIndex.value,
+                pageIndex = targetPage ?: pageIndex.value,
                 color = color.toArgb(),
                 strokeWidth = strokeWidth * shapeWidthScale,
                 boundsLeft = minOf(p0.x, p1.x),
@@ -640,6 +666,24 @@ class EditorViewModel(
             modelX = old.modelX + canvasDeltaX * scaleX,
             modelY = old.modelY + canvasDeltaY * scaleY
         )
+        viewModelScope.launch(Dispatchers.IO) {
+            textAnnotationDao.update(updated)
+            withContext(Dispatchers.Main) { pushUndo(DrawCommand.MoveTextAnnotation(old, updated)) }
+        }
+    }
+
+    /**
+     * 跨頁拖曳落點提交：文字整顆搬到 targetPage 的 (modelX, modelY)。
+     * MoveTextAnnotation 存完整實體（含 pageIndex），undo/redo 天然支援跨頁。
+     */
+    fun commitTextAnnotationMoveToPage(id: String, targetPage: Int, modelX: Float, modelY: Float) {
+        val old = currentTextAnnotations.value.firstOrNull { it.id == id } ?: return
+        val updated = old.copy(
+            pageIndex = targetPage.coerceAtLeast(0),
+            modelX = modelX.coerceIn(0f, modelWidth),
+            modelY = modelY.coerceIn(0f, modelHeight)
+        )
+        if (updated == old) return
         viewModelScope.launch(Dispatchers.IO) {
             textAnnotationDao.update(updated)
             withContext(Dispatchers.Main) { pushUndo(DrawCommand.MoveTextAnnotation(old, updated)) }
@@ -756,6 +800,29 @@ class EditorViewModel(
             modelX = old.modelX + canvasDeltaX * scaleX,
             modelY = old.modelY + canvasDeltaY * scaleY
         )
+        viewModelScope.launch(Dispatchers.IO) {
+            imageAnnotationDao.update(updated)
+            withContext(Dispatchers.Main) { pushUndo(DrawCommand.MoveImageAnnotation(old, updated)) }
+        }
+    }
+
+    /**
+     * 跨頁拖曳落點提交：圖片整顆搬到 targetPage，左上角落在 (modelX, modelY)。
+     * MoveImageAnnotation 存完整實體（含 pageIndex），undo/redo 天然支援跨頁。
+     */
+    fun commitImageAnnotationMoveToPage(
+        id: String,
+        targetPage: Int,
+        modelX: Float,
+        modelY: Float
+    ) {
+        val old = currentImageAnnotations.value.firstOrNull { it.id == id } ?: return
+        val updated = old.copy(
+            pageIndex = targetPage.coerceAtLeast(0),
+            modelX = modelX.coerceIn(0f, modelWidth),
+            modelY = modelY.coerceIn(0f, modelHeight)
+        )
+        if (updated == old) return
         viewModelScope.launch(Dispatchers.IO) {
             imageAnnotationDao.update(updated)
             withContext(Dispatchers.Main) { pushUndo(DrawCommand.MoveImageAnnotation(old, updated)) }
@@ -914,20 +981,27 @@ class EditorViewModel(
                     strokeDao.deleteStrokesByIds(command.strokes.map { it.stroke.id })
                 }
                 is DrawCommand.MoveStrokes -> {
-                    command.originals.forEach { swp ->
-                        val shiftedPoints = swp.points.map { pt ->
-                            PointEntity(strokeId = swp.stroke.id, x = pt.x + command.delta.x, y = pt.y + command.delta.y, width = pt.width)
-                        }
-                        val shiftedStroke = swp.stroke.copy(
-                            boundsLeft   = swp.stroke.boundsLeft   + command.delta.x,
-                            boundsTop    = swp.stroke.boundsTop    + command.delta.y,
-                            boundsRight  = swp.stroke.boundsRight  + command.delta.x,
-                            boundsBottom = swp.stroke.boundsBottom + command.delta.y
-                        )
-                        db.withTransaction {
-                            strokeDao.deletePointsForStroke(swp.stroke.id)
-                            strokeDao.insertStroke(shiftedStroke)
-                            strokeDao.insertPoints(shiftedPoints)
+                    // 跨頁移動：updated 帶新 pageIndex，直接恢復快照；
+                    // 單頁移動：updated 為 null，走舊 delta 重放。
+                    val crossSnap = command.updated
+                    if (crossSnap != null) {
+                        replaceStrokeSnapshots(crossSnap)
+                    } else {
+                        command.originals.forEach { swp ->
+                            val shiftedPoints = swp.points.map { pt ->
+                                PointEntity(strokeId = swp.stroke.id, x = pt.x + command.delta.x, y = pt.y + command.delta.y, width = pt.width)
+                            }
+                            val shiftedStroke = swp.stroke.copy(
+                                boundsLeft   = swp.stroke.boundsLeft   + command.delta.x,
+                                boundsTop    = swp.stroke.boundsTop    + command.delta.y,
+                                boundsRight  = swp.stroke.boundsRight  + command.delta.x,
+                                boundsBottom = swp.stroke.boundsBottom + command.delta.y
+                            )
+                            db.withTransaction {
+                                strokeDao.deletePointsForStroke(swp.stroke.id)
+                                strokeDao.insertStroke(shiftedStroke)
+                                strokeDao.insertPoints(shiftedPoints)
+                            }
                         }
                     }
                 }
@@ -1216,25 +1290,61 @@ class EditorViewModel(
         refreshSelectedStrokePreview()
     }
 
-    fun commitMovedStrokes() {
+    /**
+     * 提交套索移動。整體選取中心被拖出本頁上下界時整組換頁（y 繞回新頁），
+     * 並回傳目標頁（供 Workspace 激活）；未跨頁回傳 null（舊行為）。
+     */
+    fun commitMovedStrokes(maxPageIndex: Int = Int.MAX_VALUE): Int? {
         val strokes = _selectedStrokes.value
         val images = selectedImagesSnapshot()
         val delta = _lassoMoveOffset.value
         if ((strokes.isEmpty() && images.isEmpty()) || (delta.x == 0f && delta.y == 0f)) {
             clearSelection()
-            return
+            return null
         }
 
-        val movedStrokes = if (strokes.isNotEmpty()) {
+        var movedStrokes = if (strokes.isNotEmpty()) {
             StrokeTransformUtils.transformStrokes(strokes, translation = delta)
         } else {
             emptyList()
         }
-        val movedImages = images.map { ann ->
+        var movedImages = images.map { ann ->
             ann.copy(
                 modelX = ann.modelX + delta.x,
                 modelY = ann.modelY + delta.y
             )
+        }
+
+        // 跨頁判定：整體中心掉出本頁 → 整組換頁（y 繞回），只認縱向
+        val centerSamples = mutableListOf<Float>()
+        StrokeTransformUtils.computeSelectionBounds(movedStrokes)?.let { centerSamples.add(it.center.y) }
+        movedImages.forEach { centerSamples.add(it.modelY + it.modelHeight / 2f) }
+        val centerY = if (centerSamples.isNotEmpty()) centerSamples.average().toFloat() else modelHeight / 2f
+        val sourcePage = pageIndex.value
+        val targetPage = (sourcePage + kotlin.math.floor(centerY / modelHeight).toInt())
+            .coerceIn(0, maxPageIndex.coerceAtLeast(0))
+        val appliedShift = targetPage - sourcePage
+        val crossPage = appliedShift != 0
+        if (crossPage) {
+            val wrapY = appliedShift * modelHeight
+            movedStrokes = movedStrokes.map { swp ->
+                val sh = swp.stroke
+                swp.copy(
+                    stroke = sh.copy(
+                        pageIndex = targetPage,
+                        boundsTop = sh.boundsTop - wrapY,
+                        boundsBottom = sh.boundsBottom - wrapY
+                    ),
+                    points = swp.points.map { pt -> pt.copy(y = pt.y - wrapY) }
+                )
+            }
+            movedImages = movedImages.map { ann ->
+                ann.copy(
+                    pageIndex = targetPage,
+                    modelX = ann.modelX.coerceIn(0f, modelWidth),
+                    modelY = ann.modelY.coerceIn(0f, modelHeight)
+                )
+            }
         }
 
         // Apply new DB state but keep the selection active for further edits.
@@ -1266,7 +1376,10 @@ class EditorViewModel(
                     _commitPreview.value = null
                 }
                 when {
-                    images.isEmpty() -> pushUndo(DrawCommand.MoveStrokes(strokes, delta))
+                    images.isEmpty() && !crossPage -> pushUndo(DrawCommand.MoveStrokes(strokes, delta))
+                    images.isEmpty() -> pushUndo(
+                        DrawCommand.MoveStrokes(strokes, delta, movedStrokes)
+                    )
                     else -> pushUndo(
                         DrawCommand.MoveSelectionMixed(
                             strokeOriginals = strokes,
@@ -1278,6 +1391,7 @@ class EditorViewModel(
                 }
             }
         }
+        return if (crossPage) targetPage else null
     }
 
     fun commitResizedStrokes() {
