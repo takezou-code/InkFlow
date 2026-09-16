@@ -918,8 +918,19 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         thumbnailFlowCache[pageIndex] = flow
         if (flow.value == null) {
             viewModelScope.launch(Dispatchers.IO) {
-                renderPage(pageIndex, highQuality = false)?.let { flow.value = it }
+                // F2 黑頁修復：剛插頁重開空窗期 pdfRenderer 為 null，這次必回 null；
+                // 以前只試一次就永久黑，現在退避重試（flow 留空等重試，不毒化快取）。
+                repeat(4) { attempt ->
+                    val bmp = renderPage(pageIndex, highQuality = true)
+                    if (bmp != null) {
+                        flow.value = bmp
+                        return@launch
+                    }
+                    android.util.Log.d("PdfViewModel", "getPageBitmap retry $attempt page=$pageIndex")
+                    kotlinx.coroutines.delay(600L * (attempt + 1))
+                }
             }
+        }
         }
         return flow
     }

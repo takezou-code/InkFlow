@@ -773,6 +773,10 @@ private fun buildPickJs(): String {
                 } catch(e){}
             };
             document.addEventListener('click', window.__inkpickHandler, true);
+            try {
+                var mc = container.querySelectorAll('.math-block, .math-inline, span.katex').length;
+                note('MATHCOUNT total=' + mc);
+            } catch(e){}
             note('PICK_MODE_ON:' + n);
         })();
     """.trimIndent()
@@ -803,25 +807,74 @@ private fun buildCollectJs(): String {
                 } catch(e){}
                 return out;
             }
+            // TeX 還原：Gemini 用 KaTeX 渲染（copy-tex 沒開，innerText 沒源碼），
+            // 真源在 .math-block/.math-inline 的 data-math；裸 .katex 看 annotation。
+            function texify(root) {
+                var nb = 0, ni = 0;
+                try {
+                    root.querySelectorAll('.math-block[data-math]').forEach(function(el) {
+                        var t = el.getAttribute('data-math') || '';
+                        if (t.trim().length > 0) {
+                            el.replaceWith(document.createTextNode('$$' + t.trim() + '$$'));
+                            nb++;
+                        }
+                    });
+                    root.querySelectorAll('.math-inline[data-math]').forEach(function(el) {
+                        var t = el.getAttribute('data-math') || '';
+                        if (t.trim().length > 0) {
+                            el.replaceWith(document.createTextNode('$' + t.trim() + '$'));
+                            ni++;
+                        }
+                    });
+                    root.querySelectorAll('span.katex').forEach(function(el) {
+                        try {
+                            var an = el.querySelector('.katex-mathml annotation');
+                            if (an && an.textContent && an.textContent.trim().length > 0) {
+                                var disp = false;
+                                try { disp = !!el.closest('.katex-display'); } catch(e){}
+                                var s = an.textContent.trim();
+                                el.replaceWith(document.createTextNode(disp ? ('$$' + s + '$$') : ('$' + s + '$')));
+                                if (disp) nb++; else ni++;
+                            }
+                        } catch(e){}
+                    });
+                } catch(e){}
+                return { b: nb, i: ni };
+            }
             function lastReply() {
                 var chains = ['div[data-message-author-role="model"]', 'message-content', '.response-container', '[class*="model-response"]', '[class*="response-content"]'];
                 for (var c = 0; c < chains.length; c++) {
                     var hits = deepAll(document, chains[c], []);
                     if (hits.length > 0) {
-                        var t = hits[hits.length - 1].innerText || '';
-                        if (t.trim().length > 0) return t;
+                        var node = hits[hits.length - 1];
+                        var t = node.innerText || '';
+                        if (t.trim().length > 0) {
+                            try {
+                                var cl = node.cloneNode(true);
+                                var cc = texify(cl);
+                                var tt = cl.innerText || '';
+                                if (tt.trim().length > 0) return { text: tt, b: cc.b, i: cc.i };
+                            } catch(e){}
+                            return { text: t, b: 0, i: 0 };
+                        }
                     }
                 }
                 try {
                     var blocks = document.querySelectorAll('main p, main li, article p, article li');
                     var acc = [];
+                    var tb = 0, ti = 0;
                     for (var k = 0; k < blocks.length; k++) {
-                        var bt = blocks[k].innerText || '';
-                        if (bt.trim().length > 0) acc.push(bt.trim());
+                        try {
+                            var bcl = blocks[k].cloneNode(true);
+                            var bc = texify(bcl);
+                            tb += bc.b; ti += bc.i;
+                            var bt = bcl.innerText || '';
+                            if (bt.trim().length > 0) acc.push(bt.trim());
+                        } catch(e){}
                     }
-                    if (acc.length > 0) return acc.join('\n\n');
+                    if (acc.length > 0) return { text: acc.join('\n\n'), b: tb, i: ti };
                 } catch(e){}
-                return '';
+                return { text: '', b: 0, i: 0 };
             }
             try {
                 window.__inkpick = false;
@@ -840,24 +893,29 @@ private fun buildCollectJs(): String {
                 return true;
             });
             var out = [];
+            var mathB = 0, mathI = 0;
             roots.forEach(function(el) {
                 try {
-                    var t = el.innerText || '';
+                    var clone = el.cloneNode(true);
+                    var cc = texify(clone);
+                    mathB += cc.b; mathI += cc.i;
+                    var t = clone.innerText || '';
                     if (t.trim().length > 0) out.push(t.trim());
                 } catch(e){}
             });
             var src = 'picked x' + out.length;
             if (out.length === 0) {
                 var fb = lastReply();
-                if (fb.trim().length > 0) {
-                    out = [fb];
+                if (fb.text.trim().length > 0) {
+                    out = [fb.text];
+                    mathB += fb.b; mathI += fb.i;
                     src = 'fallback-full';
                 }
             }
             try {
                 document.querySelectorAll('[data-inkpick]').forEach(function(el) { el.removeAttribute('data-inkpick'); });
             } catch(e){}
-            note('COLLECT src=' + src);
+            note('COLLECT src=' + src + ' mathB=' + mathB + ' mathI=' + mathI + ' len=' + out.join('\n\n').length);
             report(out.join('\n\n').slice(0, 20000));
         })();
     """.trimIndent()

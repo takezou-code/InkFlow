@@ -335,10 +335,12 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
             // 數學渲染（WebView 必須 Main thread；失敗的塊退回 Unicode 文字）
             val mathBlocks = blocks.filterIsInstance<AiMathBlock>()
             val rendered = mutableMapOf<String, RenderedMath>()
+            var renderFail = 0
             if (mathBlocks.isNotEmpty()) {
                 val act = context as? android.app.Activity
                 if (act != null) MathSnapshot.ensure(act)
                 for (mb in mathBlocks) {
+                    var ok = false
                     try {
                         val bmp = MathSnapshot.render(mathBlockHtml(mb.html))
                         if (bmp != null) {
@@ -348,10 +350,12 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                             }
                             rendered[mb.id] = RenderedMath(f, bmp.width, bmp.height)
                             bmp.recycle()
+                            ok = true
                         }
                     } catch (t: Throwable) {
                         android.util.Log.w("InkFlowDbg", "math render failed ${mb.id}: $t")
                     }
+                    if (!ok) renderFail++
                 }
             }
             val resolved = resolveAiBlocks(blocks, rendered)
@@ -370,6 +374,11 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                 if (!insertOnePageAfter(after)) break
                 after += 1
                 val pageIdx = after
+                // 新頁點陣圖保證：重開空窗期建的 flow 可能永久 null，先預取＋等圖再寫入跳轉
+                pdfViewModel.prefetchPage(pageIdx)
+                kotlinx.coroutines.withTimeoutOrNull(3000) {
+                    pdfViewModel.getPageBitmap(pageIdx).filter { it != null }.first()
+                }
                 page.forEach { pl ->
                     when (pl) {
                         is Placed.T -> viewModel.insertImportedText(uri.toString(), pageIdx, pl.t.text, pl.t.modelX, pl.t.modelY, pl.t.fontSize)
@@ -387,7 +396,7 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
             }
             if (placed > 0) {
                 onRequestPage(sourcePage + 1)
-                android.widget.Toast.makeText(context, "已插入 ${pages.sumOf { it.size }} 段（公式圖 ${mathCount}，${placed} 頁）", android.widget.Toast.LENGTH_SHORT).show()
+                android.widget.Toast.makeText(context, "已插入 ${pages.sumOf { it.size }} 段（公式圖 ${mathCount}，${placed} 頁）" + if (renderFail > 0) "（${renderFail} 式渲染失敗已退回文字）" else "", android.widget.Toast.LENGTH_SHORT).show()
             } else {
                 android.widget.Toast.makeText(context, "開新頁失敗，請稍後再試", android.widget.Toast.LENGTH_SHORT).show()
             }
