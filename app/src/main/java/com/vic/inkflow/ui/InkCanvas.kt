@@ -167,6 +167,11 @@ fun InkCanvas(
     val paperStyle by viewModel.paperStyle.collectAsState()
     // 雙指縮放進行中：各畫筆迴圈見此即棄筆（由 Workspace 仲裁器寫入）
     val pinchActive by viewModel.pinchActive.collectAsState()
+    // F1：鄰頁共享預覽（src 紙走直接路徑，這裡只讀分給本頁的段）。
+    val sharedPreview by viewModel.inFlightPreview.collectAsState()
+    val sharedSegs = remember(sharedPreview, pageIndex) {
+        sharedPreview?.segments?.get(pageIndex).orEmpty()
+    }
     // 連貫畫布：跨頁參數 refs（進長駐協程，不進 pointerInput key，手勢不被重啟打斷）
     val pageCount by pdfViewModel.pageCount.collectAsState()
     val pageIndexRef = rememberUpdatedState(pageIndex)
@@ -204,6 +209,20 @@ fun InkCanvas(
     // Shape live-preview anchors (canvas pixel space)
     var activeShapeStart by remember { mutableStateOf<Offset?>(null) }
     var activeShapeEnd   by remember { mutableStateOf<Offset?>(null) }
+    // F3：提筆交接——本紙提交段 id 等資料流出現才清活路徑（2s 兜底），消滅提筆閃一下。
+    var bridgingIds by remember { mutableStateOf<Set<String>?>(null) }
+    val committedIds = remember(committedStrokes) { committedStrokes.map { it.stroke.id }.toSet() }
+    LaunchedEffect(bridgingIds, committedStrokes) {
+        val ids = bridgingIds ?: return@LaunchedEffect
+        // 一個都還沒到：等 DB 落定（或 2s 兜底防寫失敗殘影），再清不遲
+        if (ids.none { it in committedIds }) delay(2000)
+        activePath.reset()
+        activeEnvelopePath.reset()
+        currentPathPoints.clear()
+        activePathVersion++
+        viewModel.publishInFlight(null)
+        bridgingIds = null
+    }
 
     // Inline text editor (replaces the 新增文字 dialog): NEW at a canvas pos, or EDIT an existing id
     var inlineTextNewPos by remember { mutableStateOf<Offset?>(null) }
@@ -278,11 +297,21 @@ fun InkCanvas(
     val selectedStrokeScaleRef = rememberUpdatedState(selectedStrokeScale)
     val selectedStrokeResizeAnchorRef = rememberUpdatedState(selectedStrokeResizeAnchor)
     val isSelectionTransforming = lassoMoveOffset != Offset.Zero || abs(selectedStrokeScale - 1f) > 0.001f
+    // 全活頁：每紙只畫歸屬本紙的選取（跨紙選取各紙畫各的；之前要求整包同頁，跨頁直接整片不畫＝框不出來）。
+    val ownSelectedStrokes = remember(selectedStrokePreview, pageIndex) {
+        selectedStrokePreview.filter { it.stroke.pageIndex == pageIndex }
+    }
+    // 本紙子集的 bounds（框＋錨點用；混合頁全域 bounds 在此無意義）。
+    val ownSelectionBounds = remember(ownSelectedStrokes) {
+        if (ownSelectedStrokes.isEmpty()) null
+        else StrokeTransformUtils.computeSelectionBounds(ownSelectedStrokes)
+    }
     val selectionTransformAnchor = selectedStrokeResizeAnchor
+        ?: ownSelectionBounds?.center
         ?: selectedStrokePreviewBounds?.center
         ?: Offset.Zero
-    val selectedPathData = remember(selectedStrokePreview) {
-        selectedStrokePreview.map { swp ->
+    val selectedPathData = remember(ownSelectedStrokes) {
+        ownSelectedStrokes.map { swp ->
             SelectedStrokeRenderData(
                 strokeWithPoints = swp,
                 path = if (swp.stroke.shapeType == null) swp.points.toComposePath() else null
@@ -1280,13 +1309,34 @@ fun InkCanvas(
                                 )
                             }
                         } else if (activeTool == Tool.LASSO) {
+                            // 矩形套索同樣走跨頁聯集（框跨過頁界時不斷在起始頁）。
                             val pts = listOf(
                                 Offset(startOffset.x, startOffset.y),
                                 Offset(end.x, startOffset.y),
                                 Offset(end.x, end.y),
                                 Offset(startOffset.x, end.y)
                             )
-                            viewModel.selectStrokesInLasso(pts, page = pageIndexRef.value)
+                            val canvasW = canvasPixelSizeState.value.width
+                            val canvasH = canvasPixelSizeState.value.height
+                            val byPage = LinkedHashMap<Int, MutableList<List<Offset>>>()
+                            DocLayout.splitByPage(
+                                items = pts,
+                                yOf = { it.y },
+                                canvasH = canvasH,
+                                gapPx = pageGapPxRef.value,
+                                srcPage = pageIndexRef.value,
+                                pageCount = pageCountRef.value,
+                                local = { p, ly -> Offset(p.x, ly) }
+                            ).forEach { (pg, seg) ->
+                                val clipped = clipPolygonToRect(seg, 0f, 0f, canvasW, canvasH)
+                                if (clipped.size >= 3) byPage.getOrPut(pg) { mutableListOf() }.add(clipped)
+                            }
+                            viewModel.selectStrokesInLassoAcross(
+                                polygonsByPage = byPage,
+                                srcPage = pageIndexRef.value,
+                                canvasW = canvasW,
+                                canvasH = canvasH
+                            )
                         }
                     }
                     activeShapeStart = null
@@ -1308,6 +1358,8 @@ fun InkCanvas(
                     (activeTool == Tool.PEN || activeTool == Tool.HIGHLIGHTER)
                 var quickSwipeTriggered = false
                 var lastEraserDispatchTime = down.uptimeMillis
+                // F1：共享預覽去重（點數不變不重發，避免每幀垃圾）。
+                var lastPublishedSize = -1
                 val baseWidth = if (activeTool == Tool.HIGHLIGHTER) strokeWidth * 3f else strokeWidth
                 var currentW = baseWidth
                 // 觸控筆直讀壓力：Stylus 落筆才進壓力路徑；手指維持速度路徑。
@@ -1337,6 +1389,11 @@ fun InkCanvas(
                 viewModel.setPageLock(true)
                 // R1：橡皮擦手勢開門（累積器；畫筆/quick-swipe 不開，各自成格）
                 if (activeTool == Tool.ERASER) viewModel.beginEraseGesture()
+                // F3：上一筆交接中途又落筆——沿用舊行為清活路徑（提交段已在資料流，不閃），交接作廢。
+                bridgingIds = null
+                activePath.reset()
+                activeEnvelopePath.reset()
+                activePathVersion++
 
                 // When the pointer already lifted before we could call awaitDragOrCancellation
                 // (DOWN+UP in < one frame), skip the drag loop; the single DOWN point is enough
@@ -1458,10 +1515,41 @@ fun InkCanvas(
                         
                         if (!quickSwipeTriggered && (activeTool == Tool.PEN || activeTool == Tool.HIGHLIGHTER)) {
                             // 預覽包絡先過中心線平滑（入庫點列不動，匯出零影響）。
-                            val previewPts = smoothCenterline(currentPathPoints)
+                            // F2：寬先 ×docZoom——提交入庫即此語義，預覽與成品同管線（zoom=1 時與舊行為一致）。
+                            val zoomPrev = viewModel.docZoom.value.coerceAtLeast(0.1f)
+                            val previewPts = smoothCenterline(
+                                currentPathPoints.map { it.copy(width = it.width * zoomPrev) }
+                            )
                             val newPath = EnvelopeUtils.generateEnvelopePath(previewPts)
                             activeEnvelopePath.reset()
                             activeEnvelopePath.addPath(newPath)
+                        }
+
+                        // F1：跨頁共享預覽（src 紙除外，走直接路徑）。點數不變不重發。
+                        if ((activeTool == Tool.PEN || activeTool == Tool.HIGHLIGHTER ||
+                                activeTool == Tool.LASSO || activeTool == Tool.ERASER) &&
+                            currentPathPoints.size != lastPublishedSize
+                        ) {
+                            lastPublishedSize = currentPathPoints.size
+                            val zoomPub = viewModel.docZoom.value.coerceAtLeast(0.1f)
+                            val pubPts = currentPathPoints.map { it.copy(width = it.width * zoomPub) }
+                            val segs = DocLayout.splitByPage(
+                                items = pubPts,
+                                yOf = { it.y },
+                                canvasH = canvasPixelSizeState.value.height,
+                                gapPx = pageGapPxRef.value,
+                                srcPage = pageIndexRef.value,
+                                pageCount = pageCountRef.value,
+                                local = { p, ly -> p.copy(y = ly) }
+                            ).filter { it.first != pageIndexRef.value }
+                            viewModel.publishInFlight(
+                                if (segs.isEmpty()) null
+                                else EditorViewModel.InFlightPreview(
+                                    tool = activeTool,
+                                    segments = segs.toMap(),
+                                    colorArgb = selectedColor.toArgb()
+                                )
+                            )
                         }
 
                         activePathVersion++
@@ -1517,6 +1605,8 @@ fun InkCanvas(
                     activeEnvelopePath.reset()
                     currentPathPoints.clear()
                     activePathVersion++
+                    bridgingIds = null
+                    viewModel.publishInFlight(null)
                     if (activeTool == Tool.ERASER) viewModel.clearEraseHitPending()
                     // R1：累積作廢，不留復原格
                     if (activeTool == Tool.ERASER) viewModel.discardEraseGesture()
@@ -1530,6 +1620,8 @@ fun InkCanvas(
                     activeEnvelopePath.reset()
                     currentPathPoints.clear()
                     activePathVersion++
+                    bridgingIds = null
+                    viewModel.publishInFlight(null)
                     if (activeTool == Tool.ERASER) viewModel.clearEraseHitPending()
                     // R1：累積作廢，不留復原格
                     if (activeTool == Tool.ERASER) viewModel.discardEraseGesture()
@@ -1590,42 +1682,49 @@ fun InkCanvas(
                                 pageCount = pageCountRef.value
                             )
                             var lastPage = srcPage
+                            // F3：記下本紙段 id 交接（提筆不清活路徑，等資料流出現）；
+                            // 鄰頁段由各紙提交流接著畫。
+                            val bridged = mutableSetOf<String>()
                             segs.forEach { (pg, segPts) ->
                                 if (segPts.size >= 2) {
                                     viewModel.saveStroke(
                                         segPts, selectedColor, activeTool, strokeWidth,
                                         targetPage = pg
-                                    )
+                                    )?.let { id -> if (pg == pageIndexRef.value) bridged += id }
                                     lastPage = pg
                                 }
                             }
+                            bridgingIds = bridged.takeIf { it.isNotEmpty() }
                             viewModel.setPageLock(false)
                             // M1 全活頁：目標紙本來就活著，無需激活（提筆零跳轉）
                         }
                     }
                     Tool.LASSO -> {
                         activePath.close()
-                        // 跨頁套索：圈出本頁時切分到各頁分查後聯集；單頁原樣走舊路徑。
+                        // 全走跨頁聯集：切分保留同頁多段（閉環過界兩次不斷段），每段裁到本頁閉合，
+                        // 同頁閉環裁剪後原樣＝舊單頁行為，不再分叉。
                         val lassoPts = currentPathPoints.map { Offset(it.x, it.y) }
-                        val lassoSegs = DocLayout.splitByPage(
+                        val canvasW = canvasPixelSizeState.value.width
+                        val canvasH = canvasPixelSizeState.value.height
+                        val byPage = LinkedHashMap<Int, MutableList<List<Offset>>>()
+                        DocLayout.splitByPage(
                             items = lassoPts,
                             yOf = { it.y },
-                            canvasH = canvasPixelSizeState.value.height,
+                            canvasH = canvasH,
                             gapPx = pageGapPxRef.value,
                             srcPage = pageIndexRef.value,
                             pageCount = pageCountRef.value,
                             local = { p, ly -> Offset(p.x, ly) }
-                        )
-                        if (lassoSegs.size == 1 && lassoSegs[0].first == pageIndexRef.value) {
-                            viewModel.selectStrokesInLasso(lassoPts, page = pageIndexRef.value)
-                        } else {
-                            viewModel.selectStrokesInLassoAcross(
-                                polygonsByPage = lassoSegs.toMap(),
-                                srcPage = pageIndexRef.value,
-                                canvasW = canvasPixelSizeState.value.width,
-                                canvasH = canvasPixelSizeState.value.height
-                            )
+                        ).forEach { (pg, seg) ->
+                            val clipped = clipPolygonToRect(seg, 0f, 0f, canvasW, canvasH)
+                            if (clipped.size >= 3) byPage.getOrPut(pg) { mutableListOf() }.add(clipped)
                         }
+                        viewModel.selectStrokesInLassoAcross(
+                            polygonsByPage = byPage,
+                            srcPage = pageIndexRef.value,
+                            canvasW = canvasW,
+                            canvasH = canvasH
+                        )
                     }
                     Tool.ERASER -> {
                         // Fire one final erasure at end of the gesture so that:
@@ -1649,10 +1748,17 @@ fun InkCanvas(
                     }
                     else -> { }
                 }
-                activePath.reset()
-                activeEnvelopePath.reset()
-                activePathVersion++
-                currentPathPoints.clear()
+                if (activeTool == Tool.PEN || activeTool == Tool.HIGHLIGHTER) {
+                    // F3：活路徑等交接（上附 LaunchedEffect），這裡不清；
+                    // 共享預覽照常關（鄰頁段由提交流接著畫）。
+                    viewModel.publishInFlight(null)
+                } else {
+                    activePath.reset()
+                    activeEnvelopePath.reset()
+                    activePathVersion++
+                    currentPathPoints.clear()
+                    viewModel.publishInFlight(null)
+                }
                 // R1：橡皮擦手勢關門（合併推一格；畫筆是空操作）
                 if (activeTool == Tool.ERASER) viewModel.endEraseGesture()
                 // 兜底：自由筆各提交路徑在此統一清鎖（PEN/HL 已在分支內清過，重複無害）
@@ -1882,9 +1988,8 @@ fun InkCanvas(
 
             // Selected strokes (highlighted with current preview transform applied).
             // dragPreviewActive 時由 Workspace overlay 繪製（可溢出紙界、置頂），此處讓位。
-            // 全活頁：只畫歸屬本紙的選取（跨紙選取由歸屬紙畫）。
-            val previewOwnPage = selectedStrokePreview.all { it.stroke.pageIndex == pageIndex }
-            if (selectedPathData.isNotEmpty() && !dragPreviewActive && previewOwnPage) {
+            // 全活頁：每紙畫歸屬本紙的子集（ownSelectedStrokes），跨紙選取各紙出框。
+            if (selectedPathData.isNotEmpty() && !dragPreviewActive) {
                 drawIntoCanvas { cvs ->
                     cvs.save()
                     cvs.scale(sx, sy)
@@ -1908,9 +2013,16 @@ fun InkCanvas(
                     }
                     cvs.restore()
                 }
-                val previewBounds = selectedStrokePreviewBounds
-                val selectionRect = modelTransformedPolygonBoundsToCanvasRect(
-                    polygon = selectionFramePolygon,
+                // 框：本紙子集 bounds 轉四角（與移動/縮放同一變換）；無子集不畫。
+                val ownCorners = ownSelectionBounds?.let { b ->
+                    listOf(
+                        Offset(b.left, b.top), Offset(b.right, b.top),
+                        Offset(b.right, b.bottom), Offset(b.left, b.bottom)
+                    )
+                }.orEmpty()
+                val selectionRect = if (ownCorners.size < 4) null
+                else modelTransformedPolygonBoundsToCanvasRect(
+                    polygon = ownCorners,
                     translation = lassoMoveOffset,
                     scale = selectedStrokeScale,
                     anchor = selectionTransformAnchor,
@@ -1920,7 +2032,7 @@ fun InkCanvas(
                 if (activeTool == Tool.LASSO && selectionRect != null && !selectionRect.isEmpty) {
                     drawLassoSelectionFrame(
                         selectionRect = selectionRect,
-                        showHandles = selectedStrokePreview.isNotEmpty() || selectedImageAnnotationIds.isNotEmpty(),
+                        showHandles = ownSelectedStrokes.isNotEmpty() || selectedImageAnnotationIds.isNotEmpty(),
                         dashPhase = if (isSelectionTransforming) 0f else lassoDashPhase,
                         animateDash = !isSelectionTransforming
                     )
@@ -2069,6 +2181,41 @@ fun InkCanvas(
                         }
                     }
                     else -> { }
+                }
+                // F1：鄰頁共享預覽（點段已是本頁頁內座標，直接畫；寬已 ×docZoom，與提交同管線）。
+                if (sharedSegs.size >= 2) {
+                    when (sharedPreview?.tool) {
+                        Tool.PEN -> drawPath(
+                            EnvelopeUtils.generateEnvelopePath(sharedSegs),
+                            Color(sharedPreview?.colorArgb ?: 0xFF000000.toInt())
+                        )
+                        Tool.HIGHLIGHTER -> drawIntoCanvas { cvs ->
+                            hlPreviewPaint.color =
+                                Color(sharedPreview?.colorArgb ?: 0xFF000000.toInt()).copy(alpha = 0.4f)
+                            cvs.drawPath(EnvelopeUtils.generateEnvelopePath(sharedSegs), hlPreviewPaint)
+                        }
+                        Tool.ERASER -> {
+                            val epath = Path()
+                            sharedSegs.forEachIndexed { i, sp ->
+                                if (i == 0) epath.moveTo(sp.x, sp.y) else epath.lineTo(sp.x, sp.y)
+                            }
+                            val sharedErRpx = if (viewModel.modelWidth > 0f) {
+                                10f * (size.width / viewModel.modelWidth)
+                            } else 24f
+                            drawPath(
+                                epath, Color(0xFFFF5A5A).copy(alpha = 0.28f),
+                                style = Stroke(width = sharedErRpx * 2f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                            )
+                        }
+                        Tool.LASSO -> {
+                            val lpath = Path()
+                            sharedSegs.forEachIndexed { i, sp ->
+                                if (i == 0) lpath.moveTo(sp.x, sp.y) else lpath.lineTo(sp.x, sp.y)
+                            }
+                            drawPath(lpath, Color.DarkGray, style = Stroke(width = 2f, pathEffect = dashPreview))
+                        }
+                        else -> Unit
+                    }
                 }
             }
         }
