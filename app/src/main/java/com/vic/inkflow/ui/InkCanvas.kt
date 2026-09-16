@@ -1382,8 +1382,10 @@ fun InkCanvas(
                 // R1：橡皮擦手勢開門（累積器；畫筆/quick-swipe 不開，各自成格）
                 if (activeTool == Tool.ERASER) viewModel.beginEraseGesture()
                 // F3：上一筆交接中途又落筆——沿用舊行為清活路徑（提交段已在資料流，不閃），交接作廢。
+                // 注意 reset 後必須補 moveTo，否則後續 quadraticTo 以原點起筆＝左上角怪線。
                 bridgingIds = null
                 activePath.reset()
+                activePath.moveTo(startOffset.x, startOffset.y)
                 activeEnvelopePath.reset()
                 activePathVersion++
 
@@ -1502,6 +1504,8 @@ fun InkCanvas(
                             if (quickSwipeTriggered) {
                                 activePath.reset()
                                 activeEnvelopePath.reset()
+                                // reset 後補 moveTo，否則後續筆段以原點起筆（同左上角怪線）。
+                                activePath.moveTo(drag.position.x, drag.position.y)
                             }
                         }
                         
@@ -1742,8 +1746,15 @@ fun InkCanvas(
                 }
                 if (activeTool == Tool.PEN || activeTool == Tool.HIGHLIGHTER) {
                     // F3：活路徑等交接（上附 LaunchedEffect），這裡不清；
-                    // 共享預覽照常關（鄰頁段由提交流接著畫）。
-                    viewModel.publishInFlight(null)
+                    // 共享預覽也不在這裡關——鄰頁段還在路上，現在關鄰頁閃。
+                    // 關閉由交接完成/2s兜底統一做。存了零段（全是單點碎段）才立刻清。
+                    if (bridgingIds == null) {
+                        activePath.reset()
+                        activeEnvelopePath.reset()
+                        currentPathPoints.clear()
+                        activePathVersion++
+                        viewModel.publishInFlight(null)
+                    }
                 } else {
                     activePath.reset()
                     activeEnvelopePath.reset()
