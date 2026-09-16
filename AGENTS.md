@@ -31,3 +31,26 @@
 - `install -r` 前先認 APK 路徑（debug/release），禁覆蓋錯邊；裝置 `1d985f84`。
 - 測試走私有軌，禁碰 `Documents/InkFlow` 公開備份；目錄／歷史面板凍結不動。
 - 手勢新規：空白區單指＋雙指全域二維平移（`panOffsetX`，已轉正）；`offset` 直給、禁大圖層、禁 spring 追；至少留 1/4 紙在區內；垂直一律走原生 `LazyColumn`。
+
+## 觸控對接協議（TOUCH_CONTRACT，兩 agent 共同遵守）
+- 觸控流由外而內，贏家全拿：palm 採集（只看不攔）→ `twoFingerModifier`（≥2 非手掌觸點，鎖定即 consume）→ `blankPanModifier`（1 指＋起點在紙實際矩形外，首像素 consume；第二根**手指**出現整段作廢，手掌不算）→ `InkCanvas`（紙面單指 consume 畫畫，多指放行）。
+- 空白判定用紙**實際矩形**（置中＋當前 `panOffsetX`），禁拿置中假設。
+- `mainListState` 雙寫者（平移/錨定 vs 寫筆邊緣捲）靠指數互斥，不加鎖；新增寫者須先證互斥，一律 `dispatchRawDelta` 同步，禁 `scope.launch(scrollBy)`。
+- `pinchActive`：工作區寫、墨水讀；新增棄筆條件走同一旗子，禁另起旗子。
+- `pageLock`：墨水寫、跟隨讀；上鎖必須配超時自清（`programmaticTarget` 2.5s 同規），無超時的鎖視為 bug。
+- 放手後零外力：手勢結束後禁寫 `panOffsetX`／捲主列表；收斂只許寫入點＋viewport/zoom 變化時。
+- 側欄：主→側永遠被動跟隨（只動側欄）；側→主只許點按＋側欄親自拖，帶 epoch、中間頁忽略。
+- 手掌：只看接觸面積（`touchMajor`，小米檔 >1.8／像素檔 >45dp），`touchMajor<=0` 一律當手指（fail-open）；禁拿位移猜手掌（手掌和捏合錨定指運動學相同）。
+
+## 統一畫布（單一文件座標＋切頁）
+- 概念：整份文件一個座標系（PDF pt），`x∈[0,W]`，`y∈[0,N×stride)`；頁只是開在上面的窗口。`W/H` 逐文件（首頁真實尺寸，`MODEL_W/H` 預設 A4）。
+- 兩個 stride：`docStride=modelH`（資料用，無縫）；`layoutStride=canvasH+gapPx`（螢幕用，含縫）。縫只存在於版式。
+- `pageIndex` 是衍生視圖（`floor(docY/stride)`），書籤/上次頁/側欄/匯出照用；真相來源是 `docY`。混合尺寸走逐頁真實（`pageSizesMap`＋首頁 fallback）。
+- 新墨水縫歸屬：中線切；跨頁長筆存完整一筆＋錨點，繪製按窗口裁剪，切段退役。
+- 不變量：`docY == pageIndex×stride + 頂邊 ± ε`。開文件回填 check 維持閃退（user 決議），但須加 breadcrumb（哪個 assert＋哪份文件＋計數）再拋。
+- 手勢層只認 `util/DocLayout.kt`（pure object，無 Compose），資料層怎麼翻不動手勢。
+
+## 檔權切分（同分支施工，禁 `add -A` 互掃，只 stage 自己的檔）
+- Vic-agent（手勢/畫布）：`PageWorkspace.kt` 手勢區、`util/DocLayout.kt`、`EditorViewModel.kt` 回填檢查區、`AGENTS.md` 協議區。
+- 另一 agent：墨水、`InkCanvas*`、AI 面板＋新功能、`EditorViewModel.kt` 其餘區。
+- commit 只加自己的檔；動對方檔前先講。
