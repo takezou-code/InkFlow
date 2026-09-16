@@ -700,6 +700,49 @@ class EditorViewModel(
         }
     }
 
+    /**
+     * 跨頁擦除：src 紙 canvas 座標的擦除點按紙界切分到各頁，分頁刪
+     * （墨＋字都由單頁版處理）。undo 按有命中的頁各記一筆；
+     * 切筆旗累積照傳，換筆判定只在最後一段跑一次（與單頁版同語義）。
+     */
+    fun deleteStrokesIntersectingAcrossPages(
+        eraserPointsCanvas: List<Offset>,
+        srcPage: Int,
+        canvasH: Float,
+        gapPx: Float,
+        pageCount: Int,
+        markEraseHit: Boolean = true,
+        switchToPenAfterEraseHit: Boolean = false,
+    ) {
+        val segs = com.vic.inkflow.util.DocLayout.splitByPage(
+            items = eraserPointsCanvas,
+            yOf = { it.y },
+            canvasH = canvasH,
+            gapPx = gapPx,
+            srcPage = srcPage,
+            pageCount = pageCount,
+            local = { p, ly -> Offset(p.x, ly) }
+        ).filter { it.second.size >= 2 }
+        // 全是單點碎段（極端）：退回本頁整筆，保證 tap 可擦。
+        if (segs.isEmpty()) {
+            deleteStrokesIntersecting(
+                eraserPointsCanvas = eraserPointsCanvas,
+                switchToPenAfterEraseHit = switchToPenAfterEraseHit,
+                markEraseHit = markEraseHit,
+                page = srcPage
+            )
+            return
+        }
+        segs.forEachIndexed { si, (pg, pts) ->
+            deleteStrokesIntersecting(
+                eraserPointsCanvas = pts,
+                switchToPenAfterEraseHit = si == segs.lastIndex && switchToPenAfterEraseHit,
+                markEraseHit = markEraseHit,
+                page = pg
+            )
+        }
+    }
+
     /** Save a geometric shape (RECT / CIRCLE / LINE / ARROW) as a StrokeEntity. */
     fun saveShape(
         startPoint: Offset,
@@ -1428,6 +1471,50 @@ class EditorViewModel(
     }
 
     // isPointInPolygon / rotatedImageBounds / isImageSelectedByLasso 見 SelectionGeometry.kt
+
+    /**
+     * 跨頁套索：各頁頁內 canvas 座標多邊形（呼叫方已按紙界切好＋轉頁內，見 DocLayout.splitByPage），
+     * 分頁查後聯集。等大文件各頁 canvas 同尺寸，歸一化用傳入值；
+     * 氣泡定位框取 src 頁多邊形（與單頁版同行為）。
+     */
+    fun selectStrokesInLassoAcross(
+        polygonsByPage: Map<Int, List<Offset>>,
+        srcPage: Int,
+        canvasW: Float,
+        canvasH: Float,
+    ) {
+        val cW = canvasW.coerceAtLeast(1f)
+        val cH = canvasH.coerceAtLeast(1f)
+        // 主線程一次快照：各頁資料流建流＋讀值都在這裡，協程內只用快照（同單頁版紀律）。
+        val snaps = polygonsByPage.mapValues { (pg, _) -> pageDataFlow(pg).value }
+        val srcPoly = polygonsByPage[srcPage].orEmpty()
+        if (srcPoly.size >= 3) {
+            val srcNorm = srcPoly.map { Offset(it.x * modelWidth / cW, it.y * modelHeight / cH) }
+            _lassoPolygon.value = srcNorm
+            _selectionFramePolygon.value = srcNorm
+            _lastLassoPolygon.value = srcNorm
+        }
+        viewModelScope.launch(Dispatchers.Default) {
+            val allStrokes = mutableListOf<StrokeWithPoints>()
+            val allImageIds = mutableSetOf<String>()
+            for ((pg, poly) in polygonsByPage) {
+                if (poly.size < 3) continue
+                val norm = poly.map { Offset(it.x * modelWidth / cW, it.y * modelHeight / cH) }
+                val data = snaps[pg] ?: continue
+                allStrokes += IntersectionUtils.findStrokesInLasso(norm, data.strokes)
+                allImageIds += data.images.filter { isImageSelectedByLasso(it, norm) }.map { it.id }
+            }
+            withContext(Dispatchers.Main) {
+                _selectedStrokes.value = allStrokes
+                _selectedImageAnnotationIds.value = allImageIds
+                _lassoMoveOffset.value = Offset.Zero
+                _selectedStrokeScale.value = 1f
+                _selectedStrokeResizeAnchor.value = null
+                _selectedStrokePreview.value = allStrokes
+                _selectedStrokePreviewBounds.value = StrokeTransformUtils.computeSelectionBounds(allStrokes)
+            }
+        }
+    }
 
     fun moveSelectedStrokes(delta: Offset) {
         if (delta == Offset.Zero) return

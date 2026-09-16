@@ -104,4 +104,44 @@ object DocLayout {
         if (gapH <= 0f) return true
         return yInGap < gapH / 2f
     }
+
+    /**
+     * canvas-space 點列按紙界切分到各頁（版式步幅 = canvasH + gapPx，紙界定在兩紙中線）。
+     * 與舊 splitStrokeByPage 同算法（該函式已改走這裡）：連續同頁點成段；
+     * 首/末頁外溢出併入邊界頁並把 localY 鉗到紙界。
+     * [yOf] 取點的 canvas Y；[local] 把頁內 Y 寫回點（呼叫方決定點型別）。
+     * 回傳 (頁索引, 該頁頁內點列)，保序。
+     */
+    fun <T> splitByPage(
+        items: List<T>,
+        yOf: (T) -> Float,
+        canvasH: Float,
+        gapPx: Float,
+        srcPage: Int,
+        pageCount: Int,
+        local: (T, Float) -> T
+    ): List<Pair<Int, List<T>>> {
+        if (items.isEmpty() || canvasH <= 0f) return listOf(srcPage to items)
+        val lastPage = (pageCount - 1).coerceAtLeast(0)
+        val stride = canvasH + gapPx.coerceAtLeast(0f)
+        if (stride <= 0f) return listOf(srcPage to items)
+        val halfGap = gapPx.coerceAtLeast(0f) / 2f
+        val out = mutableListOf<Pair<Int, MutableList<T>>>()
+        var curK: Int? = null
+        for (p in items) {
+            val k = kotlin.math.floor((yOf(p) + halfGap) / stride).toInt()
+            val page = (srcPage + k).coerceIn(0, lastPage)
+            val walled = (srcPage + k) != page
+            val effK = page - srcPage
+            var localY = yOf(p) - effK * stride
+            if (walled) localY = localY.coerceIn(0f, canvasH)
+            if (curK == null || effK != curK || out.isEmpty()) {
+                out.add(page to mutableListOf(local(p, localY)))
+                curK = effK
+            } else {
+                out.last().second.add(local(p, localY))
+            }
+        }
+        return out
+    }
 }

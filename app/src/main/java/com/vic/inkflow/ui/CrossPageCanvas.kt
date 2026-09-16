@@ -46,7 +46,7 @@ internal fun wrapCrossPageY(
 
 /**
  * 連貫寫筆分段：canvas-space 整筆按「紙高+頁間隙」步長切分到各頁。
- * stride = canvasH + gapPx；紙界定在兩紙中線（±halfGap）。
+ * 算法唯一真相在 [DocLayout.splitByPage]（手勢/墨水共用，單測覆蓋）；這裡只做點型別轉接。
  * 回傳 (page, 該頁 canvas 座標點列)；首/末頁外溢出併入邊界頁並鉗制到纸邊。
  */
 internal fun splitStrokeByPage(
@@ -55,27 +55,13 @@ internal fun splitStrokeByPage(
     gapPx: Float,
     srcPage: Int,
     pageCount: Int
-): List<Pair<Int, List<StrokePoint>>> {
-    if (pts.isEmpty() || canvasH <= 0f) return listOf(srcPage to pts)
-    val lastPage = (pageCount - 1).coerceAtLeast(0)
-    val stride = canvasH + gapPx.coerceAtLeast(0f)
-    if (stride <= 0f) return listOf(srcPage to pts)
-    val halfGap = gapPx.coerceAtLeast(0f) / 2f
-    val out = mutableListOf<Pair<Int, MutableList<StrokePoint>>>()
-    var curK: Int? = null
-    for (p in pts) {
-        val k = kotlin.math.floor((p.y + halfGap) / stride).toInt()
-        val page = (srcPage + k).coerceIn(0, lastPage)
-        val walled = (srcPage + k) != page
-        val effK = page - srcPage
-        var localY = p.y - effK * stride
-        if (walled) localY = localY.coerceIn(0f, canvasH)
-        if (curK == null || effK != curK || out.isEmpty()) {
-            out.add(page to mutableListOf(p.copy(y = localY)))
-            curK = effK
-        } else {
-            out.last().second.add(p.copy(y = localY))
-        }
-    }
-    return out
-}
+): List<Pair<Int, List<StrokePoint>>> =
+    com.vic.inkflow.util.DocLayout.splitByPage(
+        items = pts,
+        yOf = { it.y },
+        canvasH = canvasH,
+        gapPx = gapPx,
+        srcPage = srcPage,
+        pageCount = pageCount,
+        local = { p, ly -> p.copy(y = ly) }
+    )

@@ -9,15 +9,10 @@ import com.vic.inkflow.ui.theme.ShapeLg
 import com.vic.inkflow.ui.theme.ShapeXl
 import com.vic.inkflow.util.reorderable
 import com.vic.inkflow.util.reorderableItem
-import com.vic.inkflow.util.EnvelopeUtils
-import com.vic.inkflow.util.StrokePoint
 
 import android.content.ClipData
 import android.content.ClipDescription
 import android.content.Intent
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.net.Uri
 import android.provider.OpenableColumns
 import android.view.MotionEvent
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -79,7 +74,6 @@ import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -147,7 +141,6 @@ import androidx.compose.material.icons.filled.Summarize
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.material.icons.rounded.Brush
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Gesture
 import androidx.compose.material3.ButtonDefaults
@@ -181,38 +174,24 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.RectangleShape
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.compositeOver
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
-import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
-import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.draganddrop.DragAndDropEvent
 import androidx.compose.ui.draganddrop.DragAndDropTarget
 import androidx.compose.ui.draganddrop.DragAndDropTransferData
 import androidx.compose.ui.draganddrop.toAndroidDragEvent
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import com.vic.inkflow.ui.theme.BrandIndigo
@@ -247,12 +226,10 @@ import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /** AI 快捷指令 prompt（繁體中文）：圈選氣泡第二排使用，按下後隨圈選圖一起送進 Gemini 自動送出。 */
 internal object AiQuickPrompt {
@@ -603,8 +580,8 @@ internal fun Workspace(
                 // 點陣預熱：可視 ±1 底先渲好，滑入直接顯示（API 自帶邊界守衛＋渲染排隊）
                 for (p in first - 1..last + 1) pdfViewModel.prefetchPage(p)
             }
-            // 頁鎖期間（跨頁手勢中）：忽略自動捲帶來的作用頁切換，
-            // 手勢結束由 InkCanvas.onCrossPageEnd 激活目標頁，避免 InkCanvas 中途被替換斷筆
+            // 頁鎖期間（跨頁手勢中）：忽略自動捲帶來的頁面切換，避免中途換頁斷筆；
+            // 全活頁下各頁本來就活著，手勢結束也無需激活跳轉。
             if (!viewModel.isPageLocked() && idx in 0 until pageCount) onScrollPage(idx)
         }
     }
@@ -838,7 +815,7 @@ internal fun Workspace(
                     mainListState.dispatchRawDelta(dy)
                 }
             )
-                        } // 作用頁內容 Box
+                        } // 頁內容 Box
                     } // 紙 Surface
                     // 跨頁拖曳 overlay：框+墨畫在紙上層、可溢出紙界（clip=false），
                     // InkCanvas 側同時讓位（同像素只畫一次）；放開提交後清旗接回。
@@ -1074,132 +1051,6 @@ private fun DragPreviewOverlay(
             )
         }
     }
-}
-
-@Composable
-private fun StaticPageOverlay(
-    modifier: Modifier = Modifier,
-    strokes: List<StrokeWithPoints>,
-    imageAnnotations: List<ImageAnnotationEntity>,
-    textAnnotations: List<TextAnnotationEntity>,
-    modelWidth: Float,
-    modelHeight: Float
-) {
-    val context = LocalContext.current
-    val loadedImages = remember { mutableStateMapOf<String, android.graphics.Bitmap?>() }
-    LaunchedEffect(imageAnnotations) {
-        imageAnnotations.forEach { ann ->
-            if (ann.uri !in loadedImages) {
-                loadedImages[ann.uri] = null
-                withContext(Dispatchers.IO) {
-                    try {
-                        val bmp = context.contentResolver.openInputStream(Uri.parse(ann.uri))?.use { stream ->
-                            BitmapFactory.decodeStream(stream)
-                        }
-                        loadedImages[ann.uri] = bmp
-                    } catch (_: Exception) { }
-                }
-            }
-        }
-    }
-
-    Spacer(modifier = modifier.drawBehind {
-        val modelW = modelWidth
-        val modelH = modelHeight
-        if (modelW <= 0f || modelH <= 0f) return@drawBehind
-        val sx = size.width / modelW
-        val sy = size.height / modelH
-        strokes.forEach { swp ->
-            val stroke = swp.stroke
-            val strokeColor = Color(stroke.color)
-            val alpha = if (stroke.isHighlighter) 0.4f else 1f
-            val widthPx = stroke.strokeWidth * (if (stroke.isHighlighter) 3f else 1f) * sx
-            val paintStyle = Stroke(width = widthPx, cap = StrokeCap.Round, join = StrokeJoin.Round)
-            if (stroke.shapeType != null) {
-                val r = Rect(
-                    stroke.boundsLeft * sx, stroke.boundsTop * sy,
-                    stroke.boundsRight * sx, stroke.boundsBottom * sy
-                )
-                when (stroke.shapeType) {
-                    "RECT" -> drawRect(
-                        color = strokeColor.copy(alpha = alpha),
-                        topLeft = Offset(r.left, r.top),
-                        size = Size(r.width, r.height),
-                        style = paintStyle
-                    )
-                    "CIRCLE" -> drawOval(
-                        color = strokeColor.copy(alpha = alpha),
-                        topLeft = Offset(r.left, r.top),
-                        size = Size(r.width, r.height),
-                        style = paintStyle
-                    )
-                    "LINE" -> if (swp.points.size >= 2) {
-                        drawLine(
-                            color = strokeColor.copy(alpha = alpha),
-                            start = Offset(swp.points.first().x * sx, swp.points.first().y * sy),
-                            end = Offset(swp.points.last().x * sx, swp.points.last().y * sy),
-                            strokeWidth = widthPx,
-                            cap = StrokeCap.Round
-                        )
-                    }
-                    "ARROW" -> if (swp.points.size >= 2) {
-                        val p0 = Offset(swp.points.first().x * sx, swp.points.first().y * sy)
-                        val p1 = Offset(swp.points.last().x * sx, swp.points.last().y * sy)
-                        drawLine(
-                            color = strokeColor.copy(alpha = alpha),
-                            start = p0, end = p1,
-                            strokeWidth = widthPx, cap = StrokeCap.Round
-                        )
-                        thumbnailDrawArrowHead(
-                            drawScope = this,
-                            color = strokeColor.copy(alpha = alpha),
-                            start = p0, end = p1, sw = widthPx
-                        )
-                    }
-                }
-            } else {
-                val pts = swp.points
-                if (pts.size >= 2) {
-                    // 與 InkCanvas 即時層同畫法（包絡填充，逐點寬），消除換頁/切換門線感跳變。
-                    val env = EnvelopeUtils.generateEnvelopePath(
-                        pts.map { StrokePoint(it.x, it.y, it.width) })
-                    scale(sx, sy) { drawPath(env, strokeColor.copy(alpha = alpha)) }
-                }
-            }
-        }
-        imageAnnotations.forEach { ann ->
-            val bmp = loadedImages[ann.uri]
-            if (bmp != null) {
-                drawImage(
-                    image = bmp.asImageBitmap(),
-                    dstOffset = IntOffset((ann.modelX * sx).toInt(), (ann.modelY * sy).toInt()),
-                    dstSize = IntSize(
-                        (ann.modelWidth * sx).toInt().coerceAtLeast(1),
-                        (ann.modelHeight * sy).toInt().coerceAtLeast(1)
-                    )
-                )
-            }
-        }
-        if (textAnnotations.isNotEmpty()) {
-            drawIntoCanvas { composeCanvas ->
-                textAnnotations.forEach { ann ->
-                    val paint = android.graphics.Paint().apply {
-                        textSize    = ann.fontSize * sy
-                        color       = ann.colorArgb
-                        isAntiAlias = true
-                        typeface    = android.graphics.Typeface.DEFAULT_BOLD
-                    }
-                    // Multiline：與 InkCanvas 同畫法（modelY=首行 baseline 逐行下移），否則 \n 疊成一行
-                    val lineHeight = with(paint.fontMetrics) { -ascent + descent + leading }
-                    ann.text.split("\n").forEachIndexed { i, line ->
-                        composeCanvas.nativeCanvas.drawText(
-                            line, ann.modelX * sx, ann.modelY * sy + i * lineHeight, paint
-                        )
-                    }
-                }
-            }
-        }
-    })
 }
 
 internal fun polygonBounds(points: List<Offset>): Rect? {
