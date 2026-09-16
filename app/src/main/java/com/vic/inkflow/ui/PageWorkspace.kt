@@ -1,14 +1,6 @@
 package com.vic.inkflow.ui
 
-import dev.chrisbanes.haze.HazeState
-import dev.chrisbanes.haze.hazeSource
-import com.vic.inkflow.ui.theme.Motion
 import com.vic.inkflow.ui.theme.ShapeSm
-import com.vic.inkflow.ui.theme.ShapeMd
-import com.vic.inkflow.ui.theme.ShapeLg
-import com.vic.inkflow.ui.theme.ShapeXl
-import com.vic.inkflow.util.reorderable
-import com.vic.inkflow.util.reorderableItem
 
 import android.content.ClipData
 import android.content.ClipDescription
@@ -19,33 +11,12 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.shrinkVertically
-import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.PointerType
@@ -55,26 +26,13 @@ import androidx.compose.runtime.withFrameNanos
 import com.vic.inkflow.util.PalmRejectionFilter
 import com.vic.inkflow.util.TwoFingerArbitrator
 import com.vic.inkflow.util.TwoFingerDecision
-import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.draganddrop.dragAndDropSource
-import androidx.compose.foundation.draganddrop.dragAndDropTarget
-import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.calculateCentroid
-import androidx.compose.foundation.gestures.calculateCentroidSize
-import androidx.compose.foundation.gestures.calculatePan
-import androidx.compose.foundation.gestures.calculateZoom
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -83,198 +41,48 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.runtime.snapshotFlow
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.Article
-import androidx.compose.material.icons.automirrored.filled.NoteAdd
-import androidx.compose.material.icons.automirrored.filled.Redo
-import androidx.compose.material.icons.automirrored.filled.Undo
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Apps
-import androidx.compose.material.icons.filled.Article
-import androidx.compose.material.icons.filled.BackHand
-import androidx.compose.material.icons.filled.Bookmark
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.ChevronLeft
-import androidx.compose.material.icons.filled.ChevronRight
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Create
-import androidx.compose.material.icons.filled.CropSquare
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Description
-import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.automirrored.filled.List
-import androidx.compose.material.icons.filled.Title
-import androidx.compose.material.icons.filled.TouchApp
-import androidx.compose.material.icons.outlined.DarkMode
-import androidx.compose.material.icons.outlined.FileUpload
-import androidx.compose.material.icons.outlined.LightMode
-import androidx.compose.material.icons.outlined.BookmarkBorder
-import androidx.compose.material.icons.outlined.Bookmark
-import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.filled.LibraryAdd
-import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.DeleteOutline
-import androidx.compose.material.icons.filled.QuestionAnswer
-import androidx.compose.material.icons.filled.Summarize
-import androidx.compose.material.icons.filled.Translate
-import androidx.compose.material3.LocalContentColor
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.material.icons.rounded.Delete
-import androidx.compose.material.icons.rounded.Gesture
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationRailItem
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
-import androidx.compose.ui.draganddrop.DragAndDropEvent
-import androidx.compose.ui.draganddrop.DragAndDropTarget
-import androidx.compose.ui.draganddrop.DragAndDropTransferData
-import androidx.compose.ui.draganddrop.toAndroidDragEvent
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
-import com.vic.inkflow.ui.theme.BrandIndigo
-import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.navigation.NavController
-import androidx.navigation.NavType
-import androidx.navigation.compose.NavHost
-import androidx.navigation.compose.composable
-import androidx.navigation.compose.rememberNavController
-import androidx.navigation.navArgument
-import com.vic.inkflow.R
 import com.vic.inkflow.data.AppDatabase
-import com.vic.inkflow.data.DocumentEntity
-import com.vic.inkflow.data.FolderEntity
-import com.vic.inkflow.data.ImageAnnotationEntity
-import com.vic.inkflow.data.StrokeWithPoints
-import com.vic.inkflow.data.TextAnnotationEntity
-import com.vic.inkflow.ui.theme.InkFlowTheme
-
-
-import com.vic.inkflow.ui.theme.Slate50
-import com.vic.inkflow.ui.theme.Slate100
-import com.vic.inkflow.ui.theme.Slate900
-import com.vic.inkflow.ui.theme.ToolbarGlassDark
-import com.vic.inkflow.ui.theme.ToolbarGlassLight
-import com.vic.inkflow.ui.theme.WorkspaceDeskDark
-import com.vic.inkflow.ui.theme.WorkspaceDeskLight
-import com.vic.inkflow.util.PdfManager
-import java.net.URLEncoder
-import java.nio.charset.StandardCharsets
-import kotlin.math.atan2
-import kotlin.math.cos
-import kotlin.math.roundToInt
-import kotlin.math.sin
+import com.vic.inkflow.ui.theme.BrandIndigo
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-
-/** AI 快捷指令 prompt（繁體中文）：圈選氣泡第二排使用，按下後隨圈選圖一起送進 Gemini 自動送出。 */
-internal object AiQuickPrompt {
-    const val EXPLAIN = "請用繁體中文詳細解釋這張圖片中的內容，包含重點與關鍵概念。"
-    const val SUMMARIZE = "請用繁體中文總結這張圖片內容的重點，條列不超過5點。"
-    const val TRANSLATE = "請將這張圖片中的文字翻譯成繁體中文，只輸出譯文。"
-}
-
-/** 套索氣泡的圖示動作鈕：全自繪（Box + clickable），不用 TextButton。
- *  M3 TextButton 自帶 chrome 會在圖示列畫出一條銳利白帶（Bisect A/B 定案），故棄用。 */
-@Composable
-private fun SelectionBubbleAction(
-    icon: ImageVector,
-    label: String,
-    enabled: Boolean,
-    tint: Color = Color(0xFF1E293B),
-    onClick: () -> Unit
-) {
-    Box(
-        modifier = Modifier
-            .clip(RoundedCornerShape(12.dp))
-            .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 8.dp, vertical = 6.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(2.dp)
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = label,
-                modifier = Modifier.size(20.dp),
-                tint = if (enabled) tint else tint.copy(alpha = 0.38f)
-            )
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelSmall,
-                color = if (enabled) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-            )
-        }
-    }
-}
+import kotlin.math.roundToInt
 
 @Composable
 internal fun Workspace(
@@ -293,9 +101,6 @@ internal fun Workspace(
     onRequestPage: (Int) -> Unit = {},
     onScrollPage: (Int) -> Unit = {}
 ) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    // 直向連續卷動：一頁接一頁，不再做縮放平移（觸控直走卷動、觸控筆走繪圖）
     val isDarkSurface = isDarkTheme || MaterialTheme.colorScheme.background.luminance() < 0.5f
     // 桌面全透明：底由 EditorScreen 根 Aurora 提供，紙直接浮在光斑上
     val paperColor = MaterialTheme.colorScheme.surface
@@ -310,35 +115,6 @@ internal fun Workspace(
     val activeRegionPolygon = if (lassoPolygon.isNotEmpty()) lassoPolygon else lastLassoPolygon
     val hasRegionSnapshot = activeRegionPolygon.isNotEmpty()
     var isExtracting by remember { mutableStateOf(false) }
-
-    // 圈選送 AI 共用管線：擷取套索區 → 分享檔 → FileProvider Uri → 交給 AI 面板（附可選快捷 prompt）。
-    fun sendRegionToAi(prompt: String?, pageIdx: Int) {
-        if (isExtracting || !hasSelection || !hasRegionSnapshot) return
-        isExtracting = true
-        scope.launch {
-            try {
-                val sourceBitmap = kotlinx.coroutines.withTimeoutOrNull(1200) {
-                    pdfViewModel.getPageBitmap(pageIdx).filterNotNull().first()
-                } ?: pdfViewModel.getPageBitmap(pageIdx).value
-
-                val file = viewModel.extractRegionToShareFile(
-                    context = context,
-                    sourcePageIndex = pageIdx,
-                    pdfPageBitmap = sourceBitmap
-                )
-                if (file != null) {
-                    val fileUri = androidx.core.content.FileProvider.getUriForFile(
-                        context,
-                        "${context.packageName}.fileprovider",
-                        file
-                    )
-                    onAiFileReady(fileUri, prompt)
-                }
-            } finally {
-                isExtracting = false
-            }
-        }
-    }
 
     var bubbleWidthPx by remember { mutableIntStateOf(0) }
     var bubbleHeightPx by remember { mutableIntStateOf(0) }
@@ -411,8 +187,6 @@ internal fun Workspace(
      */
     fun isCountedFinger(change: PointerInputChange): Boolean =
         change.type == PointerType.Touch && !isPalmPointer(change.id.value)
-
-    val regionBoundsModel = remember(activeRegionPolygon) { polygonBounds(activeRegionPolygon) }
 
     // 雙指全域手勢（紙上＋空白＋跨頁，單一仲裁器，同時是唯一的縮放入口）：
     // PAN → dx 寫 panOffsetX、dy 同步 dispatchRawDelta；PINCH → 寫 shared docZoom＋水平錨定。
@@ -676,38 +450,20 @@ internal fun Workspace(
             // 作用頁概念僅剩側欄指示器＋落筆記憶。靜態分支已删除。
             var itemWidthPx by remember { mutableIntStateOf(0) }
                 val itemTargetOffset = remember(
-                    regionBoundsModel, itemWidthPx, bubbleWidthPx, bubbleHeightPx,
-                    aspect, bubbleGapPx, bubbleSidePaddingPx, bubbleTopSafePx
+                    activeRegionPolygon, itemWidthPx, bubbleWidthPx, bubbleHeightPx, aspect
                 ) {
-                    if (regionBoundsModel == null || itemWidthPx <= 0) {
-                        IntOffset(0, 0)
-                    } else {
-                        val modelW = viewModel.modelWidth
-                        val modelH = viewModel.modelHeight
-                        if (modelW <= 0f || modelH <= 0f) {
-                            IntOffset(0, 0)
-                        } else {
-                            val wF = itemWidthPx.toFloat()
-                            val hF = wF / aspect
-                            val sx = wF / modelW
-                            val sy = hF / modelH
-                            val left = regionBoundsModel.left * sx
-                            val top = regionBoundsModel.top * sy
-                            val right = regionBoundsModel.right * sx
-                            val bottom = regionBoundsModel.bottom * sy
-                            val cx = (left + right) / 2f
-                            val bw = bubbleWidthPx.toFloat()
-                            val bh = bubbleHeightPx.toFloat()
-                            val aboveY = top - bh - bubbleGapPx
-                            val y = if (aboveY < bubbleTopSafePx) bottom + bubbleGapPx else aboveY
-                            val maxX = maxOf(bubbleSidePaddingPx, wF - bw - bubbleSidePaddingPx)
-                            val maxY = maxOf(bubbleTopSafePx, hF - bh - bubbleTopSafePx)
-                            IntOffset(
-                                ((cx - bw / 2f).coerceIn(bubbleSidePaddingPx, maxX)).roundToInt(),
-                                y.coerceIn(bubbleTopSafePx, maxY).roundToInt()
-                            )
-                        }
-                    }
+                    bubbleTargetOffset(
+                        regionPolygon = activeRegionPolygon,
+                        itemWidthPx = itemWidthPx,
+                        bubbleWidthPx = bubbleWidthPx,
+                        bubbleHeightPx = bubbleHeightPx,
+                        aspect = aspect,
+                        gapPx = bubbleGapPx,
+                        sidePaddingPx = bubbleSidePaddingPx,
+                        topSafePx = bubbleTopSafePx,
+                        modelW = viewModel.modelWidth,
+                        modelH = viewModel.modelHeight
+                    )
                 }
                 Box(
                     modifier = Modifier
@@ -842,163 +598,26 @@ internal fun Workspace(
                                 .graphicsLayer { clip = false }
                         )
                     }
-                    // 套索氣泡：只在選取歸屬紙顯示（全活頁下選取可落任意紙）
-                    androidx.compose.animation.AnimatedVisibility(
+                    // 套索氣泡：只在選取歸屬紙顯示（全活頁下選取可落任意紙；本體見 LassoBubble.kt）
+                    LassoBubble(
                         visible = showSelectionBubble && viewModel.selectionPage() == index,
                         modifier = Modifier
                             .align(Alignment.TopStart)
                             .offset { itemTargetOffset },
-            enter = fadeIn(animationSpec = tween(180)) +
-                slideInVertically(
-                    animationSpec = tween(220, easing = androidx.compose.animation.core.FastOutSlowInEasing),
-                    initialOffsetY = { it / 2 }
-                ),
-            exit = fadeOut(animationSpec = tween(140)) +
-                slideOutVertically(
-                    animationSpec = tween(160, easing = androidx.compose.animation.core.FastOutLinearInEasing),
-                    targetOffsetY = { it / 3 }
-                )
-        ) {
-            // 最終版：Box + 自繪毛玻璃 + 自繪按鈕，零 M3 Surface/TextButton（白帶兇手，已定案棄用）。
-            // 陰影用 graphicsLayer 打（不經過 Surface，避免 tonal/shadow 附帶圖層）。
-            Box(
-                modifier = Modifier
-                    .graphicsLayer {
-                        shadowElevation = with(density) { 8.dp.toPx() }
-                        shape = RoundedCornerShape(22.dp)
-                        clip = false
-                    }
-                    .bubbleGlass(false, RoundedCornerShape(22.dp))
-                    .onSizeChanged {
-                        bubbleWidthPx = it.width
-                        bubbleHeightPx = it.height
-                    }
-            ) {
-                Column(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(2.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    SelectionBubbleAction(
-                        icon = Icons.Filled.LibraryAdd,
-                        label = "提取",
-                        enabled = !isExtracting && hasSelection && hasRegionSnapshot,
-                        onClick = {
-                            if (isExtracting || !hasSelection || !hasRegionSnapshot) return@SelectionBubbleAction
-                            isExtracting = true
-                            scope.launch {
-                                try {
-                                    // 提取源 = 選取歸屬紙（全活頁下未必是作用頁）
-                                    val sourcePageIndex = viewModel.selectionPage()
-                                    val sourceBitmap = kotlinx.coroutines.withTimeoutOrNull(1200) {
-                                        pdfViewModel.getPageBitmap(sourcePageIndex)
-                                            .filterNotNull()
-                                            .first()
-                                    } ?: pdfViewModel.getPageBitmap(sourcePageIndex).value
-
-                                    val newPageIndex = sourcePageIndex + 1
-                                    // R2：插頁是結構操作，先清棧（後面頁號全移位，舊復原格會錯位）。
-                                    viewModel.clearUndoStacks()
-                                    pdfViewModel.insertBlankPage(
-                                        context, documentUri, sourcePageIndex,
-                                        pageWidthPt = viewModel.modelWidth,
-                                        pageHeightPt = viewModel.modelHeight
-                                    )
-
-                                    val ok = viewModel.extractRegionToNewPage(
-                                        context = context,
-                                        sourcePageIndex = sourcePageIndex,
-                                        targetPageIndex = newPageIndex,
-                                        pdfPageBitmap = sourceBitmap
-                                    )
-                                    if (!ok) {
-                                        // P0：渲染失敗時收掉剛建的空白頁，不留孤兒頁；給提示。
-                                        pdfViewModel.deletePages(documentUri, listOf(newPageIndex))
-                                        android.widget.Toast.makeText(
-                                            context, "提取失敗：畫面尚未就緒，請稍後再試",
-                                            android.widget.Toast.LENGTH_SHORT
-                                        ).show()
-                                    }
-                                } finally {
-                                    isExtracting = false
-                                }
-                            }
-                        }
+                        onSizeChanged = {
+                            bubbleWidthPx = it.width
+                            bubbleHeightPx = it.height
+                        },
+                        hasSelection = hasSelection,
+                        hasEditableSelection = hasEditableSelection,
+                        hasRegionSnapshot = hasRegionSnapshot,
+                        isExtracting = isExtracting,
+                        onExtractingChange = { isExtracting = it },
+                        viewModel = viewModel,
+                        pdfViewModel = pdfViewModel,
+                        documentUri = documentUri,
+                        onAiFileReady = onAiFileReady
                     )
-                    SelectionBubbleAction(
-                        icon = Icons.Filled.AutoAwesome,
-                        label = "AI 解析",
-                        enabled = !isExtracting && hasSelection && hasRegionSnapshot,
-                        // P0：用選取歸屬紙（同提取/快捷列），之前誤用作用頁，跨頁選取會送錯圖。
-                        onClick = { sendRegionToAi(null, viewModel.selectionPage()) }
-                    )
-                    SelectionBubbleAction(
-                        icon = Icons.Filled.ContentCopy,
-                        label = "複製",
-                        enabled = hasEditableSelection,
-                        onClick = {
-                            if (!hasEditableSelection) return@SelectionBubbleAction
-                            viewModel.copySelectionInPlace()
-                        }
-                    )
-                    SelectionBubbleAction(
-                        icon = Icons.Filled.DeleteOutline,
-                        label = "刪除",
-                        enabled = hasEditableSelection,
-                        tint = if (hasEditableSelection) MaterialTheme.colorScheme.error else Color(0xFF1E293B),
-                        onClick = {
-                            if (!hasEditableSelection) return@SelectionBubbleAction
-                            viewModel.deleteSelection()
-                        }
-                    )
-                    Box(
-                        modifier = Modifier
-                            .size(24.dp)
-                            .clip(CircleShape)
-                            .clickable { viewModel.clearSelection() },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            Icons.Outlined.Close,
-                            contentDescription = "取消選取",
-                            modifier = Modifier.size(16.dp),
-                            tint = Color(0xFF1E293B)
-                        )
-                    }
-                    } // 氣泡第一排
-                    // 快捷指令第二排：有圈選區才出現，按下後送圖 + prompt 自動送出
-                    if (hasRegionSnapshot && hasSelection) {
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(2.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            SelectionBubbleAction(
-                                icon = Icons.Filled.QuestionAnswer,
-                                label = "解釋",
-                                enabled = !isExtracting,
-                                onClick = { sendRegionToAi(AiQuickPrompt.EXPLAIN, viewModel.selectionPage()) }
-                            )
-                            SelectionBubbleAction(
-                                icon = Icons.Filled.Summarize,
-                                label = "總結",
-                                enabled = !isExtracting,
-                                onClick = { sendRegionToAi(AiQuickPrompt.SUMMARIZE, viewModel.selectionPage()) }
-                            )
-                            SelectionBubbleAction(
-                                icon = Icons.Filled.Translate,
-                                label = "翻譯",
-                                enabled = !isExtracting,
-                                onClick = { sendRegionToAi(AiQuickPrompt.TRANSLATE, viewModel.selectionPage()) }
-                            )
-                        }
-                    }
-                }
-            }
-                    }
                     } // 全活頁 item Box（靜態分支已删除，每紙常駐 InkCanvas）
             }
         }
@@ -1073,14 +692,4 @@ private fun DragPreviewOverlay(
             )
         }
     }
-}
-
-internal fun polygonBounds(points: List<Offset>): Rect? {
-    if (points.isEmpty()) return null
-    val minX = points.minOf { it.x }
-    val minY = points.minOf { it.y }
-    val maxX = points.maxOf { it.x }
-    val maxY = points.maxOf { it.y }
-    if (maxX <= minX || maxY <= minY) return null
-    return Rect(minX, minY, maxX, maxY)
 }
