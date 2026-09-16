@@ -300,6 +300,18 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
         viewModel.setActivePage(index)
         scope.launch { runCatching { mainListState.animateScrollToItem(index) } }
     }
+    // R3：提取整組撤銷的頁操作接線（VM 碰不到 PdfViewModel/Context，由這層提供；
+    // model 尺寸每次現讀，避免閉包陳舊）。
+    viewModel.extractPageOps = EditorViewModel.ExtractPageOps(
+        deletePage = { target -> pdfViewModel.deletePages(uri.toString(), listOf(target)) },
+        insertPageAfter = { after ->
+            pdfViewModel.insertBlankPage(
+                context, uri.toString(), after,
+                pageWidthPt = viewModel.modelWidth,
+                pageHeightPt = viewModel.modelHeight
+            )
+        }
+    )
 
     // M3：引入文字插入 — 分頁排版 → 來源頁後串行開新頁 → 寫入 → 跳到首個新頁。
     // insertBlankPage 同一時間只接受一頁（進行中會直接丟棄），故用 pageCount 逐頁確認。
@@ -544,6 +556,8 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
             sourceUri = selectedUri,
             afterIndex = currentPageIndex
         )
+        // R2：插入 PDF 頁也是結構操作，清棧。
+        viewModel.clearUndoStacks()
     }
 
     // When the PDF first loads, initialize the EditorViewModel's model space to match the first page.
@@ -764,6 +778,8 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                     onRequestPage(index)
                 },
                 onAddPage = { afterIndex ->
+                    // R2：結構操作超出復原範圍——先清棧，杜絕舊命令錯位寫入。
+                    viewModel.clearUndoStacks()
                     scope.launch {
                         pdfViewModel.insertBlankPage(
                             context,
@@ -775,8 +791,12 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                     }
                 },
                 onDeletePages = { indices ->
+                    // R2：同上，清棧。
+                    viewModel.clearUndoStacks()
                     pdfViewModel.deletePages(uri.toString(), indices)
                 },
+                // R2：側欄拖拽移頁是結構操作，清棧。
+                onStructureChanged = { viewModel.clearUndoStacks() },
                 listState = sidebarListState,
                 modifier = Modifier.fillMaxSize(),
                 hazeState = editorHaze,

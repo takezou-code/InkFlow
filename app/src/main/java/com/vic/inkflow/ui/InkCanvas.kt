@@ -1333,6 +1333,8 @@ fun InkCanvas(
                 down.consume()
                 // 連貫畫布：寫筆全程鎖頁，自動捲不觸發作用頁切換，鬆筆才結算跨頁
                 viewModel.setPageLock(true)
+                // R1：橡皮擦手勢開門（累積器；畫筆/quick-swipe 不開，各自成格）
+                if (activeTool == Tool.ERASER) viewModel.beginEraseGesture()
 
                 // When the pointer already lifted before we could call awaitDragOrCancellation
                 // (DOWN+UP in < one frame), skip the drag loop; the single DOWN point is enough
@@ -1478,13 +1480,15 @@ fun InkCanvas(
                                     // 避免 pointerInput key 變化中途重啟打斷手勢）。
                                     // quick-swipe 本來就是筆：不記旗不切筆。
                                     // 跨頁擦除：擦過紙界時鄰頁一起擦（各頁分段，undo 按頁記）。
+                                    // R1：命中進手勢累積器，結尾合併一格。
                                     viewModel.deleteStrokesIntersectingAcrossPages(
                                         eraserPointsCanvas = points,
                                         srcPage = pageIndexRef.value,
                                         canvasH = canvasPixelSizeState.value.height,
                                         gapPx = pageGapPxRef.value,
                                         pageCount = pageCountRef.value,
-                                        markEraseHit = activeTool == Tool.ERASER
+                                        markEraseHit = activeTool == Tool.ERASER,
+                                        accumulateToGesture = activeTool == Tool.ERASER
                                     )
                                     lastEraserDispatchTime = drag.uptimeMillis
                                 }
@@ -1512,6 +1516,8 @@ fun InkCanvas(
                     currentPathPoints.clear()
                     activePathVersion++
                     if (activeTool == Tool.ERASER) viewModel.clearEraseHitPending()
+                    // R1：累積作廢，不留復原格
+                    if (activeTool == Tool.ERASER) viewModel.discardEraseGesture()
                     viewModel.setPageLock(false)
                     return@awaitEachGesture
                 }
@@ -1523,6 +1529,8 @@ fun InkCanvas(
                     currentPathPoints.clear()
                     activePathVersion++
                     if (activeTool == Tool.ERASER) viewModel.clearEraseHitPending()
+                    // R1：累積作廢，不留復原格
+                    if (activeTool == Tool.ERASER) viewModel.discardEraseGesture()
                     viewModel.setPageLock(false)
                     return@awaitEachGesture
                 }
@@ -1633,7 +1641,8 @@ fun InkCanvas(
                             canvasH = canvasPixelSizeState.value.height,
                             gapPx = pageGapPxRef.value,
                             pageCount = pageCountRef.value,
-                            switchToPenAfterEraseHit = true
+                            switchToPenAfterEraseHit = true,
+                            accumulateToGesture = true
                         )
                     }
                     else -> { }
@@ -1642,6 +1651,8 @@ fun InkCanvas(
                 activeEnvelopePath.reset()
                 activePathVersion++
                 currentPathPoints.clear()
+                // R1：橡皮擦手勢關門（合併推一格；畫筆是空操作）
+                if (activeTool == Tool.ERASER) viewModel.endEraseGesture()
                 // 兜底：自由筆各提交路徑在此統一清鎖（PEN/HL 已在分支內清過，重複無害）
                 viewModel.setPageLock(false)
             }

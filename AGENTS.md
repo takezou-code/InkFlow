@@ -42,6 +42,12 @@
 - 側欄：主→側永遠被動跟隨（只動側欄）；側→主只許點按＋側欄親自拖，帶 epoch、中間頁忽略。
 - 手掌：只看接觸面積（`touchMajor`，小米檔 >1.8／像素檔 >45dp），`touchMajor<=0` 一律當手指（fail-open）；禁拿位移猜手掌（手掌和捏合錨定指運動學相同）。
 
+## 復原（undo/redo）公約
+- 命令＋逆操作對稱（`DrawCommand` 全分支 undo/redo 必成對，不許單邊）。
+- 手勢級合併：一筆手勢只記一格（橡皮擦用累積器＋`begin/end/discardEraseGesture`；`end` 排空 mutex 後結算；取消不留格）。新增手勢型操作照此辦理。
+- 結構操作（增/刪/移頁、插 PDF）超出復原範圍：動頁前必 `clearUndoStacks()`，杜絕舊命令錯位寫入。
+- 歷史上限 200 格；跨文件 VM 重建不保留歷史（業界標準）。
+
 ## 統一畫布（單一文件座標＋切頁）
 - 概念：整份文件一個座標系（PDF pt），`x∈[0,W]`，`y∈[0,N×stride)`；頁只是開在上面的窗口。`W/H` 逐文件（首頁真實尺寸，`MODEL_W/H` 預設 A4）。
 - 兩個 stride：`docStride=modelH`（資料用，無縫）；`layoutStride=canvasH+gapPx`（螢幕用，含縫）。縫只存在於版式。
