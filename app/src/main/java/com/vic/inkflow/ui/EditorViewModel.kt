@@ -112,16 +112,33 @@ class EditorViewModel(
                     val ns = strokeDao.backfillStrokeDocY(documentUri, stride)
                     val nt = textAnnotationDao.backfillTextDocY(documentUri, stride)
                     val ni = imageAnnotationDao.backfillImageDocY(documentUri, stride)
-                    check(strokeDao.countMissingDocY(documentUri) == 0) { "docY backfill incomplete: strokes" }
-                    check(textAnnotationDao.countMissingDocY(documentUri) == 0) { "docY backfill incomplete: texts" }
-                    check(imageAnnotationDao.countMissingDocY(documentUri) == 0) { "docY backfill incomplete: images" }
-                    check(strokeDao.countStrokeDocMismatch(documentUri, stride) == 0) { "docY invariant broken: strokes" }
-                    check(textAnnotationDao.countTextDocMismatch(documentUri, stride) == 0) { "docY invariant broken: texts" }
-                    check(imageAnnotationDao.countImageDocMismatch(documentUri, stride) == 0) { "docY invariant broken: images" }
+                    // Breadcrumb（user 決議維持閃退）：拋之前先記哪個斷言＋哪份文件＋計數，
+                    // 出事看 log 一次定位，不改任何行為。
+                    fun crumb(tag: String, n: Any?) =
+                        android.util.Log.e("DocSpace", "ASSERT-FAIL $tag doc=$documentUri stride=$stride detail=$n")
+                    val missS = strokeDao.countMissingDocY(documentUri)
+                    val missT = textAnnotationDao.countMissingDocY(documentUri)
+                    val missI = imageAnnotationDao.countMissingDocY(documentUri)
+                    if (missS != 0) crumb("backfill-incomplete/strokes", missS)
+                    if (missT != 0) crumb("backfill-incomplete/texts", missT)
+                    if (missI != 0) crumb("backfill-incomplete/images", missI)
+                    check(missS == 0) { "docY backfill incomplete: strokes ($missS)" }
+                    check(missT == 0) { "docY backfill incomplete: texts ($missT)" }
+                    check(missI == 0) { "docY backfill incomplete: images ($missI)" }
+                    val mmS = strokeDao.countStrokeDocMismatch(documentUri, stride)
+                    val mmT = textAnnotationDao.countTextDocMismatch(documentUri, stride)
+                    val mmI = imageAnnotationDao.countImageDocMismatch(documentUri, stride)
+                    if (mmS != 0) crumb("invariant-broken/strokes", mmS)
+                    if (mmT != 0) crumb("invariant-broken/texts", mmT)
+                    if (mmI != 0) crumb("invariant-broken/images", mmI)
+                    check(mmS == 0) { "docY invariant broken: strokes ($mmS)" }
+                    check(mmT == 0) { "docY invariant broken: texts ($mmT)" }
+                    check(mmI == 0) { "docY invariant broken: images ($mmI)" }
                     // 範圍查vs頁查一致性抽查（第 0 頁同頁列必須完全一致）
                     val page0 = strokeDao.getStrokesForPageSync(documentUri, 0).map { it.stroke.id }.toSet()
                     val range0 = strokeDao.getStrokesForRange(documentUri, -1f, stride + 1)
                         .filter { it.stroke.pageIndex == 0 }.map { it.stroke.id }.toSet()
+                    if (page0 != range0) crumb("range-page-parity", "page0=${page0.size} range0=${range0.size}")
                     check(page0 == range0) { "range/page parity broken: strokes page 0" }
                     android.util.Log.i(
                         "DocSpace",
