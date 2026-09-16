@@ -903,21 +903,6 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         bitmapFlowCache[pageIndex] = flow
         if (flow.value == null) {
             viewModelScope.launch(Dispatchers.IO) {
-                renderPage(pageIndex, highQuality = true)?.let {
-                    flow.value = it
-                }
-            }
-        }
-        return flow
-    }
-
-    fun getPageThumbnail(pageIndex: Int): StateFlow<Bitmap?> {
-        val existing = thumbnailFlowCache[pageIndex]
-        if (existing != null) return existing
-        val flow = MutableStateFlow(thumbnailCache[pageIndex])
-        thumbnailFlowCache[pageIndex] = flow
-        if (flow.value == null) {
-            viewModelScope.launch(Dispatchers.IO) {
                 // F2 黑頁修復：剛插頁重開空窗期 pdfRenderer 為 null，這次必回 null；
                 // 以前只試一次就永久黑，現在退避重試（flow 留空等重試，不毒化快取）。
                 repeat(4) { attempt ->
@@ -931,6 +916,18 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+        return flow
+    }
+
+    fun getPageThumbnail(pageIndex: Int): StateFlow<Bitmap?> {
+        val existing = thumbnailFlowCache[pageIndex]
+        if (existing != null) return existing
+        val flow = MutableStateFlow(thumbnailCache[pageIndex])
+        thumbnailFlowCache[pageIndex] = flow
+        if (flow.value == null) {
+            viewModelScope.launch(Dispatchers.IO) {
+                renderPage(pageIndex, highQuality = false)?.let { flow.value = it }
+            }
         }
         return flow
     }
