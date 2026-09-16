@@ -555,6 +555,29 @@ class EditorViewModel(
                 )
             }
             if (gen == prefetchGen) _neighborCache.value = fresh
+            // 影子比對（單一畫布遷移 S2 前哨）：同窗口再跑一次 docY 範圍查，
+            // 頁查⊆範圍查才算一致；只記 log，不動行為。等大文件必須零差異；
+            // 混合尺寸會有差（stride 逐頁不同），那正是 T4 要收的。
+            runCatching {
+                val stride = docStride
+                for (p in window) {
+                    val y0 = p * stride
+                    val y1 = (p + 1) * stride
+                    val pageIds = fresh[p]?.strokes?.map { it.stroke.id }?.toSet().orEmpty()
+                    val rangeIds = strokeDao.getStrokesForRange(documentUri, y0, y1)
+                        .map { it.stroke.id }.toSet()
+                    val missing = pageIds - rangeIds
+                    val extra = rangeIds - pageIds
+                    if (missing.isNotEmpty() || extra.isNotEmpty()) {
+                        android.util.Log.w(
+                            "DocSpace",
+                            "shadow-mismatch page=$p doc=$documentUri " +
+                                "missing=${missing.size} extra=${extra.size} " +
+                                "missingIds=${missing.take(5)} extraIds=${extra.take(5)}"
+                        )
+                    }
+                }
+            }
         }
     }
 
