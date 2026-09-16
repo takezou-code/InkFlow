@@ -47,6 +47,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.ui.input.pointer.PointerId
+import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.input.pointer.positionChange
@@ -404,6 +405,13 @@ internal fun Workspace(
         }
     }
 
+    /**
+     * P0：兩層手勢共用同一個「算數的手指」定義（觸控＋非手掌；筆不算）。
+     * 之前雙指層看不見筆、空白層把筆當手指——筆＋手指組合兩頭落空。
+     */
+    fun isCountedFinger(change: PointerInputChange): Boolean =
+        change.type == PointerType.Touch && !isPalmPointer(change.id.value)
+
     val regionBoundsModel = remember(activeRegionPolygon) { polygonBounds(activeRegionPolygon) }
 
     // 雙指全域手勢（紙上＋空白＋跨頁，單一仲裁器，同時是唯一的縮放入口）：
@@ -433,7 +441,8 @@ internal fun Workspace(
                 // 只算觸控手指：觸控筆書寫時不參與；手掌（大接觸面積）剔除——
                 // 手掌靜止＋手指拖時，不過濾的話重心只走一半速度、間距亂變還會誤判 PINCH，
                 // 就是半速＋亂縮放的來源。真雙指兩個都是小點，不過濾不受影響。
-                val touch = pressedAll.filter { it.type == PointerType.Touch && !isPalmPointer(it.id.value) }
+                // （計數定義見 isCountedFinger，與空白層共用，禁各寫各的。）
+                val touch = pressedAll.filter { isCountedFinger(it) }
                 if (touch.size >= 2) {
                     val ids = touch.map { it.id }.toSet()
                     val cx = touch.sumOf { it.position.x.toDouble() }.toFloat() / touch.size
@@ -516,9 +525,11 @@ internal fun Workspace(
             if (!isBlankX(down.position.x)) return@awaitEachGesture
             while (true) {
                 val event = awaitPointerEvent()
-                // 第二根「手指」出現：整段手勢作廢，交給雙指修飾——手掌不算，
-                // 否則手掌貼著時所有空白拖曳一動就死（另一種卡住）。
-                if (event.changes.count { it.pressed && !isPalmPointer(it.id.value) } > 1) return@awaitEachGesture
+                // 第二根「手指」出現：整段手勢作廢，交給雙指修飾——手掌不算；
+                // 筆出現也讓路（畫布不能在筆下漂移）。手掌貼著時不作廢，否則一動就死。
+                val counted = event.changes.count { it.pressed && isCountedFinger(it) }
+                val stylusDown = event.changes.any { it.pressed && it.type == PointerType.Stylus }
+                if (counted > 1 || stylusDown) return@awaitEachGesture
                 val change = event.changes.firstOrNull { it.id == down.id } ?: break
                 if (!change.pressed) break // up/cancel：tap 原樣放過，不消耗
                 val delta = change.positionChange()
@@ -890,18 +901,28 @@ internal fun Workspace(
                                     } ?: pdfViewModel.getPageBitmap(sourcePageIndex).value
 
                                     val newPageIndex = sourcePageIndex + 1
+                                    // R2：插頁是結構操作，先清棧（後面頁號全移位，舊復原格會錯位）。
+                                    viewModel.clearUndoStacks()
                                     pdfViewModel.insertBlankPage(
                                         context, documentUri, sourcePageIndex,
                                         pageWidthPt = viewModel.modelWidth,
                                         pageHeightPt = viewModel.modelHeight
                                     )
 
-                                    viewModel.extractRegionToNewPage(
+                                    val ok = viewModel.extractRegionToNewPage(
                                         context = context,
                                         sourcePageIndex = sourcePageIndex,
                                         targetPageIndex = newPageIndex,
                                         pdfPageBitmap = sourceBitmap
                                     )
+                                    if (!ok) {
+                                        // P0：渲染失敗時收掉剛建的空白頁，不留孤兒頁；給提示。
+                                        pdfViewModel.deletePages(documentUri, listOf(newPageIndex))
+                                        android.widget.Toast.makeText(
+                                            context, "提取失敗：畫面尚未就緒，請稍後再試",
+                                            android.widget.Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
                                 } finally {
                                     isExtracting = false
                                 }
@@ -912,7 +933,8 @@ internal fun Workspace(
                         icon = Icons.Filled.AutoAwesome,
                         label = "AI 解析",
                         enabled = !isExtracting && hasSelection && hasRegionSnapshot,
-                        onClick = { sendRegionToAi(null, pageIndex) }
+                        // P0：用選取歸屬紙（同提取/快捷列），之前誤用作用頁，跨頁選取會送錯圖。
+                        onClick = { sendRegionToAi(null, viewModel.selectionPage()) }
                     )
                     SelectionBubbleAction(
                         icon = Icons.Filled.ContentCopy,
