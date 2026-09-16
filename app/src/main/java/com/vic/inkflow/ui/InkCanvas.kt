@@ -98,6 +98,7 @@ import com.vic.inkflow.util.TouchEventLogger
 import com.vic.inkflow.util.EnvelopeUtils
 import com.vic.inkflow.util.smoothCenterline
 import com.vic.inkflow.util.StrokePoint
+import com.vic.inkflow.util.DocLayout
 import androidx.compose.ui.graphics.FilterQuality
 import com.vic.inkflow.util.StrokeTransformUtils
 import java.util.UUID
@@ -1476,10 +1477,14 @@ fun InkCanvas(
                                     // 手勢中途只記命中不切筆（切筆留到手勢結尾，
                                     // 避免 pointerInput key 變化中途重啟打斷手勢）。
                                     // quick-swipe 本來就是筆：不記旗不切筆。
-                                    viewModel.deleteStrokesIntersecting(
-                                        points,
-                                        markEraseHit = activeTool == Tool.ERASER,
-                                        page = pageIndexRef.value
+                                    // 跨頁擦除：擦過紙界時鄰頁一起擦（各頁分段，undo 按頁記）。
+                                    viewModel.deleteStrokesIntersectingAcrossPages(
+                                        eraserPointsCanvas = points,
+                                        srcPage = pageIndexRef.value,
+                                        canvasH = canvasPixelSizeState.value.height,
+                                        gapPx = pageGapPxRef.value,
+                                        pageCount = pageCountRef.value,
+                                        markEraseHit = activeTool == Tool.ERASER
                                     )
                                     lastEraserDispatchTime = drag.uptimeMillis
                                 }
@@ -1539,7 +1544,14 @@ fun InkCanvas(
                                 maxSizeWidthPx  = maxSizeWidthDuring,
                                 maxSizeHeightPx = maxSizeHeightDuring
                             )
-                            viewModel.deleteStrokesIntersecting(points, markEraseHit = false, page = pageIndexRef.value)
+                            viewModel.deleteStrokesIntersectingAcrossPages(
+                                eraserPointsCanvas = points,
+                                srcPage = pageIndexRef.value,
+                                canvasH = canvasPixelSizeState.value.height,
+                                gapPx = pageGapPxRef.value,
+                                pageCount = pageCountRef.value,
+                                markEraseHit = false
+                            )
                         } else {
                             // A single-point tap produces no drag points; duplicate it so
                             // saveStroke receives ≥2 points and StrokeCap.Round renders a dot.
@@ -1583,10 +1595,27 @@ fun InkCanvas(
                     }
                     Tool.LASSO -> {
                         activePath.close()
-                        viewModel.selectStrokesInLasso(
-                            currentPathPoints.map { Offset(it.x, it.y) },
-                            page = pageIndexRef.value
+                        // 跨頁套索：圈出本頁時切分到各頁分查後聯集；單頁原樣走舊路徑。
+                        val lassoPts = currentPathPoints.map { Offset(it.x, it.y) }
+                        val lassoSegs = DocLayout.splitByPage(
+                            items = lassoPts,
+                            yOf = { it.y },
+                            canvasH = canvasPixelSizeState.value.height,
+                            gapPx = pageGapPxRef.value,
+                            srcPage = pageIndexRef.value,
+                            pageCount = pageCountRef.value,
+                            local = { p, ly -> Offset(p.x, ly) }
                         )
+                        if (lassoSegs.size == 1 && lassoSegs[0].first == pageIndexRef.value) {
+                            viewModel.selectStrokesInLasso(lassoPts, page = pageIndexRef.value)
+                        } else {
+                            viewModel.selectStrokesInLassoAcross(
+                                polygonsByPage = lassoSegs.toMap(),
+                                srcPage = pageIndexRef.value,
+                                canvasW = canvasPixelSizeState.value.width,
+                                canvasH = canvasPixelSizeState.value.height
+                            )
+                        }
                     }
                     Tool.ERASER -> {
                         // Fire one final erasure at end of the gesture so that:
@@ -1598,10 +1627,13 @@ fun InkCanvas(
                         } else {
                             currentPathPoints.map { Offset(it.x, it.y) }
                         }
-                        viewModel.deleteStrokesIntersecting(
+                        viewModel.deleteStrokesIntersectingAcrossPages(
                             eraserPointsCanvas = points,
-                            switchToPenAfterEraseHit = true,
-                            page = pageIndexRef.value
+                            srcPage = pageIndexRef.value,
+                            canvasH = canvasPixelSizeState.value.height,
+                            gapPx = pageGapPxRef.value,
+                            pageCount = pageCountRef.value,
+                            switchToPenAfterEraseHit = true
                         )
                     }
                     else -> { }
