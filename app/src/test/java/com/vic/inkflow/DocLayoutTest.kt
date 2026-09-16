@@ -127,4 +127,55 @@ class DocLayoutTest {
         val zero = DocLayout.splitByPage(listOf(5f), { it }, 0f, 18f, 1, 3) { _, ly -> ly }
         assertEquals(1, zero.single().first)
     }
+
+    @Test
+    fun rectSinglePagePassthrough() {
+        val out = DocLayout.rectsByPage(100f, 100f, 300f, 300f, 800f, 800f, 18f, 1, 3)
+        assertEquals(1, out.size)
+        val quad = out[1]!!
+        assertEquals(4, quad.size)
+        assertEquals(100f, quad[0].x, 0.001f)
+        assertEquals(100f, quad[0].y, 0.001f)
+        assertEquals(300f, quad[2].x, 0.001f)
+        assertEquals(300f, quad[2].y, 0.001f)
+    }
+
+    @Test
+    fun rectCrossesDownOnePage() {
+        // canvasH=800, gap=18 → stride=818；框 y 700..900 從第 1 頁跨到第 2 頁。
+        val out = DocLayout.rectsByPage(100f, 700f, 300f, 900f, 800f, 800f, 18f, 1, 3)
+        assertEquals(2, out.size)
+        val upper = out[1]!!
+        val lower = out[2]!!
+        // 上頁段：700..800（頁內座標）
+        assertEquals(700f, upper[0].y, 0.001f)
+        assertEquals(800f, upper[2].y, 0.001f)
+        // 下頁段：0..82（900-818）
+        assertEquals(0f, lower[0].y, 0.001f)
+        assertEquals(82f, lower[2].y, 0.001f)
+        // x 原樣
+        assertTrue(upper.all { it.x == 100f || it.x == 300f })
+    }
+
+    @Test
+    fun rectDraggedBottomUpNormalized() {
+        // 倒著拖（右下→左上）同樣閉合正確。
+        val out = DocLayout.rectsByPage(300f, 900f, 100f, 700f, 800f, 800f, 18f, 1, 3)
+        assertEquals(2, out.size)
+        assertEquals(100f, out[1]!![0].x, 0.001f)
+        assertEquals(300f, out[1]!![1].x, 0.001f)
+    }
+
+    @Test
+    fun rectEntirelyInGapYieldsNothing() {
+        // 框整個落在縫裡（800..818）：不屬於任何頁。
+        val out = DocLayout.rectsByPage(100f, 802f, 300f, 816f, 800f, 800f, 18f, 1, 3)
+        assertTrue(out.isEmpty())
+    }
+
+    @Test
+    fun rectDegenerateEmpty() {
+        assertTrue(DocLayout.rectsByPage(100f, 100f, 100f, 300f, 800f, 800f, 18f, 1, 3).isEmpty())
+        assertTrue(DocLayout.rectsByPage(0f, 0f, 10f, 10f, 0f, 800f, 18f, 0, 1).isEmpty())
+    }
 }
