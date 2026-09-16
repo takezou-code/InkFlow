@@ -19,6 +19,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.view.MotionEvent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -52,8 +53,10 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.pointer.PointerType
+import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.runtime.withFrameNanos
+import com.vic.inkflow.util.PalmRejectionFilter
 import com.vic.inkflow.util.TwoFingerArbitrator
 import com.vic.inkflow.util.TwoFingerDecision
 import androidx.compose.foundation.combinedClickable
@@ -406,6 +409,24 @@ internal fun Workspace(
         if (fixed != cur) viewModel.setPanOffsetX(fixed)
     }
 
+    // 工作區層手掌辨識（touchMajor）：手掌和捏合錨定指在位移上長得一樣，
+    // 唯一分得出來的是接觸面積。Compose 手勢層拿不到面積，所以跟 InkCanvas 一樣
+    // 用 pointerInteropFilter 偷看原生 MotionEvent（墨水那套獨立運作，互不干擾）。
+    // 用途：雙指重心/間距＋空白作廢計數只算非手掌點——手掌貼著時手指照樣全速拖，
+    // 真雙指（兩個小點）和捏合錨定指行為不變。
+    // 安全閥：touchMajor <= 0（裝置不回報）一律當手指——fail-open，寧放過不誤殺。
+    // 注意不用 PalmRejectionFilter.shouldReject 整顆：它含「多指即拒」條款（寫字用的），平移只取面積判定。
+    val palmTouchMajors = remember { mutableStateMapOf<Int, Float>() }
+    fun isPalmPointer(composeId: Long): Boolean {
+        val major = palmTouchMajors[composeId.toInt()] ?: return false
+        if (major <= 0f) return false
+        return if (major >= 10f) {
+            major > with(density) { 45.dp.toPx() } // 像素檔（同 PalmRejectionFilter 閾值）
+        } else {
+            major > PalmRejectionFilter.RAW_UNIT_PALM_THRESHOLD // 小米歸一化檔 1.8
+        }
+    }
+
     val regionBoundsModel = remember(activeRegionPolygon) { polygonBounds(activeRegionPolygon) }
 
     // 雙指全域手勢（紙上＋空白＋跨頁，單一仲裁器，同時是唯一的縮放入口）：
@@ -432,8 +453,10 @@ internal fun Workspace(
                     }
                     break
                 }
-                // 只算觸控手指：觸控筆書寫時不參與
-                val touch = pressedAll.filter { it.type == PointerType.Touch }
+                // 只算觸控手指：觸控筆書寫時不參與；手掌（大接觸面積）剔除——
+                // 手掌靜止＋手指拖時，不過濾的話重心只走一半速度、間距亂變還會誤判 PINCH，
+                // 就是半速＋亂縮放的來源。真雙指兩個都是小點，不過濾不受影響。
+                val touch = pressedAll.filter { it.type == PointerType.Touch && !isPalmPointer(it.id.value) }
                 if (touch.size >= 2) {
                     val ids = touch.map { it.id }.toSet()
                     val cx = touch.sumOf { it.position.x.toDouble() }.toFloat() / touch.size
@@ -512,12 +535,13 @@ internal fun Workspace(
     val blankPanModifier = Modifier.pointerInput(Unit) {
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false)
+            if (isPalmPointer(down.id.value)) return@awaitEachGesture // 手掌先落：不接管
             if (!isBlankX(down.position.x)) return@awaitEachGesture
             while (true) {
                 val event = awaitPointerEvent()
-                // 第二根手指出現：整段手勢作廢，交給雙指修飾——
-                // 否則雙指放開剩一指時，殘留位移會被這裡吃掉（＝放手後還在動）。
-                if (event.changes.count { it.pressed } > 1) return@awaitEachGesture
+                // 第二根「手指」出現：整段手勢作廢，交給雙指修飾——手掌不算，
+                // 否則手掌貼著時所有空白拖曳一動就死（另一種卡住）。
+                if (event.changes.count { it.pressed && !isPalmPointer(it.id.value) } > 1) return@awaitEachGesture
                 val change = event.changes.firstOrNull { it.id == down.id } ?: break
                 if (!change.pressed) break // up/cancel：tap 原樣放過，不消耗
                 val delta = change.positionChange()
@@ -604,6 +628,26 @@ internal fun Workspace(
         modifier = modifier
             .background(Color.Transparent)
             .onSizeChanged { viewportWpx = it.width }
+            // 原生接觸面積採集（手掌辨識用）：只看不攔（回傳 false），事件原樣交給手勢層。
+            // 與 InkCanvas 內的採集器各管各的 map，互不干擾。
+            .pointerInteropFilter { motionEvent ->
+                when (motionEvent.actionMasked) {
+                    MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
+                        repeat(motionEvent.pointerCount) { i ->
+                            val pid = motionEvent.getPointerId(i)
+                            // 筆永不判掌：記 0，isPalmPointer 直接放行
+                            palmTouchMajors[pid] =
+                                if (motionEvent.getToolType(i) == MotionEvent.TOOL_TYPE_STYLUS) 0f
+                                else motionEvent.getTouchMajor(i)
+                        }
+                    }
+                    MotionEvent.ACTION_POINTER_UP ->
+                        palmTouchMajors.remove(motionEvent.getPointerId(motionEvent.actionIndex))
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+                        palmTouchMajors.clear()
+                }
+                false
+            }
             .then(twoFingerModifier)
             .then(blankPanModifier)
     ) {
