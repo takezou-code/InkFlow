@@ -152,6 +152,18 @@ class EditorViewModel(
     /** S1 雙寫步幅：live modelH（與回填同源；紙改尺寸後 S2 接 rebase）。 */
     private val docStride: Float get() = modelHeight.coerceAtLeast(1f)
 
+    /**
+     * R3：提取整組撤銷的頁操作回調（EditorScreen 接線：有 Context＋PdfViewModel 的那層，
+     * EditorViewModel 碰不到 PdfViewModel）。
+     */
+    data class ExtractPageOps(
+        /** 刪整頁（undo 用；VM 已先做「頁上無別的內容」守衛）。 */
+        val deletePage: (Int) -> Unit,
+        /** 在指定頁後插入空白頁（redo 用，頁尺寸用當下 model）。 */
+        val insertPageAfter: (Int) -> Unit,
+    )
+    var extractPageOps: ExtractPageOps? = null
+
     /** Updates the paper style (size + background template). */
     fun setPaperStyle(style: PaperStyle) {
         _paperStyle.value = style
@@ -406,8 +418,21 @@ class EditorViewModel(
 
     private fun pushUndo(command: DrawCommand) {
         undoStack.addLast(command)
+        // R2：歷史上限 200 格，裁頭（最舊先掉；無上限長會話快照膨脹）。
+        while (undoStack.size > 200) undoStack.removeFirst()
         redoStack.clear()
         _canUndo.value = true
+        _canRedo.value = false
+    }
+
+    /**
+     * R2：頁面增刪移是結構操作、超出復原範圍——呼叫方在動頁前清棧，
+     * 否則舊命令的 pageIndex 已錯位，復原會寫出幽靈資料。
+     */
+    fun clearUndoStacks() {
+        undoStack.clear()
+        redoStack.clear()
+        _canUndo.value = false
         _canRedo.value = false
     }
 
@@ -611,6 +636,47 @@ class EditorViewModel(
     /** 手勢被系統取消/縮放丟棄時清掉本手勢累積的命中，避免污染下次手勢。 */
     fun clearEraseHitPending() { eraseHitPending.set(false) }
 
+    // ── R1 手勢級合併：單次擦除手勢內只刪不記，結尾一次記一格 ──────────────
+    // 累積器只在手勢線程（Main 調用序列）碰觸；讀寫都在 Main 或單次 end 調用內，無競態。
+    private val eraseGestureStrokes = mutableListOf<StrokeWithPoints>()
+    private val eraseGestureTexts = mutableListOf<TextAnnotationEntity>()
+    private var eraseGestureOpen = false
+
+    /** 擦除手勢起手呼叫（InkCanvas 橡皮擦接管處）。 */
+    fun beginEraseGesture() {
+        eraseGestureStrokes.clear()
+        eraseGestureTexts.clear()
+        eraseGestureOpen = true
+    }
+
+    /** 擦除手勢正常結束呼叫：等同手勢所有 async 寫入落定後，有戰果則合併推一格，否則不留痕。 */
+    fun endEraseGesture() {
+        if (!eraseGestureOpen) return
+        eraseGestureOpen = false
+        viewModelScope.launch(Dispatchers.Default) {
+            eraserMutex.withLock { } // 排空：等 live/final 寫入全部落定才結算
+            val (strokes, texts) = withContext(Dispatchers.Main) {
+                val s = eraseGestureStrokes.toList()
+                val t = eraseGestureTexts.toList()
+                eraseGestureStrokes.clear()
+                eraseGestureTexts.clear()
+                s to t
+            }
+            if (strokes.isNotEmpty() || texts.isNotEmpty()) {
+                withContext(Dispatchers.Main) {
+                    pushUndo(DrawCommand.EraseGesture(strokes, texts))
+                }
+            }
+        }
+    }
+
+    /** 擦除手勢被取消/縮放丟棄呼叫：累積作廢，不留復原格。 */
+    fun discardEraseGesture() {
+        eraseGestureOpen = false
+        eraseGestureStrokes.clear()
+        eraseGestureTexts.clear()
+    }
+
     fun deleteStrokesIntersecting(
         eraserPointsCanvas: List<Offset>,
         switchToPenAfterEraseHit: Boolean = false,
@@ -618,7 +684,12 @@ class EditorViewModel(
         // 傳 false：它本來就是筆，不參與切筆，否則舊旗標會污染下一次真正的擦除手勢。
         markEraseHit: Boolean = true,
         /** 橡皮擦所在紙。null = 作用頁（舊行為）；全活頁下 InkCanvas 傳自己。 */
-        page: Int? = null
+        page: Int? = null,
+        /**
+         * R1：true = 命中只進手勢累積器、不推復原格（結尾由 endEraseGesture 一次記）。
+         * 橡皮擦 live/final 傳 true；quick-swipe（自成一格）傳 false。
+         */
+        accumulateToGesture: Boolean = false
     ) {        val cW = canvasW
         val cH = canvasH
         val targetPage = page ?: pageIndex.value
@@ -641,8 +712,15 @@ class EditorViewModel(
                 withContext(Dispatchers.IO) {
                     strokeDao.deleteStrokesByIds(intersectingStrokes.map { it.stroke.id })
                 }
-                val command = DrawCommand.RemoveStrokes(intersectingStrokes)
-                withContext(Dispatchers.Main) { pushUndo(command) }
+                if (accumulateToGesture) {
+                    withContext(Dispatchers.Main) {
+                        // 開關門栓：在飛行中的舊寫入若遇到 discard/begin 後才落定，直接丟棄不污染。
+                        if (eraseGestureOpen) eraseGestureStrokes += intersectingStrokes
+                    }
+                } else {
+                    val command = DrawCommand.RemoveStrokes(intersectingStrokes)
+                    withContext(Dispatchers.Main) { pushUndo(command) }
+                }
                 erasedAnything = true
             }
             // Also erase text annotations whose model coords fall within the eraser bounds.
@@ -676,7 +754,13 @@ class EditorViewModel(
             }
             hitTexts.forEach { ann ->
                 withContext(Dispatchers.IO) { textAnnotationDao.deleteById(ann.id) }
-                withContext(Dispatchers.Main) { pushUndo(DrawCommand.RemoveTextAnnotation(ann)) }
+                if (accumulateToGesture) {
+                    withContext(Dispatchers.Main) {
+                        if (eraseGestureOpen) eraseGestureTexts += ann
+                    }
+                } else {
+                    withContext(Dispatchers.Main) { pushUndo(DrawCommand.RemoveTextAnnotation(ann)) }
+                }
                 erasedAnything = true
             }
 
@@ -713,6 +797,8 @@ class EditorViewModel(
         pageCount: Int,
         markEraseHit: Boolean = true,
         switchToPenAfterEraseHit: Boolean = false,
+        /** R1：橡皮擦 live/final 傳 true（結尾合併一格）；quick-swipe 傳 false 自成一格。 */
+        accumulateToGesture: Boolean = false,
     ) {
         val segs = com.vic.inkflow.util.DocLayout.splitByPage(
             items = eraserPointsCanvas,
@@ -729,7 +815,8 @@ class EditorViewModel(
                 eraserPointsCanvas = eraserPointsCanvas,
                 switchToPenAfterEraseHit = switchToPenAfterEraseHit,
                 markEraseHit = markEraseHit,
-                page = srcPage
+                page = srcPage,
+                accumulateToGesture = accumulateToGesture
             )
             return
         }
@@ -738,7 +825,8 @@ class EditorViewModel(
                 eraserPointsCanvas = pts,
                 switchToPenAfterEraseHit = si == segs.lastIndex && switchToPenAfterEraseHit,
                 markEraseHit = markEraseHit,
-                page = pg
+                page = pg,
+                accumulateToGesture = accumulateToGesture
             )
         }
     }
@@ -1124,6 +1212,8 @@ class EditorViewModel(
 
     fun undo() {
         val command = undoStack.removeLastOrNull() ?: return
+        // R3：默認 redo 原樣奉還；提取守衛留頁時改記 pageKept 版（redo 不再建頁）。
+        var redoCommand: DrawCommand = command
         viewModelScope.launch(Dispatchers.IO) {
             when (command) {
                 is DrawCommand.AddStroke -> {
@@ -1136,6 +1226,16 @@ class EditorViewModel(
                             strokeDao.insertPoints(strokeWithPoints.points)
                         }
                     }
+                }
+                is DrawCommand.EraseGesture -> {
+                    // R1：一筆擦的整包戰果一次還原（墨＋字）。
+                    command.strokes.forEach { strokeWithPoints ->
+                        db.withTransaction {
+                            strokeDao.insertStroke(strokeWithPoints.stroke)
+                            strokeDao.insertPoints(strokeWithPoints.points)
+                        }
+                    }
+                    command.texts.forEach { textAnnotationDao.insert(it) }
                 }
                 is DrawCommand.MoveStrokes -> {
                     command.originals.forEach { swp ->
@@ -1217,9 +1317,21 @@ class EditorViewModel(
                     }
                     command.images.forEach { imageAnnotationDao.insert(it) }
                 }
+                is DrawCommand.ExtractToNewPage -> {
+                    imageAnnotationDao.deleteById(command.image.id)
+                    // 整組撤銷：頁上若無別的內容，連頁一起收掉；否則只拿掉圖、留頁。
+                    val hasStrokes = strokeDao.getStrokesForPageSync(documentUri, command.targetPage).isNotEmpty()
+                    val hasTexts = textAnnotationDao.getForPageSync(documentUri, command.targetPage).isNotEmpty()
+                    val hasImages = imageAnnotationDao.getForPageSync(documentUri, command.targetPage).isNotEmpty()
+                    if (!hasStrokes && !hasTexts && !hasImages) {
+                        withContext(Dispatchers.Main) { extractPageOps?.deletePage(command.targetPage) }
+                    } else {
+                        redoCommand = command.copy(pageKept = true)
+                    }
+                }
             }
             withContext(Dispatchers.Main) {
-                redoStack.addLast(command)
+                redoStack.addLast(redoCommand)
                 _canUndo.value = undoStack.isNotEmpty()
                 _canRedo.value = true
             }
@@ -1238,6 +1350,12 @@ class EditorViewModel(
                 }
                 is DrawCommand.RemoveStrokes -> {
                     strokeDao.deleteStrokesByIds(command.strokes.map { it.stroke.id })
+                }
+                is DrawCommand.EraseGesture -> {
+                    if (command.strokes.isNotEmpty()) {
+                        strokeDao.deleteStrokesByIds(command.strokes.map { it.stroke.id })
+                    }
+                    command.texts.forEach { textAnnotationDao.deleteById(it.id) }
                 }
                 is DrawCommand.MoveStrokes -> {
                     // 跨頁移動：updated 帶新 pageIndex，直接恢復快照；
@@ -1337,6 +1455,13 @@ class EditorViewModel(
                         strokeDao.deleteStrokesByIds(command.strokes.map { it.stroke.id })
                     }
                     command.images.forEach { imageAnnotationDao.deleteById(it.id) }
+                }
+                is DrawCommand.ExtractToNewPage -> {
+                    // pageKept（undo 守衛留頁）時不再建頁，只重貼圖。
+                    if (!command.pageKept) {
+                        withContext(Dispatchers.Main) { extractPageOps?.insertPageAfter(command.targetPage - 1) }
+                    }
+                    imageAnnotationDao.insert(command.image)
                 }
             }
             withContext(Dispatchers.Main) {
@@ -2048,6 +2173,8 @@ class EditorViewModel(
             db.withTransaction { imageAnnotationDao.insert(newImage) }
 
             withContext(Dispatchers.Main) {
+                // R3：整組記一格（圖＋新建頁），復原整組撤銷。
+                pushUndo(DrawCommand.ExtractToNewPage(targetPageIndex, newImage))
                 clearSelection()
                 onToolSelected(Tool.PEN)
             }

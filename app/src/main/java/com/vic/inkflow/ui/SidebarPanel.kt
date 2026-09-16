@@ -250,6 +250,8 @@ internal fun Sidebar(
     onPageSelected: (Int) -> Unit,
     onAddPage: (afterIndex: Int) -> Unit,
     onDeletePages: (List<Int>) -> Unit,
+    // R2：頁面結構操作（拖拽移頁）超出復原範圍——呼叫方清棧，杜絕舊命令錯位。
+    onStructureChanged: () -> Unit = {},
     listState: LazyListState = rememberLazyListState(),
     modifier: Modifier = Modifier,
     hazeState: dev.chrisbanes.haze.HazeState,
@@ -318,6 +320,8 @@ internal fun Sidebar(
                 },
                 onDragEnd = { from, to ->
                     if (!showOnlyBookmarked && !isSelectionMode) {
+                        // R2：移頁是結構操作，清棧。
+                        onStructureChanged()
                         pdfViewModel.movePage(documentUri, visibleIndices[from], visibleIndices[to])
                     }
                 }
