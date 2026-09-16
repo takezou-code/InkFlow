@@ -52,6 +52,73 @@ internal fun isPointInPolygon(point: Offset, polygon: List<Offset>): Boolean {
     return inside
 }
 
+/**
+ * Sutherland–Hodgman 多邊形裁剪：把（可能開口的）點列裁到軸對齊矩形內，回傳閉合多邊形。
+ * 跨頁套索用：每頁只拿自己窗口內的閉合圈去測，不開口弧＋弦閉合造成的整頁誤選。
+ * 完全在內的圈原樣返回（頂點順序不變）；完全在外的回空表。
+ */
+internal fun clipPolygonToRect(
+    polygon: List<Offset>,
+    left: Float,
+    top: Float,
+    right: Float,
+    bottom: Float
+): List<Offset> {
+    if (polygon.isEmpty()) return emptyList()
+    var output = polygon
+    // 左(x>=l)、右(x<=r)、上(y>=t)、下(y<=b)，逐邊裁。
+    output = clipAgainstEdge(output, inside = { it.x >= left }) { a, b ->
+        intersectX(a, b, left)
+    }
+    output = clipAgainstEdge(output, inside = { it.x <= right }) { a, b ->
+        intersectX(a, b, right)
+    }
+    output = clipAgainstEdge(output, inside = { it.y >= top }) { a, b ->
+        intersectY(a, b, top)
+    }
+    output = clipAgainstEdge(output, inside = { it.y <= bottom }) { a, b ->
+        intersectY(a, b, bottom)
+    }
+    return output
+}
+
+private fun clipAgainstEdge(
+    input: List<Offset>,
+    inside: (Offset) -> Boolean,
+    intersect: (Offset, Offset) -> Offset
+): List<Offset> {
+    if (input.isEmpty()) return emptyList()
+    val output = ArrayList<Offset>(input.size + 1)
+    var prev = input.last()
+    var prevIn = inside(prev)
+    for (cur in input) {
+        val curIn = inside(cur)
+        if (curIn) {
+            if (!prevIn) output.add(intersect(prev, cur))
+            output.add(cur)
+        } else if (prevIn) {
+            output.add(intersect(prev, cur))
+        }
+        prev = cur
+        prevIn = curIn
+    }
+    return output
+}
+
+private fun intersectX(a: Offset, b: Offset, x: Float): Offset {
+    val dx = b.x - a.x
+    if (dx == 0f) return Offset(x, a.y)
+    val t = (x - a.x) / dx
+    return Offset(x, a.y + t * (b.y - a.y))
+}
+
+private fun intersectY(a: Offset, b: Offset, y: Float): Offset {
+    val dy = b.y - a.y
+    if (dy == 0f) return Offset(a.x, y)
+    val t = (y - a.y) / dy
+    return Offset(a.x + t * (b.x - a.x), y)
+}
+
 /** M5: axis-aligned bounds of the (possibly rotated) image, in model space. */
 internal fun rotatedImageBounds(annotation: ImageAnnotationEntity): android.graphics.RectF {
     val cx = annotation.modelX + annotation.modelWidth / 2f

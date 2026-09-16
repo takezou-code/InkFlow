@@ -594,8 +594,8 @@ class EditorViewModel(
         baseWidth: Float = 5f,
         /** 跨頁筆分段歸屬。null = 作用頁（舊行為）。 */
         targetPage: Int? = null
-    ) {
-        if (points.size < 2) return
+    ): String? {
+        if (points.size < 2) return null
         val cW = canvasW
         val cH = canvasH
         val strokeId = UUID.randomUUID().toString()
@@ -653,6 +653,8 @@ class EditorViewModel(
             val command = DrawCommand.AddStroke(pendingStroke)
             withContext(Dispatchers.Main) { pushUndo(command) }
         }
+        // F3：回傳 id 供提筆交接（呼叫方等資料流出現該 id 才清活路徑，不再按幀猜）。
+        return strokeId
     }
 
     /** 手勢被系統取消/縮放丟棄時清掉本手勢累積的命中，避免污染下次手勢。 */
@@ -697,6 +699,22 @@ class EditorViewModel(
         eraseGestureOpen = false
         eraseGestureStrokes.clear()
         eraseGestureTexts.clear()
+    }
+
+    /**
+     * F1 進行中預覽共享：src 紙切好＋轉頁內的點段（寬已 ×docZoom，與提交同管線）；
+     * 鄰頁按自己窗口畫，不管提交。src 紙走直接路徑（segments 內不含 src 頁）。
+     * 結束/取消/提交即 publish(null)。
+     */
+    data class InFlightPreview(
+        val tool: Tool,
+        val segments: Map<Int, List<com.vic.inkflow.util.StrokePoint>>,
+        val colorArgb: Int
+    )
+    private val _inFlightPreview = MutableStateFlow<InFlightPreview?>(null)
+    val inFlightPreview: StateFlow<InFlightPreview?> = _inFlightPreview.asStateFlow()
+    fun publishInFlight(p: InFlightPreview?) {
+        _inFlightPreview.value = p
     }
 
     fun deleteStrokesIntersecting(
@@ -1585,47 +1603,14 @@ class EditorViewModel(
         _selectedStrokePreviewBounds.value = StrokeTransformUtils.computeSelectionBounds(originals)
     }
 
-    fun selectStrokesInLasso(polygon: List<Offset>, page: Int? = null) {
-        val cW = canvasW
-        val cH = canvasH
-        // 主線程一次快照：圈選所在紙的資料（全活頁下 InkCanvas 傳自己）
-        val targetData = pageDataFlow(page ?: pageIndex.value).value
-
-        // Compose already applies the graphicsLayer inverse transform when routing
-        // screen-space touches to InkCanvas (a child of the graphicsLayer-modified
-        // Surface), so `polygon` arrives in canvas layout-space — the same space that
-        // saveStroke() normalises with p.x * modelWidth / canvasW.  Applying the inverse
-        // a second time would double-invert and shift the lasso at any zoom ≠ 1.
-        val normalizedPolygon = polygon.map { Offset(it.x * modelWidth / cW, it.y * modelHeight / cH) }
-        _lassoPolygon.value = normalizedPolygon
-        _selectionFramePolygon.value = normalizedPolygon
-        _lastLassoPolygon.value = normalizedPolygon
-        viewModelScope.launch(Dispatchers.Default) {
-            val selected = IntersectionUtils.findStrokesInLasso(normalizedPolygon, targetData.strokes)
-            val selectedImages = targetData.images.filter { ann ->
-                isImageSelectedByLasso(ann, normalizedPolygon)
-            }
-            withContext(Dispatchers.Main) {
-                _selectedStrokes.value = selected
-                _selectedImageAnnotationIds.value = selectedImages.map { it.id }.toSet()
-                _lassoMoveOffset.value = Offset.Zero
-                _selectedStrokeScale.value = 1f
-                _selectedStrokeResizeAnchor.value = null
-                _selectedStrokePreview.value = selected
-                _selectedStrokePreviewBounds.value = StrokeTransformUtils.computeSelectionBounds(selected)
-            }
-        }
-    }
-
-    // isPointInPolygon / rotatedImageBounds / isImageSelectedByLasso 見 SelectionGeometry.kt
-
     /**
-     * 跨頁套索：各頁頁內 canvas 座標多邊形（呼叫方已按紙界切好＋轉頁內，見 DocLayout.splitByPage），
-     * 分頁查後聯集。等大文件各頁 canvas 同尺寸，歸一化用傳入值；
-     * 氣泡定位框取 src 頁多邊形（與單頁版同行為）。
+     * 跨頁套索（唯一入口；單頁是它的特例）：每頁若干閉合圈（呼叫方已按紙界切分＋裁剪＋轉頁內，
+     * 見 clipPolygonToRect；同頁多段保留，不可 toMap 丟棄）。
+     * 命中＝重心落在該頁任一圈內，分頁查後聯集。等大文件各頁 canvas 同尺寸，
+     * 歸一化用傳入值；氣泡定位框取 src 頁第一圈（與單頁版同行為）。
      */
     fun selectStrokesInLassoAcross(
-        polygonsByPage: Map<Int, List<Offset>>,
+        polygonsByPage: Map<Int, List<List<Offset>>>,
         srcPage: Int,
         canvasW: Float,
         canvasH: Float,
@@ -1634,9 +1619,9 @@ class EditorViewModel(
         val cH = canvasH.coerceAtLeast(1f)
         // 主線程一次快照：各頁資料流建流＋讀值都在這裡，協程內只用快照（同單頁版紀律）。
         val snaps = polygonsByPage.mapValues { (pg, _) -> pageDataFlow(pg).value }
-        val srcPoly = polygonsByPage[srcPage].orEmpty()
-        if (srcPoly.size >= 3) {
-            val srcNorm = srcPoly.map { Offset(it.x * modelWidth / cW, it.y * modelHeight / cH) }
+        val srcFirst = polygonsByPage[srcPage]?.firstOrNull().orEmpty()
+        if (srcFirst.size >= 3) {
+            val srcNorm = srcFirst.map { Offset(it.x * modelWidth / cW, it.y * modelHeight / cH) }
             _lassoPolygon.value = srcNorm
             _selectionFramePolygon.value = srcNorm
             _lastLassoPolygon.value = srcNorm
@@ -1644,23 +1629,51 @@ class EditorViewModel(
         viewModelScope.launch(Dispatchers.Default) {
             val allStrokes = mutableListOf<StrokeWithPoints>()
             val allImageIds = mutableSetOf<String>()
-            for ((pg, poly) in polygonsByPage) {
-                if (poly.size < 3) continue
-                val norm = poly.map { Offset(it.x * modelWidth / cW, it.y * modelHeight / cH) }
+            for ((pg, polys) in polygonsByPage) {
+                val norms = polys.filter { it.size >= 3 }
+                    .map { poly -> poly.map { Offset(it.x * modelWidth / cW, it.y * modelHeight / cH) } }
+                if (norms.isEmpty()) continue
                 val data = snaps[pg] ?: continue
-                allStrokes += IntersectionUtils.findStrokesInLasso(norm, data.strokes)
-                allImageIds += data.images.filter { isImageSelectedByLasso(it, norm) }.map { it.id }
+                for (swp in data.strokes) {
+                    val pts = swp.points
+                    if (pts.isEmpty()) continue
+                    val cx = pts.sumOf { it.x.toDouble() } / pts.size
+                    val cy = pts.sumOf { it.y.toDouble() } / pts.size
+                    if (isCentroidInAny(cx.toFloat(), cy.toFloat(), norms)) allStrokes += swp
+                }
+                for (norm in norms) {
+                    allImageIds += data.images.filter { isImageSelectedByLasso(it, norm) }.map { it.id }
+                }
             }
             withContext(Dispatchers.Main) {
-                _selectedStrokes.value = allStrokes
+                _selectedStrokes.value = allStrokes.distinctBy { it.stroke.id }
                 _selectedImageAnnotationIds.value = allImageIds
                 _lassoMoveOffset.value = Offset.Zero
                 _selectedStrokeScale.value = 1f
                 _selectedStrokeResizeAnchor.value = null
-                _selectedStrokePreview.value = allStrokes
-                _selectedStrokePreviewBounds.value = StrokeTransformUtils.computeSelectionBounds(allStrokes)
+                _selectedStrokePreview.value = _selectedStrokes.value
+                _selectedStrokePreviewBounds.value = StrokeTransformUtils.computeSelectionBounds(_selectedStrokes.value)
             }
         }
+    }
+
+    /** 重心落在任一圈內（跨頁聯集用；單圈走 findStrokesInLasso 同語義）。 */
+    private fun isCentroidInAny(cx: Float, cy: Float, polys: List<List<Offset>>): Boolean {
+        for (poly in polys) {
+            if (poly.size < 3) continue
+            var inside = false
+            var j = poly.lastIndex
+            for (i in poly.indices) {
+                val xi = poly[i].x; val yi = poly[i].y
+                val xj = poly[j].x; val yj = poly[j].y
+                if ((yi > cy) != (yj > cy) &&
+                    cx < (xj - xi) * (cy - yi) / (yj - yi) + xi
+                ) inside = !inside
+                j = i
+            }
+            if (inside) return true
+        }
+        return false
     }
 
     fun moveSelectedStrokes(delta: Offset) {
