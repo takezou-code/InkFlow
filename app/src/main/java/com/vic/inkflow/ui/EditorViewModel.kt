@@ -229,7 +229,26 @@ class EditorViewModel(
     fun setDocZoom(z: Float) { _docZoom.value = z }
     private val _pinchActive = MutableStateFlow(false)
     val pinchActive: StateFlow<Boolean> = _pinchActive.asStateFlow()
-    fun setPinchActive(active: Boolean) { _pinchActive.value = active }
+    fun setPinchActive(active: Boolean) {
+        _pinchActive.value = active
+        if (active) watchLock(10000L, { _pinchActive.value }, { _pinchActive.value = false }, "pinchActive")
+    }
+
+    /**
+     * P0：鎖看門狗——set(true) 後 10s 若還沒人清，強制清並記 log（協議：無超時的鎖視為 bug）。
+     * 全活頁下誤觸成本低（只影響側欄跟隨／棄筆判定，不會斷筆）；epoch 保證後來的 set 蓋掉舊表。
+     */
+    private var lockWatchEpoch = 0L
+    private fun watchLock(timeoutMs: Long, isStuck: () -> Boolean, clear: () -> Unit, tag: String) {
+        val e = ++lockWatchEpoch
+        viewModelScope.launch {
+            kotlinx.coroutines.delay(timeoutMs)
+            if (lockWatchEpoch == e && isStuck()) {
+                android.util.Log.w("InkFlowLock", "$tag stuck > ${timeoutMs}ms, force-clear")
+                clear()
+            }
+        }
+    }
 
     // 二維平移的水平分量（px）：空白區單指＋雙指全域寫入，
     // 放手停留、跨頁保持；Workspace 負責鉗制（至少留一半紙在區內），這裡只存原始值。
@@ -369,7 +388,10 @@ class EditorViewModel(
      */
     private val _pageLock = MutableStateFlow(false)
     fun isPageLocked(): Boolean = _pageLock.value
-    fun setPageLock(locked: Boolean) { _pageLock.value = locked }
+    fun setPageLock(locked: Boolean) {
+        _pageLock.value = locked
+        if (locked) watchLock(10000L, { _pageLock.value }, { _pageLock.value = false }, "pageLock")
+    }
 
     /**
      * 套索拖曳預覽旗標：LASSO 移動手勢進行中為 true。
@@ -2129,15 +2151,15 @@ class EditorViewModel(
         sourcePageIndex: Int,
         targetPageIndex: Int,
         pdfPageBitmap: android.graphics.Bitmap?
-    ) {
+    ): Boolean {
         val polygon = _lassoPolygon.value.ifEmpty { _lastLassoPolygon.value }
-        if (polygon.isEmpty()) return
+        if (polygon.isEmpty()) return false
 
-        if (!extractionMutex.tryLock()) return
+        if (!extractionMutex.tryLock()) return false
         try {
-            withContext(Dispatchers.IO) {
+            return withContext(Dispatchers.IO) {
             val trimmedBitmap = renderLassoExtraction(context, sourcePageIndex, pdfPageBitmap, polygon)
-                ?: return@withContext
+                ?: return@withContext false
             val renderScale = minOf(2f, 4096f / maxOf(modelWidth, modelHeight))
 
             // Save PNG
@@ -2178,6 +2200,7 @@ class EditorViewModel(
                 clearSelection()
                 onToolSelected(Tool.PEN)
             }
+            true
             }
         } finally {
             extractionMutex.unlock()

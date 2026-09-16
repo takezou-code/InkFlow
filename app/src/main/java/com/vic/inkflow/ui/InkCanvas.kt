@@ -382,6 +382,8 @@ fun InkCanvas(
                             anchorModel = tapAnchor
                         )
                     } else {
+                        // P0：多頁插入會移位頁號，先清復原棧（單張不動頁，不用清）。
+                        viewModel.clearUndoStacks()
                         val previousPageCount = pdfViewModel.pageCount.value
                         pdfViewModel.insertBlankPage(
                             context = context,
