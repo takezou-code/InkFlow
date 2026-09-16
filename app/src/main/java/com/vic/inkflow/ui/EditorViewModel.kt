@@ -1607,7 +1607,7 @@ class EditorViewModel(
      * 跨頁套索（唯一入口；單頁是它的特例）：每頁若干閉合圈（呼叫方已按紙界切分＋裁剪＋轉頁內，
      * 見 clipPolygonToRect；同頁多段保留，不可 toMap 丟棄）。
      * 命中＝重心落在該頁任一圈內，分頁查後聯集。等大文件各頁 canvas 同尺寸，
-     * 歸一化用傳入值；氣泡定位框取 src 頁第一圈（與單頁版同行為）。
+     * 歸一化用傳入值。框取選中墨最多的那頁的包絡（一定有錨；選空則清殘影）。
      */
     fun selectStrokesInLassoAcross(
         polygonsByPage: Map<Int, List<List<Offset>>>,
@@ -1619,6 +1619,7 @@ class EditorViewModel(
         val cH = canvasH.coerceAtLeast(1f)
         // 主線程一次快照：各頁資料流建流＋讀值都在這裡，協程內只用快照（同單頁版紀律）。
         val snaps = polygonsByPage.mapValues { (pg, _) -> pageDataFlow(pg).value }
+        // src 首圈先行定位（框最終由選中墨最多的頁重算，見下；先給泡泡一個即時錨）。
         val srcFirst = polygonsByPage[srcPage]?.firstOrNull().orEmpty()
         if (srcFirst.size >= 3) {
             val srcNorm = srcFirst.map { Offset(it.x * modelWidth / cW, it.y * modelHeight / cH) }
@@ -1645,14 +1646,35 @@ class EditorViewModel(
                     allImageIds += data.images.filter { isImageSelectedByLasso(it, norm) }.map { it.id }
                 }
             }
+            val distinct = allStrokes.distinctBy { it.stroke.id }
+            // 顯示框：選中墨最多的那頁的包絡四角（model 座標，該頁頁內）。
+            // 注意只動 _selectionFramePolygon：_lassoPolygon/_lastLassoPolygon 保持真實套索，
+            // 那是提取遮罩＋泡泡錨點，變方就回歸了。
+            val domStrokes = distinct.groupBy { it.stroke.pageIndex }
+                .maxByOrNull { it.value.size }?.value.orEmpty()
+            val frameNorm: List<Offset> = if (domStrokes.isNotEmpty()) {
+                val l = domStrokes.minOf { it.stroke.boundsLeft }
+                val t = domStrokes.minOf { it.stroke.boundsTop }
+                val r = domStrokes.maxOf { it.stroke.boundsRight }
+                val b = domStrokes.maxOf { it.stroke.boundsBottom }
+                listOf(Offset(l, t), Offset(r, t), Offset(r, b), Offset(l, b))
+            } else {
+                emptyList()
+            }
             withContext(Dispatchers.Main) {
-                _selectedStrokes.value = allStrokes.distinctBy { it.stroke.id }
+                _selectedStrokes.value = distinct
                 _selectedImageAnnotationIds.value = allImageIds
+                _selectionFramePolygon.value = frameNorm
+                if (domStrokes.isEmpty() && allImageIds.isEmpty()) {
+                    // 選空：遮罩框全清，不殘留上次的框到處飄。
+                    _lassoPolygon.value = emptyList()
+                    _lastLassoPolygon.value = emptyList()
+                }
                 _lassoMoveOffset.value = Offset.Zero
                 _selectedStrokeScale.value = 1f
                 _selectedStrokeResizeAnchor.value = null
-                _selectedStrokePreview.value = _selectedStrokes.value
-                _selectedStrokePreviewBounds.value = StrokeTransformUtils.computeSelectionBounds(_selectedStrokes.value)
+                _selectedStrokePreview.value = distinct
+                _selectedStrokePreviewBounds.value = StrokeTransformUtils.computeSelectionBounds(distinct)
             }
         }
     }

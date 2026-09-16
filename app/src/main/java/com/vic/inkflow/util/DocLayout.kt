@@ -1,5 +1,7 @@
 package com.vic.inkflow.util
 
+import androidx.compose.ui.geometry.Offset
+
 /**
  * 統一畫布座標（單一文件座標＋切頁）。
  *
@@ -103,6 +105,53 @@ object DocLayout {
     fun gapOwnerIsUpper(yInGap: Float, gapH: Float): Boolean {
         if (gapH <= 0f) return true
         return yInGap < gapH / 2f
+    }
+
+    /**
+     * 矩形按頁切分子矩形（矩形套索用）：框跨幾頁，每頁一個閉合四角（該頁頁內座標）。
+     * 與點切分不同：矩形有面積，按窗口重疊切，不存在開弧問題；縫不屬於任何頁。
+     * 輸入可任意方向拖曳（內部正規化）；零面積/非法輸入回空表。
+     */
+    fun rectsByPage(
+        left: Float,
+        top: Float,
+        right: Float,
+        bottom: Float,
+        canvasW: Float,
+        canvasH: Float,
+        gapPx: Float,
+        srcPage: Int,
+        pageCount: Int
+    ): Map<Int, List<Offset>> {
+        val l = minOf(left, right).coerceAtLeast(0f)
+        val r = maxOf(left, right)
+        val t = minOf(top, bottom)
+        val b = maxOf(top, bottom)
+        if (canvasW <= 0f || canvasH <= 0f || pageCount <= 0 || r <= l || b <= t) return emptyMap()
+        val rc = minOf(r, canvasW)
+        if (rc <= l) return emptyMap()
+        val lastPage = (pageCount - 1).coerceAtLeast(0)
+        val stride = canvasH + gapPx.coerceAtLeast(0f)
+        if (stride <= 0f) return emptyMap()
+        val out = LinkedHashMap<Int, List<Offset>>()
+        val k0 = kotlin.math.floor(t / stride).toInt()
+        val k1 = kotlin.math.floor((b - 0.001f) / stride).toInt()
+        for (k in k0..k1) {
+            val pg = (srcPage + k).coerceIn(0, lastPage)
+            if (out.containsKey(pg)) continue
+            val base = (pg - srcPage) * stride
+            val lt = maxOf(t - base, 0f)
+            val lb = minOf(b - base, canvasH)
+            if (lb > lt) {
+                out[pg] = listOf(
+                    Offset(l, lt),
+                    Offset(rc, lt),
+                    Offset(rc, lb),
+                    Offset(l, lb)
+                )
+            }
+        }
+        return out
     }
 
     /**

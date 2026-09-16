@@ -1309,30 +1309,22 @@ fun InkCanvas(
                                 )
                             }
                         } else if (activeTool == Tool.LASSO) {
-                            // 矩形套索同樣走跨頁聯集（框跨過頁界時不斷在起始頁）。
-                            val pts = listOf(
-                                Offset(startOffset.x, startOffset.y),
-                                Offset(end.x, startOffset.y),
-                                Offset(end.x, end.y),
-                                Offset(startOffset.x, end.y)
-                            )
+                            // 矩形套索：按頁切子矩形（框跨頁不斷在起始頁；2 點碎段問題根治）。
                             val canvasW = canvasPixelSizeState.value.width
                             val canvasH = canvasPixelSizeState.value.height
-                            val byPage = LinkedHashMap<Int, MutableList<List<Offset>>>()
-                            DocLayout.splitByPage(
-                                items = pts,
-                                yOf = { it.y },
+                            val quads = DocLayout.rectsByPage(
+                                left = minOf(startOffset.x, end.x),
+                                top = minOf(startOffset.y, end.y),
+                                right = maxOf(startOffset.x, end.x),
+                                bottom = maxOf(startOffset.y, end.y),
+                                canvasW = canvasW,
                                 canvasH = canvasH,
                                 gapPx = pageGapPxRef.value,
                                 srcPage = pageIndexRef.value,
-                                pageCount = pageCountRef.value,
-                                local = { p, ly -> Offset(p.x, ly) }
-                            ).forEach { (pg, seg) ->
-                                val clipped = clipPolygonToRect(seg, 0f, 0f, canvasW, canvasH)
-                                if (clipped.size >= 3) byPage.getOrPut(pg) { mutableListOf() }.add(clipped)
-                            }
+                                pageCount = pageCountRef.value
+                            ).mapValues { (_, quad) -> listOf(quad) }
                             viewModel.selectStrokesInLassoAcross(
-                                polygonsByPage = byPage,
+                                polygonsByPage = quads,
                                 srcPage = pageIndexRef.value,
                                 canvasW = canvasW,
                                 canvasH = canvasH
