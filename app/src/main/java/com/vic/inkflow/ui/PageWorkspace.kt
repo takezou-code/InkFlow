@@ -696,6 +696,13 @@ internal fun Workspace(
                         color = paperColor
                     ) {
                         Box(modifier = Modifier.fillMaxSize()) {
+            // 白紙墊底：點陣圖還沒來/渲染失敗時顯示白紙，不露深色主題底（永久黑頁主因）
+            if (pageBitmap == null) {
+                Box(
+                    modifier = Modifier.fillMaxSize()
+                        .background(Color.White)
+                )
+            }
             // PDF static layer (bottom) — crossfade between page bitmaps
             Crossfade(
                 targetState = pageBitmap,

@@ -42,8 +42,8 @@ object MathSnapshot {
 <script src="katex.min.js"></script>
 <script src="auto-render.min.js"></script>
 <style>
-html,body{margin:0;padding:0;background:#ffffff;}
-#root{color:#111111;font-size:46px;line-height:1.35;padding:8px 12px;word-wrap:break-word;}
+html,body{margin:0;padding:0;background:transparent;}
+#root{color:#111111;font-size:46px;line-height:1.35;padding:8px 12px;word-wrap:break-word;background:transparent;}
 .katex-display{margin:0.4em 0;}
 </style>
 <script>
@@ -84,7 +84,8 @@ function renderBlock(b64){
         } catch (_: Exception) { }
         try {
             val w = WebView(activity)
-            w.setBackgroundColor(Color.WHITE)
+            // 透明底：公式圖跟紙色走，深色主題不出白塊（白紙墊底在紙層負責）
+            w.setBackgroundColor(Color.TRANSPARENT)
             w.settings.javaScriptEnabled = true
             w.settings.allowFileAccess = true
             w.settings.textZoom = 100
@@ -141,57 +142,63 @@ function renderBlock(b64){
                 return null
             }
             w.layout(0, 0, RENDER_W_PX, h)
-            val done = CompletableDeferred<Bitmap?>()
-            try {
-                w.postVisualStateCallback(reqId++, object : WebView.VisualStateCallback() {
-                    override fun onComplete(requestId: Long) {
-                        try {
-                            val bmp = Bitmap.createBitmap(RENDER_W_PX, h, Bitmap.Config.ARGB_8888)
-                            val c = Canvas(bmp)
-                            c.drawColor(Color.WHITE)
-                            (w as View).draw(c)
-                            done.complete(bmp)
-                        } catch (t: Throwable) {
-                            done.complete(null)
+            // 截圖＋雙向自檢：透明/白=空，近黑過半=硬體加速沒畫完，隔 400ms 重截一次
+            repeat(2) { attempt ->
+                val bmp = captureOnce(w, h) ?: return@repeat
+                var sampled = 0
+                var ink = 0
+                var black = 0
+                var y = 0
+                while (y < bmp.height) {
+                    var x = 0
+                    while (x < bmp.width) {
+                        val p = bmp.getPixel(x, y)
+                        sampled++
+                        val a = (p ushr 24) and 0xff
+                        val r = (p shr 16) and 0xff
+                        val g = (p shr 8) and 0xff
+                        val b = p and 0xff
+                        if (a >= 128) {
+                            if (r < 240 || g < 240 || b < 240) ink++
+                            if (r < 24 && g < 24 && b < 24) black++
                         }
+                        x += 16
                     }
-                })
-            } catch (t: Throwable) {
-                done.complete(null)
-            }
-            val bmp = withTimeoutOrNull(5000) { done.await() }
-            if (bmp == null) {
-                Log.w(TAG, "capture timeout")
-                return null
-            }
-            // 自檢：全白視為失敗
-            var sampled = 0
-            var ink = 0
-            var y = 0
-            while (y < bmp.height) {
-                var x = 0
-                while (x < bmp.width) {
-                    val p = bmp.getPixel(x, y)
-                    sampled++
-                    val r = (p shr 16) and 0xff
-                    val g = (p shr 8) and 0xff
-                    val b = p and 0xff
-                    if (r < 240 || g < 240 || b < 240) ink++
-                    x += 16
+                    y += 16
                 }
-                y += 16
-            }
-            val ratio = if (sampled > 0) ink.toFloat() / sampled else 0f
-            Log.d(TAG, "render ok ${bmp.width}x${bmp.height} ink=${"%.3f".format(ratio)} ms=${SystemClock.uptimeMillis() - t0}")
-            if (ratio < 0.0005f) {
+                val inkRatio = if (sampled > 0) ink.toFloat() / sampled else 0f
+                val blackRatio = if (sampled > 0) black.toFloat() / sampled else 0f
+                Log.d(TAG, "capture #$attempt ${bmp.width}x${bmp.height} ink=${"%.3f".format(inkRatio)} black=${"%.3f".format(blackRatio)} ms=${SystemClock.uptimeMillis() - t0}")
+                if (inkRatio >= 0.0005f && blackRatio <= 0.5f) return bmp
                 bmp.recycle()
-                Log.w(TAG, "blank capture, fallback")
-                return null
+                Log.w(TAG, "bad capture (blank or black), retry=$attempt")
+                delay(400)
             }
-            bmp
+            Log.w(TAG, "capture failed, fallback")
+            return null
         } catch (t: Throwable) {
             Log.w(TAG, "render exception: $t")
             null
         }
+    }
+
+    private suspend fun captureOnce(w: WebView, h: Int): Bitmap? {
+        val done = CompletableDeferred<Bitmap?>()
+        try {
+            w.postVisualStateCallback(reqId++, object : WebView.VisualStateCallback() {
+                override fun onComplete(requestId: Long) {
+                    try {
+                        val bmp = Bitmap.createBitmap(RENDER_W_PX, h, Bitmap.Config.ARGB_8888)
+                        (w as View).draw(Canvas(bmp))
+                        done.complete(bmp)
+                    } catch (t: Throwable) {
+                        done.complete(null)
+                    }
+                }
+            })
+        } catch (t: Throwable) {
+            done.complete(null)
+        }
+        return withTimeoutOrNull(5000) { done.await() }
     }
 }
