@@ -13,38 +13,6 @@ data class AiTextChunk(
 
 private const val AI_CHUNK_MAX_CHARS = 300
 
-/**
- * 把抓回的文字切成可勾選塊：
- * - ``` 程式碼 fence 整塊保留不切
- * - 空行分段；單段超過上限按句號/換行打包續切，無句讀才硬切
- */
-fun chunkAiText(raw: String, maxChars: Int = AI_CHUNK_MAX_CHARS): List<AiTextChunk> {
-    val text = raw.replace("\r\n", "\n").trim()
-    if (text.isEmpty()) return emptyList()
-    val bodies = mutableListOf<String>()
-    val fence = Regex("```[\\s\\S]*?(?:```|$)")
-    var cursor = 0
-    for (m in fence.findAll(text)) {
-        splitProse(convertLatexInProse(text.substring(cursor, m.range.first)), maxChars, bodies)
-        val code = m.value.trim()
-        if (code.isNotEmpty()) bodies.add(code)
-        cursor = m.range.last + 1
-    }
-    splitProse(convertLatexInProse(text.substring(cursor)), maxChars, bodies)
-    return bodies.mapIndexed { i, b ->
-        val firstLine = b.lineSequence().firstOrNull()?.trim().orEmpty()
-        AiTextChunk(
-            id = "c$i",
-            title = when {
-                firstLine.isEmpty() -> "（空塊）"
-                firstLine.length <= 20 -> firstLine
-                else -> firstLine.take(20) + "…"
-            },
-            body = b
-        )
-    }
-}
-
 private fun splitProse(seg: String, maxChars: Int, out: MutableList<String>) {
     for (para in seg.split(Regex("\n\\s*\n"))) {
         val p = para.trim()
