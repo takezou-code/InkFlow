@@ -494,17 +494,17 @@ internal fun StrokeWidthSlider(
     }
 }
 
-/** 對話框縮放淡入包裝：內容播 scale+fade（系統 scrim 維持瞬間，不閃） */
+/** 對話框淡入包裝：只播 fade（背底不再跟著縮放跳；卡片的 scale 由殼內自播） */
 @Composable
 internal fun AnimatedDialog(
     visible: Boolean,
-    label: String = "DialogZoom",
+    label: String = "DialogFade",
     dialog: @Composable () -> Unit
 ) {
     AnimatedVisibility(
         visible = visible,
-        enter = fadeIn(tween(180)) + scaleIn(initialScale = 0.92f, animationSpec = tween(220)),
-        exit = fadeOut(tween(150)) + scaleOut(targetScale = 0.95f, animationSpec = tween(150)),
+        enter = fadeIn(tween(180)),
+        exit = fadeOut(tween(150)),
         label = label
     ) { dialog() }
 }
