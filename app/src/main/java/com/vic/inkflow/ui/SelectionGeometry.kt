@@ -170,14 +170,34 @@ internal fun isImageSelectedByLasso(annotation: ImageAnnotationEntity, polygon: 
 }
 
 /**
+ * 全形字判定（CJK 中日韓＋全形符號）：框寬按 1.0×字號算，半形按 0.65×。
+ * 舊公式全按 0.65，中文字永遠窄三分之一、框包不住——就這麼簡單。
+ * 注意：邊界用碼點整數寫死，不用字面量（工具鏈吞罕見字元字節，血淚）。
+ */
+internal fun isWideChar(c: Char): Boolean {
+    val code = c.code
+    return code in 0x2E80..0xA4CF ||
+        code in 0xAC00..0xD7AF ||
+        code in 0xF900..0xFAFF ||
+        code in 0xFE30..0xFE4F ||
+        code in 0xFF00..0xFFEF
+}
+
+/** 一行寬：逐字累加（全形 1.0，半形 0.65），中英混排照包。 */
+internal fun measureTextWidth(text: String, fontSize: Float): Float {
+    var w = 0f
+    for (c in text) w += if (isWideChar(c)) fontSize else fontSize * 0.65f
+    return w
+}
+
+/**
  * 文字估算框（model 座標）：與繪製命中（textAnnotationHitRect）同一口徑——
- * 寬取最長行×字號×0.65，高含多行（首行字號＋其餘行×1.2），baseline 為底邊。
+ * 寬取各行最大（全形感知），高含多行（首行字號＋其餘行×1.2），baseline 為底邊。
  * 套索命中＋選取框＋大綱共用，單一真相（canvas 層的 ±4px 觸控墊片是另一回事，不在此）。
  */
 internal fun textEstimatedBounds(ann: com.vic.inkflow.data.TextAnnotationEntity): Rect {
     val lines = ann.text.split("\n")
-    val maxLen = lines.maxOfOrNull { it.length } ?: 0
-    val w = maxLen * ann.fontSize * 0.65f
+    val w = lines.maxOfOrNull { measureTextWidth(it, ann.fontSize) } ?: 0f
     val h = ann.fontSize + (lines.size - 1).coerceAtLeast(0) * ann.fontSize * 1.2f
     return Rect(ann.modelX, ann.modelY - h, ann.modelX + w, ann.modelY)
 }
