@@ -106,7 +106,7 @@ data class RenderedMath(val file: java.io.File, val pxW: Int, val pxH: Int)
 /** 排版輸出：文字或數學圖。 */
 sealed interface Placed {
     data class T(val t: PlacedText) : Placed
-    data class I(val file: java.io.File, val modelX: Float, val modelY: Float, val modelW: Float, val modelH: Float) : Placed
+    data class I(val file: java.io.File, val modelX: Float, val modelY: Float, val modelW: Float, val modelH: Float, val blockId: String) : Placed
 }
 
 /** 引入內容塊：純文字或數學（待渲染），保原文順序。 */
@@ -297,7 +297,7 @@ fun paginateAiBlocks(
             idx += take
         }
     }
-    fun emitImage(rm: RenderedMath) {
+    fun emitImage(blockId: String, rm: RenderedMath) {
         var w = contentWpt
         var h = if (rm.pxW > 0 && rm.pxH > 0) rm.pxH.toFloat() / rm.pxW * w else contentWpt * 0.3f
         val maxH = modelH - marginTop - marginBottom
@@ -306,7 +306,7 @@ fun paginateAiBlocks(
             w = rm.pxW.toFloat() / rm.pxH * h
         }
         if (modelH - marginBottom - cursorTop < h) newPage()
-        cur.add(Placed.I(rm.file, marginH + (contentWpt - w) / 2f, cursorTop, w, h))
+        cur.add(Placed.I(rm.file, marginH + (contentWpt - w) / 2f, cursorTop, w, h, blockId))
         cursorTop += h + blockGap
     }
 
@@ -318,7 +318,7 @@ fun paginateAiBlocks(
             }
             is AiMathBlock -> {
                 val rm = rendered[b.id] ?: continue
-                emitImage(rm)
+                emitImage(b.id, rm)
             }
         }
     }

@@ -896,8 +896,16 @@ private fun buildCollectJs(): String {
             });
             var out = [];
             var mathB = 0, mathI = 0;
+            // T-X1 取證：勾選節點標籤普查＋數學痕跡計數（data-math / annotation 有無）
+            var census = {};
+            var censusMath = 0, censusDataMath = 0, censusAnno = 0;
             roots.forEach(function(el) {
                 try {
+                    var tn = (el.tagName || '?').toLowerCase();
+                    census[tn] = (census[tn] || 0) + 1;
+                    censusMath += el.querySelectorAll('.math-block, .math-inline, span.katex').length;
+                    censusDataMath += el.querySelectorAll('[data-math]').length;
+                    censusAnno += el.querySelectorAll('.katex-mathml annotation, annotation').length;
                     var clone = el.cloneNode(true);
                     var cc = texify(clone);
                     mathB += cc.b; mathI += cc.i;
@@ -917,7 +925,7 @@ private fun buildCollectJs(): String {
             try {
                 document.querySelectorAll('[data-inkpick]').forEach(function(el) { el.removeAttribute('data-inkpick'); });
             } catch(e){}
-            note('COLLECT src=' + src + ' mathB=' + mathB + ' mathI=' + mathI + ' len=' + out.join('\n\n').length);
+            note('COLLECT src=' + src + ' mathB=' + mathB + ' mathI=' + mathI + ' len=' + out.join('\n\n').length + ' census=' + JSON.stringify(census) + ' inMath=' + censusMath + ' dataMath=' + censusDataMath + ' anno=' + censusAnno);
             report(out.join('\n\n').slice(0, 20000));
         })();
     """.trimIndent()

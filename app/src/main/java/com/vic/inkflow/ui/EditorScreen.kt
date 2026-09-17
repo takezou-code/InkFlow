@@ -402,6 +402,8 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                 }
             }
             val resolved = resolveAiBlocks(blocks, rendered)
+            // M7：公式源 sidecar（blockId → 數學塊，寫入時存 TeX）
+            val mathById = resolved.filterIsInstance<AiMathBlock>().associateBy { it.id }
             val pages = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
                 paginateAiBlocks(resolved, rendered, viewModel.modelWidth, viewModel.modelHeight)
             }
@@ -437,12 +439,32 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                     when (pl) {
                         is Placed.T -> viewModel.insertImportedText(uri.toString(), pageIdx, pl.t.text, pl.t.modelX, pl.t.modelY, pl.t.fontSize)
                         is Placed.I -> {
+                            val imageUri = android.net.Uri.fromFile(pl.file).toString()
                             viewModel.insertImportedImage(
-                                uri.toString(), pageIdx,
-                                android.net.Uri.fromFile(pl.file).toString(),
+                                uri.toString(), pageIdx, imageUri,
                                 pl.modelX, pl.modelY, pl.modelW, pl.modelH
                             )
                             mathCount++
+                            // M7：TeX 源存檔（查不到即純圖，不影響顯示）
+                            val mb = mathById[pl.blockId]
+                            val tex = mb?.html
+                            if (tex != null) {
+                                scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                                    try {
+                                        db.mathSourceDao().insert(
+                                            com.vic.inkflow.data.MathSourceEntity(
+                                                documentUri = uri.toString(),
+                                                pageIndex = pageIdx,
+                                                imageUri = imageUri,
+                                                tex = tex,
+                                                display = if (mb.display) 1 else 0
+                                            )
+                                        )
+                                    } catch (t: Throwable) {
+                                        android.util.Log.w("InkFlowDbg", "math source save failed: $t")
+                                    }
+                                }
+                            }
                         }
                     }
                 }
