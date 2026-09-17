@@ -312,186 +312,10 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
         }
     )
 
-    // M3：引入文字插入 — 分頁排版 → 來源頁後串行開新頁 → 寫入 → 跳到首個新頁。
-    // insertBlankPage 同一時間只接受一頁（進行中會直接丟棄），故用 pageCount 逐頁確認。
-    suspend fun insertOnePageAfter(afterIndex: Int): Boolean {
-        repeat(5) {
-            val before = pdfViewModel.pageCount.value
-            if (!pdfViewModel.isPageOperationInProgress.value) {
-                pdfViewModel.insertBlankPage(
-                    context, uri.toString(), afterIndex,
-                    pageWidthPt = viewModel.modelWidth,
-                    pageHeightPt = viewModel.modelHeight
-                )
-            }
-            val done = kotlinx.coroutines.withTimeoutOrNull(30000) {
-                pdfViewModel.pageCount.filter { it == before + 1 }.first()
-            }
-            if (done != null) return true
-            kotlinx.coroutines.withTimeoutOrNull(10000) {
-                pdfViewModel.isPageOperationInProgress.filter { !it }.first()
-            }
-        }
-        return false
-    }
-
-    // M6：從第 0 頁往後掃空白頁（DB 先篩：有墨/字/圖直接跳過；DB 空的才拿點陣確認）。
-    // 在 IO 執行緒呼叫；找到 need 個或掃完即停。
-    suspend fun scanBlankPages(need: Int): List<Int> {
-        if (need <= 0) return emptyList()
-        val found = mutableListOf<Int>()
-        val docUri = uri.toString()
-        val count = pdfViewModel.pageCount.value
-        var checked = 0
-        var p = 0
-        while (p < count && found.size < need) {
-            checked++
-            try {
-                val strokes = db.strokeDao().getStrokesForPageSync(docUri, p)
-                val texts = db.textAnnotationDao().getForPageSync(docUri, p)
-                val images = db.imageAnnotationDao().getForPageSync(docUri, p)
-                val dbEmpty = strokes.isEmpty() && texts.isEmpty() && images.isEmpty()
-                if (dbEmpty) {
-                    val bmp = kotlinx.coroutines.withTimeoutOrNull(1200) {
-                        pdfViewModel.getPageBitmap(p).filterNotNull().first()
-                    } ?: pdfViewModel.getPageBitmap(p).value
-                    val ratio = if (bmp != null) whiteRatioOfBitmap(bmp) else 0f
-                    if (isBlankPage(true, ratio)) found.add(p)
-                }
-            } catch (t: Throwable) {
-                android.util.Log.w("InkFlowDbg", "blankscan p=$p failed: $t")
-            }
-            p++
-        }
-        android.util.Log.d("InkFlowDbg", "BLANKSCAN checked=$checked need=$need used=$found")
-        return found
-    }
-
-    suspend fun importRawTextInner(raw: String) {
-            val blocks = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-                splitAiBlocks(raw)
-            }
-            if (blocks.isEmpty()) {
-                android.widget.Toast.makeText(context, "沒有可插入的內容", android.widget.Toast.LENGTH_SHORT).show()
-                return
-            }
-            // 數學渲染（WebView 必須 Main thread；失敗的塊退回 Unicode 文字）
-            val mathBlocks = blocks.filterIsInstance<AiMathBlock>()
-            val rendered = mutableMapOf<String, RenderedMath>()
-            var renderFail = 0
-            if (mathBlocks.isNotEmpty()) {
-                val act = context as? android.app.Activity
-                if (act != null) MathSnapshot.ensure(act)
-                for (mb in mathBlocks) {
-                    var ok = false
-                    try {
-                        val bmp = MathSnapshot.render(mathBlockHtml(mb.html))
-                        if (bmp != null) {
-                            val f = java.io.File(context.filesDir, "math_${System.currentTimeMillis()}_${mb.id}.png")
-                            java.io.FileOutputStream(f).use { out ->
-                                bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
-                            }
-                            rendered[mb.id] = RenderedMath(f, bmp.width, bmp.height)
-                            bmp.recycle()
-                            ok = true
-                        }
-                    } catch (t: Throwable) {
-                        android.util.Log.w("InkFlowDbg", "math render failed ${mb.id}: $t")
-                    }
-                    if (!ok) renderFail++
-                }
-            }
-            val resolved = resolveAiBlocks(blocks, rendered)
-            // M7：公式源 sidecar（blockId → 數學塊，寫入時存 TeX）
-            val mathById = resolved.filterIsInstance<AiMathBlock>().associateBy { it.id }
-            val pages = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-                paginateAiBlocks(resolved, rendered, viewModel.modelWidth, viewModel.modelHeight)
-            }
-            if (pages.isEmpty()) {
-                android.widget.Toast.makeText(context, "沒有可插入的內容", android.widget.Toast.LENGTH_SHORT).show()
-                return
-            }
-            val sourcePage = currentPageIndex
-            // M6：先從第 0 頁掃空白頁（DB 先篩＋點陣確認），填滿才開新頁
-            val need = pages.size
-            val blanks = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                scanBlankPages(need)
-            }
-            var after = sourcePage
-            var placed = 0
-            var mathCount = 0
-            var firstTarget = -1
-            for ((i, page) in pages.withIndex()) {
-                val pageIdx = if (i < blanks.size) {
-                    blanks[i]
-                } else {
-                    if (!insertOnePageAfter(after)) break
-                    after += 1
-                    after
-                }
-                if (firstTarget < 0) firstTarget = pageIdx
-                // 點陣圖保證：重開空窗期建的 flow 可能永久 null，先預取＋等圖再寫入跳轉
-                pdfViewModel.prefetchPage(pageIdx)
-                kotlinx.coroutines.withTimeoutOrNull(3000) {
-                    pdfViewModel.getPageBitmap(pageIdx).filter { it != null }.first()
-                }
-                page.forEach { pl ->
-                    when (pl) {
-                        is Placed.T -> viewModel.insertImportedText(uri.toString(), pageIdx, pl.t.text, pl.t.modelX, pl.t.modelY, pl.t.fontSize)
-                        is Placed.I -> {
-                            val imageUri = android.net.Uri.fromFile(pl.file).toString()
-                            viewModel.insertImportedImage(
-                                uri.toString(), pageIdx, imageUri,
-                                pl.modelX, pl.modelY, pl.modelW, pl.modelH
-                            )
-                            mathCount++
-                            // M7：TeX 源存檔（查不到即純圖，不影響顯示）
-                            val mb = mathById[pl.blockId]
-                            val tex = mb?.html
-                            if (tex != null) {
-                                scope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                                    try {
-                                        db.mathSourceDao().insert(
-                                            com.vic.inkflow.data.MathSourceEntity(
-                                                documentUri = uri.toString(),
-                                                pageIndex = pageIdx,
-                                                imageUri = imageUri,
-                                                tex = tex,
-                                                display = if (mb.display) 1 else 0
-                                            )
-                                        )
-                                    } catch (t: Throwable) {
-                                        android.util.Log.w("InkFlowDbg", "math source save failed: $t")
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                placed++
-            }
-            if (placed > 0) {
-                onRequestPage(firstTarget)
-                android.widget.Toast.makeText(context, "已插入 ${pages.sumOf { it.size }} 段（公式圖 ${mathCount}，${placed} 頁" + (if (blanks.isNotEmpty()) "，含空白頁再利用" else "") + "）" + if (renderFail > 0) "（${renderFail} 式渲染失敗已退回文字）" else "", android.widget.Toast.LENGTH_SHORT).show()
-            } else {
-                android.widget.Toast.makeText(context, "開新頁失敗，請稍後再試", android.widget.Toast.LENGTH_SHORT).show()
-            }
-    }
-
-    // 按②收集後直接插入（不經勾選面板）：切塊 → KaTeX 渲染數學（Main）→ 混合排版 → 串行開新頁寫入。
-    // 包 try/catch：管線任何一步炸了都 Toast，不閃退。
+    // AI 引入管線實作見 AiImportFlow.kt（切塊→KaTeX→排版→掃空白頁→寫入→跳轉）。
+    // 薄包裝：實作在 AiImportFlow.kt，狀態由呼叫方傳入。
     fun importRawText(raw: String) {
-        if (raw.isBlank()) return
-        scope.launch {
-            try {
-                importRawTextInner(raw)
-            } catch (t: Throwable) {
-                android.util.Log.e("InkFlowDbg", "import failed", t)
-                try {
-                    android.widget.Toast.makeText(context, "插入失敗：${t.message}", android.widget.Toast.LENGTH_LONG).show()
-                } catch (_: Throwable) { }
-            }
-        }
+        scope.importRawText(raw, context, viewModel, pdfViewModel, db, uri.toString(), currentPageIndex, onRequestPage)
     }
     // 卷動跟隨：主列表滑到哪頁就換作用頁（不捲主列表，避免打架；側欄由下方 effect 置中）
     val onScrollPage: (Int) -> Unit = { index ->
@@ -508,8 +332,6 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
     // Fix1 REVERTED: 紙層當 haze source 會凍結（氣泡 effect 與紙 source 同樹→重採樣迴圈；
     // 開 AI 面板改寬時巨型圖層重抓直接全黑）。氣泡暫回 Aurora 源（黑洞但穩定），另想辦法。
     val editorHaze = rememberHazeState()
-    // 對話框第二路：只在任一對話框開著時掛 source，避開 #974 同 state 跨視窗凍結。
-    val editorDialogHaze = rememberHazeState()
     val isEditorDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
 
     // 離開編輯器時刷新書庫封面（否則畫完墨水回主頁封面永遠是舊的）+ 補寫當前頁
@@ -637,7 +459,6 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
     val paperStyle by viewModel.paperStyle.collectAsState()
     AnimatedDialog(visible = showDocumentSettingsDialog) {
         DocumentSettingsDialog(
-            dialogHaze = editorDialogHaze,
             documentTitle = documentTitle,
             pageCount = pageCount,
             currentPageIndex = currentPageIndex,
@@ -657,7 +478,6 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
             onDismissRequest = {
                 if (!isExportingPdf) showExportConfirmDialog = false
             },
-            dialogHaze = editorDialogHaze,
             isDark = isEditorDark,
             title = { Text("確認輸出 PDF") },
             text = {
@@ -724,9 +544,7 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
             isDarkTheme = isEditorDark,
             modifier = Modifier
                 .fillMaxSize()
-                .hazeSource(editorHaze)
-                // 對話框第二路 source 常駐（無 effect 時不做工；避開 #974 同 state 跨視窗凍結）
-                .hazeSource(editorDialogHaze),
+                .hazeSource(editorHaze),
             orbCount = 5
         )
         Column(modifier = Modifier.fillMaxSize()) {
@@ -861,7 +679,6 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                 listState = sidebarListState,
                 modifier = Modifier.fillMaxSize(),
                 hazeState = editorHaze,
-                dialogHaze = editorDialogHaze,
                 isDarkTheme = isEditorDark,
                 isFollowingSidebar = sidebarFollowActive
             )
