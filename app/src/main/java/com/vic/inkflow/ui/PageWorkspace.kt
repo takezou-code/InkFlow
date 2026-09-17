@@ -116,7 +116,9 @@ internal fun Workspace(
     val lastLassoPolygon by viewModel.lastLassoPolygon.collectAsState()
     val selectedStrokes by viewModel.selectedStrokes.collectAsState()
     val selectedImageAnnotationIds by viewModel.selectedImageAnnotationIds.collectAsState()
-    val hasEditableSelection = selectedStrokes.isNotEmpty() || selectedImageAnnotationIds.isNotEmpty()
+    val selectedTextAnnotationIds by viewModel.selectedTextAnnotationIds.collectAsState()
+    val hasEditableSelection = selectedStrokes.isNotEmpty() || selectedImageAnnotationIds.isNotEmpty() ||
+        selectedTextAnnotationIds.isNotEmpty()
     val hasPdfBaseSelection = lassoPolygon.isNotEmpty()
     val hasSelection = hasEditableSelection || hasPdfBaseSelection
     val activeRegionPolygon = if (lassoPolygon.isNotEmpty()) lassoPolygon else lastLassoPolygon

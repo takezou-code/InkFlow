@@ -55,4 +55,46 @@ class SelectionGeometryTest {
     fun emptyInEmptyOut() {
         assertTrue(clipPolygonToRect(emptyList(), 0f, 0f, 800f, 800f).isEmpty())
     }
+
+    private fun textAt(x: Float, y: Float, text: String = "hello", fontSize: Float = 20f) =
+        com.vic.inkflow.data.TextAnnotationEntity(
+            documentUri = "u",
+            pageIndex = 0,
+            text = text,
+            modelX = x,
+            modelY = y,
+            fontSize = fontSize
+        )
+
+    @Test
+    fun textHitByBaselineInside() {
+        val ann = textAt(100f, 100f)
+        val poly = listOf(Offset(50f, 50f), Offset(200f, 50f), Offset(200f, 200f), Offset(50f, 200f))
+        assertTrue(com.vic.inkflow.ui.isTextSelectedByLasso(ann, poly))
+    }
+
+    @Test
+    fun textHitByVertexInBox() {
+        // baseline 在圈外 (y=500)，但圈的頂點 (140,490) 深深落在字框 (100..160, 476..500) 內。
+        val ann = textAt(100f, 500f)
+        val poly = listOf(Offset(120f, 480f), Offset(140f, 480f), Offset(140f, 490f), Offset(120f, 490f))
+        val b = com.vic.inkflow.ui.textEstimatedBounds(ann)
+        assertTrue(
+            "l=${b.left} t=${b.top} r=${b.right} b=${b.bottom} model=(${ann.modelX},${ann.modelY}) len=${ann.text.length}",
+            com.vic.inkflow.ui.isTextSelectedByLasso(ann, poly)
+        )
+    }
+
+    @Test
+    fun textMissOutside() {
+        val ann = textAt(100f, 100f)
+        val poly = listOf(Offset(400f, 400f), Offset(500f, 400f), Offset(500f, 500f), Offset(400f, 500f))
+        assertTrue(!com.vic.inkflow.ui.isTextSelectedByLasso(ann, poly))
+    }
+
+    @Test
+    fun textHitDegeneratePoly() {
+        val ann = textAt(100f, 100f)
+        assertTrue(!com.vic.inkflow.ui.isTextSelectedByLasso(ann, listOf(Offset(0f, 0f), Offset(1f, 1f))))
+    }
 }

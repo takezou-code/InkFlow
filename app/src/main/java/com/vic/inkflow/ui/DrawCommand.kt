@@ -28,7 +28,10 @@ sealed class DrawCommand {
         val strokeOriginals: List<StrokeWithPoints>,
         val strokeUpdated: List<StrokeWithPoints>,
         val imageOriginals: List<ImageAnnotationEntity>,
-        val imageUpdated: List<ImageAnnotationEntity>
+        val imageUpdated: List<ImageAnnotationEntity>,
+        /** 套索移動的字（原＋新，與墨圖同批 undo/redo）。 */
+        val textOriginals: List<TextAnnotationEntity> = emptyList(),
+        val textUpdated: List<TextAnnotationEntity> = emptyList()
     ) : DrawCommand()
     data class ResizeSelectionMixed(
         val strokeOriginals: List<StrokeWithPoints>,
@@ -36,8 +39,18 @@ sealed class DrawCommand {
         val imageOriginals: List<ImageAnnotationEntity>,
         val imageUpdated: List<ImageAnnotationEntity>
     ) : DrawCommand()
-    data class AddSelectionCopies(val strokes: List<StrokeWithPoints>, val images: List<ImageAnnotationEntity>) : DrawCommand()
-    data class RemoveSelectionMixed(val strokes: List<StrokeWithPoints>, val images: List<ImageAnnotationEntity>) : DrawCommand()
+    data class AddSelectionCopies(
+        val strokes: List<StrokeWithPoints>,
+        val images: List<ImageAnnotationEntity>,
+        /** 套索複製的字（與墨圖同批，undo 整組撤）。 */
+        val texts: List<TextAnnotationEntity> = emptyList()
+    ) : DrawCommand()
+    data class RemoveSelectionMixed(
+        val strokes: List<StrokeWithPoints>,
+        val images: List<ImageAnnotationEntity>,
+        /** 套索刪除的字（與墨圖同批，undo 整組回）。 */
+        val texts: List<TextAnnotationEntity> = emptyList()
+    ) : DrawCommand()
     /** 單次擦除手勢的全部戰果（手勢級合併：一筆擦的一鍵全回）。texts 目前只有墨的字註解；圖片註解擦不掉故無。 */
     data class EraseGesture(val strokes: List<StrokeWithPoints>, val texts: List<TextAnnotationEntity>) : DrawCommand()
     /**
