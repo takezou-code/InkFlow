@@ -53,7 +53,7 @@
 - 兩個 stride：`docStride=modelH`（資料用，無縫）；`layoutStride=canvasH+gapPx`（螢幕用，含縫）。縫只存在於版式。
 - `pageIndex` 是衍生視圖（`floor(docY/stride)`），書籤/上次頁/側欄/匯出照用；真相來源是 `docY`。混合尺寸走逐頁真實（`pageSizesMap`＋首頁 fallback）。
 - 新墨水縫歸屬：中線切；跨頁長筆存完整一筆＋錨點，繪製按窗口裁剪，切段退役。
-- 不變量：`docY == pageIndex×stride + 頂邊 ± ε`。開文件回填 check 維持閃退（user 決議），但須加 breadcrumb（哪個 assert＋哪份文件＋計數）再拋。
+- 不變量：`docY == pageIndex×stride + 頂邊 ± ε`。開文件回填檢查一律軟失敗（記 log＋繼續，禁拋）——9/17 證據：parity check 磚掉真實文件（紙改小後舊墨合法出界）。閃退決議收回。
 - 手勢層只認 `util/DocLayout.kt`（pure object，無 Compose），資料層怎麼翻不動手勢。
 
 ## 檔權切分（同分支施工，禁 `add -A` 互掃，只 stage 自己的檔）
