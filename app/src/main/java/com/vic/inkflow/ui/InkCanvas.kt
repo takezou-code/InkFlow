@@ -919,20 +919,19 @@ fun InkCanvas(
                             down.consume()
                             viewModel.setPageLock(true)
                             var totalDelta = Offset.Zero
-                            // 跟手絕對式：指位相對起點 + 已施加捲動量，每幀重算不積差
-                            //（觸控微抖讓事件不斷流，紙多走的量必須補進累計，否則被紙帶跑）
-                            var autoY = 0f
+                            // 跟手絕對式：指位相對起點，每幀重算不積差。
+                            // 注意自動捲量「不可」加進來：觸控座標是紙座標，紙被捲動時
+                            // 座標跟著 shift（Compose 機制），再加 autoY 就是雙倍——
+                            // 跨頁漂移的真正根因。自動捲只負責把路讓出來（捲視野）。
                             var drag = awaitDragOrCancellation(down.id)
                             while (drag != null && drag.pressed) {
-                                // 連貫畫布：拖出紙界自動捲（Workspace 程式化捲動，不搶原生手勢）
+                                // 連貫畫布：拖出紙界自動捲（只捲視野，不進位移）
                                 val csH = canvasPixelSizeState.value.height
                                 val autoDy = edgeAutoScrollDy(drag.position.y, csH)
                                 if (autoDy != 0f) {
-                                    // 累加實際捲動量（dispatchRawDelta 回傳值），不是要求的量——
-                                    // 列表到頭被夾掉時，差額不再灌進 totalDelta（跨頁漂移根因）。
-                                    autoY += onEdgeAutoScrollRef.value(autoDy)
+                                    onEdgeAutoScrollRef.value(autoDy)
                                 }
-                                totalDelta = (drag.position - startOffset) + Offset(0f, autoY)
+                                totalDelta = drag.position - startOffset
                                 textMoveDelta = totalDelta
                                 if (pinchActive) {
                                     viewModel.commitTextAnnotationMove(selAnn.id, totalDelta.x, totalDelta.y)
@@ -1112,19 +1111,16 @@ fun InkCanvas(
                             down.consume()
                             viewModel.setPageLock(true)
                             var totalDelta = Offset.Zero
-                            // 跟手絕對式：同文字分支，捲動量補進累計防漂移
-                            var autoY = 0f
+                            // 跟手絕對式：指位相對起點；自動捲量不加（見文字分支同註解）。
                             var drag = awaitDragOrCancellation(down.id)
                             while (drag != null && drag.pressed) {
-                                // 連貫畫布：拖出紙界自動捲
+                                // 連貫畫布：拖出紙界自動捲（只捲視野，不進位移）
                                 val csH = canvasPixelSizeState.value.height
                                 val autoDy = edgeAutoScrollDy(drag.position.y, csH)
                                 if (autoDy != 0f) {
-                                    // 累加實際捲動量（dispatchRawDelta 回傳值），不是要求的量——
-                                    // 列表到頭被夾掉時，差額不再灌進 totalDelta（跨頁漂移根因）。
-                                    autoY += onEdgeAutoScrollRef.value(autoDy)
+                                    onEdgeAutoScrollRef.value(autoDy)
                                 }
-                                totalDelta = (drag.position - startOffset) + Offset(0f, autoY)
+                                totalDelta = drag.position - startOffset
                                 imageMovePreview = totalDelta
                                 // F4：發布拖曳態給 overlay 跨頁畫（model 位移，與提交同公式）。
                                 run {
@@ -1261,20 +1257,18 @@ fun InkCanvas(
                             down.consume()
                             viewModel.setPageLock(true)
                             viewModel.setDragPreviewActive(true)
-                            // 跟手絕對式：相對位移每幀重算，增量餵 VM（telescoping 精確，不積差）
-                            var autoY = 0f
+                            // 跟手絕對式：指位相對起點，每幀重算不積差；
+                            // 自動捲量不加（見文字分支同註解），增量餵 VM 保持 telescoping 精確。
                             var prevAbs = Offset.Zero
                             var drag = awaitDragOrCancellation(down.id)
                             while (drag != null && drag.pressed) {
-                                // 連貫畫布：拖出紙界自動捲（先捲，位移公式含已捲量）
+                                // 連貫畫布：拖出紙界自動捲（只捲視野，不進位移）
                                 val csH = canvasPixelSizeState.value.height
                                 val autoDy = edgeAutoScrollDy(drag.position.y, csH)
                                 if (autoDy != 0f) {
-                                    // 累加實際捲動量（dispatchRawDelta 回傳值），不是要求的量——
-                                    // 列表到頭被夾掉時，差額不再灌進 totalDelta（跨頁漂移根因）。
-                                    autoY += onEdgeAutoScrollRef.value(autoDy)
+                                    onEdgeAutoScrollRef.value(autoDy)
                                 }
-                                val abs = (drag.position - startOffset) + Offset(0f, autoY)
+                                val abs = drag.position - startOffset
                                 val step = abs - prevAbs
                                 prevAbs = abs
                                 if (pinchActive) {
