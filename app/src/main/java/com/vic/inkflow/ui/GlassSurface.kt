@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
@@ -24,10 +25,6 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.window.DialogProperties
-import com.styropyr0.prismal.drawPrismalGlass
-import com.styropyr0.prismal.depth.PrismalDepthInset
-import com.styropyr0.prismal.effects.applyPrismalGlassEffects
-import com.styropyr0.prismal.prismalGlassEffects
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
@@ -86,84 +83,15 @@ fun glassStyle(isDark: Boolean): HazeStyle = HazeStyle(
 )
 
 /**
- * 重點面板用真折射：有 backdrop 就走 Prismal AGSL，沒有就退回 haze 模糊
- *（小元件不傳 backdrop，維持糊、省電也不吵）。
+ * 全統一入口（Prismal 真折射已退役）：等同 [glassPanel]。
+ * 保留此別名是為了呼叫端收斂期少改一行；新 code 直接用 [glassPanel]。
  */
-@Composable
 fun Modifier.smartGlass(
     state: HazeState,
     isDark: Boolean,
     shape: Shape = ShapeLg,
-    specular: Boolean = true,
-    prismal: com.styropyr0.prismal.PrismalBackdrop? = null
-): Modifier {
-    if (prismal == null) return glassPanel(state, isDark, shape, specular)
-    val density = androidx.compose.ui.platform.LocalDensity.current
-    val prismalShape = when (shape) {
-        CircleShape -> com.styropyr0.prismal.shapes.PrismalCapsule()
-        ShapeSm -> com.styropyr0.prismal.shapes.PrismalRoundedRectangle(12.dp)
-        ShapeMd -> com.styropyr0.prismal.shapes.PrismalRoundedRectangle(16.dp)
-        ShapeXl -> com.styropyr0.prismal.shapes.PrismalRoundedRectangle(32.dp)
-        else -> com.styropyr0.prismal.shapes.PrismalRoundedRectangle(24.dp)
-    }
-    var m: Modifier = drawPrismalGlass(
-        backdrop = prismal,
-        shape = { prismalShape },
-        // S3 高級感配方（對標 iOS Liquid Glass）：
-        // - blur 8dp（官方 base 值；3dp 太透像塑膠片，frosted 是厚重感來源）
-        // - 折射收窄收斂（12/26：邊帶銳、中央平，透鏡感集中在邊緣才像真玻璃）
-        // - CA 0.1（S2 教訓：常駐色散顯假，只留邊緣一絲）
-        // - vibrancy 由 applyPrismalGlassEffects 預設開啟（useVibrancy=true）：背底飽和提升，
-        //   iOS 招牌「pumped」色感就靠它
-        // - specular/depthShadow 走庫預設（真 Blinn-Phong 高光＋深度陰影，不再只靠手畫漸層）
-        // - depthInset 內陰影：玻璃厚度感，沒有它邊緣就是一張皮
-        effects = {
-            applyPrismalGlassEffects(
-                density = density,
-                adaptiveLuminance = false,
-                luminance = 0.5f,
-                blurRadiusPx = with(density) { 8.dp.toPx() },
-                refractionHeightPx = with(density) { 12.dp.toPx() },
-                refractionAmountPx = with(density) { 26.dp.toPx() },
-                chromaticAberration = 0.1f
-            )
-        },
-        depthInset = { PrismalDepthInset(radius = 8.dp) },
-        // 表面罩紗：iOS 表面只有約 0.08 白，之前 Compose dressing 疊 0.38 直接洗掉折射。
-        // 這裡只留一層薄紗，立體打光交給 shader 高光＋減薄後的 dressing。
-        onDrawSurface = { drawRect(Color.White.copy(alpha = 0.06f)) }
-    )
-    // 採樣空窗打底：折射還沒抓到 backdrop 那幀，看到深灰而不是純黑洞。
-    // 減淡（暗 25%→18%）：平時這層會悶住折射，是廉價感共犯之一。
-    m = m.background(
-        color = if (isDark) Color(0x2E0F172A) else Color(0x14FFFFFF),
-        shape = shape
-    )
-    // 打光走共用 dressing：跟 haze/faux 同款 Sheen + 亮邊，全 App 只剩一種玻璃語言，
-    // 差別只剩底是折射 / 模糊 / 半透明（效能分級），表面看起來一致。
-    m = m.glassDressing(isDark, shape, specular)
-    // 出現動畫：scale 0.96→1 + 淡入（掛載播一次，圖層階段讀，不重組）
-    var shown by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { shown = true }
-    val appearScale by animateFloatAsState(
-        targetValue = if (shown) 1f else 0.96f,
-        animationSpec = spring(
-            dampingRatio = androidx.compose.animation.core.Spring.DampingRatioMediumBouncy,
-            stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow
-        ),
-        label = "GlassAppearScale"
-    )
-    val appearAlpha by animateFloatAsState(
-        targetValue = if (shown) 1f else 0f,
-        animationSpec = tween(300),
-        label = "GlassAppearAlpha"
-    )
-    return m.graphicsLayer {
-        scaleX = appearScale
-        scaleY = appearScale
-        alpha = appearAlpha
-    }
-}
+    specular: Boolean = true
+): Modifier = glassPanel(state, isDark, shape, specular)
 
 /**
  * Turn any surface into liquid glass. Attach [com.vic.inkflow.ui.hazeSource]
@@ -297,7 +225,7 @@ fun Modifier.fauxGlassPanel(
 }
 
 /**
- * 共用打光 v3：prismal 路徑已有真高光/真陰影（shader 算的），這裡只補「妝」不搶戲。
+ * 共用打光：薄 Sheen＋頂光 rim＋染色投影，全 App 唯一玻璃妝。
  * v2 的 0.38 白罩＋斜射是廉價感主因（直接蓋掉折射）：全部減到點到為止。
  * haze/faux 路徑沒有 shader 高光，靠這層薄妝＋rim 維持玻璃讀感。
  * 壓在底（blur 或半透明色）上、內容下。
@@ -359,16 +287,21 @@ private fun Modifier.glassDressing(
 }
 
 /**
- * 無鉻玻璃對話框：BasicAlertDialog（純視窗＋遮罩，零 M3 Surface）＋ Box ＋ fauxGlassPanel。
+ * 全統一對話框殼（單一入口）：BasicAlertDialog（純視窗＋遮罩，零 M3 Surface）
+ * ＋ 全屏真模糊背底（第二路 HazeState）＋ 單一玻璃卡 ＋ GlassTextButton。
  *
- * M3 AlertDialog 會在 modifier 外框之內再套一層 tonal Surface（內縮約 24dp），
- * 玻璃上就是一道直角內框——跟之前氣泡的白帶同一類 M3 chrome（Bisect 定案：對話框
- * subtree 零 M3 Surface/TextButton）。要開對話框一律走這裡，不要直接用 M3 AlertDialog。
+ * 為何第二路 state：主視窗 state（editorHaze 等）同時被主視窗 effect 和對話框 effect
+ * 吃會凍結（Haze #974）。各螢幕根只在「任一對話框開著時」才掛 hazeSource(dialogHaze)，
+ * 關框即撤，不常駐、不雙採。
+ *
+ * 殼內鐵律：單一背景層（卡是唯一底）、零 M3 widget（禁 Surface/TextButton/FilterChip）、
+ * 禁第二層底（分區用分隔線＋字階，不疊底）。要開對話框一律走這裡。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GlassDialog(
     onDismissRequest: () -> Unit,
+    dialogHaze: HazeState,
     isDark: Boolean = MaterialTheme.colorScheme.background.luminance() < 0.5f,
     title: @Composable () -> Unit,
     text: (@Composable () -> Unit)? = null,
@@ -382,6 +315,7 @@ fun GlassDialog(
 ) {
     GlassDialogFrame(
         onDismissRequest = onDismissRequest,
+        dialogHaze = dialogHaze,
         isDark = isDark,
         title = title,
         text = text,
@@ -400,11 +334,12 @@ fun GlassDialog(
     }
 }
 
-/** 按鈕列自訂版（text 裡有選項清單那種）：只借視窗＋玻璃框，按鈕自己排。 */
+/** 按鈕列自訂版（選項清單／輸入框那種）：只借視窗＋模糊背底＋玻璃卡，按鈕自己排。 */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GlassDialogCustom(
     onDismissRequest: () -> Unit,
+    dialogHaze: HazeState,
     isDark: Boolean = MaterialTheme.colorScheme.background.luminance() < 0.5f,
     title: @Composable () -> Unit,
     text: (@Composable () -> Unit)? = null,
@@ -413,6 +348,7 @@ fun GlassDialogCustom(
 ) {
     GlassDialogFrame(
         onDismissRequest = onDismissRequest,
+        dialogHaze = dialogHaze,
         isDark = isDark,
         title = title,
         text = text,
@@ -425,6 +361,7 @@ fun GlassDialogCustom(
 @Composable
 private fun GlassDialogFrame(
     onDismissRequest: () -> Unit,
+    dialogHaze: HazeState,
     isDark: Boolean,
     title: @Composable () -> Unit,
     text: (@Composable () -> Unit)?,
@@ -432,37 +369,84 @@ private fun GlassDialogFrame(
     buttons: @Composable RowScope.() -> Unit
 ) {
     BasicAlertDialog(onDismissRequest = onDismissRequest, properties = properties) {
-        Column(
-            modifier = Modifier
-                .widthIn(min = 280.dp, max = 560.dp)
-                .fauxGlassPanel(isDark, ShapeLg)
-                .padding(24.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
         ) {
-            // M3 AlertDialog 同款字階：標題 headlineSmall/onSurface、內文 bodyMedium/onSurfaceVariant；
-            // 呼叫端有寫 style/color 的照樣覆蓋，只影響沒寫的 Text。
-            CompositionLocalProvider(
-                LocalContentColor provides MaterialTheme.colorScheme.onSurface,
-                LocalTextStyle provides MaterialTheme.typography.headlineSmall
-            ) { title() }
-            if (text != null) {
-                CompositionLocalProvider(
-                    LocalContentColor provides MaterialTheme.colorScheme.onSurfaceVariant,
-                    LocalTextStyle provides MaterialTheme.typography.bodyMedium
-                ) { text() }
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
-                verticalAlignment = Alignment.CenterVertically,
-                content = buttons
+            // 全屏真模糊背底（採主視窗 source）＋ 輕調光；iOS 式毛玻璃背底。
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .hazeEffect(dialogHaze, style = glassStyle(isDark))
+                    .background(Color.Black.copy(alpha = if (isDark) 0.20f else 0.12f))
             )
+            // 全殼唯一背景層：玻璃卡（faux 底壓在已模糊的背底上＝厚玻璃讀感）。
+            Column(
+                modifier = Modifier
+                    .padding(horizontal = 24.dp)
+                    .widthIn(min = 280.dp, max = 560.dp)
+                    .fauxGlassPanel(isDark, ShapeLg)
+                    .padding(24.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                // M3 AlertDialog 同款字階：標題 headlineSmall/onSurface、內文 bodyMedium/onSurfaceVariant；
+                // 呼叫端有寫 style/color 的照樣覆蓋，只影響沒寫的 Text。
+                CompositionLocalProvider(
+                    LocalContentColor provides MaterialTheme.colorScheme.onSurface,
+                    LocalTextStyle provides MaterialTheme.typography.headlineSmall
+                ) { title() }
+                if (text != null) {
+                    CompositionLocalProvider(
+                        LocalContentColor provides MaterialTheme.colorScheme.onSurfaceVariant,
+                        LocalTextStyle provides MaterialTheme.typography.bodyMedium
+                    ) { text() }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                    content = buttons
+                )
+            }
         }
     }
 }
 
-/** 對話框按鈕：素字＋無漣漪点击，零 M3 chrome。長清單選項用 alignStart 撐滿整行。 */
+/** 對話框選項丸（取代 M3 FilterChip）：選中靛底＋白字，未選中半透明＋主色字，零 M3 chrome。 */
 @Composable
+fun GlassOptionChip(
+    text: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    isDark: Boolean = MaterialTheme.colorScheme.background.luminance() < 0.5f
+) {
+    Box(
+        modifier = modifier
+            .clip(CircleShape)
+            .background(
+                color = if (selected) MaterialTheme.colorScheme.primary
+                else Color.White.copy(alpha = if (isDark) 0.10f else 0.55f),
+                shape = CircleShape
+            )
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClick
+            )
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelLarge,
+            color = if (selected) Color.White
+            else MaterialTheme.colorScheme.primary
+        )
+    }
+}
+
+/** 對話框按鈕：素字＋無漣漪点击，零 M3 chrome。長清單選項用 alignStart 撐滿整行。 */@Composable
 fun GlassTextButton(
     text: String,
     onClick: () -> Unit,

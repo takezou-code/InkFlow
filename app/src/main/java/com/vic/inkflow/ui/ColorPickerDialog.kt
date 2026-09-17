@@ -13,8 +13,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
@@ -45,6 +45,7 @@ import kotlin.math.sin
 
 @Composable
 fun ColorPickerDialog(
+    dialogHaze: dev.chrisbanes.haze.HazeState,
     initialColor: Color = Color.White,
     onColorSelected: (Color) -> Unit,
     onDismiss: () -> Unit
@@ -58,14 +59,14 @@ fun ColorPickerDialog(
 
     val pickedColor = Color.hsv(hue, saturation, brightness, alpha)
 
-    AlertDialog(
+    // 殼內禁第二層底：內容直接放卡上，不包 Surface。
+    GlassDialogCustom(
         onDismissRequest = onDismiss,
-        modifier = Modifier.fauxGlassPanel(isDarkSurface, ShapeLg),
-        containerColor = Color.Transparent,
-        shape = ShapeLg,
+        dialogHaze = dialogHaze,
+        isDark = isDarkSurface,
         title = {
             Column {
-                Text("選擇顏色", style = MaterialTheme.typography.titleLarge)
+                Text("選擇顏色")
                 Text(
                     "調整墨水、螢光筆與標註色彩",
                     style = MaterialTheme.typography.labelMedium,
@@ -73,102 +74,101 @@ fun ColorPickerDialog(
                 )
             }
         },
-        confirmButton = {
-            TextButton(onClick = { onColorSelected(pickedColor); onDismiss() }) {
-                Text("確認")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
-        },
         text = {
-            Surface(
-                shape = ShapeLg,
-                color = Color.White.copy(alpha = if (isDarkSurface) 0.08f else 0.35f)
+            Column(
+                modifier = Modifier.padding(top = 4.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
+                HueRing(
+                    hue = hue,
+                    modifier = Modifier.size(208.dp),
+                    onHueChanged = { hue = it }
+                )
+                Spacer(Modifier.height(16.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    HueRing(
-                        hue = hue,
-                        modifier = Modifier.size(208.dp),
-                        onHueChanged = { hue = it }
+                    Text("飽和度", style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(0.25f))
+                    Slider(
+                        value = saturation,
+                        onValueChange = { saturation = it },
+                        modifier = Modifier.weight(0.75f)
                     )
-                    Spacer(Modifier.height(16.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("飽和度", style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(0.25f))
-                        Slider(
-                            value = saturation,
-                            onValueChange = { saturation = it },
-                            modifier = Modifier.weight(0.75f)
-                        )
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("明度", style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(0.25f))
-                        Slider(
-                            value = brightness,
-                            onValueChange = { brightness = it },
-                            modifier = Modifier.weight(0.75f)
-                        )
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("透明度", style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(0.25f))
-                        Slider(
-                            value = alpha,
-                            onValueChange = { alpha = it },
-                            modifier = Modifier.weight(0.75f)
-                        )
-                    }
-
-                    Spacer(Modifier.height(10.dp))
-                    Text(
-                        text = "目前顏色  ${(alpha * 100).toInt()}%",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.align(Alignment.Start)
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("明度", style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(0.25f))
+                    Slider(
+                        value = brightness,
+                        onValueChange = { brightness = it },
+                        modifier = Modifier.weight(0.75f)
                     )
-                    Canvas(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(48.dp)
-                            .clip(ShapeSm)
-                            .background(
-                                if (isDarkSurface) {
-                                    Color(0xFF1E293B)
-                                } else {
-                                    Color(0xFFF8FAFC)
-                                }
-                            )
-                    ) {
-                        val cellSize = 10.dp.toPx()
-                        val cols = (size.width / cellSize).toInt() + 1
-                        val rows = (size.height / cellSize).toInt() + 1
-                        val checkColor1 = if (isDarkSurface) Color(0xFF334155) else Color(0xFFE2E8F0)
-                        val checkColor2 = if (isDarkSurface) Color(0xFF1E293B) else Color(0xFFFFFFFF)
-                        for (row in 0..rows) {
-                            for (col in 0..cols) {
-                                drawRect(
-                                    color = if ((row + col) % 2 == 0) checkColor1 else checkColor2,
-                                    topLeft = Offset(col * cellSize, row * cellSize),
-                                    size = Size(cellSize, cellSize)
-                                )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("透明度", style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(0.25f))
+                    Slider(
+                        value = alpha,
+                        onValueChange = { alpha = it },
+                        modifier = Modifier.weight(0.75f)
+                    )
+                }
+
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    text = "目前顏色  ${(alpha * 100).toInt()}%",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.align(Alignment.Start)
+                )
+                Canvas(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .clip(ShapeSm)
+                        .background(
+                            if (isDarkSurface) {
+                                Color(0xFF1E293B)
+                            } else {
+                                Color(0xFFF8FAFC)
                             }
+                        )
+                ) {
+                    val cellSize = 10.dp.toPx()
+                    val cols = (size.width / cellSize).toInt() + 1
+                    val rows = (size.height / cellSize).toInt() + 1
+                    val checkColor1 = if (isDarkSurface) Color(0xFF334155) else Color(0xFFE2E8F0)
+                    val checkColor2 = if (isDarkSurface) Color(0xFF1E293B) else Color(0xFFFFFFFF)
+                    for (row in 0..rows) {
+                        for (col in 0..cols) {
+                            drawRect(
+                                color = if ((row + col) % 2 == 0) checkColor1 else checkColor2,
+                                topLeft = Offset(col * cellSize, row * cellSize),
+                                size = Size(cellSize, cellSize)
+                            )
                         }
-                        drawRect(color = pickedColor, size = size)
                     }
+                    drawRect(color = pickedColor, size = size)
                 }
             }
+        },
+        buttons = {
+            GlassTextButton(
+                text = "取消",
+                onClick = onDismiss,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.width(8.dp))
+            GlassTextButton(
+                text = "確認",
+                onClick = { onColorSelected(pickedColor); onDismiss() }
+            )
         }
     )
 }

@@ -247,8 +247,7 @@ internal fun LibraryHeroPanel(
     onToggleGridView: () -> Unit,
     selectedNavIndex: Int = 0,
     onCreateFolder: () -> Unit = {},
-    hazeState: dev.chrisbanes.haze.HazeState,
-    prismalBackdrop: com.styropyr0.prismal.PrismalBackdrop? = null
+    hazeState: dev.chrisbanes.haze.HazeState
 ) {
     Column(
         modifier = Modifier
@@ -256,7 +255,7 @@ internal fun LibraryHeroPanel(
             .padding(horizontal = 18.dp, vertical = 14.dp)
     ) {
         Surface(
-            modifier = Modifier.smartGlass(hazeState, isDarkTheme, prismal = prismalBackdrop),
+            modifier = Modifier.smartGlass(hazeState, isDarkTheme),
             color = Color.Transparent,
             contentColor = MaterialTheme.colorScheme.onSurface
         ) {
@@ -440,8 +439,7 @@ internal fun DocumentLibraryFab(
     hazeState: dev.chrisbanes.haze.HazeState,
     onOpenPdf: () -> Unit,
     onCreateBlank: () -> Unit,
-    onCreateFolder: () -> Unit,
-    prismalBackdrop: com.styropyr0.prismal.PrismalBackdrop? = null
+    onCreateFolder: () -> Unit
 ) {
     val fabContentColor = if (isDarkTheme) Color.White else MaterialTheme.colorScheme.primary
     Box {
@@ -450,7 +448,7 @@ internal fun DocumentLibraryFab(
 
         Box(
             modifier = Modifier
-                .smartGlass(hazeState, isDarkTheme, prismal = prismalBackdrop)
+                .smartGlass(hazeState, isDarkTheme)
                 .pressableGlass(fabInteractionSource)
                 .clickable(interactionSource = fabInteractionSource, indication = androidx.compose.foundation.LocalIndication.current, onClick = onToggleMenu)
                 .padding(horizontal = 18.dp, vertical = 14.dp)
@@ -511,8 +509,7 @@ internal fun LibraryEmptyState(
     onOpenPdf: () -> Unit,
     onCreateBlank: () -> Unit,
     hazeState: dev.chrisbanes.haze.HazeState? = null,
-    isDarkTheme: Boolean = false,
-    prismalBackdrop: com.styropyr0.prismal.PrismalBackdrop? = null
+    isDarkTheme: Boolean = false
 ) {
     val emptyStateFloat by rememberInfiniteTransition(label = "EmptyIconFloat")
         .animateFloat(
@@ -546,7 +543,7 @@ internal fun LibraryEmptyState(
                 modifier = Modifier
                     .fillMaxWidth()
                     .widthIn(max = 560.dp)
-                    .then(if (hazeState != null) Modifier.smartGlass(hazeState, isDarkTheme, ShapeXl, prismal = prismalBackdrop) else Modifier),
+                    .then(if (hazeState != null) Modifier.smartGlass(hazeState, isDarkTheme, ShapeXl) else Modifier),
                 color = if (hazeState != null) Color.Transparent else MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.96f),
                 shape = ShapeXl,
                 border = if (hazeState != null) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),

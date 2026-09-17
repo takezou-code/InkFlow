@@ -200,7 +200,6 @@ import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
-import com.styropyr0.prismal.sources.prismalGlassLayer
 import androidx.navigation.navArgument
 import com.vic.inkflow.R
 import com.vic.inkflow.data.AppDatabase
@@ -441,11 +440,11 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
         }
     }
     // 編輯器共用玻璃狀態：根 Aurora 當 source，TopBar/側欄/氣泡當 effect。
-    // 真折射用同一個 Aurora 當 backdrop（haze 照用，小元件不受影響）。
-    // Fix1 REVERTED: 紙層當 haze/prismal source 會凍結（氣泡 effect 與紙 source 同樹→重採樣迴圈；
+    // Fix1 REVERTED: 紙層當 haze source 會凍結（氣泡 effect 與紙 source 同樹→重採樣迴圈；
     // 開 AI 面板改寬時巨型圖層重抓直接全黑）。氣泡暫回 Aurora 源（黑洞但穩定），另想辦法。
     val editorHaze = rememberHazeState()
-    val editorPrismalBackdrop = com.styropyr0.prismal.sources.rememberPrismalGlassLayer()
+    // 對話框第二路：只在任一對話框開著時掛 source，避開 #974 同 state 跨視窗凍結。
+    val editorDialogHaze = rememberHazeState()
     val isEditorDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
 
     // 離開編輯器時刷新書庫封面（否則畫完墨水回主頁封面永遠是舊的）+ 補寫當前頁
@@ -573,6 +572,7 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
     val paperStyle by viewModel.paperStyle.collectAsState()
     AnimatedDialog(visible = showDocumentSettingsDialog) {
         DocumentSettingsDialog(
+            dialogHaze = editorDialogHaze,
             documentTitle = documentTitle,
             pageCount = pageCount,
             currentPageIndex = currentPageIndex,
@@ -588,13 +588,12 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
     }
 
     AnimatedDialog(visible = showExportConfirmDialog) {
-        androidx.compose.material3.AlertDialog(
+        GlassDialogCustom(
             onDismissRequest = {
                 if (!isExportingPdf) showExportConfirmDialog = false
             },
-            modifier = Modifier.fauxGlassPanel(isEditorDark, ShapeLg),
-            containerColor = Color.Transparent,
-            shape = ShapeLg,
+            dialogHaze = editorDialogHaze,
+            isDark = isEditorDark,
             title = { Text("確認輸出 PDF") },
             text = {
                 Text(
@@ -602,10 +601,18 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                     else "將輸出目前文件的所有頁面與註記到 Downloads，是否繼續？"
                 )
             },
-            confirmButton = {
-                TextButton(
+            buttons = {
+                GlassTextButton(
+                    text = "取消",
+                    onClick = { showExportConfirmDialog = false },
+                    enabled = !isExportingPdf,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.width(8.dp))
+                GlassTextButton(
+                    text = if (isExportingPdf) "輸出中" else "確認匯出",
                     onClick = {
-                        if (isExportingPdf) return@TextButton
+                        if (isExportingPdf) return@GlassTextButton
                         isExportingPdf = true
                         scope.launch {
                             try {
@@ -635,17 +642,7 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                         }
                     },
                     enabled = !isExportingPdf
-                ) {
-                    Text(if (isExportingPdf) "輸出中" else "確認匯出")
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = { showExportConfirmDialog = false },
-                    enabled = !isExportingPdf
-                ) {
-                    Text("取消")
-                }
+                )
             }
         )
     }
@@ -663,7 +660,8 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
             modifier = Modifier
                 .fillMaxSize()
                 .hazeSource(editorHaze)
-                .prismalGlassLayer(editorPrismalBackdrop),
+                // 對話框第二路 source 常駐（無 effect 時不做工；避開 #974 同 state 跨視窗凍結）
+                .hazeSource(editorDialogHaze),
             orbCount = 5
         )
         Column(modifier = Modifier.fillMaxSize()) {
@@ -680,8 +678,7 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                 onDocumentSettings = { showDocumentSettingsDialog = true },
                 onToggleAiPanel = { showAiPanel = !showAiPanel },
                 hazeState = editorHaze,
-                isDarkTheme = isEditorDark,
-                prismalBackdrop = editorPrismalBackdrop
+                isDarkTheme = isEditorDark
             )
 
             AnimatedVisibility(
@@ -693,7 +690,6 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                     viewModel = viewModel,
                     hazeState = editorHaze,
                     isDarkTheme = isEditorDark,
-                    prismalBackdrop = editorPrismalBackdrop
                 )
             }
 
@@ -800,9 +796,9 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                 listState = sidebarListState,
                 modifier = Modifier.fillMaxSize(),
                 hazeState = editorHaze,
+                dialogHaze = editorDialogHaze,
                 isDarkTheme = isEditorDark,
-                isFollowingSidebar = sidebarFollowActive,
-                prismalBackdrop = editorPrismalBackdrop
+                isFollowingSidebar = sidebarFollowActive
             )
 
         }
@@ -1036,8 +1032,7 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                         db = db,
                         mainListState = mainListState,
                         onRequestPage = onRequestPage,
-                        onScrollPage = onScrollPage,
-                        prismalBackdrop = editorPrismalBackdrop
+                        onScrollPage = onScrollPage
                     )
                 } // 5 Box(Workspace)
             } // 6 inner Row

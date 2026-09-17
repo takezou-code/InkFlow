@@ -68,9 +68,16 @@ private fun SelectionBubbleAction(
     icon: ImageVector,
     label: String,
     enabled: Boolean,
-    tint: Color = Color(0xFF1E293B),
+    tint: Color = Color.Unspecified,
+    isDark: Boolean = false,
     onClick: () -> Unit
 ) {
+    // 紙上氣泡深淺跟主題走（之前寫死亮底，深色下是白底黑字，現對齊 bubbleGlass）
+    val ink = when {
+        tint != Color.Unspecified -> tint
+        isDark -> Color(0xFFE2E8F0)
+        else -> Color(0xFF1E293B)
+    };
     Box(
         modifier = Modifier
             .clip(RoundedCornerShape(12.dp))
@@ -86,7 +93,7 @@ private fun SelectionBubbleAction(
                 imageVector = icon,
                 contentDescription = label,
                 modifier = Modifier.size(20.dp),
-                tint = if (enabled) tint else tint.copy(alpha = 0.38f)
+                tint = if (enabled) ink else ink.copy(alpha = 0.38f)
             )
             Text(
                 text = label,
@@ -204,6 +211,7 @@ internal fun LassoBubble(
     pdfViewModel: PdfViewModel,
     documentUri: String,
     onAiFileReady: (android.net.Uri, String?) -> Unit,
+    isDark: Boolean = false
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -231,7 +239,7 @@ internal fun LassoBubble(
                     shape = RoundedCornerShape(22.dp)
                     clip = false
                 }
-                .bubbleGlass(false, RoundedCornerShape(22.dp))
+                .bubbleGlass(isDark, RoundedCornerShape(22.dp))
                 .onSizeChanged { onSizeChanged(it) }
         ) {
             Column(
@@ -246,6 +254,7 @@ internal fun LassoBubble(
                     SelectionBubbleAction(
                         icon = Icons.Filled.LibraryAdd,
                         label = "提取",
+                        isDark = isDark,
                         enabled = !isExtracting && hasSelection && hasRegionSnapshot,
                         onClick = {
                             if (isExtracting || !hasSelection || !hasRegionSnapshot) return@SelectionBubbleAction
@@ -292,6 +301,7 @@ internal fun LassoBubble(
                     SelectionBubbleAction(
                         icon = Icons.Filled.AutoAwesome,
                         label = "AI 解析",
+                        isDark = isDark,
                         enabled = !isExtracting && hasSelection && hasRegionSnapshot,
                         // P0：用選取歸屬紙（同提取/快捷列），之前誤用作用頁，跨頁選取會送錯圖。
                         onClick = {
@@ -305,6 +315,7 @@ internal fun LassoBubble(
                     SelectionBubbleAction(
                         icon = Icons.Filled.ContentCopy,
                         label = "複製",
+                        isDark = isDark,
                         enabled = hasEditableSelection,
                         onClick = {
                             if (!hasEditableSelection) return@SelectionBubbleAction
@@ -314,8 +325,9 @@ internal fun LassoBubble(
                     SelectionBubbleAction(
                         icon = Icons.Filled.DeleteOutline,
                         label = "刪除",
+                        isDark = isDark,
                         enabled = hasEditableSelection,
-                        tint = if (hasEditableSelection) MaterialTheme.colorScheme.error else Color(0xFF1E293B),
+                        tint = if (hasEditableSelection) MaterialTheme.colorScheme.error else Color.Unspecified,
                         onClick = {
                             if (!hasEditableSelection) return@SelectionBubbleAction
                             viewModel.deleteSelection()
@@ -332,7 +344,7 @@ internal fun LassoBubble(
                             Icons.Outlined.Close,
                             contentDescription = "取消選取",
                             modifier = Modifier.size(16.dp),
-                            tint = Color(0xFF1E293B)
+                            tint = if (isDark) Color(0xFFE2E8F0) else Color(0xFF1E293B)
                         )
                     }
                 } // 氣泡第一排
@@ -345,6 +357,7 @@ internal fun LassoBubble(
                         SelectionBubbleAction(
                             icon = Icons.Filled.QuestionAnswer,
                             label = "解釋",
+                            isDark = isDark,
                             enabled = !isExtracting,
                             onClick = {
                                 sendRegionToAi(
@@ -357,6 +370,7 @@ internal fun LassoBubble(
                         SelectionBubbleAction(
                             icon = Icons.Filled.Summarize,
                             label = "總結",
+                            isDark = isDark,
                             enabled = !isExtracting,
                             onClick = {
                                 sendRegionToAi(
@@ -369,6 +383,7 @@ internal fun LassoBubble(
                         SelectionBubbleAction(
                             icon = Icons.Filled.Translate,
                             label = "翻譯",
+                            isDark = isDark,
                             enabled = !isExtracting,
                             onClick = {
                                 sendRegionToAi(

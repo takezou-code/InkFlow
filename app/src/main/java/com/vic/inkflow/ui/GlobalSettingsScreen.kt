@@ -76,6 +76,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
+import dev.chrisbanes.haze.hazeSource
 import kotlin.math.roundToInt
 import com.vic.inkflow.util.AutoBackupScheduler
 import com.vic.inkflow.util.BackupManager
@@ -97,6 +98,8 @@ fun GlobalSettingsScreen(
     val scrollState = rememberScrollState()
     // 對話框自判深淺
     val isDarkSettings = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    // 對話框第二路（設定頁無 Aurora，source 掛內容根，糊素色底＋殼調光照樣統一）
+    val settingsDialogHaze = rememberHazeState()
 
     var defaultInputMode by remember { mutableStateOf(prefs.getString("default_input_mode", InputMode.FREE.name) ?: InputMode.FREE.name) }
     var defaultQuickSwipe by remember { mutableStateOf(prefs.getBoolean("default_quick_swipe_eraser_enabled", false)) }
@@ -153,6 +156,7 @@ fun GlobalSettingsScreen(
             modifier = Modifier
                 .padding(innerPadding)
                 .fillMaxSize()
+                .hazeSource(settingsDialogHaze)
                 .verticalScroll(scrollState)
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(24.dp)
@@ -337,64 +341,55 @@ fun GlobalSettingsScreen(
 
             // 一鍵還原自動備份：先確認（會覆蓋目前全部資料），驗證後走同一套重啟套用流程
             confirmRestoreFile?.let { target ->
-                androidx.compose.material3.AlertDialog(
+                GlassDialog(
                     onDismissRequest = { confirmRestoreFile = null },
-                    modifier = Modifier.fauxGlassPanel(isDarkSettings, ShapeLg),
-                    containerColor = Color.Transparent,
-                    shape = ShapeLg,
+                    dialogHaze = settingsDialogHaze,
+                    isDark = isDarkSettings,
                     title = { Text("還原這份備份？") },
                     text = { Text("將以「${target.name}」取代目前的文件清單與全部註解，此動作無法復原。") },
-                    confirmButton = {
-                        TextButton(onClick = {
-                            confirmRestoreFile = null
-                            isBackupBusy = true
-                            backupStatus = "正在驗證備份檔…"
-                            coroutineScope.launch {
-                                val result = BackupManager.stageRestore(
-                                    appContext, android.net.Uri.fromFile(target)
-                                )
-                                result.fold(
-                                    onSuccess = { count ->
-                                        backupStatus = "備份驗證成功（$count 份文件），重啟後套用"
-                                        showRestartDialog = true
-                                    },
-                                    onFailure = {
-                                        backupStatus = "還原失敗：${it.message}"
-                                    }
-                                )
-                                isBackupBusy = false
-                            }
-                        }) { Text("確定還原") }
-                    },
-                    dismissButton = {
-                        TextButton(onClick = { confirmRestoreFile = null }) { Text("取消") }
+                    confirmText = "確定還原",
+                    onConfirm = {
+                        confirmRestoreFile = null
+                        isBackupBusy = true
+                        backupStatus = "正在驗證備份檔…"
+                        coroutineScope.launch {
+                            val result = BackupManager.stageRestore(
+                                appContext, android.net.Uri.fromFile(target)
+                            )
+                            result.fold(
+                                onSuccess = { count ->
+                                    backupStatus = "備份驗證成功（$count 份文件），重啟後套用"
+                                    showRestartDialog = true
+                                },
+                                onFailure = {
+                                    backupStatus = "還原失敗：${it.message}"
+                                }
+                            )
+                            isBackupBusy = false
+                        }
                     }
                 )
             }
 
             if (showRestartDialog) {
-                androidx.compose.material3.AlertDialog(
+                GlassDialog(
                     onDismissRequest = { showRestartDialog = false },
-                    modifier = Modifier.fauxGlassPanel(isDarkSettings, ShapeLg),
-                    containerColor = Color.Transparent,
-                    shape = ShapeLg,
+                    dialogHaze = settingsDialogHaze,
+                    isDark = isDarkSettings,
                     title = { Text("還原就緒") },
                     text = { Text("備份資料已完成驗證。重新啟動 App 後將以備份內容取代目前的文件清單與註解。") },
-                    confirmButton = {
-                        TextButton(onClick = {
-                            showRestartDialog = false
-                            val intent = appContext.packageManager.getLaunchIntentForPackage(appContext.packageName)
-                            intent?.addFlags(
-                                android.content.Intent.FLAG_ACTIVITY_NEW_TASK or
-                                    android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK
-                            )
-                            if (intent != null) appContext.startActivity(intent)
-                            Runtime.getRuntime().exit(0)
-                        }) { Text("立即重新啟動") }
+                    confirmText = "立即重新啟動",
+                    onConfirm = {
+                        showRestartDialog = false
+                        val intent = appContext.packageManager.getLaunchIntentForPackage(appContext.packageName)
+                        intent?.addFlags(
+                            android.content.Intent.FLAG_ACTIVITY_NEW_TASK or
+                                android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK
+                        )
+                        if (intent != null) appContext.startActivity(intent)
+                        Runtime.getRuntime().exit(0)
                     },
-                    dismissButton = {
-                        TextButton(onClick = { showRestartDialog = false }) { Text("稍後自行重啟") }
-                    }
+                    dismissText = "稍後自行重啟"
                 )
             }
 
@@ -591,6 +586,7 @@ fun GlobalSettingsScreen(
                 if (showPaletteColorPicker != null) {
                     val (index, colorInt) = showPaletteColorPicker!!
                     ColorPickerDialog(
+                        dialogHaze = settingsDialogHaze,
                         initialColor = Color(colorInt),
                         onColorSelected = { color ->
                             val intVal = color.toArgb()
@@ -617,6 +613,7 @@ fun GlobalSettingsScreen(
 
     if (showPenColorPicker) {
         ColorPickerDialog(
+            dialogHaze = settingsDialogHaze,
             initialColor = Color(defaultPenColor),
             onColorSelected = { color ->
                 showPenColorPicker = false
@@ -630,6 +627,7 @@ fun GlobalSettingsScreen(
 
     if (showHighlighterColorPicker) {
         ColorPickerDialog(
+            dialogHaze = settingsDialogHaze,
             initialColor = Color(defaultHighlighterColor),
             onColorSelected = { color ->
                 showHighlighterColorPicker = false

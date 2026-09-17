@@ -2,11 +2,6 @@
 
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeSource
-import com.styropyr0.prismal.drawPrismalGlass
-import com.styropyr0.prismal.prismalGlassEffects
-import com.styropyr0.prismal.shapes.PrismalRoundedRectangle
-import com.styropyr0.prismal.sources.prismalGlassLayer
-import com.styropyr0.prismal.sources.rememberPrismalGlassLayer
 import com.vic.inkflow.ui.theme.Motion
 import com.vic.inkflow.ui.theme.ShapeSm
 import com.vic.inkflow.ui.theme.ShapeMd
@@ -260,6 +255,8 @@ fun DocumentLibraryScreen(
     var showNewDocSizeDialog by remember { mutableStateOf(false) }
     var showCreateFolderDialog by remember { mutableStateOf(false) }
     var createFolderInput by rememberSaveable { mutableStateOf("") }
+    // 對話框第二路 state（source 掛根 Aurora，常駐）
+    val libraryDialogHaze = rememberHazeState()
 
     // Chromium 預熱：編輯器 AI 面板首建 WebView 會卡主執行緒數百毫秒，
     // 那幾百毫秒正好把玻璃採樣空窗的那幀凍在螢幕上 = 黑閃。書庫閒置 2s 後先建一個即丟，
@@ -282,8 +279,10 @@ fun DocumentLibraryScreen(
     }
 
     AnimatedDialog(visible = showCreateFolderDialog) {
-        androidx.compose.material3.AlertDialog(
+        GlassDialogCustom(
             onDismissRequest = { showCreateFolderDialog = false },
+            dialogHaze = libraryDialogHaze,
+            isDark = isDarkTheme,
             title = { Text("建立新資料夾") },
             text = {
                 androidx.compose.material3.OutlinedTextField(
@@ -291,11 +290,20 @@ fun DocumentLibraryScreen(
                     onValueChange = { createFolderInput = it },
                     singleLine = true,
                     label = { Text("資料夾名稱") },
+                    colors = glassFieldColors(isDarkTheme),
+                    shape = ShapeLg,
                     modifier = Modifier.fillMaxWidth()
                 )
             },
-            confirmButton = {
-                TextButton(
+            buttons = {
+                GlassTextButton(
+                    text = "取消",
+                    onClick = { showCreateFolderDialog = false },
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.width(8.dp))
+                GlassTextButton(
+                    text = "建立",
                     onClick = {
                         val name = createFolderInput.trim()
                         if (name.isNotEmpty()) {
@@ -305,16 +313,14 @@ fun DocumentLibraryScreen(
                         }
                     },
                     enabled = createFolderInput.trim().isNotEmpty()
-                ) { Text("建立") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showCreateFolderDialog = false }) { Text("取消") }
+                )
             }
         )
     }
 
     if (showNewDocSizeDialog) {
         NewDocPaperSizeDialog(
+            dialogHaze = libraryDialogHaze,
             onDismiss = { showNewDocSizeDialog = false },
             onCreate = { widthPt, heightPt ->
                 showNewDocSizeDialog = false
@@ -420,9 +426,6 @@ fun DocumentLibraryScreen(
     // Outer Box does NOT read any animated State, so it never recomposes at 60 fps.
     // The animated gradient is drawn by the isolated AnimatedGradientBackground child.
     val libraryHazeState = rememberHazeState()
-    // 真折射試點：backdrop 錄 Aurora，一個 Dock 先吃，其它面板看效果再說
-    val prismalBackdrop = rememberPrismalGlassLayer()
-    val prismalDensity = LocalDensity.current
     val gridScrollState = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
     val listScrollState = rememberLazyListState()
     Box(
@@ -434,7 +437,8 @@ fun DocumentLibraryScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .hazeSource(libraryHazeState)
-                .prismalGlassLayer(prismalBackdrop),
+                // 對話框第二路 source 常駐（無 effect 時不做工）
+                .hazeSource(libraryDialogHaze),
             orbCount = 12
         )
 
@@ -450,11 +454,7 @@ fun DocumentLibraryScreen(
                 .fillMaxHeight()
                 .padding(start = 12.dp, top = 12.dp, bottom = 12.dp)
                 .width(76.dp)
-                .drawPrismalGlass(
-                    backdrop = prismalBackdrop,
-                    shape = { PrismalRoundedRectangle(24.dp) },
-                    effects = prismalGlassEffects(prismalDensity)
-                )
+                .glassPanel(libraryHazeState, isDarkTheme, ShapeMd)
                 .padding(vertical = 8.dp)
         ) {
             Spacer(Modifier.height(8.dp))
@@ -529,8 +529,7 @@ fun DocumentLibraryScreen(
                     onToggleGridView = { isGridView = !isGridView },
                     selectedNavIndex = selectedNavIndex,
                     onCreateFolder = { showCreateFolderDialog = true },
-                    hazeState = libraryHazeState,
-                    prismalBackdrop = prismalBackdrop
+                    hazeState = libraryHazeState
                 )
             },
             floatingActionButton = {
@@ -552,8 +551,7 @@ fun DocumentLibraryScreen(
                     onCreateFolder = {
                         showFabMenu = false
                         showCreateFolderDialog = true
-                    },
-                    prismalBackdrop = prismalBackdrop
+                    }
                 )
             }
         ) { innerPadding ->
@@ -617,8 +615,7 @@ fun DocumentLibraryScreen(
                             onOpenPdf = { pdfLauncher.launch(arrayOf("application/pdf")) },
                             onCreateBlank = { showNewDocSizeDialog = true },
                             hazeState = libraryHazeState,
-                            isDarkTheme = isDarkTheme,
-                            prismalBackdrop = prismalBackdrop
+                            isDarkTheme = isDarkTheme
                         )
                     } else {
                         FolderGroupedDocumentsView(
@@ -643,6 +640,7 @@ fun DocumentLibraryScreen(
                                 docViewModel.moveFolderToParent(folderId, targetParentId)
                             },
                             hazeState = libraryHazeState,
+                            dialogHaze = libraryDialogHaze,
                             isDarkTheme = isDarkTheme
                         )
                     }
@@ -654,11 +652,10 @@ fun DocumentLibraryScreen(
                         searchQuery = normalizedQuery,
                         onClearSearch = { searchQuery = "" },
                         onOpenPdf = { pdfLauncher.launch(arrayOf("application/pdf")) },
-                        onCreateBlank = { showNewDocSizeDialog = true },
-                        hazeState = libraryHazeState,
-                        isDarkTheme = isDarkTheme,
-                        prismalBackdrop = prismalBackdrop
-                    )
+                            onCreateBlank = { showNewDocSizeDialog = true },
+                            hazeState = libraryHazeState,
+                            isDarkTheme = isDarkTheme
+                        )
                 } else {
                     val animatedCardUris = remember { mutableStateMapOf<String, Boolean>() }
                     if (isGridView) {
@@ -702,8 +699,9 @@ fun DocumentLibraryScreen(
                                         onRename = { newName -> docViewModel.rename(doc.uri, newName) },
                                         onMoveToFolder = { folderId -> docViewModel.moveDocumentToFolder(doc.uri, folderId) },
                                         onCreateFolder = { folderName -> docViewModel.createFolder(folderName) },
-                                        // 卡片實底：每卡一個即時模糊是滾動卡頓主因
+                                        // 卡片實底：每卡一個即時模糊是滾動卡頓主因（對話框照吃第二路真模糊）
                                         hazeState = null,
+                                        dialogHaze = libraryDialogHaze,
                                         isDarkTheme = isDarkTheme
                                     )
                                 }
@@ -748,8 +746,9 @@ fun DocumentLibraryScreen(
                                         onRename = { newName -> docViewModel.rename(doc.uri, newName) },
                                         onMoveToFolder = { folderId -> docViewModel.moveDocumentToFolder(doc.uri, folderId) },
                                         onCreateFolder = { folderName -> docViewModel.createFolder(folderName) },
-                                        // 列表行實底：同卡片
+                                        // 列表行實底：同卡片（對話框照吃第二路真模糊）
                                         hazeState = null,
+                                        dialogHaze = libraryDialogHaze,
                                         isDarkTheme = isDarkTheme
                                     )
                                 }

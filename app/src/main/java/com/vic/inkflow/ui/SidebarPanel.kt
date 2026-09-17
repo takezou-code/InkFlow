@@ -255,10 +255,10 @@ internal fun Sidebar(
     listState: LazyListState = rememberLazyListState(),
     modifier: Modifier = Modifier,
     hazeState: dev.chrisbanes.haze.HazeState,
+    dialogHaze: dev.chrisbanes.haze.HazeState,
     isDarkTheme: Boolean,
     // 跟隨門衛：主列表推側欄時為 true，這時側欄推主列表必須讓路，不准回推
-    isFollowingSidebar: Boolean = false,
-    prismalBackdrop: com.styropyr0.prismal.PrismalBackdrop? = null
+    isFollowingSidebar: Boolean = false
 ) {
     var deleteConfirmIndices by remember { mutableStateOf<List<Int>>(emptyList()) }
     var isSelectionMode by remember { mutableStateOf(false) }
@@ -276,26 +276,21 @@ internal fun Sidebar(
     val isPageOperationInProgress by pdfViewModel.isPageOperationInProgress.collectAsState()
     if (deleteConfirmIndices.isNotEmpty()) {
         val indices = deleteConfirmIndices
-        androidx.compose.material3.AlertDialog(
+        GlassDialog(
             onDismissRequest = { deleteConfirmIndices = emptyList() },
+            dialogHaze = dialogHaze,
+            isDark = isDarkTheme,
             title = { Text("刪除頁面") },
             text = { Text(if (indices.size == 1) "確定要刪除第 ${indices[0] + 1} 頁？此操作無法復原。" else "確定要刪除這 ${indices.size} 頁？此操作無法復原。") },
-            confirmButton = {
-                androidx.compose.material3.TextButton(
-                    onClick = {
-                        deleteConfirmIndices = emptyList()
-                        onDeletePages(indices)
-                        isSelectionMode = false
-                        selectedPages = emptySet()
-                    },
-                    enabled = !isPageOperationInProgress
-                ) { Text("刪除", color = MaterialTheme.colorScheme.error) }
+            confirmText = "刪除",
+            onConfirm = {
+                deleteConfirmIndices = emptyList()
+                onDeletePages(indices)
+                isSelectionMode = false
+                selectedPages = emptySet()
             },
-            dismissButton = {
-                androidx.compose.material3.TextButton(onClick = { deleteConfirmIndices = emptyList() }) {
-                    Text("取消")
-                }
-            }
+            confirmEnabled = !isPageOperationInProgress,
+            confirmColor = MaterialTheme.colorScheme.error
         )
     }
 
@@ -771,7 +766,7 @@ internal fun Sidebar(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = 6.dp, vertical = 5.dp)
-                                .smartGlass(hazeState, isDarkTheme, ShapeMd, prismal = prismalBackdrop)
+                                .smartGlass(hazeState, isDarkTheme, ShapeMd)
                         ) {
                             Icon(
                                 Icons.Outlined.Add,
