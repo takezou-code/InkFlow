@@ -4,5 +4,8 @@
     <style name="Theme.InkFlow" parent="android:Theme.Material.NoActionBar">
         <!-- Fix2d: 主執行緒被 WebView 首建卡住時，露出來的是這個而不是純黑 -->
         <item name="android:windowBackground">?android:attr/colorBackground</item>
+        <!-- AI 面板 WebView：禁止系統深色模式算法染黑網頁（Gemini 黑底主因之一）；
+             App UI 是 Compose 自繪，不受此屬性影響 -->
+        <item name="android:forceDarkAllowed">false</item>
     </style>
 </resources>

@@ -238,6 +238,8 @@ fun AiWebPanel(
     pickEnterId: Int = 0,
     pickCollectId: Int = 0,
     onTextGrabbed: (String) -> Unit = {},
+    webLight: Boolean = true,
+    onClose: () -> Unit,
     onClose: () -> Unit,
     modifier: androidx.compose.ui.Modifier = androidx.compose.ui.Modifier
 ) {
@@ -247,6 +249,7 @@ fun AiWebPanel(
     val currentPrompt = androidx.compose.runtime.rememberUpdatedState(prompt)
     val promptConsumedCallback = androidx.compose.runtime.rememberUpdatedState(onPromptConsumed)
     val grabbedCallback = androidx.compose.runtime.rememberUpdatedState(onTextGrabbed)
+    val currentWebLight = androidx.compose.runtime.rememberUpdatedState(webLight)
     val uploadState = androidx.compose.runtime.remember { 
         object {
             var lastProcessedUri: android.net.Uri? = null
@@ -265,6 +268,15 @@ fun AiWebPanel(
         }
     }
     
+    // AI 面板黑白切換：亮色清 filter＋宣告 light，暗色用 invert 濾鏡（重載不丟對話，Gemini 是 SPA）。
+    androidx.compose.runtime.LaunchedEffect(webLight) {
+        try {
+            webView?.evaluateJavascript(buildThemeJs(currentWebLight.value), null)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
     // M2b-2：拉桿「引入」鈕兩段式 — ①進圈選模式（段落打勾）②收集打勾段落（無勾選則取最後回覆全文）。
     androidx.compose.runtime.LaunchedEffect(pickEnterId) {
         if (pickEnterId > 0) {
@@ -899,6 +911,7 @@ private fun buildCollectJs(): String {
             // T-X1 取證：勾選節點標籤普查＋數學痕跡計數（data-math / annotation 有無）
             var census = {};
             var censusMath = 0, censusDataMath = 0, censusAnno = 0;
+            var rects = [];
             roots.forEach(function(el) {
                 try {
                     var tn = (el.tagName || '?').toLowerCase();
@@ -906,6 +919,10 @@ private fun buildCollectJs(): String {
                     censusMath += el.querySelectorAll('.math-block, .math-inline, span.katex').length;
                     censusDataMath += el.querySelectorAll('[data-math]').length;
                     censusAnno += el.querySelectorAll('.katex-mathml annotation, annotation').length;
+                    try {
+                        var r = el.getBoundingClientRect();
+                        rects.push([Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)]);
+                    } catch(e){}
                     var clone = el.cloneNode(true);
                     var cc = texify(clone);
                     mathB += cc.b; mathI += cc.i;
@@ -925,8 +942,30 @@ private fun buildCollectJs(): String {
             try {
                 document.querySelectorAll('[data-inkpick]').forEach(function(el) { el.removeAttribute('data-inkpick'); });
             } catch(e){}
-            note('COLLECT src=' + src + ' mathB=' + mathB + ' mathI=' + mathI + ' len=' + out.join('\n\n').length + ' census=' + JSON.stringify(census) + ' inMath=' + censusMath + ' dataMath=' + censusDataMath + ' anno=' + censusAnno);
+            note('COLLECT src=' + src + ' mathB=' + mathB + ' mathI=' + mathI + ' len=' + out.join('\n\n').length + ' census=' + JSON.stringify(census) + ' inMath=' + censusMath + ' dataMath=' + censusDataMath + ' anno=' + censusAnno + ' rects=' + JSON.stringify(rects) + ' dpr=' + window.devicePixelRatio);
             report(out.join('\n\n').slice(0, 20000));
+        })();
+    """.trimIndent()
+}
+
+/**
+ * AI 面板黑白切換腳本：亮色清 filter＋宣告 light；暗色用 invert 濾鏡。
+ * 不 reload（Gemini 是 SPA，重載不丟對話但會閃；先不清快取試）。
+ */
+private fun buildThemeJs(light: Boolean): String {
+    return """
+        (function() {
+            var LIGHT = $light;
+            try {
+                var h = document.documentElement;
+                if (LIGHT) {
+                    h.style.filter = '';
+                    h.style.setProperty('color-scheme', 'light', 'important');
+                } else {
+                    h.style.setProperty('color-scheme', 'dark', 'important');
+                    h.style.filter = 'invert(1) hue-rotate(180deg)';
+                }
+            } catch(e){}
         })();
     """.trimIndent()
 }
