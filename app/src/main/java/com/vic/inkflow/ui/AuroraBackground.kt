@@ -16,12 +16,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.FilterQuality
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.ImageBitmapConfig
-import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.unit.IntSize
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sin
@@ -122,29 +117,7 @@ fun AuroraBackground(
 
     // 45 幀上限：delay 驅動（不對齊 vsync、不喚醒每一幀，最省電），
     // 泡泡慢動作 45fps 綽綽有餘，GPU 少畫七成。t 取真實秒數，速度不變。
-    // 折射噪點圖：烘一次，每幀一張 drawImage 平鋪（FilterQuality.None 保銳利）。
-    // 肉眼幾乎看不見，但透鏡掃過時噪點會彎——折射現形的關鍵。靜態，不跑不動。
-    val grain = remember(isDarkTheme) {
-        // 512 配 1px 點：屏上約 6px 細沙（256 配 2px 會糊成 25px磚 veil 整片，錯過一次）
-        val s = 512
-        val img = ImageBitmap(s, s, ImageBitmapConfig.Argb8888)
-        val c = androidx.compose.ui.graphics.Canvas(img)
-        val rnd = Random(0x6AA17E55L)
-        val paint = Paint()
-        val dot = if (isDarkTheme) 1f else 0f
-        var y = 0
-        while (y < s) {
-            var x = 0
-            while (x < s) {
-                val a = rnd.nextFloat() * 0.045f
-                paint.color = Color(dot, dot, dot, alpha = a)
-                c.drawRect(x.toFloat(), y.toFloat(), x + 1f, y + 1f, paint)
-                x += 1
-            }
-            y += 1
-        }
-        img
-    }
+    // 噪點圖已刪除（當初給退役折射做牙齒的；泡泡要清晰，沙子不留）。
 
     val tick = remember { mutableLongStateOf(0L) }
     val t0 = remember { System.nanoTime() }
@@ -197,21 +170,16 @@ fun AuroraBackground(
                 )
             }
 
-            // 噪點平鋪（折射的牙齒）：一張 drawImage，銳利不過濾
-            drawImage(
-                image = grain,
-                dstSize = IntSize(size.width.toInt().coerceAtLeast(1), size.height.toInt().coerceAtLeast(1)),
-                filterQuality = FilterQuality.None
-            )
+            // 噪點平鋪已刪除（泡泡要清晰）。
 
             // n ≤ 12，這一個小排序是每幀唯一的配置，可接受
             val sortedOrbs = orbs.sortedByDescending { it.currentY(t, h) }
 
             // 暗色 Plus 已拿掉：SrcOver 走硬體快路，視覺差異極小
             val orbBlend = BlendMode.SrcOver
-            // 柔光斑：三段衰減，中心不再 1.0 全亮
-            val coreAlpha = if (isDarkTheme) 0.50f else 0.34f
-            val midAlpha = if (isDarkTheme) 0.22f else 0.14f
+            // 柔光斑改硬芯：中心實色撐到 0.7 再衰減，泡泡清晰飽滿
+            val coreAlpha = if (isDarkTheme) 0.62f else 0.45f
+            val midAlpha = if (isDarkTheme) 0.30f else 0.20f
             sortedOrbs.forEach { bubble ->
                 val radius = bubble.currentRadius(t, w, h)
                 val centerX = bubble.currentX(t, w)
@@ -222,7 +190,7 @@ fun AuroraBackground(
                     brush = Brush.radialGradient(
                         colorStops = arrayOf(
                             0f to bubble.baseColor.copy(alpha = coreAlpha),
-                            0.55f to bubble.baseColor.copy(alpha = midAlpha),
+                            0.7f to bubble.baseColor.copy(alpha = coreAlpha),
                             1f to Color.Transparent
                         ),
                         center = orbCenter,
@@ -233,7 +201,7 @@ fun AuroraBackground(
                     blendMode = orbBlend
                 )
 
-                // 極淡外暈，只做氣氛不做主角
+                // 極淡外暈，只做氣氛不做主角（減半，不搶實芯）
                 val haloRadius = radius * 1.6f
                 drawCircle(
                     brush = Brush.radialGradient(
