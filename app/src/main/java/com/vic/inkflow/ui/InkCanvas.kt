@@ -1094,10 +1094,23 @@ fun InkCanvas(
                                 }
                                 totalDelta = (drag.position - startOffset) + Offset(0f, autoY)
                                 imageMovePreview = totalDelta
+                                // F4：發布拖曳態給 overlay 跨頁畫（model 位移，與提交同公式）。
+                                run {
+                                    val csw = canvasPixelSizeState.value.width.coerceAtLeast(1f)
+                                    val csh = canvasPixelSizeState.value.height.coerceAtLeast(1f)
+                                    viewModel.publishImageDragPreview(
+                                        EditorViewModel.ImageDragPreview(
+                                            image = selAnn,
+                                            dxModel = totalDelta.x * viewModel.modelWidth / csw,
+                                            dyModel = totalDelta.y * viewModel.modelHeight / csh
+                                        )
+                                    )
+                                }
                                 if (pinchActive) {
                                     viewModel.commitImageAnnotationMove(selAnn.id, totalDelta.x, totalDelta.y)
                                     imageMovePreview = Offset.Zero
                                     activePathVersion++
+                                    viewModel.publishImageDragPreview(null)
                                     viewModel.setPageLock(false)
                                     return@awaitEachGesture
                                 }
@@ -1123,12 +1136,14 @@ fun InkCanvas(
                                 selectedImageAnnotationId = null
                                 imageMovePreview = Offset.Zero
                                 activePathVersion++
+                                viewModel.publishImageDragPreview(null)
                                 return@awaitEachGesture
                             }
                             viewModel.commitImageAnnotationMove(selAnn.id, totalDelta.x, totalDelta.y)
                             viewModel.setPageLock(false)
                             imageMovePreview = Offset.Zero
                             activePathVersion++
+                            viewModel.publishImageDragPreview(null)
                             return@awaitEachGesture
                         }
                     }

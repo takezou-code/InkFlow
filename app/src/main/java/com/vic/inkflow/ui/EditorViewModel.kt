@@ -165,6 +165,21 @@ class EditorViewModel(
     )
     var extractPageOps: ExtractPageOps? = null
 
+    /**
+     * F4 圖片直接拖：拖曳中狀態（實體＋model 位移），overlay 跨頁畫在紙上層。
+     * 與套索 overlay 同協議：放開/取消即清。src 紙原本照畫（同像素複畫無感）。
+     */
+    data class ImageDragPreview(
+        val image: ImageAnnotationEntity,
+        val dxModel: Float,
+        val dyModel: Float
+    )
+    private val _imageDragPreview = MutableStateFlow<ImageDragPreview?>(null)
+    val imageDragPreview: StateFlow<ImageDragPreview?> = _imageDragPreview.asStateFlow()
+    fun publishImageDragPreview(p: ImageDragPreview?) {
+        _imageDragPreview.value = p
+    }
+
     /** Updates the paper style (size + background template). */
     fun setPaperStyle(style: PaperStyle) {
         _paperStyle.value = style

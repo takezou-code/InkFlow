@@ -178,4 +178,34 @@ class DocLayoutTest {
         assertTrue(DocLayout.rectsByPage(100f, 100f, 100f, 300f, 800f, 800f, 18f, 1, 3).isEmpty())
         assertTrue(DocLayout.rectsByPage(0f, 0f, 10f, 10f, 0f, 800f, 18f, 0, 1).isEmpty())
     }
+
+    @Test
+    fun draggedLocalVerticalSamePage() {
+        // 本頁內：原樣返回。
+        assertEquals(
+            100f to 300f,
+            DocLayout.draggedLocalVertical(1, 100f, 200f, 1, 842f)
+        )
+    }
+
+    @Test
+    fun draggedLocalVerticalCrossDown() {
+        // 從第 1 頁往下拖 700：第 1 頁剩 [700,842)，第 2 頁得 [0,58)。
+        assertEquals(
+            700f to 842f,
+            DocLayout.draggedLocalVertical(1, 700f, 200f, 1, 842f)
+        )
+        assertEquals(
+            0f to 58f,
+            DocLayout.draggedLocalVertical(1, 700f, 200f, 2, 842f)
+        )
+        // 第 0 頁無交集。
+        assertEquals(null, DocLayout.draggedLocalVertical(1, 700f, 200f, 0, 842f))
+    }
+
+    @Test
+    fun draggedLocalVerticalDegenerate() {
+        assertEquals(null, DocLayout.draggedLocalVertical(0, 0f, 0f, 0, 842f))
+        assertEquals(null, DocLayout.draggedLocalVertical(0, 0f, 100f, 0, 0f))
+    }
 }
