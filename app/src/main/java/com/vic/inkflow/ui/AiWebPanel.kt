@@ -237,7 +237,8 @@ fun AiWebPanel(
     onPromptConsumed: () -> Unit,
     pickEnterId: Int = 0,
     pickCollectId: Int = 0,
-    onTextGrabbed: (String) -> Unit = {},
+    onPickedJson: (String) -> Unit = {},
+    onWebView: (android.webkit.WebView?) -> Unit = {},
     webLight: Boolean = true,
     onClose: () -> Unit,
     modifier: androidx.compose.ui.Modifier = androidx.compose.ui.Modifier
@@ -247,7 +248,8 @@ fun AiWebPanel(
     val currentFileUri = androidx.compose.runtime.rememberUpdatedState(fileUri)
     val currentPrompt = androidx.compose.runtime.rememberUpdatedState(prompt)
     val promptConsumedCallback = androidx.compose.runtime.rememberUpdatedState(onPromptConsumed)
-    val grabbedCallback = androidx.compose.runtime.rememberUpdatedState(onTextGrabbed)
+    val pickedCallback = androidx.compose.runtime.rememberUpdatedState(onPickedJson)
+    val webViewCallback = androidx.compose.runtime.rememberUpdatedState(onWebView)
     val currentWebLight = androidx.compose.runtime.rememberUpdatedState(webLight)
     val uploadState = androidx.compose.runtime.remember { 
         object {
@@ -315,6 +317,7 @@ fun AiWebPanel(
                     setBackgroundColor(webViewBgArgb)
                     
                     webView = this
+                    webViewCallback.value(this)
                     settings.apply {
                         javaScriptEnabled = true
                         domStorageEnabled = true
@@ -351,10 +354,10 @@ fun AiWebPanel(
                             } catch (t: Throwable) { }
                         }
                         @android.webkit.JavascriptInterface
-                        fun onTextGrabbed(text: String) {
+                        fun onPickedJson(json: String) {
                             try {
-                                android.util.Log.d("AiWebPanel", "onTextGrabbed len=${text.length}")
-                                grabbedCallback.value(text)
+                                android.util.Log.d("AiWebPanel", "onPickedJson len=${json.length}")
+                                pickedCallback.value(json)
                             } catch (t: Throwable) { }
                         }
                     }
@@ -806,9 +809,6 @@ private fun buildCollectJs(): String {
             function note(s) {
                 try { if (window.AndroidBridge && window.AndroidBridge.onPasteResult) window.AndroidBridge.onPasteResult(s); } catch(e){}
             }
-            function report(t) {
-                try { if (window.AndroidBridge && window.AndroidBridge.onTextGrabbed) window.AndroidBridge.onTextGrabbed(t); } catch(e){}
-            }
             function deepAll(root, sel, out) {
                 try {
                     var found = root.querySelectorAll(sel);
@@ -905,7 +905,7 @@ private fun buildCollectJs(): String {
                 }
                 return true;
             });
-            var out = [];
+            var picks = [];
             var mathB = 0, mathI = 0;
             // T-X1 取證：勾選節點標籤普查＋數學痕跡計數（data-math / annotation 有無）
             var census = {};
@@ -915,25 +915,33 @@ private fun buildCollectJs(): String {
                 try {
                     var tn = (el.tagName || '?').toLowerCase();
                     census[tn] = (census[tn] || 0) + 1;
+                    var hasMath = false;
+                    try { hasMath = el.querySelector('.math-block, .math-inline, span.katex, [data-math]') != null; } catch(e){}
                     censusMath += el.querySelectorAll('.math-block, .math-inline, span.katex').length;
                     censusDataMath += el.querySelectorAll('[data-math]').length;
                     censusAnno += el.querySelectorAll('.katex-mathml annotation, annotation').length;
+                    var r = null;
                     try {
-                        var r = el.getBoundingClientRect();
-                        rects.push([Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)]);
+                        var rr = el.getBoundingClientRect();
+                        r = [Math.round(rr.x), Math.round(rr.y), Math.round(rr.width), Math.round(rr.height)];
+                        rects.push(r);
                     } catch(e){}
                     var clone = el.cloneNode(true);
                     var cc = texify(clone);
                     mathB += cc.b; mathI += cc.i;
                     var t = clone.innerText || '';
-                    if (t.trim().length > 0) out.push(t.trim());
+                    if (hasMath) {
+                        picks.push({k:'m', r:r, t:t.trim().slice(0, 20000)});
+                    } else if (t.trim().length > 0) {
+                        picks.push({k:'t', t:t.trim().slice(0, 20000)});
+                    }
                 } catch(e){}
             });
-            var src = 'picked x' + out.length;
-            if (out.length === 0) {
+            var src = 'picked x' + picks.length;
+            if (picks.length === 0) {
                 var fb = lastReply();
                 if (fb.text.trim().length > 0) {
-                    out = [fb.text];
+                    picks.push({k:'t', t:fb.text.slice(0, 20000)});
                     mathB += fb.b; mathI += fb.i;
                     src = 'fallback-full';
                 }
@@ -941,8 +949,8 @@ private fun buildCollectJs(): String {
             try {
                 document.querySelectorAll('[data-inkpick]').forEach(function(el) { el.removeAttribute('data-inkpick'); });
             } catch(e){}
-            note('COLLECT src=' + src + ' mathB=' + mathB + ' mathI=' + mathI + ' len=' + out.join('\n\n').length + ' census=' + JSON.stringify(census) + ' inMath=' + censusMath + ' dataMath=' + censusDataMath + ' anno=' + censusAnno + ' rects=' + JSON.stringify(rects) + ' dpr=' + window.devicePixelRatio);
-            report(out.join('\n\n').slice(0, 20000));
+            note('COLLECT src=' + src + ' mathB=' + mathB + ' mathI=' + mathI + ' census=' + JSON.stringify(census) + ' inMath=' + censusMath + ' dataMath=' + censusDataMath + ' anno=' + censusAnno + ' rects=' + JSON.stringify(rects) + ' dpr=' + window.devicePixelRatio);
+            try { if (window.AndroidBridge && window.AndroidBridge.onPickedJson) window.AndroidBridge.onPickedJson(JSON.stringify(picks).slice(0, 200000)); } catch(e){}
         })();
     """.trimIndent()
 }

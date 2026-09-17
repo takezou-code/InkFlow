@@ -266,16 +266,11 @@ fun paginateAiBlocks(
         }
     }
     fun emitImage(blockId: String, rm: RenderedMath) {
-        var w = contentWpt
-        var h = if (rm.pxW > 0 && rm.pxH > 0) rm.pxH.toFloat() / rm.pxW * w else contentWpt * 0.3f
-        val maxH = modelH - marginTop - marginBottom
-        if (h > maxH && h > 0f) {
-            h = maxH
-            w = rm.pxW.toFloat() / rm.pxH * h
-        }
-        if (modelH - marginBottom - cursorTop < h) newPage()
-        cur.add(Placed.I(rm.file, marginH + (contentWpt - w) / 2f, cursorTop, w, h, blockId))
-        cursorTop += h + blockGap
+        val (w0, h0) = fitMathSize(rm.pxW, rm.pxH, contentWpt, modelH - marginTop - marginBottom)
+        if (w0 <= 0f || h0 <= 0f) return
+        if (modelH - marginBottom - cursorTop < h0) newPage()
+        cur.add(Placed.I(rm.file, marginH + (contentWpt - w0) / 2f, cursorTop, w0, h0, blockId))
+        cursorTop += h0 + blockGap
     }
 
     for (b in blocks) {
@@ -483,4 +478,24 @@ fun whiteRatioOfBitmap(
         y += stridePx
     }
     return whiteRatioOfPixels(buf.copyOf(k), luminanceThreshold)
+}
+
+/**
+ * 數學圖放置尺寸（純函數，可單測）：Device 像素按固定比例映射 model，
+ * 小圖不拉伸（有多小擺多小），超寬縮到頁寬，超高縮到頁高。
+ * 比例基準 = KaTeX 渲染寬（MathSnapshot.RENDER_W_PX → 內容寬），截圖同此換算。
+ */
+fun fitMathSize(pxW: Int, pxH: Int, contentWpt: Float, maxHpt: Float): Pair<Float, Float> {
+    if (pxW <= 0 || pxH <= 0 || contentWpt <= 0f || maxHpt <= 0f) return 0f to 0f
+    var w = pxW * contentWpt / MathSnapshot.RENDER_W_PX
+    var h = pxH.toFloat() / pxW * w
+    if (w > contentWpt) {
+        w = contentWpt
+        h = pxH.toFloat() / pxW * w
+    }
+    if (h > maxHpt) {
+        h = maxHpt
+        w = pxW.toFloat() / pxH * h
+    }
+    return w to h
 }
