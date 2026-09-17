@@ -135,12 +135,24 @@ private fun stripDisplayShell(s: String): String {
 
 private fun isComplexPara(p: String): Boolean {
     if (DISPLAY_MATH.containsMatchIn(p)) return true
-    for (m in INLINE_PAREN.findAll(p)) if (COMPLEX_CMD.containsMatchIn(m.groupValues[1])) return true
-    for (m in INLINE_DOLLAR.findAll(p)) {
-        val inner = m.groupValues[1]
-        if ((inner.contains('\\') || inner.contains('^') || inner.contains('_')) && COMPLEX_CMD.containsMatchIn(inner)) return true
-    }
+    // \(...\) 是顯式數學殼，有字就算數（ChatGPT 風格的 \(f(x)\) 不能漏）
+    for (m in INLINE_PAREN.findAll(p)) if (m.groupValues[1].isNotBlank()) return true
+    for (m in INLINE_DOLLAR.findAll(p)) if (looksLikeInlineMath(m.groupValues[1])) return true
     return false
+}
+
+/**
+ * 短行內數學判定：$f(x)$、$[a,b]$、$x$ 這種沒反斜線的不能漏；
+ * 金額/普通文字不能誤殺（$100、$5 and $10、$hello world 全放行）。
+ */
+fun looksLikeInlineMath(inner0: String): Boolean {
+    val t = inner0.trim()
+    if (t.isEmpty() || t.length > 60) return false
+    if (t.contains('\\') || t.contains('^') || t.contains('_')) return true
+    if (t.any { it.isWhitespace() }) return false
+    if (t[0].isDigit()) return false
+    if (t.length == 1) return t[0].isLetter()
+    return t.any { it in "()[]{}+-*/=,|<>!" }
 }
 
 /** 把原文切成保序的文字/數學塊（code fence 內不找數學）。 */
@@ -194,7 +206,9 @@ fun splitAiBlocks(raw: String, maxChars: Int = AI_CHUNK_MAX_CHARS): List<AiBlock
 fun normalizeDollarMath(seg: String): String =
     INLINE_DOLLAR.replace(seg) { r ->
         val inner = r.groupValues[1]
-        if (inner.contains('\\') || inner.contains('^') || inner.contains('_')) "\\(" + inner + "\\)"
+        // 超長不碰（防遠距離 $ 配對吞整段）；短數學轉 \(..\) 供 auto-render
+        if (inner.length > 300) r.value
+        else if (looksLikeInlineMath(inner)) "\\(" + inner.trim() + "\\)"
         else r.value
     }
 
