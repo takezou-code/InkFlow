@@ -270,6 +270,8 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
     // M2b-2：聰明圈選 — 引入鈕兩段式：①進圈選模式（段落打勾）②收集打勾段落
     var aiPickMode by remember { mutableStateOf(false) }
     var aiPickEnterId by remember { mutableStateOf(0) }
+    // AI 面板黑白切換（預設亮底；只影響 Gemini 網頁，不動 App 主題）
+    var aiWebLight by rememberSaveable { mutableStateOf(true) }
     var aiPickCollectId by remember { mutableStateOf(0) }
     val sidebarListState = rememberLazyListState()
     val mainListState = rememberLazyListState()
@@ -796,6 +798,7 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                         onPromptConsumed = { aiPrompt = null },
                         pickEnterId = aiPickEnterId,
                         pickCollectId = aiPickCollectId,
+                        webLight = aiWebLight,
                         onTextGrabbed = { text ->
                             scope.launch {
                                 if (text.isBlank()) {
@@ -869,6 +872,18 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                                 modifier = Modifier.size(16.dp),
                                 tint = if (aiPickMode) MaterialTheme.colorScheme.primary
                                 else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                            )
+                        }
+                        // AI 面板黑白切換
+                        IconButton(
+                            onClick = { aiWebLight = !aiWebLight },
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (aiWebLight) Icons.Outlined.DarkMode else Icons.Outlined.LightMode,
+                                contentDescription = if (aiWebLight) "切換深色" else "切換淺色",
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                             )
                         }
                         Box(
