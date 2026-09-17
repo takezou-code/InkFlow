@@ -1,6 +1,7 @@
 package com.vic.inkflow.ui
 
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import com.vic.inkflow.data.ImageAnnotationEntity
 import com.vic.inkflow.util.StrokeTransformUtils
 
@@ -119,8 +120,10 @@ private fun intersectY(a: Offset, b: Offset, y: Float): Offset {
     return Offset(a.x + t * (b.x - a.x), y)
 }
 
-/** M5: axis-aligned bounds of the (possibly rotated) image, in model space. */
-internal fun rotatedImageBounds(annotation: ImageAnnotationEntity): android.graphics.RectF {
+/** M5: axis-aligned bounds of the (possibly rotated) image, in model space.
+ * 回傳 compose Rect（刻意不用 android.graphics.RectF——後者在 JVM 單測是空殼，
+ * 構造器不賦值、方法全樁，純幾何測不了；血淚教訓見 textEstimatedBounds）。 */
+internal fun rotatedImageBounds(annotation: ImageAnnotationEntity): Rect {
     val cx = annotation.modelX + annotation.modelWidth / 2f
     val cy = annotation.modelY + annotation.modelHeight / 2f
     val rad = Math.toRadians(annotation.rotation.toDouble())
@@ -136,7 +139,7 @@ internal fun rotatedImageBounds(annotation: ImageAnnotationEntity): android.grap
         val dy = p.y - cy
         Offset(cx + dx * cos - dy * sin, cy + dx * sin + dy * cos)
     }
-    return android.graphics.RectF(
+    return Rect(
         corners.minOf { it.x }, corners.minOf { it.y },
         corners.maxOf { it.x }, corners.maxOf { it.y }
     )
@@ -150,18 +153,39 @@ internal fun isImageSelectedByLasso(annotation: ImageAnnotationEntity, polygon: 
     val minY = polygon.minOf { it.y }
     val maxX = polygon.maxOf { it.x }
     val maxY = polygon.maxOf { it.y }
-    val polygonBounds = android.graphics.RectF(minX, minY, maxX, maxY)
-    if (!android.graphics.RectF.intersects(imageRect, polygonBounds)) return false
+    val polygonBounds = Rect(minX, minY, maxX, maxY)
+    if (!imageRect.overlaps(polygonBounds)) return false
 
     val samplePoints = listOf(
         Offset(imageRect.left, imageRect.top),
         Offset(imageRect.right, imageRect.top),
         Offset(imageRect.left, imageRect.bottom),
         Offset(imageRect.right, imageRect.bottom),
-        Offset(imageRect.centerX(), imageRect.centerY())
+        imageRect.center
     )
 
     if (samplePoints.any { isPointInPolygon(it, polygon) }) return true
 
     return polygon.any { p -> p.x in imageRect.left..imageRect.right && p.y in imageRect.top..imageRect.bottom }
+}
+
+/**
+ * 文字估算框（model 座標）：與橡皮擦命中同一口徑（寬≈字數×字號×0.6，高≈字號×1.2；
+ * baseline 為底邊）。套索命中＋選取框共用，單一真相。
+ */
+internal fun textEstimatedBounds(ann: com.vic.inkflow.data.TextAnnotationEntity): Rect {
+    val w = if (ann.isStamp) ann.fontSize else ann.text.length * ann.fontSize * 0.6f
+    val h = if (ann.isStamp) ann.fontSize else ann.fontSize * 1.2f
+    return Rect(ann.modelX, ann.modelY - h, ann.modelX + w, ann.modelY)
+}
+
+/** 文字套索命中：baseline 點在圈內，或圈的任一頂點落在字框內。 */
+internal fun isTextSelectedByLasso(
+    ann: com.vic.inkflow.data.TextAnnotationEntity,
+    polygon: List<Offset>
+): Boolean {
+    if (polygon.size < 3) return false
+    if (isPointInPolygon(Offset(ann.modelX, ann.modelY), polygon)) return true
+    val b = textEstimatedBounds(ann)
+    return polygon.any { p -> p.x in b.left..b.right && p.y in b.top..b.bottom }
 }

@@ -1370,6 +1370,7 @@ class EditorViewModel(
                         }
                     }
                     command.imageOriginals.forEach { imageAnnotationDao.update(it) }
+                    command.textOriginals.forEach { textAnnotationDao.update(it) }
                 }
                 is DrawCommand.ResizeSelectionMixed -> {
                     command.strokeOriginals.forEach { swp ->
@@ -1386,6 +1387,7 @@ class EditorViewModel(
                         strokeDao.deleteStrokesByIds(command.strokes.map { it.stroke.id })
                     }
                     command.images.forEach { imageAnnotationDao.deleteById(it.id) }
+                    command.texts.forEach { textAnnotationDao.deleteById(it.id) }
                 }
                 is DrawCommand.RemoveSelectionMixed -> {
                     command.strokes.forEach { strokeWithPoints ->
@@ -1395,6 +1397,7 @@ class EditorViewModel(
                         }
                     }
                     command.images.forEach { imageAnnotationDao.insert(it) }
+                    command.texts.forEach { textAnnotationDao.insert(it) }
                 }
                 is DrawCommand.ExtractToNewPage -> {
                     imageAnnotationDao.deleteById(command.image.id)
@@ -1509,6 +1512,7 @@ class EditorViewModel(
                         }
                     }
                     command.imageUpdated.forEach { imageAnnotationDao.update(it) }
+                    command.textUpdated.forEach { textAnnotationDao.update(it) }
                 }
                 is DrawCommand.ResizeSelectionMixed -> {
                     command.strokeUpdated.forEach { swp ->
@@ -1528,12 +1532,14 @@ class EditorViewModel(
                         }
                     }
                     command.images.forEach { imageAnnotationDao.insert(it) }
+                    command.texts.forEach { textAnnotationDao.insert(it) }
                 }
                 is DrawCommand.RemoveSelectionMixed -> {
                     if (command.strokes.isNotEmpty()) {
                         strokeDao.deleteStrokesByIds(command.strokes.map { it.stroke.id })
                     }
                     command.images.forEach { imageAnnotationDao.deleteById(it.id) }
+                    command.texts.forEach { textAnnotationDao.deleteById(it.id) }
                 }
                 is DrawCommand.ExtractToNewPage -> {
                     // pageKept（undo 守衛留頁）時不再建頁，只重貼圖。
@@ -1557,6 +1563,10 @@ class EditorViewModel(
 
     private val _selectedImageAnnotationIds = MutableStateFlow<Set<String>>(emptySet())
     val selectedImageAnnotationIds: StateFlow<Set<String>> = _selectedImageAnnotationIds.asStateFlow()
+
+    // 套索選中的字（與墨圖同等待遇：框線、移動、刪除、複製、復原全支援）。
+    private val _selectedTextAnnotationIds = MutableStateFlow<Set<String>>(emptySet())
+    val selectedTextAnnotationIds: StateFlow<Set<String>> = _selectedTextAnnotationIds.asStateFlow()
 
     private val _selectedStrokePreview = MutableStateFlow<List<StrokeWithPoints>>(emptyList())
     val selectedStrokePreview: StateFlow<List<StrokeWithPoints>> = _selectedStrokePreview.asStateFlow()
@@ -1668,7 +1678,8 @@ class EditorViewModel(
         }
         viewModelScope.launch(Dispatchers.Default) {
             val allStrokes = mutableListOf<StrokeWithPoints>()
-            val allImageIds = mutableSetOf<String>()
+            val allImages = mutableListOf<ImageAnnotationEntity>()
+            val allTexts = mutableListOf<TextAnnotationEntity>()
             for ((pg, polys) in polygonsByPage) {
                 val norms = polys.filter { it.size >= 3 }
                     .map { poly -> poly.map { Offset(it.x * modelWidth / cW, it.y * modelHeight / cH) } }
@@ -1682,29 +1693,71 @@ class EditorViewModel(
                     if (isCentroidInAny(cx.toFloat(), cy.toFloat(), norms)) allStrokes += swp
                 }
                 for (norm in norms) {
-                    allImageIds += data.images.filter { isImageSelectedByLasso(it, norm) }.map { it.id }
+                    allImages += data.images.filter { isImageSelectedByLasso(it, norm) }
+                    allTexts += data.texts.filter { isTextSelectedByLasso(it, norm) }
                 }
             }
             val distinct = allStrokes.distinctBy { it.stroke.id }
-            // 顯示框：選中墨最多的那頁的包絡四角（model 座標，該頁頁內）。
+            val distinctImages = allImages.distinctBy { it.id }
+            val distinctTexts = allTexts.distinctBy { it.id }
+            // 顯示框：選中物最多的那頁的包絡四角（model 座標，該頁頁內；墨圖字一起比）。
             // 注意只動 _selectionFramePolygon：_lassoPolygon/_lastLassoPolygon 保持真實套索，
             // 那是提取遮罩＋泡泡錨點，變方就回歸了。
-            val domStrokes = distinct.groupBy { it.stroke.pageIndex }
-                .maxByOrNull { it.value.size }?.value.orEmpty()
-            val frameNorm: List<Offset> = if (domStrokes.isNotEmpty()) {
-                val l = domStrokes.minOf { it.stroke.boundsLeft }
-                val t = domStrokes.minOf { it.stroke.boundsTop }
-                val r = domStrokes.maxOf { it.stroke.boundsRight }
-                val b = domStrokes.maxOf { it.stroke.boundsBottom }
-                listOf(Offset(l, t), Offset(r, t), Offset(r, b), Offset(l, b))
+            data class PgBox(val page: Int, val l: Float, val t: Float, val r: Float, val b: Float)
+            val boxes = mutableListOf<PgBox>()
+            distinct.groupBy { it.stroke.pageIndex }.forEach { (pg, list) ->
+                boxes += PgBox(
+                    pg,
+                    list.minOf { it.stroke.boundsLeft },
+                    list.minOf { it.stroke.boundsTop },
+                    list.maxOf { it.stroke.boundsRight },
+                    list.maxOf { it.stroke.boundsBottom }
+                )
+            }
+            distinctTexts.groupBy { it.pageIndex }.forEach { (pg, list) ->
+                var l = Float.POSITIVE_INFINITY
+                var t = Float.POSITIVE_INFINITY
+                var r = Float.NEGATIVE_INFINITY
+                var b = Float.NEGATIVE_INFINITY
+                list.forEach { ann ->
+                    val eb = textEstimatedBounds(ann)
+                    if (eb.left < l) l = eb.left
+                    if (eb.top < t) t = eb.top
+                    if (eb.right > r) r = eb.right
+                    if (eb.bottom > b) b = eb.bottom
+                }
+                boxes += PgBox(pg, l, t, r, b)
+            }
+            distinctImages.groupBy { it.pageIndex }.forEach { (pg, list) ->
+                boxes += PgBox(
+                    pg,
+                    list.minOf { it.modelX },
+                    list.minOf { it.modelY },
+                    list.maxOf { it.modelX + it.modelWidth },
+                    list.maxOf { it.modelY + it.modelHeight }
+                )
+            }
+            // 主導頁＝選中物最多（墨＋圖＋字一起數）。
+            fun countOn(pg: Int): Int =
+                distinct.count { it.stroke.pageIndex == pg } +
+                    distinctImages.count { it.pageIndex == pg } +
+                    distinctTexts.count { it.pageIndex == pg }
+            val domBox = boxes.maxByOrNull { countOn(it.page) }
+            val frameNorm: List<Offset> = if (domBox != null) {
+                listOf(
+                    Offset(domBox.l, domBox.t), Offset(domBox.r, domBox.t),
+                    Offset(domBox.r, domBox.b), Offset(domBox.l, domBox.b)
+                )
             } else {
                 emptyList()
             }
+            val hasAny = distinct.isNotEmpty() || distinctImages.isNotEmpty() || distinctTexts.isNotEmpty()
             withContext(Dispatchers.Main) {
                 _selectedStrokes.value = distinct
-                _selectedImageAnnotationIds.value = allImageIds
+                _selectedImageAnnotationIds.value = distinctImages.map { it.id }.toSet()
+                _selectedTextAnnotationIds.value = distinctTexts.map { it.id }.toSet()
                 _selectionFramePolygon.value = frameNorm
-                if (domStrokes.isEmpty() && allImageIds.isEmpty()) {
+                if (!hasAny) {
                     // 選空：遮罩框全清，不殘留上次的框到處飄。
                     _lassoPolygon.value = emptyList()
                     _lastLassoPolygon.value = emptyList()
@@ -1766,8 +1819,11 @@ class EditorViewModel(
     fun commitMovedStrokes(maxPageIndex: Int = Int.MAX_VALUE): Int? {
         val strokes = _selectedStrokes.value
         val images = selectedImagesSnapshot()
+        val texts = selectedTextsSnapshot()
         val delta = _lassoMoveOffset.value
-        if ((strokes.isEmpty() && images.isEmpty()) || (delta.x == 0f && delta.y == 0f)) {
+        if ((strokes.isEmpty() && images.isEmpty() && texts.isEmpty()) ||
+            (delta.x == 0f && delta.y == 0f)
+        ) {
             clearSelection()
             return null
         }
@@ -1783,11 +1839,21 @@ class EditorViewModel(
                 modelY = ann.modelY + delta.y
             )
         }
+        var movedTexts = texts.map { ann ->
+            ann.copy(
+                modelX = ann.modelX + delta.x,
+                modelY = ann.modelY + delta.y
+            )
+        }
 
         // 跨頁判定：整體中心掉出本頁 → 整組換頁（y 繞回），只認縱向
         val centerSamples = mutableListOf<Float>()
         StrokeTransformUtils.computeSelectionBounds(movedStrokes)?.let { centerSamples.add(it.center.y) }
         movedImages.forEach { centerSamples.add(it.modelY + it.modelHeight / 2f) }
+        movedTexts.forEach {
+            val eb = textEstimatedBounds(it)
+            centerSamples.add((eb.top + eb.bottom) / 2f)
+        }
         val centerY = if (centerSamples.isNotEmpty()) centerSamples.average().toFloat() else modelHeight / 2f
         val sourcePage = selectionPage()
         val targetPage = (sourcePage + kotlin.math.floor(centerY / modelHeight).toInt())
@@ -1815,11 +1881,24 @@ class EditorViewModel(
                     modelY = (ann.modelY - wrapY).coerceIn(0f, modelHeight)
                 )
             }
+            movedTexts = movedTexts.map { ann ->
+                // 字與墨圖同幅繞回；docY 同步重算（見 S1 雙寫）。
+                val newY = (ann.modelY - wrapY).coerceIn(0f, modelHeight)
+                ann.copy(
+                    pageIndex = targetPage,
+                    modelX = ann.modelX.coerceIn(0f, modelWidth),
+                    modelY = newY,
+                    docY = targetPage * docStride + newY
+                )
+            }
         }
 
         // S1 雙寫：落庫/入 undo 指令前把 docY 重算（冪等；replaceStrokeSnapshots 會再算一次也無妨）
         movedStrokes = movedStrokes.map { it.redoc() }
         movedImages = movedImages.map { it.redoc() }
+        movedTexts = movedTexts.map {
+            it.copy(docY = it.pageIndex * docStride + it.modelY)
+        }
 
         // Apply new DB state but keep the selection active for further edits.
         _selectedStrokes.value = movedStrokes
@@ -1853,13 +1932,16 @@ class EditorViewModel(
                 replaceStrokeSnapshots(movedStrokes)
             }
             movedImages.forEach { imageAnnotationDao.update(it) }
+            movedTexts.forEach { textAnnotationDao.update(it) }
             withContext(Dispatchers.Main) {
                 if (_commitPreview.value === movedStrokes) {
                     _commitPreview.value = null
                 }
+                // 字視同墨圖：三者全空才走純筆路徑，否則進混合命令（texts 預設空，向後相容）。
+                val noObjs = images.isEmpty() && texts.isEmpty()
                 when {
-                    images.isEmpty() && !crossPage -> pushUndo(DrawCommand.MoveStrokes(strokes, delta))
-                    images.isEmpty() -> pushUndo(
+                    noObjs && !crossPage -> pushUndo(DrawCommand.MoveStrokes(strokes, delta))
+                    noObjs -> pushUndo(
                         DrawCommand.MoveStrokes(strokes, delta, movedStrokes)
                     )
                     else -> pushUndo(
@@ -1867,7 +1949,9 @@ class EditorViewModel(
                             strokeOriginals = strokes,
                             strokeUpdated = movedStrokes,
                             imageOriginals = images,
-                            imageUpdated = movedImages
+                            imageUpdated = movedImages,
+                            textOriginals = texts,
+                            textUpdated = movedTexts
                         )
                     )
                 }
@@ -1983,6 +2067,7 @@ class EditorViewModel(
             }
             currentImageAnnotations.value.firstOrNull { it.id in ids }?.let { return it.pageIndex }
         }
+        selectedTextsSnapshot().firstOrNull()?.let { return it.pageIndex }
         return pageIndex.value
     }
 
@@ -1997,6 +2082,18 @@ class EditorViewModel(
         return currentImageAnnotations.value.filter { it.id in ids }
     }
 
+    /** 套索選中的字快照（與圖同模式掃全頁流；呼叫方保證主線程）。 */
+    private fun selectedTextsSnapshot(): List<TextAnnotationEntity> {
+        val ids = _selectedTextAnnotationIds.value
+        if (ids.isEmpty()) return emptyList()
+        val found = mutableListOf<TextAnnotationEntity>()
+        for (flow in pageFlows.values) {
+            found += flow.value.texts.filter { it.id in ids }
+        }
+        if (found.isNotEmpty()) return found
+        return currentTextAnnotations.value.filter { it.id in ids }
+    }
+
     /**
      * Overlay 用：主線程同步快照（只讀 flows 當前值；拖曳中實體不變，安全）。
      * 跨頁拖曳時選中圖也要畫在紙上層。
@@ -2006,16 +2103,24 @@ class EditorViewModel(
     fun deleteSelection() {
         val selectedStrokeSnapshots = _selectedStrokes.value
         val selectedImageSnapshots = selectedImagesSnapshot()
-        if (selectedStrokeSnapshots.isEmpty() && selectedImageSnapshots.isEmpty()) return
+        val selectedTextSnapshots = selectedTextsSnapshot()
+        if (selectedStrokeSnapshots.isEmpty() && selectedImageSnapshots.isEmpty() &&
+            selectedTextSnapshots.isEmpty()
+        ) return
 
         viewModelScope.launch(Dispatchers.IO) {
             if (selectedStrokeSnapshots.isNotEmpty()) {
                 strokeDao.deleteStrokesByIds(selectedStrokeSnapshots.map { it.stroke.id })
             }
             selectedImageSnapshots.forEach { imageAnnotationDao.deleteById(it.id) }
+            selectedTextSnapshots.forEach { textAnnotationDao.deleteById(it.id) }
             withContext(Dispatchers.Main) {
                 clearSelection(keepLastRegion = true)
-                pushUndo(DrawCommand.RemoveSelectionMixed(selectedStrokeSnapshots, selectedImageSnapshots))
+                pushUndo(
+                    DrawCommand.RemoveSelectionMixed(
+                        selectedStrokeSnapshots, selectedImageSnapshots, selectedTextSnapshots
+                    )
+                )
             }
         }
     }
@@ -2023,7 +2128,8 @@ class EditorViewModel(
     fun copySelectionInPlace() {
         val sourceStrokes = _selectedStrokes.value
         val sourceImages = selectedImagesSnapshot()
-        if (sourceStrokes.isEmpty() && sourceImages.isEmpty()) return
+        val sourceTexts = selectedTextsSnapshot()
+        if (sourceStrokes.isEmpty() && sourceImages.isEmpty() && sourceTexts.isEmpty()) return
 
         viewModelScope.launch(Dispatchers.IO) {
             val copiedStrokes = sourceStrokes.map { original ->
@@ -2045,6 +2151,12 @@ class EditorViewModel(
                 copied
             }
 
+            val copiedTexts = sourceTexts.map { original ->
+                val copied = original.copy(id = UUID.randomUUID().toString())
+                textAnnotationDao.insert(copied)
+                copied
+            }
+
             withContext(Dispatchers.Main) {
                 _selectedStrokes.value = copiedStrokes
                 _selectedStrokePreview.value = copiedStrokes
@@ -2053,7 +2165,8 @@ class EditorViewModel(
                 _selectedStrokeResizeAnchor.value = null
                 _lassoMoveOffset.value = Offset.Zero
                 _selectedImageAnnotationIds.value = copiedImages.map { it.id }.toSet()
-                pushUndo(DrawCommand.AddSelectionCopies(copiedStrokes, copiedImages))
+                _selectedTextAnnotationIds.value = copiedTexts.map { it.id }.toSet()
+                pushUndo(DrawCommand.AddSelectionCopies(copiedStrokes, copiedImages, copiedTexts))
             }
         }
     }
@@ -2061,6 +2174,7 @@ class EditorViewModel(
     fun clearSelection(keepLastRegion: Boolean = false) {
         _selectedStrokes.value = emptyList()
         _selectedImageAnnotationIds.value = emptySet()
+        _selectedTextAnnotationIds.value = emptySet()
         _selectedStrokePreview.value = emptyList()
         _selectedStrokePreviewBounds.value = null
         _selectionFramePolygon.value = emptyList()

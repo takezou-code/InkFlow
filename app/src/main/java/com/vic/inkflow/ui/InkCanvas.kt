@@ -136,8 +136,8 @@ fun InkCanvas(
     images: List<ImageAnnotationEntity> = emptyList(),
     /** 頁間隙 px（Workspace 的 Arrangement.spacedBy，需與列表一致）。 */
     pageGapPx: Float = 0f,
-    /** 邊緣自動捲：手指拖出紙上下界時回傳期望捲動量 px（正=往後頁）。 */
-    onEdgeAutoScroll: (Float) -> Unit = {}
+    /** 邊緣自動捲：手指拖出紙上下界時回傳期望捲動量 px（正=往後頁）；回傳實際捲動量。 */
+    onEdgeAutoScroll: (Float) -> Float = { _ -> 0f }
 ) {
     // 全活頁：筆/字/圖吃傳入的本頁資料（Workspace 熱流），不再訂閱作用頁流；
     // 工具/顏色/設定等全域態照舊。
@@ -164,6 +164,8 @@ fun InkCanvas(
     val touchCalDxDp by viewModel.touchCalDxDp.collectAsState()
     val touchCalDyDp by viewModel.touchCalDyDp.collectAsState()
     val selectedImageAnnotationIds by viewModel.selectedImageAnnotationIds.collectAsState()
+    // 套索選中的字（與墨圖同等待遇；TEXT 工具私選 selectedTextAnnotationId 是另一套，不管）。
+    val vmSelectedTextIds by viewModel.selectedTextAnnotationIds.collectAsState()
     val paperStyle by viewModel.paperStyle.collectAsState()
     // 雙指縮放進行中：各畫筆迴圈見此即棄筆（由 Workspace 仲裁器寫入）
     val pinchActive by viewModel.pinchActive.collectAsState()
@@ -302,9 +304,37 @@ fun InkCanvas(
         selectedStrokePreview.filter { it.stroke.pageIndex == pageIndex }
     }
     // 本紙子集的 bounds（框＋錨點用；混合頁全域 bounds 在此無意義）。
-    val ownSelectionBounds = remember(ownSelectedStrokes) {
-        if (ownSelectedStrokes.isEmpty()) null
-        else StrokeTransformUtils.computeSelectionBounds(ownSelectedStrokes)
+    // 墨圖字一起算：純圖/純字選取也要出框（之前只有墨，圖字選了沒框）。
+    val ownSelectionBounds = remember(
+        ownSelectedStrokes, selectedImageAnnotationIds, vmSelectedTextIds,
+        imageAnnotations, textAnnotations
+    ) {
+        val rects = mutableListOf<androidx.compose.ui.geometry.Rect>()
+        ownSelectedStrokes.forEach { swp ->
+            val s = swp.stroke
+            rects += androidx.compose.ui.geometry.Rect(
+                s.boundsLeft, s.boundsTop, s.boundsRight, s.boundsBottom
+            )
+        }
+        imageAnnotations.forEach { ann ->
+            if (ann.id in selectedImageAnnotationIds) {
+                rects += androidx.compose.ui.geometry.Rect(
+                    ann.modelX, ann.modelY,
+                    ann.modelX + ann.modelWidth, ann.modelY + ann.modelHeight
+                )
+            }
+        }
+        textAnnotations.forEach { ann ->
+            if (ann.id in vmSelectedTextIds) {
+                val eb = textEstimatedBounds(ann)
+                rects += androidx.compose.ui.geometry.Rect(eb.left, eb.top, eb.right, eb.bottom)
+            }
+        }
+        if (rects.isEmpty()) null
+        else androidx.compose.ui.geometry.Rect(
+            rects.minOf { it.left }, rects.minOf { it.top },
+            rects.maxOf { it.right }, rects.maxOf { it.bottom }
+        )
     }
     val selectionTransformAnchor = selectedStrokeResizeAnchor
         ?: ownSelectionBounds?.center
@@ -898,8 +928,9 @@ fun InkCanvas(
                                 val csH = canvasPixelSizeState.value.height
                                 val autoDy = edgeAutoScrollDy(drag.position.y, csH)
                                 if (autoDy != 0f) {
-                                    onEdgeAutoScrollRef.value(autoDy)
-                                    autoY += autoDy
+                                    // 累加實際捲動量（dispatchRawDelta 回傳值），不是要求的量——
+                                    // 列表到頭被夾掉時，差額不再灌進 totalDelta（跨頁漂移根因）。
+                                    autoY += onEdgeAutoScrollRef.value(autoDy)
                                 }
                                 totalDelta = (drag.position - startOffset) + Offset(0f, autoY)
                                 textMoveDelta = totalDelta
@@ -1089,8 +1120,9 @@ fun InkCanvas(
                                 val csH = canvasPixelSizeState.value.height
                                 val autoDy = edgeAutoScrollDy(drag.position.y, csH)
                                 if (autoDy != 0f) {
-                                    onEdgeAutoScrollRef.value(autoDy)
-                                    autoY += autoDy
+                                    // 累加實際捲動量（dispatchRawDelta 回傳值），不是要求的量——
+                                    // 列表到頭被夾掉時，差額不再灌進 totalDelta（跨頁漂移根因）。
+                                    autoY += onEdgeAutoScrollRef.value(autoDy)
                                 }
                                 totalDelta = (drag.position - startOffset) + Offset(0f, autoY)
                                 imageMovePreview = totalDelta
@@ -1238,8 +1270,9 @@ fun InkCanvas(
                                 val csH = canvasPixelSizeState.value.height
                                 val autoDy = edgeAutoScrollDy(drag.position.y, csH)
                                 if (autoDy != 0f) {
-                                    onEdgeAutoScrollRef.value(autoDy)
-                                    autoY += autoDy
+                                    // 累加實際捲動量（dispatchRawDelta 回傳值），不是要求的量——
+                                    // 列表到頭被夾掉時，差額不再灌進 totalDelta（跨頁漂移根因）。
+                                    autoY += onEdgeAutoScrollRef.value(autoDy)
                                 }
                                 val abs = (drag.position - startOffset) + Offset(0f, autoY)
                                 val step = abs - prevAbs
@@ -2050,6 +2083,7 @@ fun InkCanvas(
                 if (activeTool == Tool.LASSO && selectionRect != null && !selectionRect.isEmpty) {
                     drawLassoSelectionFrame(
                         selectionRect = selectionRect,
+                        // 把手只在墨/圖子集非空時出現：字不支援套索縮放，有把手沒功能更騙人。
                         showHandles = ownSelectedStrokes.isNotEmpty() || selectedImageAnnotationIds.isNotEmpty(),
                         dashPhase = if (isSelectionTransforming) 0f else lassoDashPhase,
                         animateDash = !isSelectionTransforming
@@ -2105,6 +2139,23 @@ fun InkCanvas(
                         textLines[ann.id].orEmpty().forEachIndexed { i, line ->
                             composeCanvas.nativeCanvas.drawText(
                                 line, ann.modelX * sx + dx, ann.modelY * sy + dy + i * lineHeight, textPaint
+                            )
+                        }
+                    }
+                }
+
+                // 套索選中字的描邊（與墨反白同語義；無框頁不畫，框由 ownSelectionBounds 統一出）。
+                if (activeTool == Tool.LASSO) {
+                    textAnnotations.forEach { ann ->
+                        if (ann.id in vmSelectedTextIds) {
+                            val r = textAnnotationHitRect(ann, sx, sy).translate(
+                                lassoMoveOffset.x * sx, lassoMoveOffset.y * sy
+                            )
+                            drawRect(
+                                color = BrandIndigo,
+                                topLeft = r.topLeft,
+                                size = r.size,
+                                style = Stroke(width = 2f)
                             )
                         }
                     }
