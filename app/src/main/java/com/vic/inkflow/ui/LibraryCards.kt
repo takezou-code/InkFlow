@@ -148,7 +148,6 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -255,7 +254,6 @@ internal fun FolderGroupedDocumentsView(
     onMoveFolder: (String, Boolean) -> Unit,
     onMoveFolderToParent: (String, String?) -> Unit,
     hazeState: dev.chrisbanes.haze.HazeState? = null,
-    dialogHaze: dev.chrisbanes.haze.HazeState,
     isDarkTheme: Boolean = false
 ) {
 val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
@@ -352,7 +350,6 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
                                         onCreateFolder = { folderName -> onCreateFolder(folderName, null) },
                                         // 實底：省即時模糊（對話框照吃第二路真模糊）
                                         hazeState = null,
-                                        dialogHaze = dialogHaze,
                                         isDarkTheme = isDarkTheme
                                     )
                                 }
@@ -383,7 +380,6 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
                         AnimatedDialog(visible = showNewChildFolderDialog) {
                 GlassDialogCustom(
                     onDismissRequest = { showNewChildFolderDialog = false },
-                    dialogHaze = dialogHaze,
                     isDark = isDarkTheme,
                     title = { Text("建立子資料夾") },
                     text = {
@@ -419,7 +415,6 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
             AnimatedDialog(visible = showRenameFolderDialog) {
                 GlassDialogCustom(
                     onDismissRequest = { showRenameFolderDialog = false },
-                    dialogHaze = dialogHaze,
                     isDark = isDarkTheme,
                     title = { Text("重新命名資料夾") },
                     text = {
@@ -455,7 +450,6 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
             AnimatedDialog(visible = showDeleteFolderDialog) {
                 GlassDialog(
                     onDismissRequest = { showDeleteFolderDialog = false },
-                    dialogHaze = dialogHaze,
                     isDark = isDarkTheme,
                     title = { Text("刪除資料夾") },
                     text = { Text("確定要刪除「${folder.name}」嗎？子資料夾會一併刪除，內含文件會保留並移到未分類。") },
@@ -471,7 +465,6 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
             AnimatedDialog(visible = showMoveFolderDialog) {
                 GlassDialogCustom(
                     onDismissRequest = { showMoveFolderDialog = false },
-                    dialogHaze = dialogHaze,
                     isDark = isDarkTheme,
                     title = { Text("移動資料夾") },
                     text = {
@@ -667,7 +660,6 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
                                         onCreateFolder = { folderName -> onCreateFolder(folderName, null) },
                                         // 實底：省即時模糊（對話框照吃第二路真模糊）
                                         hazeState = null,
-                                        dialogHaze = dialogHaze,
                                         isDarkTheme = isDarkTheme
                                     )
                                 }
@@ -693,7 +685,6 @@ internal fun DocumentCard(
     onMoveToFolder: (String?) -> Unit = {},
     onCreateFolder: (String) -> Unit = {},
     hazeState: dev.chrisbanes.haze.HazeState? = null,
-    dialogHaze: dev.chrisbanes.haze.HazeState,
     isDarkTheme: Boolean = false
 ) {
     var showRenameDialog by remember { mutableStateOf(false) }
@@ -709,7 +700,6 @@ internal fun DocumentCard(
     AnimatedDialog(visible = showRenameDialog) {
         GlassDialogCustom(
             onDismissRequest = { showRenameDialog = false },
-            dialogHaze = dialogHaze,
             isDark = isDarkTheme,
             title = { Text("重新命名") },
             text = {
@@ -745,7 +735,6 @@ internal fun DocumentCard(
     AnimatedDialog(visible = showDeleteDialog) {
         GlassDialog(
             onDismissRequest = { showDeleteDialog = false },
-            dialogHaze = dialogHaze,
             isDark = isDarkTheme,
             title = { Text("刪除筆記本") },
             text = {
@@ -763,7 +752,6 @@ internal fun DocumentCard(
     AnimatedDialog(visible = showMoveDialog) {
         GlassDialogCustom(
             onDismissRequest = { showMoveDialog = false },
-            dialogHaze = dialogHaze,
             isDark = isDarkTheme,
             title = { Text("移到資料夾") },
             text = {
@@ -817,7 +805,6 @@ internal fun DocumentCard(
     AnimatedDialog(visible = showCreateFolderDialog) {
         GlassDialogCustom(
             onDismissRequest = { showCreateFolderDialog = false },
-            dialogHaze = dialogHaze,
             isDark = isDarkTheme,
             title = { Text("建立資料夾") },
             text = {
@@ -1031,7 +1018,6 @@ internal fun DocumentListRow(
     onMoveToFolder: (String?) -> Unit = {},
     onCreateFolder: (String) -> Unit = {},
     hazeState: dev.chrisbanes.haze.HazeState? = null,
-    dialogHaze: dev.chrisbanes.haze.HazeState,
     isDarkTheme: Boolean = false
 ) {
     var showRenameDialog by remember { mutableStateOf(false) }
@@ -1166,7 +1152,6 @@ internal fun DocumentListRow(
     AnimatedDialog(visible = showMoveDialog) {
         GlassDialogCustom(
             onDismissRequest = { showMoveDialog = false },
-            dialogHaze = dialogHaze,
             isDark = isDarkTheme,
             title = { Text("移到資料夾") },
             text = {
@@ -1220,7 +1205,6 @@ internal fun DocumentListRow(
     AnimatedDialog(visible = showCreateFolderDialog) {
         GlassDialogCustom(
             onDismissRequest = { showCreateFolderDialog = false },
-            dialogHaze = dialogHaze,
             isDark = isDarkTheme,
             title = { Text("建立資料夾") },
             text = {
@@ -1260,7 +1244,6 @@ internal fun DocumentListRow(
     AnimatedDialog(visible = showRenameDialog) {
         GlassDialogCustom(
             onDismissRequest = { showRenameDialog = false },
-            dialogHaze = dialogHaze,
             isDark = isDarkTheme,
             title = { Text("重新命名") },
             text = {
@@ -1294,7 +1277,6 @@ internal fun DocumentListRow(
     AnimatedDialog(visible = showDeleteDialog) {
         GlassDialog(
             onDismissRequest = { showDeleteDialog = false },
-            dialogHaze = dialogHaze,
             isDark = isDarkTheme,
             title = { Text("刪除文件") },
             text = { Text("確定要刪除「${document.displayName}」嗎？此操作無法還原。") },

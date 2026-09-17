@@ -85,19 +85,6 @@ fun glassStyle(isDark: Boolean): HazeStyle = HazeStyle(
 )
 
 /**
- * 對話框全屏背底專用：重糊（36dp，把 Aurora 光斑糊到認不出來，只剩色霧）
- * ＋略濃 tint。平常用 [glassStyle] 的 16dp 糊全屏會糊不透，背景像重播一層。
- */
-fun dialogBackdropStyle(isDark: Boolean): HazeStyle = HazeStyle(
-    backgroundColor = if (isDark) Color.Black.copy(alpha = 0.20f) else Color.White.copy(alpha = 0.10f),
-    tints = listOf(
-        HazeTint(if (isDark) Color(0x590F172A) else Color(0x40FFFFFF))
-    ),
-    blurRadius = 36.dp,
-    noiseFactor = 0.02f
-)
-
-/**
  * 全統一入口（Prismal 真折射已退役）：等同 [glassPanel]。
  * 保留此別名是為了呼叫端收斂期少改一行；新 code 直接用 [glassPanel]。
  */
@@ -302,21 +289,18 @@ private fun Modifier.glassDressing(
 }
 
 /**
- * 全統一對話框殼（單一入口）：ui.window.Dialog（純視窗＋遮罩，零 M3）
- * ＋ 全屏真模糊背底（第二路 HazeState）＋ 單一玻璃卡 ＋ GlassTextButton。
+ * 全統一對話框殼（單一入口）：ui.window.Dialog（純視窗＋系統遮罩，零 M3）
+ * ＋ 單一玻璃卡 ＋ GlassTextButton。
  *
- * 為何第二路 state：主視窗 state（editorHaze 等）同時被主視窗 effect 和對話框 effect
- * 吃會凍結（Haze #974）。各螢幕根只在「任一對話框開著時」才掛 hazeSource(dialogHaze)，
- * 關框即撤，不常駐、不雙採。
+ * 背底＝系統調光（跟以前 M3 框一模一樣：全屏稍微變暗＋框浮起），不另加模糊層。
  *
  * 殼內鐵律：單一背景層（卡是唯一底）、零 M3 widget（禁 Surface/TextButton/FilterChip）、
- * 禁第二層底（分區用分隔線＋字階，不疊底）。要開對話框一律走這裡。
+ * 禁第二層底（分區用分隔線＋字階，不疊 Surface）。要開對話框一律走這裡。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GlassDialog(
     onDismissRequest: () -> Unit,
-    dialogHaze: HazeState,
     isDark: Boolean = MaterialTheme.colorScheme.background.luminance() < 0.5f,
     title: @Composable () -> Unit,
     text: (@Composable () -> Unit)? = null,
@@ -330,7 +314,6 @@ fun GlassDialog(
 ) {
     GlassDialogFrame(
         onDismissRequest = onDismissRequest,
-        dialogHaze = dialogHaze,
         isDark = isDark,
         title = title,
         text = text,
@@ -354,7 +337,6 @@ fun GlassDialog(
 @Composable
 fun GlassDialogCustom(
     onDismissRequest: () -> Unit,
-    dialogHaze: HazeState,
     isDark: Boolean = MaterialTheme.colorScheme.background.luminance() < 0.5f,
     title: @Composable () -> Unit,
     text: (@Composable () -> Unit)? = null,
@@ -363,7 +345,6 @@ fun GlassDialogCustom(
 ) {
     GlassDialogFrame(
         onDismissRequest = onDismissRequest,
-        dialogHaze = dialogHaze,
         isDark = isDark,
         title = title,
         text = text,
@@ -376,7 +357,6 @@ fun GlassDialogCustom(
 @Composable
 private fun GlassDialogFrame(
     onDismissRequest: () -> Unit,
-    dialogHaze: HazeState,
     isDark: Boolean,
     title: @Composable () -> Unit,
     text: (@Composable () -> Unit)?,
@@ -384,7 +364,7 @@ private fun GlassDialogFrame(
     buttons: @Composable RowScope.() -> Unit
 ) {
     // 注意：不用 M3 BasicAlertDialog——它在內容外再套 sizeIn(280..560dp) 的 Box，
-    // 全屏模糊層會被箍成 560dp 寬的豎帶（背景腰帶 bug）。ui.window.Dialog 是純視窗，無箍。
+    // 全屏層會被箍成 560dp 寬的豎帶（背景腰帶 bug）。ui.window.Dialog 是純視窗，無箍。
     Dialog(onDismissRequest = onDismissRequest, properties = properties) {
         Box(
             modifier = Modifier
@@ -392,13 +372,7 @@ private fun GlassDialogFrame(
                 .semantics { paneTitle = "對話框" },
             contentAlignment = Alignment.Center
         ) {
-            // 全屏重糊背底（採主視窗 source）＋ 調光：結霜讀感，泡泡糊到認不出來。
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .hazeEffect(dialogHaze, style = dialogBackdropStyle(isDark))
-                    .background(Color.Black.copy(alpha = if (isDark) 0.32f else 0.25f))
-            )
+            // 背底＝系統調光，不另加層（以前 M3 框就是這樣：全屏稍微變暗＋框浮起）。
             // 卡片自播 scale＋淡入（外層 AnimatedDialog 只剩純淡入，背底不再跟著縮放跳）。
             var cardShown by remember { mutableStateOf(false) }
             LaunchedEffect(Unit) { cardShown = true }

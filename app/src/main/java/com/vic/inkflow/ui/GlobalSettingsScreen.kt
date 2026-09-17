@@ -76,7 +76,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
-import dev.chrisbanes.haze.hazeSource
 import kotlin.math.roundToInt
 import com.vic.inkflow.util.AutoBackupScheduler
 import com.vic.inkflow.util.BackupManager
@@ -98,8 +97,6 @@ fun GlobalSettingsScreen(
     val scrollState = rememberScrollState()
     // 對話框自判深淺
     val isDarkSettings = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    // 對話框第二路（設定頁無 Aurora，source 掛內容根，糊素色底＋殼調光照樣統一）
-    val settingsDialogHaze = rememberHazeState()
 
     var defaultInputMode by remember { mutableStateOf(prefs.getString("default_input_mode", InputMode.FREE.name) ?: InputMode.FREE.name) }
     var defaultQuickSwipe by remember { mutableStateOf(prefs.getBoolean("default_quick_swipe_eraser_enabled", false)) }
@@ -156,7 +153,6 @@ fun GlobalSettingsScreen(
             modifier = Modifier
                 .padding(innerPadding)
                 .fillMaxSize()
-                .hazeSource(settingsDialogHaze)
                 .verticalScroll(scrollState)
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(24.dp)
@@ -343,7 +339,6 @@ fun GlobalSettingsScreen(
             confirmRestoreFile?.let { target ->
                 GlassDialog(
                     onDismissRequest = { confirmRestoreFile = null },
-                    dialogHaze = settingsDialogHaze,
                     isDark = isDarkSettings,
                     title = { Text("還原這份備份？") },
                     text = { Text("將以「${target.name}」取代目前的文件清單與全部註解，此動作無法復原。") },
@@ -374,7 +369,6 @@ fun GlobalSettingsScreen(
             if (showRestartDialog) {
                 GlassDialog(
                     onDismissRequest = { showRestartDialog = false },
-                    dialogHaze = settingsDialogHaze,
                     isDark = isDarkSettings,
                     title = { Text("還原就緒") },
                     text = { Text("備份資料已完成驗證。重新啟動 App 後將以備份內容取代目前的文件清單與註解。") },
@@ -586,7 +580,6 @@ fun GlobalSettingsScreen(
                 if (showPaletteColorPicker != null) {
                     val (index, colorInt) = showPaletteColorPicker!!
                     ColorPickerDialog(
-                        dialogHaze = settingsDialogHaze,
                         initialColor = Color(colorInt),
                         onColorSelected = { color ->
                             val intVal = color.toArgb()
@@ -613,7 +606,6 @@ fun GlobalSettingsScreen(
 
     if (showPenColorPicker) {
         ColorPickerDialog(
-            dialogHaze = settingsDialogHaze,
             initialColor = Color(defaultPenColor),
             onColorSelected = { color ->
                 showPenColorPicker = false
@@ -627,7 +619,6 @@ fun GlobalSettingsScreen(
 
     if (showHighlighterColorPicker) {
         ColorPickerDialog(
-            dialogHaze = settingsDialogHaze,
             initialColor = Color(defaultHighlighterColor),
             onColorSelected = { color ->
                 showHighlighterColorPicker = false

@@ -1,14 +1,6 @@
 ﻿package com.vic.inkflow.ui
 
 import dev.chrisbanes.haze.HazeState
-import dev.chrisbanes.haze.hazeSource
-import com.vic.inkflow.ui.theme.Motion
-import com.vic.inkflow.ui.theme.ShapeSm
-import com.vic.inkflow.ui.theme.ShapeMd
-import com.vic.inkflow.ui.theme.ShapeLg
-import com.vic.inkflow.ui.theme.ShapeXl
-import com.vic.inkflow.util.reorderable
-import com.vic.inkflow.util.reorderableItem
 
 import android.content.ClipData
 import android.content.ClipDescription
@@ -130,9 +122,7 @@ import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.rounded.Brush
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Gesture
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -143,7 +133,6 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -233,7 +222,6 @@ import kotlinx.coroutines.withContext
 
 @Composable
 internal fun DocumentSettingsDialog(
-    dialogHaze: HazeState,
     documentTitle: String,
     pageCount: Int,
     currentPageIndex: Int,
@@ -250,7 +238,6 @@ internal fun DocumentSettingsDialog(
     // 殼內禁第二層底：分區只用分隔線＋字階，不疊 Surface。
     GlassDialogCustom(
         onDismissRequest = onDismiss,
-        dialogHaze = dialogHaze,
         isDark = isDark,
         title = { Text("文件設定中心") },
         text = {
@@ -359,7 +346,6 @@ internal fun DocumentSettingsDialog(
 
 @Composable
 internal fun NewDocPaperSizeDialog(
-    dialogHaze: HazeState,
     onDismiss: () -> Unit,
     onCreate: (widthPt: Float, heightPt: Float) -> Unit
 ) {
@@ -379,7 +365,6 @@ internal fun NewDocPaperSizeDialog(
 
     GlassDialogCustom(
         onDismissRequest = onDismiss,
-        dialogHaze = dialogHaze,
         isDark = isDarkPaper,
         title = { Text("選擇紙張大小") },
         text = {
