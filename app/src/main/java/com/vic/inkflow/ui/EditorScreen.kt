@@ -335,6 +335,38 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
         return false
     }
 
+    // M6：從第 0 頁往後掃空白頁（DB 先篩：有墨/字/圖直接跳過；DB 空的才拿點陣確認）。
+    // 在 IO 執行緒呼叫；找到 need 個或掃完即停。
+    suspend fun scanBlankPages(need: Int): List<Int> {
+        if (need <= 0) return emptyList()
+        val found = mutableListOf<Int>()
+        val docUri = uri.toString()
+        val count = pdfViewModel.pageCount.value
+        var checked = 0
+        var p = 0
+        while (p < count && found.size < need) {
+            checked++
+            try {
+                val strokes = db.strokeDao().getStrokesForPageSync(docUri, p)
+                val texts = db.textAnnotationDao().getForPageSync(docUri, p)
+                val images = db.imageAnnotationDao().getForPageSync(docUri, p)
+                val dbEmpty = strokes.isEmpty() && texts.isEmpty() && images.isEmpty()
+                if (dbEmpty) {
+                    val bmp = kotlinx.coroutines.withTimeoutOrNull(1200) {
+                        pdfViewModel.getPageBitmap(p).filterNotNull().first()
+                    } ?: pdfViewModel.getPageBitmap(p).value
+                    val ratio = if (bmp != null) whiteRatioOfBitmap(bmp) else 0f
+                    if (isBlankPage(true, ratio)) found.add(p)
+                }
+            } catch (t: Throwable) {
+                android.util.Log.w("InkFlowDbg", "blankscan p=$p failed: $t")
+            }
+            p++
+        }
+        android.util.Log.d("InkFlowDbg", "BLANKSCAN checked=$checked need=$need used=$found")
+        return found
+    }
+
     suspend fun importRawTextInner(raw: String) {
             val blocks = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
                 splitAiBlocks(raw)
@@ -378,14 +410,25 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                 return
             }
             val sourcePage = currentPageIndex
+            // M6：先從第 0 頁掃空白頁（DB 先篩＋點陣確認），填滿才開新頁
+            val need = pages.size
+            val blanks = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                scanBlankPages(need)
+            }
             var after = sourcePage
             var placed = 0
             var mathCount = 0
-            for (page in pages) {
-                if (!insertOnePageAfter(after)) break
-                after += 1
-                val pageIdx = after
-                // 新頁點陣圖保證：重開空窗期建的 flow 可能永久 null，先預取＋等圖再寫入跳轉
+            var firstTarget = -1
+            for ((i, page) in pages.withIndex()) {
+                val pageIdx = if (i < blanks.size) {
+                    blanks[i]
+                } else {
+                    if (!insertOnePageAfter(after)) break
+                    after += 1
+                    after
+                }
+                if (firstTarget < 0) firstTarget = pageIdx
+                // 點陣圖保證：重開空窗期建的 flow 可能永久 null，先預取＋等圖再寫入跳轉
                 pdfViewModel.prefetchPage(pageIdx)
                 kotlinx.coroutines.withTimeoutOrNull(3000) {
                     pdfViewModel.getPageBitmap(pageIdx).filter { it != null }.first()
@@ -406,8 +449,8 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                 placed++
             }
             if (placed > 0) {
-                onRequestPage(sourcePage + 1)
-                android.widget.Toast.makeText(context, "已插入 ${pages.sumOf { it.size }} 段（公式圖 ${mathCount}，${placed} 頁）" + if (renderFail > 0) "（${renderFail} 式渲染失敗已退回文字）" else "", android.widget.Toast.LENGTH_SHORT).show()
+                onRequestPage(firstTarget)
+                android.widget.Toast.makeText(context, "已插入 ${pages.sumOf { it.size }} 段（公式圖 ${mathCount}，${placed} 頁" + (if (blanks.isNotEmpty()) "，含空白頁再利用" else "") + "）" + if (renderFail > 0) "（${renderFail} 式渲染失敗已退回文字）" else "", android.widget.Toast.LENGTH_SHORT).show()
             } else {
                 android.widget.Toast.makeText(context, "開新頁失敗，請稍後再試", android.widget.Toast.LENGTH_SHORT).show()
             }
