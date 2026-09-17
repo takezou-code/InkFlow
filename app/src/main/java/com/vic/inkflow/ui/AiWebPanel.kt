@@ -742,13 +742,15 @@ private fun buildPickJs(): String {
             function mark(el) {
                 try {
                     if (!el || el.hasAttribute('data-inkpick')) return false;
+                    // 祖先已被標就不重複描框（document 順序父先子後；收集去重本來就有）
+                    if (el.parentElement && el.parentElement.closest && el.parentElement.closest('[data-inkpick]')) return false;
                     if (!el.innerText || el.innerText.trim().length === 0) return false;
                     if (fallbackMain && inChrome(el)) return false;
                     el.setAttribute('data-inkpick', '0');
                     return true;
                 } catch(e){ return false; }
             }
-            var parts = container.querySelectorAll('p, li, h1, h2, h3, h4, pre, blockquote');
+            var parts = container.querySelectorAll('p, li, h1, h2, h3, h4, pre, blockquote, div.math-block, span.math-inline, div.katex-display, span.katex');
             var n = 0;
             if (parts.length === 0) {
                 if (mark(container)) n = 1;
@@ -758,7 +760,7 @@ private fun buildPickJs(): String {
             window.__inkpickHandler = function(ev) {
                 try {
                     if (!window.__inkpick) return;
-                    var t = (ev.target && ev.target.closest) ? ev.target.closest('p, li, h1, h2, h3, h4, pre, blockquote') : null;
+                    var t = (ev.target && ev.target.closest) ? ev.target.closest('p, li, h1, h2, h3, h4, pre, blockquote, div.math-block, span.math-inline, div.katex-display, span.katex') : null;
                     if (!t) return;
                     // 自癒：串流中重渲染導致容器換新時，不卡容器歸屬、有字就地標記（chrome 區除外）
                     if (inChrome(t)) return;
