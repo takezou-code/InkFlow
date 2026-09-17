@@ -273,6 +273,7 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
     // AI 面板黑白切換（預設亮底；只影響 Gemini 網頁，不動 App 主題）
     var aiWebLight by rememberSaveable { mutableStateOf(true) }
     var aiPickCollectId by remember { mutableStateOf(0) }
+    var aiWebView by remember { mutableStateOf<android.webkit.WebView?>(null) }
     val sidebarListState = rememberLazyListState()
     val mainListState = rememberLazyListState()
     val pinchActive by viewModel.pinchActive.collectAsState()
@@ -314,9 +315,9 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
     )
 
     // AI 引入管線實作見 AiImportFlow.kt（切塊→KaTeX→排版→掃空白頁→寫入→跳轉）。
-    // 薄包裝：實作在 AiImportFlow.kt，狀態由呼叫方傳入。
-    fun importRawText(raw: String) {
-        scope.importRawText(raw, context, viewModel, pdfViewModel, db, uri.toString(), currentPageIndex, onRequestPage)
+    // 薄包裝：勾選混排（文字＋公式裁圖），實作在 AiImportFlow.kt。
+    fun importPickedJson(json: String) {
+        scope.importPickedJson(json, context, viewModel, pdfViewModel, db, uri.toString(), currentPageIndex, onRequestPage, context as? android.app.Activity, aiWebView)
     }
     // 卷動跟隨：主列表滑到哪頁就換作用頁（不捲主列表，避免打架；側欄由下方 effect 置中）
     val onScrollPage: (Int) -> Unit = { index ->
@@ -799,16 +800,17 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                         pickEnterId = aiPickEnterId,
                         pickCollectId = aiPickCollectId,
                         webLight = aiWebLight,
-                        onTextGrabbed = { text ->
+                        onPickedJson = { json ->
                             scope.launch {
-                                if (text.isBlank()) {
-                                    android.widget.Toast.makeText(context, "沒抓到文字：請在 Gemini 回覆中點段落打勾後再按引入", android.widget.Toast.LENGTH_SHORT).show()
+                                if (json.isBlank()) {
+                                    android.widget.Toast.makeText(context, "沒抓到內容，請重選後再按引入", android.widget.Toast.LENGTH_SHORT).show()
                                 } else {
                                     aiPickMode = false
-                                    importRawText(text)
+                                    importPickedJson(json)
                                 }
                             }
                         },
+                        onWebView = { aiWebView = it },
                         onClose = {
                             showAiPanel = false
                             aiFileUri = null
