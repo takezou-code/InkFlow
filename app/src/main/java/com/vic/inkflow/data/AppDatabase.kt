@@ -25,11 +25,14 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 // v23: Added rotation column to image_annotations.
 // v24: S1 單畫布：strokes/text_annotations/image_annotations 加 docY（文件座標錨點，
 //      nullable；舊資料懶回填，不在此搬運）＋ (documentUri, docY) 索引。
+// v25: M7 公式源 sidecar：新增 math_sources 表（imageUri 唯一關聯 image_annotations.uri，
+//      只加表不動現有表）。
 @Database(
     entities = [StrokeEntity::class, PointEntity::class, DocumentEntity::class, FolderEntity::class,
                 TextAnnotationEntity::class, ImageAnnotationEntity::class,
-                DocumentPreferenceEntity::class, BookmarkEntity::class],
-    version = 24
+                DocumentPreferenceEntity::class, BookmarkEntity::class,
+                MathSourceEntity::class],
+    version = 25
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun strokeDao(): StrokeDao
@@ -39,6 +42,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun imageAnnotationDao(): ImageAnnotationDao
     abstract fun documentPreferenceDao(): DocumentPreferenceDao
     abstract fun bookmarkDao(): BookmarkDao
+    abstract fun mathSourceDao(): MathSourceDao
 
     companion object {
         @Volatile
@@ -517,8 +521,7 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        private val MIGRATION_23_24 = object : Migration(23, 24) {
-            override fun migrate(db: SupportSQLiteDatabase) {
+        private val MIGRATION_23_24 = object : Migration(23, 24) {            override fun migrate(db: SupportSQLiteDatabase) {
                 // 只加欄＋索引；資料回填由 EditorViewModel.ensureDocSpaceMigrated 懶做
                 //（回填 stride 必須用開文件時的 live modelH，遷移期拿不到，硬搬會錯）。
                 db.execSQL("ALTER TABLE strokes ADD COLUMN docY REAL DEFAULT NULL")
@@ -527,6 +530,27 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_strokes_documentUri_docY` ON `strokes` (`documentUri`, `docY`)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_text_annotations_documentUri_docY` ON `text_annotations` (`documentUri`, `docY`)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_image_annotations_documentUri_docY` ON `image_annotations` (`documentUri`, `docY`)")
+            }
+        }
+
+        private val MIGRATION_24_25 = object : Migration(24, 25) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // M7 公式源 sidecar：只建新表，不碰現有表；舊圖無源（查不到即純圖）。
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS math_sources (
+                        id TEXT NOT NULL PRIMARY KEY,
+                        documentUri TEXT NOT NULL,
+                        pageIndex INTEGER NOT NULL,
+                        imageUri TEXT NOT NULL,
+                        tex TEXT NOT NULL,
+                        display INTEGER NOT NULL DEFAULT 1,
+                        createdAt INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_math_sources_imageUri` ON `math_sources` (`imageUri`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_math_sources_documentUri_pageIndex` ON `math_sources` (`documentUri`, `pageIndex`)")
             }
         }
 
@@ -562,7 +586,8 @@ abstract class AppDatabase : RoomDatabase() {
                     MIGRATION_20_21,
                     MIGRATION_21_22,
                     MIGRATION_22_23,
-                    MIGRATION_23_24
+                    MIGRATION_23_24,
+                    MIGRATION_24_25
                 )
                 // Only allow destructive migration on downgrade (e.g. user reverts to an
                 // older APK). Unknown *upgrade* paths surface as a hard crash rather than
