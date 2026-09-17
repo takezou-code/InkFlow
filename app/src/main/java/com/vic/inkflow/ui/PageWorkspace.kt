@@ -72,8 +72,14 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import android.content.Context
+import android.net.Uri
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import com.vic.inkflow.data.AppDatabase
@@ -128,8 +134,6 @@ internal fun Workspace(
     val density = LocalDensity.current
     // 頁間隙 px：必須與下方 LazyColumn 的 Arrangement.spacedBy(18.dp) 一致（跨頁分段用）
     val pageGapPx = with(density) { 18.dp.toPx() }
-    // 列表上下內距 px：與下方 LazyColumn 的 contentPadding(vertical = 18.dp) 一致（縮放垂直錨定用）
-    val listPadTopPx = with(density) { 18.dp.toPx() }
     val bubbleGapPx = with(density) { 12.dp.toPx() }
     val bubbleSidePaddingPx = with(density) { 12.dp.toPx() }
     val bubbleTopSafePx = with(density) { 12.dp.toPx() }
@@ -247,28 +251,19 @@ internal fun Workspace(
                                 val new = (old * decision.zoomFactor).coerceIn(0.4f, 4f)
                                 if (new.isFinite() && !new.isNaN() && new != old) {
                                     val ratio = new / old
-                                    // 錨定在雙指中心 (cx, cy) 下——內容點跟著手指，不漂移。
-                                    // 水平：內容點 = scrollX + cx - panX（整列被 panOffsetX 平移過，必須扣掉）。
+                                    // 錨定在雙指中心 cx 下：內容點 = scrollX + cx - panX
+                                    //（整列被 panOffsetX 平移過，必須扣掉；不扣＝平移後再捏就偏）。
+                                    // 垂直不主動錨：LazyColumn 原生保留首可見項，逐幀再按舊尺寸推
+                                    // 反而和版式調整打架（捏合中每幀尺寸都在變）——退回原生，只修水平。
                                     val panX = clampPan(viewModel.panOffsetX.value)
                                     val currentScrollX = hScrollState.value
                                     val maxScrollX = maxOf(0f, viewportWpx * (new - 1f))
                                     val targetScrollX = ((currentScrollX + cx - panX) * ratio - cx + panX)
                                         .coerceIn(0f, maxScrollX)
-                                    // 垂直：各頁等高 H，內容點 P = S + cy 縮放後保持 → S' = S + P * (ratio - 1)。
-                                    val firstItem = mainListState.layoutInfo.visibleItemsInfo.firstOrNull()
-                                    val anchorDy = if (firstItem != null && firstItem.size > 0) {
-                                        val scrollS = listPadTopPx +
-                                            firstItem.index * (firstItem.size + pageGapPx) +
-                                            mainListState.firstVisibleItemScrollOffset
-                                        (scrollS + cy) * (ratio - 1f)
-                                    } else 0f
                                     viewModel.setDocZoom(new)
                                     val deltaX = targetScrollX - currentScrollX
                                     if (kotlin.math.abs(deltaX) > 0.5f) {
                                         hScrollState.dispatchRawDelta(deltaX)
-                                    }
-                                    if (anchorDy.isFinite() && kotlin.math.abs(anchorDy) > 0.5f) {
-                                        mainListState.dispatchRawDelta(anchorDy)
                                     }
                                 }
                             }
@@ -639,7 +634,29 @@ private fun DragPreviewOverlay(
     modifier: Modifier = Modifier
 ) {
     val preview by viewModel.selectedStrokePreview.collectAsState()
-    if (preview.isEmpty()) return
+    val selectedIds by viewModel.selectedImageAnnotationIds.collectAsState()
+    // 選中圖：與墨同待遇畫在紙上層（跨頁拖曳全程可見；之前 overlay 只畫墨，圖被留在紙內）。
+    val selImages = remember(selectedIds) { viewModel.selectedImagesNow() }
+    if (preview.isEmpty() && selImages.isEmpty()) return
+    val context = LocalContext.current
+    // 圖片解碼快取（1024 封頂，拖曳預覽夠用；與 InkCanvas 各管各的，不共享）。
+    val loadedImages = remember { mutableStateMapOf<String, ImageBitmap?>() }
+    androidx.compose.runtime.LaunchedEffect(selImages) {
+        selImages.forEach { ann ->
+            if (ann.uri !in loadedImages) {
+                loadedImages[ann.uri] = null
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    val bmp = try {
+                        decodeBoundedBitmap(context, Uri.parse(ann.uri), maxSidePx = 1024)
+                            ?.asImageBitmap()
+                    } catch (_: Exception) { null }
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        loadedImages[ann.uri] = bmp
+                    }
+                }
+            }
+        }
+    }
     val moveOffset by viewModel.lassoMoveOffset.collectAsState()
     val scale by viewModel.selectedStrokeScale.collectAsState()
     val anchorState by viewModel.selectedStrokeResizeAnchor.collectAsState()
@@ -659,6 +676,28 @@ private fun DragPreviewOverlay(
         }
     }
     androidx.compose.foundation.Canvas(modifier = modifier) {
+        // 選中圖先畫（墊底，與 InkCanvas 圖→墨層序一致），套同樣的移動/縮放變換。
+        selImages.forEach { ann ->
+            val bmp = loadedImages[ann.uri] ?: return@forEach
+            val r = modelTransformedImageRectToCanvasRect(
+                image = ann,
+                translation = moveOffset,
+                scale = scale,
+                anchor = anchor,
+                sx = sx,
+                sy = sy
+            )
+            rotate(ann.rotation, r.center) {
+                drawImage(
+                    image = bmp,
+                    dstOffset = IntOffset(r.left.toInt(), r.top.toInt()),
+                    dstSize = IntSize(
+                        r.width.toInt().coerceAtLeast(2),
+                        r.height.toInt().coerceAtLeast(2)
+                    )
+                )
+            }
+        }
         drawIntoCanvas { cvs ->
             cvs.save()
             cvs.scale(sx, sy)

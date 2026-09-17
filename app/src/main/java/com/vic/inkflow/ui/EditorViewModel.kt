@@ -1796,7 +1796,8 @@ class EditorViewModel(
                 ann.copy(
                     pageIndex = targetPage,
                     modelX = ann.modelX.coerceIn(0f, modelWidth),
-                    modelY = ann.modelY.coerceIn(0f, modelHeight)
+                    // 與墨同幅繞回（之前只鉗制沒減 wrapY，圖黏在目標頁紙邊）。
+                    modelY = (ann.modelY - wrapY).coerceIn(0f, modelHeight)
                 )
             }
         }
@@ -1980,6 +1981,12 @@ class EditorViewModel(
         if (found.isNotEmpty()) return found
         return currentImageAnnotations.value.filter { it.id in ids }
     }
+
+    /**
+     * Overlay 用：主線程同步快照（只讀 flows 當前值；拖曳中實體不變，安全）。
+     * 跨頁拖曳時選中圖也要畫在紙上層。
+     */
+    fun selectedImagesNow(): List<ImageAnnotationEntity> = selectedImagesSnapshot()
 
     fun deleteSelection() {
         val selectedStrokeSnapshots = _selectedStrokes.value
