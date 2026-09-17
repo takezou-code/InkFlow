@@ -348,14 +348,27 @@ private val LATEX_SYM = mapOf(
     "int" to "∫", "iint" to "∬", "partial" to "∂", "nabla" to "∇",
     "to" to "→", "rightarrow" to "→", "leftarrow" to "←",
     "Rightarrow" to "⇒", "Leftarrow" to "⇐", "Leftrightarrow" to "⇔",
-    "leftrightarrow" to "↔", "in" to "∈", "notin" to "∉",
+    "leftrightarrow" to "↔", "longleftarrow" to "⟵", "longrightarrow" to "⟶",
+    "longleftrightarrow" to "⟷", "Longleftarrow" to "⟸", "Longrightarrow" to "⟹",
+    "Longleftrightarrow" to "⟺", "in" to "∈", "notin" to "∉",
     "subset" to "⊂", "supset" to "⊃", "subseteq" to "⊆", "supseteq" to "⊇",
     "cup" to "∪", "cap" to "∩", "forall" to "∀", "exists" to "∃",
     "emptyset" to "∅", "angle" to "∠", "perp" to "⊥", "propto" to "∝",
     "sim" to "∼", "cong" to "≅", "equiv" to "≡", "ldots" to "…",
     "cdots" to "⋯", "vdots" to "⋮", "ddots" to "⋱", "ast" to "∗",
     "circ" to "∘", "bullet" to "•", "hbar" to "ℏ", "ell" to "ℓ",
-    "aleph" to "ℵ", "prime" to "′", "dagger" to "†", "star" to "★"
+    "aleph" to "ℵ", "prime" to "′", "dagger" to "†", "star" to "★",
+    "langle" to "⟨", "rangle" to "⟩", "vert" to "|", "Vert" to "∥",
+    "lvert" to "|", "rvert" to "|", "lVert" to "∥", "rVert" to "∥",
+    "mid" to "|", "parallel" to "∥", "implies" to "⟹", "impliedby" to "⟸",
+    "iff" to "⟺", "dots" to "…", "exists" to "∃", "nexists" to "∄",
+    "ni" to "∋", "cong" to "≅", "simeq" to "≃", "land" to "∧", "lor" to "∨",
+    "neg" to "¬", "lnot" to "¬", "top" to "⊤", "bot" to "⊥",
+    "bigcup" to "⋃", "bigcap" to "⋂", "bigvee" to "⋁", "bigwedge" to "⋀",
+    "bigoplus" to "⊕", "bigotimes" to "⊗", "bigodot" to "⊙", "bigsqcup" to "⊔",
+    "coprod" to "∐", "iiint" to "∭", "oint" to "∮",
+    "lceil" to "⌈", "rceil" to "⌉", "lfloor" to "⌊", "rfloor" to "⌋",
+    "mapsto" to "↦"
 )
 
 private val SUP_MAP = mapOf(
@@ -407,10 +420,16 @@ fun convertLatexMath(m0: String): String {
     m = m.replace(Regex("\\\\tag\\{[^{}]*\\}"), "")
     var guard = 0
     while (guard++ < 20) {
-        val next = m.replace(Regex("\\\\text(?:bf|it|rm|sf|tt)?\\{([^{}]*)\\}"), "$1")
+        val next = m.replace(Regex("\\\\(?:text(?:bf|it|rm|sf|tt)?|math(?:bf|it|rm|sf|tt))\\{([^{}]*)\\}"), "$1")
         if (next == m) break
         m = next
     }
+    // 黑板體常用字母 / 花體脫殼（Unicode fallback 可讀優先）
+    val bb = mapOf("R" to "ℝ", "Z" to "ℤ", "N" to "ℕ", "Q" to "ℚ", "C" to "ℂ")
+    m = Regex("\\\\mathbb\\{([A-Za-z])\\}").replace(m) { r -> bb[r.groupValues[1]] ?: r.groupValues[1] }
+    m = Regex("\\\\mathcal\\{([A-Za-z])\\}").replace(m) { it.groupValues[1] }
+    // 常用函數名脫反斜線（\sin x → sin x，fallback 可讀）
+    m = Regex("\\\\(sin|cos|tan|sec|csc|cot|sinh|cosh|tanh|arcsin|arccos|arctan|log|lg|ln|exp|lim|sup|inf|max|min|det|gcd|ker|dim|arg|deg)\\b").replace(m, "$1")
     guard = 0
     while (guard++ < 20) {
         val next = m.replace(Regex("\\\\d?frac\\{([^{}]*)\\}\\{([^{}]*)\\}"), "($1)/($2)")
@@ -423,14 +442,14 @@ fun convertLatexMath(m0: String): String {
     m = Regex("_\\{([^{}]*)\\}").replace(m) { r -> subOf(r.groupValues[1]) }
     m = Regex("\\^([^\\s{}])").replace(m) { r -> supOf(r.groupValues[1]) }
     m = Regex("_([^\\s{}])").replace(m) { r -> subOf(r.groupValues[1]) }
-    m = m.replace(Regex("\\\\(?:left|right|big|Big|bigg|Bigg)\\s?"), "")
+    m = m.replace(Regex("\\\\(?:left|right)(?=[\\(\\[\\{\\)\\]\\}\\|\\.\\/\\\\])|\\\\(?:big|Big|bigg|Bigg)[lmr]?(?=[\\(\\[\\]\\)\\|\\.\\/])"), "")
     m = m.replace(Regex("\\\\(?:quad|qquad|displaystyle|limits|nonumber)"), " ")
     m = m.replace(Regex("\\\\[,;:! ]"), " ")
     m = Regex("\\\\([A-Za-z]+)").replace(m) { r ->
         val name = r.groupValues[1]
         LATEX_GREEK[name] ?: LATEX_SYM[name] ?: r.value
     }
-    m = m.replace("{", "").replace("}", "")
+    // 注意：殘留分組括號不 blanket 清除（未知指令原樣保留優先，如 \qwerty{z}）
     return m.split("\n").joinToString("\n") { it.replace(Regex("[ \\t]+"), " ").trim() }.trim()
         .replace("\u0001", "{").replace("\u0002", "}")
 }
