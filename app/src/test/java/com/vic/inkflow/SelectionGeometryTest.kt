@@ -97,4 +97,20 @@ class SelectionGeometryTest {
         val ann = textAt(100f, 100f)
         assertTrue(!com.vic.inkflow.ui.isTextSelectedByLasso(ann, listOf(Offset(0f, 0f), Offset(1f, 1f))))
     }
+
+    @Test
+    fun textBoundsCoversMultiline() {
+        // 三行字：框高必須含全部行（之前只算一行，框包不住）。
+        val ann = textAt(100f, 300f, text = "ab\ncdef\ng", fontSize = 20f)
+        val b = com.vic.inkflow.ui.textEstimatedBounds(ann)
+        // 最長行 4 字：寬 = 4*20*0.65 = 52；高 = 20 + 2*24 = 68
+        assertEquals(100f, b.left, 0.01f)
+        assertEquals(152f, b.right, 0.01f)
+        assertEquals(300f - 68f, b.top, 0.01f)
+        assertEquals(300f, b.bottom, 0.01f)
+        // 第二行區域的頂點命中：單行公式 top=276 會 miss，多行 top=232 才中。
+        // baseline (100,300) 在圈外，走頂點分支。
+        val poly = listOf(Offset(120f, 240f), Offset(140f, 240f), Offset(140f, 260f), Offset(120f, 260f))
+        assertTrue(com.vic.inkflow.ui.isTextSelectedByLasso(ann, poly))
+    }
 }

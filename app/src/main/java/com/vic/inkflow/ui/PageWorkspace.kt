@@ -71,6 +71,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import android.content.Context
@@ -656,8 +657,10 @@ private fun DragPreviewOverlay(
     val selectedIds by viewModel.selectedImageAnnotationIds.collectAsState()
     // 選中圖：與墨同待遇畫在紙上層（跨頁拖曳全程可見；之前 overlay 只畫墨，圖被留在紙內）。
     val selImages = remember(selectedIds) { viewModel.selectedImagesNow() }
+    val selTextIds by viewModel.selectedTextAnnotationIds.collectAsState()
+    val selTexts = remember(selTextIds) { viewModel.selectedTextsNow() }
     val dragImg by viewModel.imageDragPreview.collectAsState()
-    if (preview.isEmpty() && selImages.isEmpty() && dragImg == null) return
+    if (preview.isEmpty() && selImages.isEmpty() && selTexts.isEmpty() && dragImg == null) return
     val context = LocalContext.current
     // 圖片解碼快取（1024 封頂，拖曳預覽夠用；與 InkCanvas 各管各的，不共享）。
     val loadedImages = remember { mutableStateMapOf<String, ImageBitmap?>() }
@@ -695,9 +698,17 @@ private fun DragPreviewOverlay(
             swp to if (swp.stroke.shapeType == null) swp.points.toComposePath() else null
         }
     }
+    // 字共用 Paint（拖曳 transient，逐字改字號顏色，與 InkCanvas 同模式）。
+    val textPaint = remember {
+        android.graphics.Paint().apply {
+            isAntiAlias = true
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+        }
+    }
     androidx.compose.foundation.Canvas(modifier = modifier) {
-        // 選中圖先畫（墊底，與 InkCanvas 圖→墨層序一致），套同樣的移動/縮放變換。
+        // 選中圖先畫（墊底）；只畫歸屬本紙的（跨紙選取各紙 overlay 畫各的，跟墨同規矩）。
         selImages.forEach { ann ->
+            if (ann.pageIndex != pageIndex) return@forEach
             val bmp = loadedImages[ann.uri] ?: return@forEach
             val r = modelTransformedImageRectToCanvasRect(
                 image = ann,
@@ -764,6 +775,26 @@ private fun DragPreviewOverlay(
                 }
             }
             cvs.restore()
+        }
+        // 選中字：跟墨同層序（字在墨上，與 InkCanvas 一致），跟隨移動變換，只畫歸屬本紙的。
+        selTexts.forEach { ann ->
+            if (ann.pageIndex != pageIndex) return@forEach
+            textPaint.textSize = ann.fontSize * sy
+            textPaint.color = ann.colorArgb
+            val lines = ann.text.split("\n")
+            val lineHeight = with(textPaint.fontMetrics) { -ascent + descent + leading }
+            val dx = moveOffset.x * sx
+            val dy = moveOffset.y * sy
+            drawIntoCanvas { cvs ->
+                lines.forEachIndexed { i, line ->
+                    cvs.nativeCanvas.drawText(
+                        line,
+                        ann.modelX * sx + dx,
+                        ann.modelY * sy + dy + i * lineHeight,
+                        textPaint
+                    )
+                }
+            }
         }
         val rect = modelTransformedPolygonBoundsToCanvasRect(
             polygon = framePolygon,

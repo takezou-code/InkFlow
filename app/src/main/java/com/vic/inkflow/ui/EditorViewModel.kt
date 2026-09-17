@@ -2100,6 +2100,9 @@ class EditorViewModel(
      */
     fun selectedImagesNow(): List<ImageAnnotationEntity> = selectedImagesSnapshot()
 
+    /** 同上，給 overlay 畫選中字（拖曳跨頁全程可見）。 */
+    fun selectedTextsNow(): List<TextAnnotationEntity> = selectedTextsSnapshot()
+
     fun deleteSelection() {
         val selectedStrokeSnapshots = _selectedStrokes.value
         val selectedImageSnapshots = selectedImagesSnapshot()
