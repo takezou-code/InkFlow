@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.BasicAlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.LocalTextStyle
@@ -25,6 +24,9 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.semantics.paneTitle
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
@@ -79,6 +81,19 @@ fun glassStyle(isDark: Boolean): HazeStyle = HazeStyle(
         HazeTint(if (isDark) Color(0x4D0F172A) else Color(0x30FFFFFF))
     ),
     blurRadius = 16.dp,
+    noiseFactor = 0.02f
+)
+
+/**
+ * 對話框全屏背底專用：重糊（36dp，把 Aurora 光斑糊到認不出來，只剩色霧）
+ * ＋略濃 tint。平常用 [glassStyle] 的 16dp 糊全屏會糊不透，背景像重播一層。
+ */
+fun dialogBackdropStyle(isDark: Boolean): HazeStyle = HazeStyle(
+    backgroundColor = if (isDark) Color.Black.copy(alpha = 0.20f) else Color.White.copy(alpha = 0.10f),
+    tints = listOf(
+        HazeTint(if (isDark) Color(0x590F172A) else Color(0x40FFFFFF))
+    ),
+    blurRadius = 36.dp,
     noiseFactor = 0.02f
 )
 
@@ -287,7 +302,7 @@ private fun Modifier.glassDressing(
 }
 
 /**
- * 全統一對話框殼（單一入口）：BasicAlertDialog（純視窗＋遮罩，零 M3 Surface）
+ * 全統一對話框殼（單一入口）：ui.window.Dialog（純視窗＋遮罩，零 M3）
  * ＋ 全屏真模糊背底（第二路 HazeState）＋ 單一玻璃卡 ＋ GlassTextButton。
  *
  * 為何第二路 state：主視窗 state（editorHaze 等）同時被主視窗 effect 和對話框 effect
@@ -368,25 +383,47 @@ private fun GlassDialogFrame(
     properties: DialogProperties,
     buttons: @Composable RowScope.() -> Unit
 ) {
-    BasicAlertDialog(onDismissRequest = onDismissRequest, properties = properties) {
+    // 注意：不用 M3 BasicAlertDialog——它在內容外再套 sizeIn(280..560dp) 的 Box，
+    // 全屏模糊層會被箍成 560dp 寬的豎帶（背景腰帶 bug）。ui.window.Dialog 是純視窗，無箍。
+    Dialog(onDismissRequest = onDismissRequest, properties = properties) {
         Box(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .semantics { paneTitle = "對話框" },
             contentAlignment = Alignment.Center
         ) {
-            // 全屏真模糊背底（採主視窗 source）＋ 輕調光；iOS 式毛玻璃背底。
+            // 全屏重糊背底（採主視窗 source）＋ 調光：結霜讀感，泡泡糊到認不出來。
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .hazeEffect(dialogHaze, style = glassStyle(isDark))
-                    .background(Color.Black.copy(alpha = if (isDark) 0.20f else 0.12f))
+                    .hazeEffect(dialogHaze, style = dialogBackdropStyle(isDark))
+                    .background(Color.Black.copy(alpha = if (isDark) 0.32f else 0.25f))
             )
-            // 全殼唯一背景層：玻璃卡（faux 底壓在已模糊的背底上＝厚玻璃讀感）。
+            // 卡片自播 scale＋淡入（外層 AnimatedDialog 只剩純淡入，背底不再跟著縮放跳）。
+            var cardShown by remember { mutableStateOf(false) }
+            LaunchedEffect(Unit) { cardShown = true }
+            val cardScale by animateFloatAsState(
+                targetValue = if (cardShown) 1f else 0.94f,
+                animationSpec = tween(220),
+                label = "DialogCardScale"
+            )
+            val cardAlpha by animateFloatAsState(
+                targetValue = if (cardShown) 1f else 0f,
+                animationSpec = tween(180),
+                label = "DialogCardAlpha"
+            )
+            // 全殼唯一背景層：玻璃卡（faux 底壓在已糊透的背底上＝厚玻璃讀感）。
             Column(
                 modifier = Modifier
                     .padding(horizontal = 24.dp)
                     .widthIn(min = 280.dp, max = 560.dp)
                     .fauxGlassPanel(isDark, ShapeLg)
-                    .padding(24.dp),
+                    .padding(24.dp)
+                    .graphicsLayer {
+                        scaleX = cardScale
+                        scaleY = cardScale
+                        alpha = cardAlpha
+                    },
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 // M3 AlertDialog 同款字階：標題 headlineSmall/onSurface、內文 bodyMedium/onSurfaceVariant；
