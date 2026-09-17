@@ -99,6 +99,19 @@ class SelectionGeometryTest {
     }
 
     @Test
+    fun wideCharsCountFullWidth() {
+        // 中文 4 字 ×20 = 80（舊 0.65 公式只給 52，框包不住）。
+        // 字面量只用 ASCII 拼碼點，避免工具鏈吞字節，見 isWideChar 註解。
+        val s = String(intArrayOf(0x4E2D, 0x6587, 0x6E2C, 0x8A66).map { it.toChar() }.toCharArray())
+        assertEquals(80f, com.vic.inkflow.ui.measureTextWidth(s, 20f), 0.01f)
+        // 混排：2 半形 + 2 全形 = 2*13 + 2*20 = 66
+        val mixed = "ab" + String(intArrayOf(0x4E2D, 0x6587).map { it.toChar() }.toCharArray())
+        assertEquals(66f, com.vic.inkflow.ui.measureTextWidth(mixed, 20f), 0.01f)
+        assertTrue(!com.vic.inkflow.ui.isWideChar('a'))
+        assertTrue(com.vic.inkflow.ui.isWideChar(0x4E2D.toChar()))
+    }
+
+    @Test
     fun textBoundsCoversMultiline() {
         // 三行字：框高必須含全部行（之前只算一行，框包不住）。
         val ann = textAt(100f, 300f, text = "ab\ncdef\ng", fontSize = 20f)
