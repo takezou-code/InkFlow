@@ -108,42 +108,43 @@ class EditorViewModel(
                 if (docSpaceMigrationDone) return@withLock
                 docSpaceMigrationDone = true
                 val stride = modelH.coerceAtLeast(1f)
-                db.withTransaction {
-                    val ns = strokeDao.backfillStrokeDocY(documentUri, stride)
-                    val nt = textAnnotationDao.backfillTextDocY(documentUri, stride)
-                    val ni = imageAnnotationDao.backfillImageDocY(documentUri, stride)
-                    // Breadcrumb（user 決議維持閃退）：拋之前先記哪個斷言＋哪份文件＋計數，
-                    // 出事看 log 一次定位，不改任何行為。
-                    fun crumb(tag: String, n: Any?) =
-                        android.util.Log.e("DocSpace", "ASSERT-FAIL $tag doc=$documentUri stride=$stride detail=$n")
-                    val missS = strokeDao.countMissingDocY(documentUri)
-                    val missT = textAnnotationDao.countMissingDocY(documentUri)
-                    val missI = imageAnnotationDao.countMissingDocY(documentUri)
-                    if (missS != 0) crumb("backfill-incomplete/strokes", missS)
-                    if (missT != 0) crumb("backfill-incomplete/texts", missT)
-                    if (missI != 0) crumb("backfill-incomplete/images", missI)
-                    check(missS == 0) { "docY backfill incomplete: strokes ($missS)" }
-                    check(missT == 0) { "docY backfill incomplete: texts ($missT)" }
-                    check(missI == 0) { "docY backfill incomplete: images ($missI)" }
-                    val mmS = strokeDao.countStrokeDocMismatch(documentUri, stride)
-                    val mmT = textAnnotationDao.countTextDocMismatch(documentUri, stride)
-                    val mmI = imageAnnotationDao.countImageDocMismatch(documentUri, stride)
-                    if (mmS != 0) crumb("invariant-broken/strokes", mmS)
-                    if (mmT != 0) crumb("invariant-broken/texts", mmT)
-                    if (mmI != 0) crumb("invariant-broken/images", mmI)
-                    check(mmS == 0) { "docY invariant broken: strokes ($mmS)" }
-                    check(mmT == 0) { "docY invariant broken: texts ($mmT)" }
-                    check(mmI == 0) { "docY invariant broken: images ($mmI)" }
-                    // 範圍查vs頁查一致性抽查（第 0 頁同頁列必須完全一致）
-                    val page0 = strokeDao.getStrokesForPageSync(documentUri, 0).map { it.stroke.id }.toSet()
-                    val range0 = strokeDao.getStrokesForRange(documentUri, -1f, stride + 1)
-                        .filter { it.stroke.pageIndex == 0 }.map { it.stroke.id }.toSet()
-                    if (page0 != range0) crumb("range-page-parity", "page0=${page0.size} range0=${range0.size}")
-                    check(page0 == range0) { "range/page parity broken: strokes page 0" }
-                    android.util.Log.i(
-                        "DocSpace",
-                        "backfilled doc=$documentUri stride=$stride strokes=$ns texts=$nt images=$ni"
-                    )
+                // P0-hotfix(9/17)：開檔永不因遷移檢查而死——9/16 起真實文件被 parity check 磚掉
+                // （紙改尺寸後舊墨超出新紙界，範圍查合法查不到，回填自洽卻判死刑；重開必閃）。
+                // 原「維持閃退」決議收回：以下全部降級為記 log＋繼續；髒數據走 rebase 修，不擋開檔。
+                // S1 只寫不讀＋影子探針只記 log，開檔路徑無任何實質依賴，降級零行為變化。
+                runCatching {
+                    db.withTransaction {
+                        val ns = strokeDao.backfillStrokeDocY(documentUri, stride)
+                        val nt = textAnnotationDao.backfillTextDocY(documentUri, stride)
+                        val ni = imageAnnotationDao.backfillImageDocY(documentUri, stride)
+                        // Breadcrumb：記哪個斷言＋哪份文件＋計數，出事看 log 一次定位。
+                        fun crumb(tag: String, n: Any?) =
+                            android.util.Log.e("DocSpace", "ASSERT-FAIL $tag doc=$documentUri stride=$stride detail=$n")
+                        val missS = strokeDao.countMissingDocY(documentUri)
+                        val missT = textAnnotationDao.countMissingDocY(documentUri)
+                        val missI = imageAnnotationDao.countMissingDocY(documentUri)
+                        if (missS != 0) crumb("backfill-incomplete/strokes", missS)
+                        if (missT != 0) crumb("backfill-incomplete/texts", missT)
+                        if (missI != 0) crumb("backfill-incomplete/images", missI)
+                        val mmS = strokeDao.countStrokeDocMismatch(documentUri, stride)
+                        val mmT = textAnnotationDao.countTextDocMismatch(documentUri, stride)
+                        val mmI = imageAnnotationDao.countImageDocMismatch(documentUri, stride)
+                        if (mmS != 0) crumb("invariant-broken/strokes", mmS)
+                        if (mmT != 0) crumb("invariant-broken/texts", mmT)
+                        if (mmI != 0) crumb("invariant-broken/images", mmI)
+                        // 範圍查vs頁查一致性抽查（第 0 頁）：探針性質，只記不拋。
+                        // 紙改小後舊墨合法地落在窗口外（parities 必然破），等 rebase 收。
+                        val page0 = strokeDao.getStrokesForPageSync(documentUri, 0).map { it.stroke.id }.toSet()
+                        val range0 = strokeDao.getStrokesForRange(documentUri, -1f, stride + 1)
+                            .filter { it.stroke.pageIndex == 0 }.map { it.stroke.id }.toSet()
+                        if (page0 != range0) crumb("range-page-parity", "page0=${page0.size} range0=${range0.size}")
+                        android.util.Log.i(
+                            "DocSpace",
+                            "backfilled doc=$documentUri stride=$stride strokes=$ns texts=$nt images=$ni"
+                        )
+                    }
+                }.onFailure { e ->
+                    android.util.Log.e("DocSpace", "migration failed (open continues) doc=$documentUri", e)
                 }
             }
         }
