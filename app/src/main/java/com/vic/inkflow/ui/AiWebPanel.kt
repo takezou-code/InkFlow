@@ -240,7 +240,6 @@ fun AiWebPanel(
     onTextGrabbed: (String) -> Unit = {},
     webLight: Boolean = true,
     onClose: () -> Unit,
-    onClose: () -> Unit,
     modifier: androidx.compose.ui.Modifier = androidx.compose.ui.Modifier
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
