@@ -2136,18 +2136,16 @@ fun InkCanvas(
                     }
                 }
 
-                // 套索選中字的描邊（與墨反白同語義；無框頁不畫，框由 ownSelectionBounds 統一出）。
+                // 套索選中字：與 TEXT 工具打字態同一框（同函數、同把手；框由 ownSelectionBounds 統一出）。
                 if (activeTool == Tool.LASSO) {
                     textAnnotations.forEach { ann ->
                         if (ann.id in vmSelectedTextIds) {
                             val r = textAnnotationHitRect(ann, sx, sy).translate(
                                 lassoMoveOffset.x * sx, lassoMoveOffset.y * sy
                             )
-                            drawRect(
-                                color = BrandIndigo,
-                                topLeft = r.topLeft,
-                                size = r.size,
-                                style = Stroke(width = 2f)
+                            drawLiquidGlassSelectionFrame(
+                                rect = r,
+                                handleCenters = listOf(Offset(r.right, r.bottom))
                             )
                         }
                     }

@@ -60,3 +60,9 @@
 - Vic-agent（手勢/畫布）：`PageWorkspace.kt` 手勢區、`util/DocLayout.kt`、`EditorViewModel.kt` 回填檢查區、`AGENTS.md` 協議區。
 - 另一 agent：墨水、`InkCanvas*`、AI 面板＋新功能、`EditorViewModel.kt` 其餘區。
 - commit 只加自己的檔；動對方檔前先講。
+
+## 註解不可盡信（9/17 血淚）
+- 註解會過期、會寫反（如「紙多走的量必須補進累計」實為雙倍計算，錯了三個月）。
+- 凡涉及座標假設、執行順序、執行緒、生命週期的註解，動手前必須對原始碼驗證一次，
+  不許憑註解寫 code。驗證手段：讀實現、寫單測釘住、或實機確認。
+- debug 版行為異常時，優先懷疑「被註解誤導的舊邏輯」，而不是加新邏輯蓋過去。
