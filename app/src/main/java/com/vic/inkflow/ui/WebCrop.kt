@@ -4,8 +4,8 @@ import android.app.Activity
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.PixelCopy
 import android.graphics.Rect
+import android.view.PixelCopy
 import android.os.Handler
 import android.os.Looper
 import android.util.Log

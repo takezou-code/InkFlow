@@ -19,32 +19,10 @@ import java.io.File
 import java.io.FileOutputStream
 
 /**
- * AI 引入管線（切塊 → KaTeX 渲染 → 混合排版 → 掃空白頁 → 寫入 → 跳轉）。
+ * AI 引入管線（勾選混排：文字切分＋公式像素裁圖＋KaTeX 第二引擎 → 混合排版 → 掃空白頁 → 寫入 → 跳轉）。
  * 純流程編排，無 Compose 依賴；狀態（aiPickMode 等）由呼叫方持有。
  * 管線任何一步炸了都只 Toast，不閃退。
  */
-fun CoroutineScope.importRawText(
-    raw: String,
-    context: Context,
-    viewModel: EditorViewModel,
-    pdfViewModel: PdfViewModel,
-    db: AppDatabase,
-    documentUri: String,
-    sourcePage: Int,
-    onRequestPage: (Int) -> Unit
-) {
-    if (raw.isBlank()) return
-    launch {
-        try {
-            importRawTextInner(context, viewModel, pdfViewModel, db, documentUri, sourcePage, onRequestPage, raw)
-        } catch (t: Throwable) {
-            Log.e("InkFlowDbg", "import failed", t)
-            try {
-                Toast.makeText(context, "插入失敗：${t.message}", Toast.LENGTH_LONG).show()
-            } catch (_: Throwable) { }
-        }
-    }
-}
 
 /**
  * KaTeX 第二引擎：有 TeX 源的數學塊渲染成圖（Main thread；失敗回空，上層退文字）。
