@@ -1288,13 +1288,11 @@ fun InkCanvas(
                                 drag = awaitDragOrCancellation(drag.id)
                             }
                             val maxPage = (pageCountRef.value - 1).coerceAtLeast(0)
-                            val crossTarget = viewModel.commitMovedStrokes(maxPage)
+                            viewModel.commitMovedStrokes(maxPage)
                             viewModel.setPageLock(false)
                             viewModel.setDragPreviewActive(false)
-                            if (crossTarget != null) {
-                                // M1 全活頁：跨頁落地即脫選（M2 改框跟內容走），不激活不跳轉
-                                viewModel.clearSelection()
-                            }
+                            // 跨頁落地不清選（舊 workaround 已退役）：高亮和泡泡跟到新頁，
+                            // 選不到東西時點空白照常清（見下）。單頁本來就不清，現在一致。
                             return@awaitEachGesture
                         }
 

@@ -170,12 +170,15 @@ internal fun isImageSelectedByLasso(annotation: ImageAnnotationEntity, polygon: 
 }
 
 /**
- * 文字估算框（model 座標）：與橡皮擦命中同一口徑（寬≈字數×字號×0.6，高≈字號×1.2；
- * baseline 為底邊）。套索命中＋選取框共用，單一真相。
+ * 文字估算框（model 座標）：與繪製命中（textAnnotationHitRect）同一口徑——
+ * 寬取最長行×字號×0.65，高含多行（首行字號＋其餘行×1.2），baseline 為底邊。
+ * 套索命中＋選取框＋大綱共用，單一真相（canvas 層的 ±4px 觸控墊片是另一回事，不在此）。
  */
 internal fun textEstimatedBounds(ann: com.vic.inkflow.data.TextAnnotationEntity): Rect {
-    val w = if (ann.isStamp) ann.fontSize else ann.text.length * ann.fontSize * 0.6f
-    val h = if (ann.isStamp) ann.fontSize else ann.fontSize * 1.2f
+    val lines = ann.text.split("\n")
+    val maxLen = lines.maxOfOrNull { it.length } ?: 0
+    val w = maxLen * ann.fontSize * 0.65f
+    val h = ann.fontSize + (lines.size - 1).coerceAtLeast(0) * ann.fontSize * 1.2f
     return Rect(ann.modelX, ann.modelY - h, ann.modelX + w, ann.modelY)
 }
 
