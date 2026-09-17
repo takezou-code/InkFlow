@@ -470,8 +470,49 @@ fun convertLatexInProse(seg: String): String {
     s = INLINE_PAREN.replace(s) { convertLatexMath(it.groupValues[1]) }
     s = INLINE_DOLLAR.replace(s) { r ->
         val inner = r.groupValues[1]
-        if (inner.contains('\\') || inner.contains('^') || inner.contains('_')) convertLatexMath(inner)
+        if (looksLikeInlineMath(inner)) convertLatexMath(inner)
         else r.value
     }
     return s
+}
+
+// ---- M6：空白頁偵測（整頁才用，不摳零碎縫） ----
+
+/** M6：空白頁判定（純函數，可單測）。dbEmpty = DB 無墨無字無圖；whiteRatio = 點陣紙白比例。 */
+fun isBlankPage(dbEmpty: Boolean, whiteRatio: Float, whiteThreshold: Float = 0.99f): Boolean =
+    dbEmpty && whiteRatio >= whiteThreshold
+
+/** M6：ARGB 陣列紙白比例（純函數，可單測；亮度門檻預設 200）。 */
+fun whiteRatioOfPixels(pixels: IntArray, luminanceThreshold: Int = 200): Float {
+    if (pixels.isEmpty()) return 0f
+    var white = 0
+    for (p in pixels) {
+        val r = (p shr 16) and 0xff
+        val g = (p shr 8) and 0xff
+        val b = p and 0xff
+        if (r >= luminanceThreshold && g >= luminanceThreshold && b >= luminanceThreshold) white++
+    }
+    return white.toFloat() / pixels.size
+}
+
+/** M6：點陣紙白比例（取樣步長 stridePx；大點陣圖 IO 執行緒呼叫）。 */
+fun whiteRatioOfBitmap(
+    bmp: android.graphics.Bitmap,
+    stridePx: Int = 8,
+    luminanceThreshold: Int = 200
+): Float {
+    val w = bmp.width
+    val h = bmp.height
+    if (w <= 0 || h <= 0) return 0f
+    val xs = (0 until w step stridePx).toList()
+    if (xs.isEmpty()) return 0f
+    val rows = (h + stridePx - 1) / stridePx
+    val buf = IntArray(xs.size * rows)
+    var k = 0
+    var y = 0
+    while (y < h) {
+        for (x in xs) buf[k++] = bmp.getPixel(x, y)
+        y += stridePx
+    }
+    return whiteRatioOfPixels(buf.copyOf(k), luminanceThreshold)
 }
