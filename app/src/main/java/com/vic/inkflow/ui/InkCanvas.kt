@@ -2209,6 +2209,11 @@ fun InkCanvas(
                                 epath, Color(0xFFFF5A5A).copy(alpha = 0.28f),
                                 style = Stroke(width = sharedErRpx * 2f, cap = StrokeCap.Round, join = StrokeJoin.Round)
                             )
+                            // 中線：與本紙一致，跨頁不斷（之前鄰頁只有寬帶沒有線）。
+                            drawPath(
+                                epath, Color(0xFFFF5A5A),
+                                style = Stroke(width = 2.5f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                            )
                         }
                         Tool.LASSO -> {
                             val lpath = Path()
