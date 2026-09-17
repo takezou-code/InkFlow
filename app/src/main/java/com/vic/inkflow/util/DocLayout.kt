@@ -108,6 +108,28 @@ object DocLayout {
     }
 
     /**
+     * F4：拖曳中物件在本頁窗口的局部縱向範圍（model 座標，頁內）。
+     * [anchorPage]＋[offsetInAnchorPage] 定位物件頂（錨點頁內座標，含拖曳位移），
+     * [extent] 為物件高。與本頁窗口無交集回 null。
+     * 等大文件步幅即 pageH；呼叫方保證同座標系。
+     */
+    fun draggedLocalVertical(
+        anchorPage: Int,
+        offsetInAnchorPage: Float,
+        extent: Float,
+        pageIndex: Int,
+        pageH: Float
+    ): Pair<Float, Float>? {
+        if (pageH <= 0f || extent <= 0f) return null
+        val docTop = anchorPage * pageH + offsetInAnchorPage
+        val winTop = pageIndex * pageH
+        val top = maxOf(docTop, winTop) - winTop
+        val bottom = minOf(docTop + extent, winTop + pageH) - winTop
+        if (bottom <= top) return null
+        return top to bottom
+    }
+
+    /**
      * 矩形按頁切分子矩形（矩形套索用）：框跨幾頁，每頁一個閉合四角（該頁頁內座標）。
      * 與點切分不同：矩形有面積，按窗口重疊切，不存在開弧問題；縫不屬於任何頁。
      * 輸入可任意方向拖曳（內部正規化）；零面積/非法輸入回空表。

@@ -23,6 +23,7 @@ import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.runtime.withFrameNanos
+import com.vic.inkflow.util.DocLayout
 import com.vic.inkflow.util.PalmRejectionFilter
 import com.vic.inkflow.util.TwoFingerArbitrator
 import com.vic.inkflow.util.TwoFingerDecision
@@ -430,6 +431,18 @@ internal fun Workspace(
             val aspect = uniformAspect
             // 套索跨頁拖曳中：overlay 接手選取預覽（本 item 需配合置頂）
             val dragActive by viewModel.dragPreviewActive.collectAsState()
+            // F4 圖片直接拖：本頁窗口有重疊才顯示 overlay（各頁按自己窗口畫一段）。
+            val imageDrag by viewModel.imageDragPreview.collectAsState()
+            val dragImgOverlap = remember(imageDrag, index) {
+                val d = imageDrag ?: return@remember false
+                DocLayout.draggedLocalVertical(
+                    anchorPage = d.image.pageIndex,
+                    offsetInAnchorPage = d.image.modelY + d.dyModel,
+                    extent = d.image.modelHeight,
+                    pageIndex = index,
+                    pageH = viewModel.modelHeight.coerceAtLeast(1f)
+                ) != null
+            }
             // 數據上提：bitmap + 三路註記流放在分支外面，作用頁/靜態頁身份互換時
             // remember 不重建、Flow 不重訂、實例不變 —— 翻頁不再有空窗白閃。
             // （之前翻頁閃光的主因：分支內各自 remember，切換必重載 + Crossfade 重播）
@@ -463,9 +476,9 @@ internal fun Workspace(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        // 拖曳 overlay 置頂：溢出紙界的框/墨不被後頁蓋住；
-                        // 全活頁下只頂選取歸屬紙（其餘紙的 overlay 不畫，見下）
-                        .zIndex(if (dragActive && viewModel.selectionPage() == index) 1f else 0f),
+                        // 拖曳 overlay 置頂：溢出紙界的框/墨/圖不被後頁蓋住；
+                        // 全活頁下只頂選取歸屬紙＋圖片拖曳重疊紙（其餘紙的 overlay 不畫，見下）
+                        .zIndex(if ((dragActive && viewModel.selectionPage() == index) || dragImgOverlap) 1f else 0f),
                     contentAlignment = Alignment.Center
                 ) {
                     Surface(
@@ -582,11 +595,14 @@ internal fun Workspace(
                     // 跨頁拖曳 overlay：框+墨畫在紙上層、可溢出紙界（clip=false），
                     // InkCanvas 側同時讓位（同像素只畫一次）；放開提交後清旗接回。
                     // 全活頁下只在選取歸屬紙畫（他紙同像素會重影，螢光筆疊色）。
-                    if (dragActive && itemWidthPx > 0 && viewModel.selectionPage() == index) {
+                    if ((dragActive && itemWidthPx > 0 && viewModel.selectionPage() == index) ||
+                        (dragImgOverlap && itemWidthPx > 0)
+                    ) {
                         DragPreviewOverlay(
                             viewModel = viewModel,
                             paperWpx = itemWidthPx.toFloat(),
                             aspect = aspect,
+                            pageIndex = index,
                             modifier = Modifier
                                 .width(with(density) { itemWidthPx.toDp() })
                                 .aspectRatio(aspect)
@@ -631,27 +647,29 @@ private fun DragPreviewOverlay(
     viewModel: EditorViewModel,
     paperWpx: Float,
     aspect: Float,
+    pageIndex: Int,
     modifier: Modifier = Modifier
 ) {
     val preview by viewModel.selectedStrokePreview.collectAsState()
     val selectedIds by viewModel.selectedImageAnnotationIds.collectAsState()
     // 選中圖：與墨同待遇畫在紙上層（跨頁拖曳全程可見；之前 overlay 只畫墨，圖被留在紙內）。
     val selImages = remember(selectedIds) { viewModel.selectedImagesNow() }
-    if (preview.isEmpty() && selImages.isEmpty()) return
+    val dragImg by viewModel.imageDragPreview.collectAsState()
+    if (preview.isEmpty() && selImages.isEmpty() && dragImg == null) return
     val context = LocalContext.current
     // 圖片解碼快取（1024 封頂，拖曳預覽夠用；與 InkCanvas 各管各的，不共享）。
     val loadedImages = remember { mutableStateMapOf<String, ImageBitmap?>() }
-    androidx.compose.runtime.LaunchedEffect(selImages) {
-        selImages.forEach { ann ->
-            if (ann.uri !in loadedImages) {
-                loadedImages[ann.uri] = null
+    androidx.compose.runtime.LaunchedEffect(selImages, dragImg?.image?.uri) {
+        (selImages.map { it.uri } + listOfNotNull(dragImg?.image?.uri)).distinct().forEach { uri ->
+            if (uri !in loadedImages) {
+                loadedImages[uri] = null
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                     val bmp = try {
-                        decodeBoundedBitmap(context, Uri.parse(ann.uri), maxSidePx = 1024)
+                        decodeBoundedBitmap(context, Uri.parse(uri), maxSidePx = 1024)
                             ?.asImageBitmap()
                     } catch (_: Exception) { null }
                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                        loadedImages[ann.uri] = bmp
+                        loadedImages[uri] = bmp
                     }
                 }
             }
@@ -696,6 +714,37 @@ private fun DragPreviewOverlay(
                         r.height.toInt().coerceAtLeast(2)
                     )
                 )
+            }
+        }
+        // F4 圖片直接拖：本頁窗口重疊段畫在紙上層（src 紙原本照畫，同像素複畫無感）。
+        // 旋轉中心用整圖中心（與 InkCanvas 一致），映射到本頁座標。
+        val dragLocal = dragImg?.let { d ->
+            DocLayout.draggedLocalVertical(
+                anchorPage = d.image.pageIndex,
+                offsetInAnchorPage = d.image.modelY + d.dyModel,
+                extent = d.image.modelHeight,
+                pageIndex = pageIndex,
+                pageH = modelH.coerceAtLeast(1f)
+            )?.let { (lt, lb) -> Triple(d, lt, lb) }
+        }
+        if (dragLocal != null) {
+            val (d, lt, lb) = dragLocal
+            val bmp = loadedImages[d.image.uri]
+            if (bmp != null) {
+                val rx = (d.image.modelX + d.dxModel) * sx
+                val fullCx = (d.image.modelX + d.dxModel + d.image.modelWidth / 2f) * sx
+                val fullCy = (d.image.pageIndex * modelH + d.image.modelY + d.dyModel +
+                    d.image.modelHeight / 2f - pageIndex * modelH) * sy
+                rotate(d.image.rotation, androidx.compose.ui.geometry.Offset(fullCx, fullCy)) {
+                    drawImage(
+                        image = bmp,
+                        dstOffset = IntOffset(rx.toInt(), (lt * sy).toInt()),
+                        dstSize = IntSize(
+                            (d.image.modelWidth * sx).toInt().coerceAtLeast(2),
+                            ((lb - lt) * sy).toInt().coerceAtLeast(2)
+                        )
+                    )
+                }
             }
         }
         drawIntoCanvas { cvs ->
