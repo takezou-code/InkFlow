@@ -790,8 +790,13 @@ private fun buildPickJs(): String {
             };
             document.addEventListener('click', window.__inkpickHandler, true);
             try {
-                var mc = container.querySelectorAll('.math-block, .math-inline, span.katex').length;
-                note('MATHCOUNT total=' + mc);
+                var mc = 0, mcMathml = 0, mcMjx = 0;
+                try {
+                    mc = container.querySelectorAll('.math-block, .math-inline, span.katex, [data-math]').length;
+                    mcMathml = container.querySelectorAll('math, .katex-mathml').length;
+                    mcMjx = container.querySelectorAll('mjx-container, .MathJax, .mjx-chtml').length;
+                } catch(e){}
+                note('MATHCOUNT total=' + mc + ' mathml=' + mcMathml + ' mjx=' + mcMjx);
             } catch(e){}
             note('PICK_MODE_ON:' + n);
         })();
@@ -849,6 +854,24 @@ private fun buildCollectJs(): String {
                                 el.replaceWith(document.createTextNode(disp ? ('$$' + s + '$$') : ('$' + s + '$')));
                                 if (disp) nb++; else ni++;
                             }
+                        } catch(e){}
+                    });
+                    // 通用：任何 annotation[encoding*=tex]（MathML 直出、換殼渲染都適用；
+                    // 在 KaTeX 規則之後跑，已被換掉的不會重複）。
+                    root.querySelectorAll('annotation').forEach(function(el) {
+                        try {
+                            var enc = (el.getAttribute('encoding') || '').toLowerCase();
+                            if (enc.indexOf('tex') < 0) return;
+                            var host = null;
+                            try { host = el.closest('math, span.katex, .math-block, .math-inline'); } catch(e2){}
+                            var target = host || el.parentElement;
+                            if (!target || target === root) return;
+                            var s = el.textContent || '';
+                            if (s.trim().length === 0) return;
+                            var disp = false;
+                            try { disp = !!target.closest('.katex-display'); } catch(e2){}
+                            target.replaceWith(document.createTextNode(disp ? ('$$' + s.trim() + '$$') : ('$' + s.trim() + '$')));
+                            if (disp) nb++; else ni++;
                         } catch(e){}
                     });
                 } catch(e){}
@@ -916,8 +939,8 @@ private fun buildCollectJs(): String {
                     var tn = (el.tagName || '?').toLowerCase();
                     census[tn] = (census[tn] || 0) + 1;
                     var hasMath = false;
-                    try { hasMath = el.querySelector('.math-block, .math-inline, span.katex, [data-math]') != null; } catch(e){}
-                    censusMath += el.querySelectorAll('.math-block, .math-inline, span.katex').length;
+                    try { hasMath = el.querySelector('.math-block, .math-inline, span.katex, [data-math], math, mjx-container, .MathJax') != null; } catch(e){}
+                    censusMath += el.querySelectorAll('.math-block, .math-inline, span.katex, math, mjx-container, .MathJax').length;
                     censusDataMath += el.querySelectorAll('[data-math]').length;
                     censusAnno += el.querySelectorAll('.katex-mathml annotation, annotation').length;
                     var r = null;
