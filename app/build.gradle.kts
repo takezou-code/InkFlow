@@ -105,11 +105,8 @@ dependencies {
     // PDFBox
     implementation(libs.pdfbox.android)
 
-    // Liquid-glass backdrop blur
+    // Liquid-glass backdrop blur（全統一唯一材質；Prismal 真折射已退役）
     implementation(libs.haze)
-
-    // 真折射玻璃試點（PrismalAGSL, JitPack）：只給重點面板，小元件維持 haze
-    implementation(libs.prismal)
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

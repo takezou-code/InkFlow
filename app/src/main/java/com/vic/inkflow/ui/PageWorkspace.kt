@@ -103,7 +103,6 @@ internal fun Workspace(
     onAiFileReady: (android.net.Uri, String?) -> Unit,
     hazeState: dev.chrisbanes.haze.HazeState = rememberHazeState(),
     isDarkTheme: Boolean = false,
-    prismalBackdrop: com.styropyr0.prismal.PrismalBackdrop? = null,
     db: AppDatabase,
     mainListState: LazyListState = rememberLazyListState(),
     onRequestPage: (Int) -> Unit = {},
@@ -630,7 +629,8 @@ internal fun Workspace(
                         viewModel = viewModel,
                         pdfViewModel = pdfViewModel,
                         documentUri = documentUri,
-                        onAiFileReady = onAiFileReady
+                        onAiFileReady = onAiFileReady,
+                        isDark = isDarkSurface
                     )
                     } // 全活頁 item Box（靜態分支已删除，每紙常駐 InkCanvas）
             }

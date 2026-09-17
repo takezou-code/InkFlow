@@ -133,6 +133,7 @@ import androidx.compose.material.icons.rounded.Gesture
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -232,6 +233,7 @@ import kotlinx.coroutines.withContext
 
 @Composable
 internal fun DocumentSettingsDialog(
+    dialogHaze: HazeState,
     documentTitle: String,
     pageCount: Int,
     currentPageIndex: Int,
@@ -244,14 +246,13 @@ internal fun DocumentSettingsDialog(
     var selectedBackground by remember { mutableStateOf(currentStyle.background) }
     // 對話框自判深淺（不改簽名驚動呼叫端）
     val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    val innerVeil = Color.White.copy(alpha = if (isDark) 0.08f else 0.35f)
 
-    androidx.compose.material3.AlertDialog(
+    // 殼內禁第二層底：分區只用分隔線＋字階，不疊 Surface。
+    GlassDialogCustom(
         onDismissRequest = onDismiss,
-        modifier = Modifier.fauxGlassPanel(isDark, ShapeLg),
-        containerColor = Color.Transparent,
-        shape = ShapeLg,
-        title = { Text("文件設定中心", style = MaterialTheme.typography.titleLarge) },
+        dialogHaze = dialogHaze,
+        isDark = isDark,
+        title = { Text("文件設定中心") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
@@ -260,30 +261,24 @@ internal fun DocumentSettingsDialog(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
-                Surface(
-                    color = innerVeil,
-                    shape = ShapeLg
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Text("文件資訊", style = MaterialTheme.typography.titleSmall)
-                        Text(
-                            text = documentTitle,
-                            style = MaterialTheme.typography.bodyMedium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = "共 $pageCount 頁，目前第 ${currentPageIndex + 1} 頁",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("文件資訊", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        text = documentTitle,
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = "共 $pageCount 頁，目前第 ${currentPageIndex + 1} 頁",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
 
                 Text(
                     text = "頁面背景樣式",
@@ -305,74 +300,66 @@ internal fun DocumentSettingsDialog(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     bgOptions.forEach { (bg, label) ->
-                        FilterChip(
+                        GlassOptionChip(
+                            text = label,
                             selected = selectedBackground == bg,
                             onClick = { selectedBackground = bg },
-                            label = { Text(label) },
-                            colors = androidx.compose.material3.FilterChipDefaults.filterChipColors(
-                                containerColor = Color.Transparent,
-                                selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
-                            ),
-                            leadingIcon = if (selectedBackground == bg) {
-                                { Icon(Icons.Outlined.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
-                            } else null
+                            isDark = isDark
                         )
                     }
                 }
 
-                Surface(
-                    color = innerVeil,
-                    shape = ShapeLg
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        Column(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Text("插入 PDF", style = MaterialTheme.typography.titleSmall)
-                            Text(
-                                text = if (isPageOperationInProgress) {
-                                    "正在更新頁面，完成前暫時無法再插入。"
-                                } else {
-                                    "從檔案挑選 PDF，插入到目前第 ${currentPageIndex + 1} 頁後方。"
-                                },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        TextButton(
-                            onClick = onInsertPdf,
-                            enabled = !isPageOperationInProgress,
-                            colors = ButtonDefaults.textButtonColors(
-                                contentColor = MaterialTheme.colorScheme.primary
-                            )
-                        ) {
-                            Text(if (isPageOperationInProgress) "匯入中" else "選擇 PDF")
-                        }
+                        Text("插入 PDF", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            text = if (isPageOperationInProgress) {
+                                "正在更新頁面，完成前暫時無法再插入。"
+                            } else {
+                                "從檔案挑選 PDF，插入到目前第 ${currentPageIndex + 1} 頁後方。"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
+                    GlassTextButton(
+                        text = if (isPageOperationInProgress) "匯入中" else "選擇 PDF",
+                        onClick = onInsertPdf,
+                        enabled = !isPageOperationInProgress
+                    )
                 }
             }
         },
-        confirmButton = {
-            androidx.compose.material3.TextButton(onClick = {
-                onConfirmStyle(currentStyle.copy(background = selectedBackground))
-                onDismiss()
-            }) { Text("確認") }
-        },
-        dismissButton = {
-            androidx.compose.material3.TextButton(onClick = onDismiss) { Text("取消") }
+        buttons = {
+            GlassTextButton(
+                text = "取消",
+                onClick = onDismiss,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.width(8.dp))
+            GlassTextButton(
+                text = "確認",
+                onClick = {
+                    onConfirmStyle(currentStyle.copy(background = selectedBackground))
+                    onDismiss()
+                }
+            )
         }
     )
 }
 
 @Composable
 internal fun NewDocPaperSizeDialog(
+    dialogHaze: HazeState,
     onDismiss: () -> Unit,
     onCreate: (widthPt: Float, heightPt: Float) -> Unit
 ) {
@@ -390,12 +377,11 @@ internal fun NewDocPaperSizeDialog(
         )
     }
 
-    androidx.compose.material3.AlertDialog(
+    GlassDialogCustom(
         onDismissRequest = onDismiss,
-        modifier = Modifier.fauxGlassPanel(isDarkPaper, ShapeLg),
-        containerColor = Color.Transparent,
-        shape = ShapeLg,
-        title = { Text("選擇紙張大小", style = MaterialTheme.typography.titleLarge) },
+        dialogHaze = dialogHaze,
+        isDark = isDarkPaper,
+        title = { Text("選擇紙張大小") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(
@@ -408,41 +394,33 @@ internal fun NewDocPaperSizeDialog(
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         val isPortrait = selectedWidth == w && selectedHeight == h
                         val isLandscape = selectedWidth == h && selectedHeight == w
-                        FilterChip(
+                        GlassOptionChip(
+                            text = "$label 直向",
                             selected = isPortrait,
                             onClick = { selectedWidth = w; selectedHeight = h },
-                            label = { Text("$label 直向") },
-                            colors = androidx.compose.material3.FilterChipDefaults.filterChipColors(
-                                containerColor = Color.Transparent,
-                                selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
-                            ),
-                            leadingIcon = if (isPortrait) {
-                                { Icon(Icons.Outlined.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
-                            } else null
+                            isDark = isDarkPaper
                         )
-                        FilterChip(
+                        GlassOptionChip(
+                            text = "$label 橫向",
                             selected = isLandscape,
                             onClick = { selectedWidth = h; selectedHeight = w },
-                            label = { Text("$label 橫向") },
-                            colors = androidx.compose.material3.FilterChipDefaults.filterChipColors(
-                                containerColor = Color.Transparent,
-                                selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
-                            ),
-                            leadingIcon = if (isLandscape) {
-                                { Icon(Icons.Outlined.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
-                            } else null
+                            isDark = isDarkPaper
                         )
                     }
                 }
             }
         },
-        confirmButton = {
-            androidx.compose.material3.TextButton(onClick = {
-                onCreate(selectedWidth, selectedHeight)
-            }) { Text("建立") }
-        },
-        dismissButton = {
-            androidx.compose.material3.TextButton(onClick = onDismiss) { Text("取消") }
+        buttons = {
+            GlassTextButton(
+                text = "取消",
+                onClick = onDismiss,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.width(8.dp))
+            GlassTextButton(
+                text = "建立",
+                onClick = { onCreate(selectedWidth, selectedHeight) }
+            )
         }
     )
 }
@@ -476,8 +454,7 @@ internal fun ColorChip(color: Color, isSelected: Boolean, onClick: () -> Unit) {
 internal fun StrokeWidthSlider(
     viewModel: EditorViewModel,
     hazeState: dev.chrisbanes.haze.HazeState,
-    isDarkTheme: Boolean,
-    prismalBackdrop: com.styropyr0.prismal.PrismalBackdrop? = null
+    isDarkTheme: Boolean
 ) {
     val strokeWidth by viewModel.strokeWidth.collectAsState()
     val activeTool by viewModel.selectedTool.collectAsState()
@@ -485,7 +462,7 @@ internal fun StrokeWidthSlider(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .smartGlass(hazeState, isDarkTheme, shape = RectangleShape, specular = false, prismal = prismalBackdrop),
+            .smartGlass(hazeState, isDarkTheme, shape = RectangleShape, specular = false),
         tonalElevation = 0.dp,
         color = Color.Transparent,
         contentColor = MaterialTheme.colorScheme.onSurface

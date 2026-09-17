@@ -255,6 +255,7 @@ internal fun FolderGroupedDocumentsView(
     onMoveFolder: (String, Boolean) -> Unit,
     onMoveFolderToParent: (String, String?) -> Unit,
     hazeState: dev.chrisbanes.haze.HazeState? = null,
+    dialogHaze: dev.chrisbanes.haze.HazeState,
     isDarkTheme: Boolean = false
 ) {
 val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
@@ -349,8 +350,9 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
                                         onRename = { newName -> onRename(doc.uri, newName) },
                                         onMoveToFolder = { folderId -> onMoveToFolder(doc.uri, folderId) },
                                         onCreateFolder = { folderName -> onCreateFolder(folderName, null) },
-                                        // 實底：省即時模糊
+                                        // 實底：省即時模糊（對話框照吃第二路真模糊）
                                         hazeState = null,
+                                        dialogHaze = dialogHaze,
                                         isDarkTheme = isDarkTheme
                                     )
                                 }
@@ -379,11 +381,10 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
             val movableParentCandidates = remember { emptyList<FolderEntity>() }
 
                         AnimatedDialog(visible = showNewChildFolderDialog) {
-                androidx.compose.material3.AlertDialog(
+                GlassDialogCustom(
                     onDismissRequest = { showNewChildFolderDialog = false },
-                    modifier = Modifier.fauxGlassPanel(isDarkTheme, ShapeLg),
-                    containerColor = Color.Transparent,
-                    shape = ShapeLg,
+                    dialogHaze = dialogHaze,
+                    isDark = isDarkTheme,
                     title = { Text("建立子資料夾") },
                     text = {
                         androidx.compose.material3.OutlinedTextField(
@@ -396,27 +397,30 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
                             modifier = Modifier.fillMaxWidth()
                         )
                     },
-                    confirmButton = {
-                        TextButton(
+                    buttons = {
+                        GlassTextButton(
+                            text = "取消",
+                            onClick = { showNewChildFolderDialog = false },
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        GlassTextButton(
+                            text = "建立",
                             onClick = {
                                 onCreateFolder(newChildFolderName, folder.id)
                                 showNewChildFolderDialog = false
                             },
                             enabled = newChildFolderName.trim().isNotEmpty()
-                        ) { Text("建立") }
-                    },
-                    dismissButton = {
-                        TextButton(onClick = { showNewChildFolderDialog = false }) { Text("取消") }
+                        )
                     }
                 )
             }
 
             AnimatedDialog(visible = showRenameFolderDialog) {
-                androidx.compose.material3.AlertDialog(
+                GlassDialogCustom(
                     onDismissRequest = { showRenameFolderDialog = false },
-                    modifier = Modifier.fauxGlassPanel(isDarkTheme, ShapeLg),
-                    containerColor = Color.Transparent,
-                    shape = ShapeLg,
+                    dialogHaze = dialogHaze,
+                    isDark = isDarkTheme,
                     title = { Text("重新命名資料夾") },
                     text = {
                         androidx.compose.material3.OutlinedTextField(
@@ -429,61 +433,58 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
                             modifier = Modifier.fillMaxWidth()
                         )
                     },
-                    confirmButton = {
-                        TextButton(
+                    buttons = {
+                        GlassTextButton(
+                            text = "取消",
+                            onClick = { showRenameFolderDialog = false },
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        GlassTextButton(
+                            text = "確認",
                             onClick = {
                                 onRenameFolder(folder.id, renameFolderInput)
                                 showRenameFolderDialog = false
                             },
                             enabled = renameFolderInput.trim().isNotEmpty()
-                        ) { Text("確認") }
-                    },
-                    dismissButton = {
-                        TextButton(onClick = { showRenameFolderDialog = false }) { Text("取消") }
+                        )
                     }
                 )
             }
 
             AnimatedDialog(visible = showDeleteFolderDialog) {
-                androidx.compose.material3.AlertDialog(
+                GlassDialog(
                     onDismissRequest = { showDeleteFolderDialog = false },
-                    modifier = Modifier.fauxGlassPanel(isDarkTheme, ShapeLg),
-                    containerColor = Color.Transparent,
-                    shape = ShapeLg,
+                    dialogHaze = dialogHaze,
+                    isDark = isDarkTheme,
                     title = { Text("刪除資料夾") },
                     text = { Text("確定要刪除「${folder.name}」嗎？子資料夾會一併刪除，內含文件會保留並移到未分類。") },
-                    confirmButton = {
-                        TextButton(
-                            onClick = {
-                                showDeleteFolderDialog = false
-                                onDeleteFolder(folder.id)
-                            }
-                        ) { Text("刪除", color = MaterialTheme.colorScheme.error) }
+                    confirmText = "刪除",
+                    onConfirm = {
+                        showDeleteFolderDialog = false
+                        onDeleteFolder(folder.id)
                     },
-                    dismissButton = {
-                        TextButton(onClick = { showDeleteFolderDialog = false }) { Text("取消") }
-                    }
+                    confirmColor = MaterialTheme.colorScheme.error
                 )
             }
 
             AnimatedDialog(visible = showMoveFolderDialog) {
-                androidx.compose.material3.AlertDialog(
+                GlassDialogCustom(
                     onDismissRequest = { showMoveFolderDialog = false },
-                    modifier = Modifier.fauxGlassPanel(isDarkTheme, ShapeLg),
-                    containerColor = Color.Transparent,
-                    shape = ShapeLg,
+                    dialogHaze = dialogHaze,
+                    isDark = isDarkTheme,
                     title = { Text("移動資料夾") },
                     text = {
                         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            TextButton(
+                            GlassTextButton(
+                                text = "移到最上層",
                                 onClick = {
                                     onMoveFolderToParent(folder.id, null)
                                     showMoveFolderDialog = false
                                 },
-                                enabled = folder.parentFolderId != null
-                            ) {
-                                Text("移到最上層")
-                            }
+                                enabled = folder.parentFolderId != null,
+                                alignStart = true
+                            )
 
                             if (movableParentCandidates.isEmpty()) {
                                 Text(
@@ -494,20 +495,24 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
                                 )
                             } else {
                                 movableParentCandidates.forEach { candidate ->
-                                    TextButton(
+                                    GlassTextButton(
+                                        text = "移到「${candidate.name}」",
                                         onClick = {
                                             onMoveFolderToParent(folder.id, candidate.id)
                                             showMoveFolderDialog = false
-                                        }
-                                    ) {
-                                        Text("移到「${candidate.name}」")
-                                    }
+                                        },
+                                        alignStart = true
+                                    )
                                 }
                             }
                         }
                     },
-                    confirmButton = {
-                        TextButton(onClick = { showMoveFolderDialog = false }) { Text("關閉") }
+                    buttons = {
+                        GlassTextButton(
+                            text = "關閉",
+                            onClick = { showMoveFolderDialog = false },
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 )
             }
@@ -660,8 +665,9 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
                                         onRename = { newName -> onRename(doc.uri, newName) },
                                         onMoveToFolder = { folderId -> onMoveToFolder(doc.uri, folderId) },
                                         onCreateFolder = { folderName -> onCreateFolder(folderName, null) },
-                                        // 實底：省即時模糊
+                                        // 實底：省即時模糊（對話框照吃第二路真模糊）
                                         hazeState = null,
+                                        dialogHaze = dialogHaze,
                                         isDarkTheme = isDarkTheme
                                     )
                                 }
@@ -687,6 +693,7 @@ internal fun DocumentCard(
     onMoveToFolder: (String?) -> Unit = {},
     onCreateFolder: (String) -> Unit = {},
     hazeState: dev.chrisbanes.haze.HazeState? = null,
+    dialogHaze: dev.chrisbanes.haze.HazeState,
     isDarkTheme: Boolean = false
 ) {
     var showRenameDialog by remember { mutableStateOf(false) }
@@ -700,11 +707,10 @@ internal fun DocumentCard(
     val favVeil = Color.White.copy(alpha = if (isDarkTheme) 0.18f else 0.55f)
 
     AnimatedDialog(visible = showRenameDialog) {
-        androidx.compose.material3.AlertDialog(
+        GlassDialogCustom(
             onDismissRequest = { showRenameDialog = false },
-            modifier = Modifier.fauxGlassPanel(isDarkTheme, ShapeLg),
-            containerColor = Color.Transparent,
-            shape = ShapeLg,
+            dialogHaze = dialogHaze,
+            isDark = isDarkTheme,
             title = { Text("重新命名") },
             text = {
                 androidx.compose.material3.OutlinedTextField(
@@ -717,66 +723,59 @@ internal fun DocumentCard(
                     modifier = Modifier.fillMaxWidth()
                 )
             },
-            confirmButton = {
-                androidx.compose.material3.TextButton(
+            buttons = {
+                GlassTextButton(
+                    text = "取消",
+                    onClick = { showRenameDialog = false },
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.width(8.dp))
+                GlassTextButton(
+                    text = "確認",
                     onClick = {
                         onRename(renameInput)
                         showRenameDialog = false
                     },
                     enabled = renameInput.isNotBlank()
-                ) { Text("確認") }
-            },
-            dismissButton = {
-                androidx.compose.material3.TextButton(onClick = { showRenameDialog = false }) {
-                    Text("取消")
-                }
+                )
             }
         )
     }
 
     AnimatedDialog(visible = showDeleteDialog) {
-        androidx.compose.material3.AlertDialog(
+        GlassDialog(
             onDismissRequest = { showDeleteDialog = false },
-            modifier = Modifier.fauxGlassPanel(isDarkTheme, ShapeLg),
-            containerColor = Color.Transparent,
-            shape = ShapeLg,
+            dialogHaze = dialogHaze,
+            isDark = isDarkTheme,
             title = { Text("刪除筆記本") },
             text = {
                 Text("確定要刪除「${document.displayName}」嗎？此操作會一併移除筆跡與標註，且無法復原。")
             },
-            confirmButton = {
-                androidx.compose.material3.TextButton(
-                    onClick = {
-                        showDeleteDialog = false
-                        onDelete()
-                    }
-                ) {
-                    Text("刪除", color = MaterialTheme.colorScheme.error)
-                }
+            confirmText = "刪除",
+            onConfirm = {
+                showDeleteDialog = false
+                onDelete()
             },
-            dismissButton = {
-                androidx.compose.material3.TextButton(onClick = { showDeleteDialog = false }) {
-                    Text("取消")
-                }
-            }
+            confirmColor = MaterialTheme.colorScheme.error
         )
     }
 
     AnimatedDialog(visible = showMoveDialog) {
-        androidx.compose.material3.AlertDialog(
+        GlassDialogCustom(
             onDismissRequest = { showMoveDialog = false },
-            modifier = Modifier.fauxGlassPanel(isDarkTheme, ShapeLg),
-            containerColor = Color.Transparent,
-            shape = ShapeLg,
+            dialogHaze = dialogHaze,
+            isDark = isDarkTheme,
             title = { Text("移到資料夾") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(onClick = {
-                        onMoveToFolder(null)
-                        showMoveDialog = false
-                    }) {
-                        Text("設為未分類")
-                    }
+                    GlassTextButton(
+                        text = "設為未分類",
+                        onClick = {
+                            onMoveToFolder(null)
+                            showMoveDialog = false
+                        },
+                        alignStart = true
+                    )
                     if (availableFolders.isEmpty()) {
                         Text(
                             text = "尚未建立資料夾",
@@ -785,34 +784,41 @@ internal fun DocumentCard(
                         )
                     } else {
                         availableFolders.forEach { folder ->
-                            TextButton(onClick = {
-                                onMoveToFolder(folder.id)
-                                showMoveDialog = false
-                            }) {
-                                Text(folder.name)
-                            }
+                            GlassTextButton(
+                                text = folder.name,
+                                onClick = {
+                                    onMoveToFolder(folder.id)
+                                    showMoveDialog = false
+                                },
+                                alignStart = true
+                            )
                         }
                     }
                 }
             },
-            confirmButton = {
-                TextButton(onClick = {
-                    showMoveDialog = false
-                    showCreateFolderDialog = true
-                }) { Text("新增資料夾") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showMoveDialog = false }) { Text("關閉") }
+            buttons = {
+                GlassTextButton(
+                    text = "關閉",
+                    onClick = { showMoveDialog = false },
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.width(8.dp))
+                GlassTextButton(
+                    text = "新增資料夾",
+                    onClick = {
+                        showMoveDialog = false
+                        showCreateFolderDialog = true
+                    }
+                )
             }
         )
     }
 
     AnimatedDialog(visible = showCreateFolderDialog) {
-        androidx.compose.material3.AlertDialog(
+        GlassDialogCustom(
             onDismissRequest = { showCreateFolderDialog = false },
-            modifier = Modifier.fauxGlassPanel(isDarkTheme, ShapeLg),
-            containerColor = Color.Transparent,
-            shape = ShapeLg,
+            dialogHaze = dialogHaze,
+            isDark = isDarkTheme,
             title = { Text("建立資料夾") },
             text = {
                 androidx.compose.material3.OutlinedTextField(
@@ -825,8 +831,15 @@ internal fun DocumentCard(
                     modifier = Modifier.fillMaxWidth()
                 )
             },
-            confirmButton = {
-                TextButton(
+            buttons = {
+                GlassTextButton(
+                    text = "取消",
+                    onClick = { showCreateFolderDialog = false },
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.width(8.dp))
+                GlassTextButton(
+                    text = "建立",
                     onClick = {
                         val name = folderInput.trim()
                         if (name.isNotEmpty()) {
@@ -836,10 +849,7 @@ internal fun DocumentCard(
                         }
                     },
                     enabled = folderInput.trim().isNotEmpty()
-                ) { Text("建立") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showCreateFolderDialog = false }) { Text("取消") }
+                )
             }
         )
     }
@@ -1021,6 +1031,7 @@ internal fun DocumentListRow(
     onMoveToFolder: (String?) -> Unit = {},
     onCreateFolder: (String) -> Unit = {},
     hazeState: dev.chrisbanes.haze.HazeState? = null,
+    dialogHaze: dev.chrisbanes.haze.HazeState,
     isDarkTheme: Boolean = false
 ) {
     var showRenameDialog by remember { mutableStateOf(false) }
@@ -1153,20 +1164,21 @@ internal fun DocumentListRow(
     }
 
     AnimatedDialog(visible = showMoveDialog) {
-        androidx.compose.material3.AlertDialog(
+        GlassDialogCustom(
             onDismissRequest = { showMoveDialog = false },
-            modifier = Modifier.fauxGlassPanel(isDarkTheme, ShapeLg),
-            containerColor = Color.Transparent,
-            shape = ShapeLg,
+            dialogHaze = dialogHaze,
+            isDark = isDarkTheme,
             title = { Text("移到資料夾") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(onClick = {
-                        onMoveToFolder(null)
-                        showMoveDialog = false
-                    }) {
-                        Text("設為未分類")
-                    }
+                    GlassTextButton(
+                        text = "設為未分類",
+                        onClick = {
+                            onMoveToFolder(null)
+                            showMoveDialog = false
+                        },
+                        alignStart = true
+                    )
                     if (availableFolders.isEmpty()) {
                         Text(
                             text = "尚未建立資料夾",
@@ -1175,34 +1187,41 @@ internal fun DocumentListRow(
                         )
                     } else {
                         availableFolders.forEach { folder ->
-                            TextButton(onClick = {
-                                onMoveToFolder(folder.id)
-                                showMoveDialog = false
-                            }) {
-                                Text(folder.name)
-                            }
+                            GlassTextButton(
+                                text = folder.name,
+                                onClick = {
+                                    onMoveToFolder(folder.id)
+                                    showMoveDialog = false
+                                },
+                                alignStart = true
+                            )
                         }
                     }
                 }
             },
-            confirmButton = {
-                TextButton(onClick = {
-                    showMoveDialog = false
-                    showCreateFolderDialog = true
-                }) { Text("新增資料夾") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showMoveDialog = false }) { Text("關閉") }
+            buttons = {
+                GlassTextButton(
+                    text = "關閉",
+                    onClick = { showMoveDialog = false },
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.width(8.dp))
+                GlassTextButton(
+                    text = "新增資料夾",
+                    onClick = {
+                        showMoveDialog = false
+                        showCreateFolderDialog = true
+                    }
+                )
             }
         )
     }
 
     AnimatedDialog(visible = showCreateFolderDialog) {
-        androidx.compose.material3.AlertDialog(
+        GlassDialogCustom(
             onDismissRequest = { showCreateFolderDialog = false },
-            modifier = Modifier.fauxGlassPanel(isDarkTheme, ShapeLg),
-            containerColor = Color.Transparent,
-            shape = ShapeLg,
+            dialogHaze = dialogHaze,
+            isDark = isDarkTheme,
             title = { Text("建立資料夾") },
             text = {
                 androidx.compose.material3.OutlinedTextField(
@@ -1215,8 +1234,15 @@ internal fun DocumentListRow(
                     modifier = Modifier.fillMaxWidth()
                 )
             },
-            confirmButton = {
-                TextButton(
+            buttons = {
+                GlassTextButton(
+                    text = "取消",
+                    onClick = { showCreateFolderDialog = false },
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.width(8.dp))
+                GlassTextButton(
+                    text = "建立",
                     onClick = {
                         val name = folderInput.trim()
                         if (name.isNotEmpty()) {
@@ -1226,20 +1252,16 @@ internal fun DocumentListRow(
                         }
                     },
                     enabled = folderInput.trim().isNotEmpty()
-                ) { Text("建立") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showCreateFolderDialog = false }) { Text("取消") }
+                )
             }
         )
     }
 
     AnimatedDialog(visible = showRenameDialog) {
-        androidx.compose.material3.AlertDialog(
+        GlassDialogCustom(
             onDismissRequest = { showRenameDialog = false },
-            modifier = Modifier.fauxGlassPanel(isDarkTheme, ShapeLg),
-            containerColor = Color.Transparent,
-            shape = ShapeLg,
+            dialogHaze = dialogHaze,
+            isDark = isDarkTheme,
             title = { Text("重新命名") },
             text = {
                 androidx.compose.material3.OutlinedTextField(
@@ -1251,40 +1273,37 @@ internal fun DocumentListRow(
                     modifier = Modifier.fillMaxWidth()
                 )
             },
-            confirmButton = {
-                TextButton(
+            buttons = {
+                GlassTextButton(
+                    text = "取消",
+                    onClick = { showRenameDialog = false },
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.width(8.dp))
+                GlassTextButton(
+                    text = "確認",
                     onClick = {
                         if (renameInput.isNotBlank()) onRename(renameInput.trim())
                         showRenameDialog = false
                     }
-                ) { Text("確認") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showRenameDialog = false }) { Text("取消") }
+                )
             }
         )
     }
 
     AnimatedDialog(visible = showDeleteDialog) {
-        androidx.compose.material3.AlertDialog(
+        GlassDialog(
             onDismissRequest = { showDeleteDialog = false },
-            modifier = Modifier.fauxGlassPanel(isDarkTheme, ShapeLg),
-            containerColor = Color.Transparent,
-            shape = ShapeLg,
+            dialogHaze = dialogHaze,
+            isDark = isDarkTheme,
             title = { Text("刪除文件") },
             text = { Text("確定要刪除「${document.displayName}」嗎？此操作無法還原。") },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        onDelete()
-                        showDeleteDialog = false
-                    },
-                    colors = androidx.compose.material3.ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
-                ) { Text("刪除") }
+            confirmText = "刪除",
+            onConfirm = {
+                onDelete()
+                showDeleteDialog = false
             },
-            dismissButton = {
-                TextButton(onClick = { showDeleteDialog = false }) { Text("取消") }
-            }
+            confirmColor = MaterialTheme.colorScheme.error
         )
     }
 }

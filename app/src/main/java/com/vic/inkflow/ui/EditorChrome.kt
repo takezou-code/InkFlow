@@ -254,8 +254,7 @@ fun TabletEditorTopBar(
     onDocumentSettings: () -> Unit = {},
     onToggleAiPanel: () -> Unit = {},
     hazeState: dev.chrisbanes.haze.HazeState,
-    isDarkTheme: Boolean,
-    prismalBackdrop: com.styropyr0.prismal.PrismalBackdrop? = null
+    isDarkTheme: Boolean
 ) {
     val activeTool by viewModel.selectedTool.collectAsState()
     val selectedColor by viewModel.selectedColor.collectAsState()
@@ -319,7 +318,7 @@ fun TabletEditorTopBar(
             Surface(
                 modifier = Modifier
                     .fillMaxHeight()
-                    .smartGlass(hazeState, isDarkTheme, ShapeLg, prismal = prismalBackdrop),
+                    .smartGlass(hazeState, isDarkTheme, ShapeLg),
                 shape = ShapeLg,
                 color = Color.Transparent
             ) {
@@ -350,7 +349,7 @@ fun TabletEditorTopBar(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight()
-                    .smartGlass(hazeState, isDarkTheme, ShapeLg, prismal = prismalBackdrop),
+                    .smartGlass(hazeState, isDarkTheme, ShapeLg),
                 shape = ShapeLg,
                 color = Color.Transparent
             ) {
@@ -596,7 +595,7 @@ fun TabletEditorTopBar(
             Surface(
                 modifier = Modifier
                     .fillMaxHeight()
-                    .smartGlass(hazeState, isDarkTheme, ShapeLg, prismal = prismalBackdrop),
+                    .smartGlass(hazeState, isDarkTheme, ShapeLg),
                 shape = ShapeLg,
                 color = Color.Transparent
             ) {
