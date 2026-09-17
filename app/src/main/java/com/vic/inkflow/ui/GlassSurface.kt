@@ -80,7 +80,7 @@ fun glassStyle(isDark: Boolean): HazeStyle = HazeStyle(
     tints = listOf(
         HazeTint(if (isDark) Color(0x4D0F172A) else Color(0x30FFFFFF))
     ),
-    blurRadius = 16.dp,
+    blurRadius = 24.dp,
     noiseFactor = 0.02f
 )
 
@@ -372,7 +372,12 @@ private fun GlassDialogFrame(
                 .semantics { paneTitle = "對話框" },
             contentAlignment = Alignment.Center
         ) {
-            // 背底＝系統調光，不另加層（以前 M3 框就是這樣：全屏稍微變暗＋框浮起）。
+            // 背底＝系統調光＋這層補暗（單一數字調深淺）：全屏稍微變暗＋框浮起。
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.35f))
+            )
             // 卡片自播 scale＋淡入（外層 AnimatedDialog 只剩純淡入，背底不再跟著縮放跳）。
             var cardShown by remember { mutableStateOf(false) }
             LaunchedEffect(Unit) { cardShown = true }
