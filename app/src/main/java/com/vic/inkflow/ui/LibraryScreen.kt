@@ -255,8 +255,6 @@ fun DocumentLibraryScreen(
     var showNewDocSizeDialog by remember { mutableStateOf(false) }
     var showCreateFolderDialog by remember { mutableStateOf(false) }
     var createFolderInput by rememberSaveable { mutableStateOf("") }
-    // 對話框第二路 state（source 掛根 Aurora，常駐）
-    val libraryDialogHaze = rememberHazeState()
 
     // Chromium 預熱：編輯器 AI 面板首建 WebView 會卡主執行緒數百毫秒，
     // 那幾百毫秒正好把玻璃採樣空窗的那幀凍在螢幕上 = 黑閃。書庫閒置 2s 後先建一個即丟，
@@ -281,7 +279,6 @@ fun DocumentLibraryScreen(
     AnimatedDialog(visible = showCreateFolderDialog) {
         GlassDialogCustom(
             onDismissRequest = { showCreateFolderDialog = false },
-            dialogHaze = libraryDialogHaze,
             isDark = isDarkTheme,
             title = { Text("建立新資料夾") },
             text = {
@@ -320,7 +317,6 @@ fun DocumentLibraryScreen(
 
     if (showNewDocSizeDialog) {
         NewDocPaperSizeDialog(
-            dialogHaze = libraryDialogHaze,
             onDismiss = { showNewDocSizeDialog = false },
             onCreate = { widthPt, heightPt ->
                 showNewDocSizeDialog = false
@@ -436,9 +432,7 @@ fun DocumentLibraryScreen(
             isDarkTheme = isDarkTheme,
             modifier = Modifier
                 .fillMaxSize()
-                .hazeSource(libraryHazeState)
-                // 對話框第二路 source 常駐（無 effect 時不做工）
-                .hazeSource(libraryDialogHaze),
+                .hazeSource(libraryHazeState),
             orbCount = 12
         )
 
@@ -640,7 +634,6 @@ fun DocumentLibraryScreen(
                                 docViewModel.moveFolderToParent(folderId, targetParentId)
                             },
                             hazeState = libraryHazeState,
-                            dialogHaze = libraryDialogHaze,
                             isDarkTheme = isDarkTheme
                         )
                     }
@@ -699,9 +692,8 @@ fun DocumentLibraryScreen(
                                         onRename = { newName -> docViewModel.rename(doc.uri, newName) },
                                         onMoveToFolder = { folderId -> docViewModel.moveDocumentToFolder(doc.uri, folderId) },
                                         onCreateFolder = { folderName -> docViewModel.createFolder(folderName) },
-                                        // 卡片實底：每卡一個即時模糊是滾動卡頓主因（對話框照吃第二路真模糊）
+                                        // 卡片實底：每卡一個即時模糊是滾動卡頓主因
                                         hazeState = null,
-                                        dialogHaze = libraryDialogHaze,
                                         isDarkTheme = isDarkTheme
                                     )
                                 }
@@ -746,9 +738,8 @@ fun DocumentLibraryScreen(
                                         onRename = { newName -> docViewModel.rename(doc.uri, newName) },
                                         onMoveToFolder = { folderId -> docViewModel.moveDocumentToFolder(doc.uri, folderId) },
                                         onCreateFolder = { folderName -> docViewModel.createFolder(folderName) },
-                                        // 列表行實底：同卡片（對話框照吃第二路真模糊）
+                                        // 列表行實底：同卡片
                                         hazeState = null,
-                                        dialogHaze = libraryDialogHaze,
                                         isDarkTheme = isDarkTheme
                                     )
                                 }

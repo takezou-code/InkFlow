@@ -255,7 +255,6 @@ internal fun Sidebar(
     listState: LazyListState = rememberLazyListState(),
     modifier: Modifier = Modifier,
     hazeState: dev.chrisbanes.haze.HazeState,
-    dialogHaze: dev.chrisbanes.haze.HazeState,
     isDarkTheme: Boolean,
     // 跟隨門衛：主列表推側欄時為 true，這時側欄推主列表必須讓路，不准回推
     isFollowingSidebar: Boolean = false
@@ -278,7 +277,6 @@ internal fun Sidebar(
         val indices = deleteConfirmIndices
         GlassDialog(
             onDismissRequest = { deleteConfirmIndices = emptyList() },
-            dialogHaze = dialogHaze,
             isDark = isDarkTheme,
             title = { Text("刪除頁面") },
             text = { Text(if (indices.size == 1) "確定要刪除第 ${indices[0] + 1} 頁？此操作無法復原。" else "確定要刪除這 ${indices.size} 頁？此操作無法復原。") },
