@@ -22,6 +22,7 @@
 - 工具鏈：Gradle 9.7.1 / AGP 9.3.2 / Kotlin 2.4.10，JDK 在 `C:\Users\Vic\AppData\Local\Temp\opencode\jdk\jdk-21.0.12.1+1`，SDK 在 `%LOCALAPPDATA%\Android\Sdk`。
 - 架構：`LazyColumn` 原生捲動 + 每頁 GPU 預覽圖層；相機重寫路線已封存（教訓：自幹虛擬化前先做隔離驗證）。
 - 已知地雷：`LazyColumn` 只組成可見頁（官方文件背書）；`graphicsLayer` 大圖層會爆 GPU 貼圖上限；`animateItem` 掛大圖會卡滾動；`awaitDragOrCancellation` 的 slop 是本地座標。
+- 玻璃禁 `Modifier.shadow()`（9/18 血淚，9 輪診斷版實證）：在小米平板上，有 shadow 的面板會在每段文字後留下白色行框殘影（哪裡有字哪裡有框，M3/字體/模糊/描邊皆無罪）。深度改由 rim＋底內陰影撐。懷疑視覺殘影時：一次只動一個變因打診斷版＋`adb screencap` 抓圖＋讀像素驗，不要用猜的。
 - `remember { derivedStateOf { ... } }` 裡讀普通參數不會訂閱，快照系統看不見——參數必須加進 `remember` key，否則值永遠是第一次的。
 - 彈簧（spring）只能追靜止目標；追移動目標會越落越遠。跟手位置用直給 + 到位小動畫，不要用追的。
 
