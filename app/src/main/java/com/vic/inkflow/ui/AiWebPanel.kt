@@ -956,7 +956,7 @@ private fun buildCollectJs(): String {
                     if (hasMath) {
                         picks.push({k:'m', r:r, t:t.trim().slice(0, 20000)});
                     } else if (t.trim().length > 0) {
-                        picks.push({k:'t', t:t.trim().slice(0, 20000)});
+                        picks.push({k:'t', r:r, t:t.trim().slice(0, 20000)});
                     }
                 } catch(e){}
             });

@@ -139,7 +139,14 @@ suspend fun importPickedJsonInner(
             blocks.add(AiMathBlock(id, html = "", display = true, fallback = p.text))
             shots.add(Shot(id, p.rect, p.text))
         } else if (p.text.isNotBlank()) {
-            blocks.addAll(withContext(Dispatchers.Default) { splitAiBlocks(p.text) })
+            // 數學味文字塊：整塊截圖（徽章會變，內容不會變）；截不到退文字路
+            if (p.rect != null && hasMathScent(p.text)) {
+                val id = "s${si++}"
+                blocks.add(AiMathBlock(id, html = "", display = false, fallback = p.text))
+                shots.add(Shot(id, p.rect, p.text))
+            } else {
+                blocks.addAll(withContext(Dispatchers.Default) { splitAiBlocks(p.text) })
+            }
         }
     }
     if (blocks.isEmpty()) {
