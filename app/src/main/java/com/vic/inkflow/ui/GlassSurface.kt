@@ -29,7 +29,6 @@ import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
@@ -227,23 +226,21 @@ fun Modifier.fauxGlassPanel(
 }
 
 /**
- * 共用打光：薄 Sheen＋頂光 rim＋染色投影，全 App 唯一玻璃妝。
- * v2 的 0.38 白罩＋斜射是廉價感主因（直接蓋掉折射）：全部減到點到為止。
+ * 共用打光：薄 Sheen＋頂光 rim＋亮邊，全 App 唯一玻璃妝。
  * haze/faux 路徑沒有 shader 高光，靠這層薄妝＋rim 維持玻璃讀感。
+ *
+ * 注意：這裡刻意不用 Modifier.shadow()——在小米平板 GPU 上，shadow 層會在文字後
+ * 留下白色行框殘影（9 輪診斷版實證：有 shadow 全有框、拿掉全沒框，描邊/亮面/模糊皆無罪）。
+ * 深度改由 rim＋底內陰影撐，不要加 shadow 回來。
  * 壓在底（blur 或半透明色）上、內容下。
  */
 private fun Modifier.glassDressing(
     isDark: Boolean,
     shape: Shape,
-    specular: Boolean,
-    shadowDp: Dp = 6.dp
+    specular: Boolean
 ): Modifier {
-    val spot = if (isDark) Color.Black.copy(alpha = 0.45f)
-               else Color(0xFF1E1B4B).copy(alpha = 0.28f)
     var m = this
-        // 染色外投影：跟著形狀走的深度，取代 M3 灰影
-        .shadow(shadowDp, shape, spotColor = spot)
-        // 頂部 Sheen v3：只留髮絲亮緣＋極淡罩紗（之前 0.38 直接洗掉折射）。
+        // 頂部 Sheen v3：只留髮絲亮緣＋極淡罩紗。
         // 底部內陰影保留做厚度。
         .background(
             brush = Brush.verticalGradient(
