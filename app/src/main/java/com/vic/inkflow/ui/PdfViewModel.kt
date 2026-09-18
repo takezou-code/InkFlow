@@ -567,6 +567,123 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * 將多份 PDF 按 [sourceUris] 順序插到 [afterIndex] 頁後方（單次互斥、單份備份、
+     * 索引一次平移、一次重開）。第一份失敗即整批回滾；拷貝/空檔等瑣碎失敗跳過該份
+     * 繼續（最後報數）。單份請繼續用 [insertPdfPages]，行為零變化。
+     */
+    fun insertMultiplePdfs(
+        context: Context,
+        documentUri: String,
+        sourceUris: List<Uri>,
+        afterIndex: Int
+    ) {
+        if (_isPageOperationInProgress.value) {
+            _pageOperationMessage.value = "頁面操作進行中，請稍後再試"
+            return
+        }
+
+        val targetFileUri = _currentPdfUri.value ?: return
+        if (targetFileUri.scheme != "file") {
+            android.util.Log.w("PdfViewModel", "insertMultiplePdfs: only file:// target URIs supported")
+            return
+        }
+
+        _isPageOperationInProgress.value = true
+        viewModelScope.launch(Dispatchers.IO) {
+            // 逐份拷貝＋算頁數，壞的跳過。
+            val locals = mutableListOf<Pair<Uri, Int>>()
+            var skippedCount = 0
+            for (sourceUri in sourceUris) {
+                val local = PdfManager.copyPdfToAppDir(context, sourceUri)
+                if (local == null) {
+                    skippedCount++
+                    continue
+                }
+                val count = PdfManager.getPdfPageCount(local)
+                if (count <= 0) {
+                    runCatching { local.path?.let { File(it).delete() } }
+                    skippedCount++
+                    continue
+                }
+                locals.add(local to count)
+            }
+            if (locals.isEmpty()) {
+                _pageOperationMessage.value = "匯入 PDF 失敗，請再試一次"
+                _isPageOperationInProgress.value = false
+                return@launch
+            }
+
+            val totalInserted = locals.sumOf { it.second }
+            val currentCount = _pageCount.value
+            val insertionIndex = if (afterIndex >= currentCount - 1) currentCount else afterIndex + 1
+
+            var backup: java.io.File? = null
+            try {
+                val targetFile = File(targetFileUri.path!!)
+                backup = PageOpJournal.backupFile(getApplication(), targetFile)
+                if (backup == null) {
+                    _pageOperationMessage.value = "無法建立操作備份，已取消"
+                    return@launch
+                }
+                val entry = PageOpJournal.Entry(
+                    op = "insert", documentUri = documentUri,
+                    indices = listOf(insertionIndex), count = totalInserted, toIndex = -1,
+                    pageCountBefore = currentCount, stage = "prepared"
+                )
+                PageOpJournal.write(getApplication(), entry)
+
+                renderMutex.withLock { closeRendererOnly(clearFlows = false) }
+                var cursor = afterIndex
+                for ((localUri, filePageCount) in locals) {
+                    val merged = PdfManager.insertPdfPages(targetFileUri, localUri, cursor)
+                    if (!merged) {
+                        PageOpJournal.restoreBackup(getApplication(), backup, targetFile)
+                        PageOpJournal.clear(getApplication())
+                        _pageOperationMessage.value = "匯入 PDF 失敗，請再試一次"
+                        reopenCurrentPdf(targetFileUri, fallbackPageCount = currentCount)
+                        return@launch
+                    }
+                    cursor += filePageCount
+                }
+
+                PageOpJournal.markFileDone(getApplication(), entry)
+                db.withTransaction {
+                    db.strokeDao().shiftPageIndicesUp(documentUri, insertionIndex, totalInserted)
+                    db.textAnnotationDao().shiftPageIndicesUp(documentUri, insertionIndex, totalInserted)
+                    db.imageAnnotationDao().shiftPageIndicesUp(documentUri, insertionIndex, totalInserted)
+                    db.bookmarkDao().shiftPageIndicesUp(documentUri, insertionIndex, totalInserted)
+                }
+                PageOpJournal.clear(getApplication())
+                PageOpJournal.deleteBackup(getApplication(), backup)
+
+                _lastInsertedPageIndex.value = insertionIndex
+                reopenCurrentPdfAfterInsert(
+                    fileUri = targetFileUri,
+                    fallbackPageCount = currentCount + totalInserted,
+                    insertionIndex = insertionIndex
+                )
+                if (skippedCount > 0) {
+                    _pageOperationMessage.value = "已匯入 ${locals.size} 份，另有 $skippedCount 份無法讀取已跳過"
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("PdfViewModel", "insertMultiplePdfs failed", e)
+                val targetFile = File(targetFileUri.path!!)
+                if (backup != null) PageOpJournal.restoreBackup(getApplication(), backup, targetFile)
+                PageOpJournal.clear(getApplication())
+                _pageCount.value = currentCount
+                _lastInsertedPageIndex.value = null
+                _pageOperationMessage.value = "匯入 PDF 失敗，請再試一次"
+                reopenCurrentPdf(targetFileUri, fallbackPageCount = currentCount)
+            } finally {
+                for ((localUri, _) in locals) {
+                    runCatching { localUri.path?.let { File(it).delete() } }
+                }
+                _isPageOperationInProgress.value = false
+            }
+        }
+    }
+
 
 
     /** 

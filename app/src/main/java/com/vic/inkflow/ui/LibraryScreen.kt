@@ -255,6 +255,8 @@ fun DocumentLibraryScreen(
     var showNewDocSizeDialog by remember { mutableStateOf(false) }
     var showCreateFolderDialog by remember { mutableStateOf(false) }
     var createFolderInput by rememberSaveable { mutableStateOf("") }
+    var isMergingPdfs by remember { mutableStateOf(false) }
+    var mergeTotal by remember { mutableStateOf(0) }
 
     // Chromium 預熱：編輯器 AI 面板首建 WebView 會卡主執行緒數百毫秒，
     // 那幾百毫秒正好把玻璃採樣空窗的那幀凍在螢幕上 = 黑閃。書庫閒置 2s 後先建一個即丟，
@@ -274,6 +276,16 @@ fun DocumentLibraryScreen(
         val message = folderOperationMessage ?: return@LaunchedEffect
         android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_SHORT).show()
         docViewModel.consumeFolderOperationMessage()
+    }
+
+    AnimatedDialog(visible = isMergingPdfs) {
+        GlassDialogCustom(
+            onDismissRequest = {},
+            isDark = isDarkTheme,
+            title = { Text("合併 PDF") },
+            text = { Text("正在按選取順序合併 $mergeTotal 份文件，請稍候…") },
+            buttons = {}
+        )
     }
 
     AnimatedDialog(visible = showCreateFolderDialog) {
@@ -339,9 +351,11 @@ fun DocumentLibraryScreen(
     }
 
     val pdfLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument(),
-        onResult = { uri ->
-            if (uri != null) {
+        contract = ActivityResultContracts.OpenMultipleDocuments(),
+        onResult = { uris ->
+            if (uris.isEmpty()) return@rememberLauncherForActivityResult
+            if (uris.size == 1) {
+                val uri = uris.first()
                 val name = context.contentResolver.query(
                     uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null
                 )?.use { cursor ->
@@ -359,6 +373,26 @@ fun DocumentLibraryScreen(
                         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
                             android.widget.Toast.makeText(context, "無法複製 PDF，請重試", android.widget.Toast.LENGTH_SHORT).show()
                         }
+                    }
+                }
+                return@rememberLauncherForActivityResult
+            }
+            // 多份：按選取順序合併成一份再開。
+            mergeTotal = uris.size
+            isMergingPdfs = true
+            scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                val (mergedUri, failed, baseName) = PdfManager.mergePdfs(context, uris)
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    isMergingPdfs = false
+                    if (mergedUri != null) {
+                        docViewModel.recordOpened(mergedUri.toString(), baseName ?: "合併筆記")
+                        val encodedUri = URLEncoder.encode(mergedUri.toString(), StandardCharsets.UTF_8.toString())
+                        navController.navigate("editor/$encodedUri")
+                    } else {
+                        android.widget.Toast.makeText(context, "合併失敗，請重試", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                    if (failed.isNotEmpty()) {
+                        android.widget.Toast.makeText(context, "有 ${failed.size} 份無法加入已跳過", android.widget.Toast.LENGTH_SHORT).show()
                     }
                 }
             }
