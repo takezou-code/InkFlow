@@ -429,21 +429,32 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
     }
 
     val insertPdfLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
-    ) { selectedUri ->
-        if (selectedUri == null) return@rememberLauncherForActivityResult
-        runCatching {
-            context.contentResolver.takePersistableUriPermission(
-                selectedUri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION
+        contract = ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        for (selectedUri in uris) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    selectedUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            }
+        }
+        if (uris.size == 1) {
+            pdfViewModel.insertPdfPages(
+                context = context,
+                documentUri = uri.toString(),
+                sourceUri = uris.first(),
+                afterIndex = currentPageIndex
+            )
+        } else {
+            pdfViewModel.insertMultiplePdfs(
+                context = context,
+                documentUri = uri.toString(),
+                sourceUris = uris,
+                afterIndex = currentPageIndex
             )
         }
-        pdfViewModel.insertPdfPages(
-            context = context,
-            documentUri = uri.toString(),
-            sourceUri = selectedUri,
-            afterIndex = currentPageIndex
-        )
         // R2：插入 PDF 頁也是結構操作，清棧。
         viewModel.clearUndoStacks()
     }

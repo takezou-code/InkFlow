@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.os.ParcelFileDescriptor
+import android.provider.OpenableColumns
 import android.util.Log
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.PDPage
@@ -222,6 +223,67 @@ object PdfManager {
     /** @deprecated Use insertBlankPage instead. */
     @Deprecated("Use insertBlankPage(fileUri, afterIndex) instead", ReplaceWith("insertBlankPage(fileUri, Int.MAX_VALUE)"))
     suspend fun appendBlankPage(fileUri: Uri): Boolean = insertBlankPage(fileUri, Int.MAX_VALUE)
+
+    /** 讀取 content:// URI 的顯示名稱，失敗回傳 null。 */
+    private suspend fun displayNameOf(context: Context, uri: Uri): String? =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                context.contentResolver.query(
+                    uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null
+                )?.use { cursor ->
+                    if (cursor.moveToFirst()) cursor.getString(0) else null
+                }
+            }.getOrNull()
+        }
+
+    /**
+     * 將多份 PDF 按 [sourceUris] 順序合併成一份新文件。
+     * 第一份拷貝為底，後面逐份 [insertPdfPages] 接到尾巴；中間拷貝全刪，只留成品。
+     * 壞檔/加密檔跳過並記入回傳的失敗名單（部分合併照樣可用，不整批作廢）。
+     * @return Triple(成品 file:// Uri（全失敗則 null）, 失敗顯示名稱, 底檔顯示名稱?)
+     */
+    suspend fun mergePdfs(
+        context: Context,
+        sourceUris: List<Uri>
+    ): Triple<Uri?, List<String>, String?> =
+        withContext(Dispatchers.IO) {
+            if (sourceUris.isEmpty()) return@withContext Triple(null, emptyList(), null)
+            val failed = mutableListOf<String>()
+            // 先全部拷進私有目錄（加密/壞檔在算頁數時現形）。
+            val copied = mutableListOf<Pair<Uri, String>>()
+            for (uri in sourceUris) {
+                val name = displayNameOf(context, uri) ?: uri.lastPathSegment ?: "未命名"
+                val local = copyPdfToAppDir(context, uri)
+                if (local == null) {
+                    failed.add(name)
+                    continue
+                }
+                copied.add(local to name)
+            }
+            if (copied.isEmpty()) return@withContext Triple(null, failed, null)
+
+            val (baseUri, baseName) = copied.first()
+            try {
+                for ((localUri, name) in copied.drop(1)) {
+                    if (getPdfPageCount(localUri) <= 0) {
+                        failed.add(name)
+                        continue
+                    }
+                    if (!insertPdfPages(baseUri, localUri, Int.MAX_VALUE)) {
+                        failed.add(name)
+                    }
+                }
+                Triple(baseUri, failed, baseName)
+            } catch (e: Exception) {
+                Log.e(TAG, "mergePdfs failed", e)
+                Triple(null, failed, null)
+            } finally {
+                // 中間拷貝全刪；成品（base）保留，呼叫端負責。
+                for ((localUri, _) in copied.drop(1)) {
+                    runCatching { localUri.path?.let { File(it).delete() } }
+                }
+            }
+        }
 
     /** 刪除 file:// URI PDF 中第 [pageIndex] 頁。若僅剩一頁則拒絕刪除並回傳 false。
      *  採用「寫入暫存檔 → 原子重命名」策略，確保操作失敗時原始 PDF 不受損。 */
