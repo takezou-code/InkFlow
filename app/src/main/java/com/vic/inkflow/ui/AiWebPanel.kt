@@ -972,6 +972,8 @@ private fun buildCollectJs(): String {
             try {
                 document.querySelectorAll('[data-inkpick]').forEach(function(el) { el.removeAttribute('data-inkpick'); });
             } catch(e){}
+            // F1：強制 reflow，逼殘影樣式先退，Kotlin 側 PixelCopy 前還會再等 600ms
+            try { void document.body.offsetHeight; } catch(e){}
             note('COLLECT src=' + src + ' mathB=' + mathB + ' mathI=' + mathI + ' census=' + JSON.stringify(census) + ' inMath=' + censusMath + ' dataMath=' + censusDataMath + ' anno=' + censusAnno + ' rects=' + JSON.stringify(rects) + ' dpr=' + window.devicePixelRatio);
             try { if (window.AndroidBridge && window.AndroidBridge.onPickedJson) window.AndroidBridge.onPickedJson(JSON.stringify(picks).slice(0, 200000)); } catch(e){}
         })();

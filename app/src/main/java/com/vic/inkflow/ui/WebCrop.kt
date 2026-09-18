@@ -135,9 +135,47 @@ object WebCrop {
         return if (n > 0) sum.toFloat() / n else 255f
     }
 
-    /** 深底（<128）全圖反色→黑字白底；淺底原樣。回傳新圖（輸入由呼叫方 recycle）。 */
-    fun normalizeToWhite(bmp: Bitmap): Bitmap {
-        if (medianLuminance(bmp) >= 128f) return bmp
+    /** 純函數：兩色是否接近（最大分量差容限，可單測）。 */
+    fun nearBg(px: Int, bgR: Int, bgG: Int, bgB: Int, tol: Int = 28): Boolean {
+        val r = (px shr 16) and 0xff
+        val g = (px shr 8) and 0xff
+        val b = px and 0xff
+        return maxOf(kotlin.math.abs(r - bgR), kotlin.math.abs(g - bgG), kotlin.math.abs(b - bgB)) <= tol
+    }
+
+    /** 邊緣取樣底色（公式碰不到極邊，取四邊內縮 6px 的中位色）。 */
+    private fun edgeBg(bmp: Bitmap): Triple<Int, Int, Int> {
+        val w = bmp.width
+        val h = bmp.height
+        val rs = mutableListOf<Int>()
+        val gs = mutableListOf<Int>()
+        val bs = mutableListOf<Int>()
+        val m = 6
+        fun feed(x: Int, y: Int) {
+            if (x < 0 || y < 0 || x >= w || y >= h) return
+            val p = bmp.getPixel(x, y)
+            if (((p ushr 24) and 0xff) < 128) return
+            rs.add((p shr 16) and 0xff)
+            gs.add((p shr 8) and 0xff)
+            bs.add(p and 0xff)
+        }
+        var x = 0
+        while (x < w) {
+            feed(x, m); feed(x, h - 1 - m)
+            x += 8
+        }
+        var y = 0
+        while (y < h) {
+            feed(m, y); feed(w - 1 - m, y)
+            y += 8
+        }
+        if (rs.isEmpty()) return Triple(255, 255, 255)
+        rs.sort(); gs.sort(); bs.sort()
+        val mid = rs.size / 2
+        return Triple(rs[mid], gs[mid], bs[mid])
+    }
+
+    private fun invert(bmp: Bitmap): Bitmap {
         val w = bmp.width
         val h = bmp.height
         val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
@@ -151,7 +189,35 @@ object WebCrop {
         }
         out.setPixels(px, 0, w, 0, 0, w, h)
         bmp.recycle()
-        Log.d(TAG, "inverted dark crop to white")
+        return out
+    }
+
+    /**
+     * 兩步正規化（取代整張反色）：
+     * 1) 底深先反色（median <128）
+     * 2) 邊緣取樣底色、近底色壓純白（洗米黃/淡藍殘留），字不動。
+     * 輸入一律消耗（recycle），回傳可用圖由呼叫方 recycle。
+     */
+    fun normalizeToWhite(bmp: Bitmap): Bitmap {
+        var cur = bmp
+        val med = medianLuminance(cur)
+        if (med < 128f) {
+            cur = invert(cur)
+            Log.d(TAG, "inverted dark crop to white")
+        }
+        val (br, bg, bb) = edgeBg(cur)
+        Log.d(TAG, "crop bg=($br,$bg,$bb) med=$med")
+        if (br >= 240 && bg >= 240 && bb >= 240) return cur
+        val w = cur.width
+        val h = cur.height
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val px = IntArray(w * h)
+        cur.getPixels(px, 0, w, 0, 0, w, h)
+        for (i in px.indices) {
+            if (nearBg(px[i], br, bg, bb)) px[i] = -0x1 // opaque white
+        }
+        out.setPixels(px, 0, w, 0, 0, w, h)
+        cur.recycle()
         return out
     }
 
