@@ -156,6 +156,8 @@ suspend fun importPickedJsonInner(
     val rendered = mutableMapOf<String, RenderedMath>()
     var cropFail = 0
     if (shots.isNotEmpty() && activity != null && webView != null) {
+        // F1：等一幀，讓圈選高亮殘影先退（否則裁到藍 tint，反白後變米黃）
+        kotlinx.coroutines.delay(600)
         for (s in shots) {
             try {
                 val rm = WebCrop.cropFormula(activity, webView, s.box, s.id)

@@ -81,4 +81,17 @@ class WebCropTest {
         assertEquals(0f to 0f, fitMathSize(10, 0, 500f, 700f))
         assertEquals(0f to 0f, fitMathSize(100, 100, 0f, 700f))
     }
+
+    @Test fun nearBg_tintVsText() {
+        val beigeBg = (235 shl 16) or (230 shl 8) or 210 // 米黃殘留
+        // 底色自身與鄰近色算接近
+        assertTrue(WebCrop.nearBg((235 shl 16) or (230 shl 8) or 210, 235, 230, 210))
+        assertTrue(WebCrop.nearBg((232 shl 16) or (228 shl 8) or 208, 235, 230, 210))
+        // 黑字永遠不算底
+        assertTrue(!WebCrop.nearBg((10 shl 16) or (10 shl 8) or 10, 235, 230, 210))
+        // 純白紙像素對米黃底不算接近（留給白紙邏輯，flatten 只壓底色族）
+        assertTrue(!WebCrop.nearBg(-0x1, 235, 230, 210))
+        // 自訂容限
+        assertTrue(WebCrop.nearBg((200 shl 16) or (200 shl 8) or 200, 235, 230, 210, tol = 40))
+    }
 }
