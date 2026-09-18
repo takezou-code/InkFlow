@@ -5,6 +5,7 @@ import com.vic.inkflow.ui.AiTextBlock
 import com.vic.inkflow.ui.convertLatexInProse
 import com.vic.inkflow.ui.convertLatexMath
 import com.vic.inkflow.ui.escHtml
+import com.vic.inkflow.ui.hasMathScent
 import com.vic.inkflow.ui.looksLikeInlineMath
 import com.vic.inkflow.ui.normalizeDollarMath
 import com.vic.inkflow.ui.splitAiBlocks
@@ -164,5 +165,23 @@ class AiMathCorpusTest {
 
     @Test fun prose_money_untouched() {
         assertEquals("價格 \$100 不變", convertLatexInProse("價格 \$100 不變"))
+    }
+
+    @Test fun scent_catchesMath() {
+        // 使用者回報案例：0 到無限大 e^(-2x) 積分題（三重命中）
+        assertTrue(hasMathScent("計算瑕積分 \$\\int_0^\\infty x e^{-2x} \\, dx\$。"))
+        assertTrue(hasMathScent("\$\$x^2 + y^2 = r^2\$\$"))
+        assertTrue(hasMathScent("解 \$f(x)\$ 得"))
+        assertTrue(hasMathScent("其中 \\(a+b\\) 成立"))
+        assertTrue(hasMathScent("面積 ∫01 積分"))
+        assertTrue(hasMathScent("求和 \\sum_{i=1}^n i"))
+    }
+
+    @Test fun scent_rejectsProse() {
+        assertTrue(!hasMathScent("價格 \$100 不變"))
+        assertTrue(!hasMathScent("今天天氣很好，適合出門散步"))
+        assertTrue(!hasMathScent(""))
+        assertTrue(!hasMathScent("hello world"))
+        assertTrue(!hasMathScent("\$5 and \$10"))
     }
 }

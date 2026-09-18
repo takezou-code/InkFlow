@@ -123,6 +123,34 @@ fun looksLikeInlineMath(inner0: String): Boolean {
     return t.any { it in "()[]{}+-*/=,|<>!" }
 }
 
+private val SCENT_TEX_CMD = Regex("\\\\[A-Za-z]+")
+private val SCENT_KEYWORDS = setOf(
+    "frac", "sum", "prod", "int", "sqrt", "lim", "begin",
+    "log", "ln", "sin", "cos", "tan", "exp", "det",
+    "alpha", "beta", "gamma", "delta", "theta", "lambda", "mu",
+    "pi", "sigma", "phi", "omega", "infty", "partial", "nabla",
+    "forall", "exists", "equiv", "approx", "neq", "leq", "geq",
+    "times", "cdot", "pm", "to", "rightarrow", "leftarrow", "oint", "iint"
+)
+
+/**
+ * 數學味判定（純函數，可單測）：整段文字有強數學訊號就整塊截圖，
+ * 不認 DOM 徽章（徽章會變，內容不會變）。金額/普通文字放行。
+ */
+fun hasMathScent(text0: String): Boolean {
+    val t = text0.trim()
+    if (t.isEmpty() || t.length > 8000) return false
+    if (t.contains("\$\$") || t.contains("\\(") || t.contains("\\[")) return true
+    if (t.any { it in "∫∑∏√∞∂∇∈∀∃≤≥≠≈→←⇒⇔∧∨¬⊤⊥" }) return true
+    for (m in INLINE_DOLLAR.findAll(t)) {
+        if (looksLikeInlineMath(m.groupValues[1])) return true
+    }
+    for (m in SCENT_TEX_CMD.findAll(t)) {
+        if (m.groupValues[0].substring(1) in SCENT_KEYWORDS) return true
+    }
+    return false
+}
+
 /** 把原文切成保序的文字/數學塊（code fence 內不找數學）。 */
 fun splitAiBlocks(raw: String, maxChars: Int = AI_CHUNK_MAX_CHARS): List<AiBlock> {
     val text = raw.replace("\r\n", "\n").trim()
