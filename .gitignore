@@ -1,21 +1,48 @@
-*.iml
-.gradle
-/local.properties
-/.idea/caches
-/.idea/libraries
-/.idea/modules.xml
-/.idea/workspace.xml
-/.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
-.DS_Store
-/build
-/captures
-.externalNativeBuild
-.cxx
-local.properties
+```
+# Gradle
+.gradle/
+build/
+target/
 
-# Release signing key (never commit; back it up separately)
-*.pfx
-*.p12
-*.jks
-*.keystore
+# Kotlin
+*.class
+*.jar
+*.war
+*.ear
+*.kotlin_metadata
+
+# Dependencies
+node_modules/
+vendor/
+
+# Logs
+*.log
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.local
+*.env.*
+
+# Coverage
+coverage/
+htmlcov/
+.coverage
+
+# Python (if present)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+```
