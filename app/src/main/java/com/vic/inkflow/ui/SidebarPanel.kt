@@ -222,6 +222,7 @@ import com.vic.inkflow.ui.theme.ToolbarGlassLight
 import com.vic.inkflow.ui.theme.WorkspaceDeskDark
 import com.vic.inkflow.ui.theme.WorkspaceDeskLight
 import com.vic.inkflow.util.PdfManager
+import com.vic.inkflow.util.DocTransform
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import kotlin.math.atan2
@@ -871,8 +872,8 @@ internal fun PageThumbnail(
                 val modelW = modelWidth
                 val modelH = modelHeight
                 if (modelW <= 0f || modelH <= 0f) return@drawBehind
-                val sx = size.width / modelW
-                val sy = size.height / modelH
+                val sx = DocTransform.scaleX(size.width, modelW)
+                val sy = DocTransform.scaleY(size.height, modelH)
                 // --- Strokes (freehand + shapes) ---
                 strokes.forEach { swp ->
                     val stroke = swp.stroke

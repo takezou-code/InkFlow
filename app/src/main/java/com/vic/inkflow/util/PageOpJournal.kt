@@ -121,6 +121,13 @@ object PageOpJournal {
                     if (actual > 0 && actual != entry.pageCountBefore) {
                         db.withTransaction {
                             applyForwardLocked(db, entry)
+                            // S1 docY 同搬：重放只在崩潰窗口發生，用首頁高重算（讀不到就跳過，不更壞）。
+                            PdfManager.readFirstPageSize(context, uri)?.second
+                                ?.takeIf { it > 0f }?.let { stride ->
+                                    db.strokeDao().backfillStrokeDocY(entry.documentUri, stride)
+                                    db.textAnnotationDao().backfillTextDocY(entry.documentUri, stride)
+                                    db.imageAnnotationDao().backfillImageDocY(entry.documentUri, stride)
+                                }
                         }
                         Log.w(TAG, "Replayed DB shift for ${entry.op} on ${entry.documentUri}")
                     }
@@ -142,6 +149,7 @@ object PageOpJournal {
                 db.textAnnotationDao().shiftPageIndicesUp(entry.documentUri, idx, entry.count)
                 db.imageAnnotationDao().shiftPageIndicesUp(entry.documentUri, idx, entry.count)
                 db.bookmarkDao().shiftPageIndicesUp(entry.documentUri, idx, entry.count)
+                db.mathSourceDao().shiftPageIndicesUp(entry.documentUri, idx, entry.count)
             }
             "delete" -> {
                 for (index in entry.indices.sortedDescending()) {
@@ -149,6 +157,7 @@ object PageOpJournal {
                     with(db.textAnnotationDao()) { deleteForPage(entry.documentUri, index); shiftPageIndicesDown(entry.documentUri, index) }
                     with(db.imageAnnotationDao()) { deleteForPage(entry.documentUri, index); shiftPageIndicesDown(entry.documentUri, index) }
                     with(db.bookmarkDao()) { deleteForPage(entry.documentUri, index); shiftPageIndicesDown(entry.documentUri, index) }
+                    with(db.mathSourceDao()) { deleteForPage(entry.documentUri, index); shiftPageIndicesDown(entry.documentUri, index) }
                 }
             }
             "move" -> {
@@ -158,6 +167,7 @@ object PageOpJournal {
                 with(db.textAnnotationDao()) { moveToTempIndex(entry.documentUri, from, -1); if (from < to) shiftForMoveDown(entry.documentUri, from, to) else shiftForMoveUp(entry.documentUri, from, to); moveToTempIndex(entry.documentUri, -1, to) }
                 with(db.imageAnnotationDao()) { moveToTempIndex(entry.documentUri, from, -1); if (from < to) shiftForMoveDown(entry.documentUri, from, to) else shiftForMoveUp(entry.documentUri, from, to); moveToTempIndex(entry.documentUri, -1, to) }
                 with(db.bookmarkDao()) { moveToTempIndex(entry.documentUri, from, -1); if (from < to) shiftForMoveDown(entry.documentUri, from, to) else shiftForMoveUp(entry.documentUri, from, to); moveToTempIndex(entry.documentUri, -1, to) }
+                with(db.mathSourceDao()) { moveToTempIndex(entry.documentUri, from, -1); if (from < to) shiftForMoveDown(entry.documentUri, from, to) else shiftForMoveUp(entry.documentUri, from, to); moveToTempIndex(entry.documentUri, -1, to) }
             }
         }
     }

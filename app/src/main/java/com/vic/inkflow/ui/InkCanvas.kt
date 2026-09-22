@@ -99,6 +99,7 @@ import com.vic.inkflow.util.EnvelopeUtils
 import com.vic.inkflow.util.smoothCenterline
 import com.vic.inkflow.util.StrokePoint
 import com.vic.inkflow.util.DocLayout
+import com.vic.inkflow.util.DocTransform
 import androidx.compose.ui.graphics.FilterQuality
 import com.vic.inkflow.util.StrokeTransformUtils
 import java.util.UUID
@@ -877,8 +878,8 @@ fun InkCanvas(
                 // Text tool: selection, move, resize, or new text placement
                 if (activeTool == Tool.TEXT) {
                     val cs = canvasPixelSizeState.value
-                    val sx = if (cs.width > 0f) cs.width / viewModel.modelWidth else 1f
-                    val sy = if (cs.height > 0f) cs.height / viewModel.modelHeight else 1f
+                    val sx = DocTransform.scaleX(cs.width, viewModel.modelWidth)
+                    val sy = DocTransform.scaleY(cs.height, viewModel.modelHeight)
                     val annotations = textAnnotationsRef.value
                     val selId = selectedTextIdRef.value
                     val selAnn = if (selId != null) annotations.firstOrNull { it.id == selId } else null
@@ -952,8 +953,8 @@ fun InkCanvas(
                             } else {
                                 // 跨頁：總位移把文字推出本頁 → 整顆換頁；否則舊提交
                                 val cs = canvasPixelSizeState.value
-                                val scaleX = viewModel.modelWidth / cs.width.coerceAtLeast(1f)
-                                val scaleY = viewModel.modelHeight / cs.height.coerceAtLeast(1f)
+                                val scaleX = DocTransform.invScaleX(cs.width, viewModel.modelWidth)
+                                val scaleY = DocTransform.invScaleY(cs.height, viewModel.modelHeight)
                                 val newModelX = selAnn.modelX + totalDelta.x * scaleX
                                 val newModelY = selAnn.modelY + totalDelta.y * scaleY
                                 val wrapped = wrapCrossPageY(
@@ -1007,8 +1008,8 @@ fun InkCanvas(
                 // Image tool: selection, move, resize, or tap-to-pick
                 if (activeTool == Tool.IMAGE) {
                     val cs = canvasPixelSizeState.value
-                    val sx = if (cs.width > 0f) cs.width / viewModel.modelWidth else 1f
-                    val sy = if (cs.height > 0f) cs.height / viewModel.modelHeight else 1f
+                    val sx = DocTransform.scaleX(cs.width, viewModel.modelWidth)
+                    val sy = DocTransform.scaleY(cs.height, viewModel.modelHeight)
                     val annotations = imageAnnotationsRef.value
                     val selId = selectedImageIdRef.value
                     val selAnn = if (selId != null) annotations.firstOrNull { it.id == selId } else null
@@ -1148,8 +1149,8 @@ fun InkCanvas(
                             }
                             // 跨頁：推出本頁 → 整顆換頁（旋轉角保留）；否則舊提交
                             val cs = canvasPixelSizeState.value
-                            val scaleX = viewModel.modelWidth / cs.width.coerceAtLeast(1f)
-                            val scaleY = viewModel.modelHeight / cs.height.coerceAtLeast(1f)
+                            val scaleX = DocTransform.invScaleX(cs.width, viewModel.modelWidth)
+                            val scaleY = DocTransform.invScaleY(cs.height, viewModel.modelHeight)
                             val wrapped = wrapCrossPageY(
                                 selAnn.modelY + totalDelta.y * scaleY, viewModel.modelHeight,
                                 pageIndexRef.value, pageCountRef.value
@@ -1208,8 +1209,8 @@ fun InkCanvas(
                         selectedImageAnnotationIds.isNotEmpty() ||
                         selectionFramePolygonRef.value.isNotEmpty()
                     val cs = canvasPixelSizeState.value
-                    val sx = if (cs.width > 0f) cs.width / viewModel.modelWidth else 1f
-                    val sy = if (cs.height > 0f) cs.height / viewModel.modelHeight else 1f
+                    val sx = DocTransform.scaleX(cs.width, viewModel.modelWidth)
+                    val sy = DocTransform.scaleY(cs.height, viewModel.modelHeight)
                     val anchorModel = selectedStrokeResizeAnchorRef.value
                         ?: selectionBounds?.center
                         ?: Offset.Zero
@@ -1809,8 +1810,8 @@ fun InkCanvas(
             }
         }
         .drawWithCache {
-            val sx = size.width  / viewModel.modelWidth
-            val sy = size.height / viewModel.modelHeight
+            val sx = DocTransform.scaleX(size.width, viewModel.modelWidth)
+            val sy = DocTransform.scaleY(size.height, viewModel.modelHeight)
 
             val strokes = committedStrokes
             val preview = commitPreview

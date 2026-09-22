@@ -54,6 +54,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.roundToInt
+import com.vic.inkflow.util.DocTransform
 
 internal object AiQuickPrompt {
     const val EXPLAIN = "請用繁體中文詳細解釋這張圖片中的內容，包含重點與關鍵概念。"
@@ -137,8 +138,8 @@ internal fun bubbleTargetOffset(
     }
     val wF = itemWidthPx.toFloat()
     val hF = wF / aspect
-    val sx = wF / modelW
-    val sy = hF / modelH
+    val sx = DocTransform.scaleX(wF, modelW)
+    val sy = DocTransform.scaleY(hF, modelH)
     val left = regionBounds.left * sx
     val top = regionBounds.top * sy
     val right = regionBounds.right * sx
