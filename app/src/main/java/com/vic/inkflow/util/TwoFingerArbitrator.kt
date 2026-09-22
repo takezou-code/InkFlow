@@ -13,6 +13,15 @@ sealed interface TwoFingerDecision {
 }
 
 /**
+ * Single-frame applied-delta ceiling (px, per axis).
+ * Touch batches coalesce after UI jank into one mega-frame (observed: 163px);
+ * applying it raw = visible page flash. Capped remainder is dropped (a transient
+ * sub-100px lag the ongoing motion covers), the flash is not.
+ * 96px/frame still allows ~23m/s at 240Hz touch rate — never hit legitimately.
+ */
+const val MAX_FRAME_DELTA_PX = 96f
+
+/**
  * Decides whether a two-pointer gesture means scroll (PAN) or pinch-zoom (PINCH).
  *
  * Rules (mirroring AOSP ScaleGestureDetector spanSlop = 2x touchSlop, plus the
@@ -20,10 +29,15 @@ sealed interface TwoFingerDecision {
  * - Both signals race from gesture start; the first past its threshold LOCKS the gesture.
  * - Pan threshold = touch slop; pinch needs span change > 2x slop AND span >= min span.
  * - Ties go to PAN (scroll wins; a pinch can simply be retried).
- * - After locking, the other signal is ignored until all pointers lift (tremor-proof).
+ * - PINCH never downgrades. PAN can UPGRADE to PINCH mid-gesture when the span
+ *   clearly opens (span change from pan-lock moment > 2x span slop AND span >=
+ *   min span): scrolling morphs into zoom like Maps/Chrome. The zoom smoother
+ *   re-anchors at upgrade so the first pinched frames don't jump.
  * - Span is EMA-smoothed with a deadband so hand tremor never zooms.
  * - Pointer-set changes (finger added/lifted, gesture continues) re-baseline
  *   without unlocking, so there are no jumps.
+ * - Applied deltas are capped per frame ([MAX_FRAME_DELTA_PX]) so coalesced
+ *   post-jank batches can't teleport the page.
  *
  * Pure Kotlin, no Compose/Android dependencies — unit tested in GestureArbitratorTest.
  */
@@ -45,10 +59,13 @@ class TwoFingerArbitrator(
     private var smoothSpan = 0f
     private var prevSmooth = 0f
     private var hasBaseline = false
+    /** Span at the moment PAN locked; upgrade compares against this (hysteresis). */
+    private var panLockSpan = 0f
 
     fun reset() {
         lock = Lock.NONE
         hasBaseline = false
+        panLockSpan = 0f
     }
 
     /** Pointer set changed but gesture continues: re-baseline, keep the lock. */
@@ -61,6 +78,8 @@ class TwoFingerArbitrator(
         smoothSpan = span
         prevSmooth = span
         hasBaseline = true
+        // 新手指加入會改變 span 基準，升級比較也同步重錨，避免誤升級。
+        if (lock == Lock.PAN) panLockSpan = span
     }
 
     /** Feed one frame (centroid + span in px). Deltas are absorbed until a lock. */
@@ -69,8 +88,9 @@ class TwoFingerArbitrator(
             rebaseline(cx, cy, span)
             return TwoFingerDecision.Undecided
         }
-        val dx = cx - lastCx
-        val dy = cy - lastCy
+        // 單幀封頂：卡頓合併幀不傳送整頁（實測抓到過 163px）。
+        val dx = (cx - lastCx).coerceIn(-MAX_FRAME_DELTA_PX, MAX_FRAME_DELTA_PX)
+        val dy = (cy - lastCy).coerceIn(-MAX_FRAME_DELTA_PX, MAX_FRAME_DELTA_PX)
         lastCx = cx
         lastCy = cy
 
@@ -88,10 +108,20 @@ class TwoFingerArbitrator(
             // Re-baseline at lock moment so the first locked deltas don't jump.
             prevSmooth = span
             smoothSpan = span
+            if (lock == Lock.PAN) panLockSpan = span
         }
 
         return when (lock) {
-            Lock.PAN -> TwoFingerDecision.Pan(dx, dy)
+            Lock.PAN -> {
+                // 滾動中張開：升級成捏合（Maps/Chrome 行為），zoom 平滑器重錨無跳變。
+                if (span >= minSpanPx && abs(span - panLockSpan) > spanSlopPx * 2f) {
+                    lock = Lock.PINCH
+                    prevSmooth = span
+                    smoothSpan = span
+                    return TwoFingerDecision.Pinch(1f, dx, dy)
+                }
+                TwoFingerDecision.Pan(dx, dy)
+            }
             Lock.PINCH -> {
                 smoothSpan += (span - smoothSpan) * smoothAlpha
                 val rawFactor = if (prevSmooth > 0f && prevSmooth.isFinite()) smoothSpan / prevSmooth else 1f

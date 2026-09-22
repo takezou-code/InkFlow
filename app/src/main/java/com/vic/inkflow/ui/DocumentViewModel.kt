@@ -8,6 +8,7 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import androidx.room.withTransaction
 import com.vic.inkflow.data.AppDatabase
 import com.vic.inkflow.data.DocumentDao
 import com.vic.inkflow.data.DocumentEntity
@@ -99,11 +100,16 @@ class DocumentViewModel(
         val appContext = context.applicationContext
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             invalidateThumbnail(appContext, uri)
-            // Delete all strokes and annotations belonging to this document first.
-            strokeDao.deleteStrokesForDocument(uri)
-            db.textAnnotationDao().deleteForDocument(uri)
-            db.imageAnnotationDao().deleteForDocument(uri)
-            db.documentPreferenceDao().deleteByDocumentUri(uri)
+            // 整份連帶清（含書籤/公式源，不留孤兒）＋文件列，同一交易。
+            db.withTransaction {
+                strokeDao.deleteStrokesForDocument(uri)
+                db.textAnnotationDao().deleteForDocument(uri)
+                db.imageAnnotationDao().deleteForDocument(uri)
+                db.mathSourceDao().deleteForDocument(uri)
+                db.bookmarkDao().deleteForDocument(uri)
+                db.documentPreferenceDao().deleteByDocumentUri(uri)
+                documentDao.delete(uri)
+            }
             // Delete the physical file for app-private documents (file:// URIs).
             try {
                 val parsed = android.net.Uri.parse(uri)
@@ -112,7 +118,6 @@ class DocumentViewModel(
                     if (file.exists()) file.delete()
                 }
             } catch (_: Exception) { }
-            documentDao.delete(uri)
         }
     }
 

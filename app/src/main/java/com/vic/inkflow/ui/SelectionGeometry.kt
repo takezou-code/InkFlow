@@ -3,6 +3,7 @@ package com.vic.inkflow.ui
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import com.vic.inkflow.data.ImageAnnotationEntity
+import com.vic.inkflow.util.DocTransform
 import com.vic.inkflow.util.StrokeTransformUtils
 
 // ── 套索/選取幾何：座標換算、多邊形變換、命中測試 ──────────────────────────
@@ -15,8 +16,8 @@ internal fun canvasToModel(
     canvasW: Float,
     canvasH: Float
 ): Offset = Offset(
-    x = offset.x * modelW / canvasW,
-    y = offset.y * modelH / canvasH
+    x = offset.x * DocTransform.invScaleXUnchecked(canvasW, modelW),
+    y = offset.y * DocTransform.invScaleYUnchecked(canvasH, modelH)
 )
 
 internal fun transformPolygon(

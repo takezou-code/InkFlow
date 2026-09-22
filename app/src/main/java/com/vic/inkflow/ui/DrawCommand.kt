@@ -37,7 +37,10 @@ sealed class DrawCommand {
         val strokeOriginals: List<StrokeWithPoints>,
         val strokeUpdated: List<StrokeWithPoints>,
         val imageOriginals: List<ImageAnnotationEntity>,
-        val imageUpdated: List<ImageAnnotationEntity>
+        val imageUpdated: List<ImageAnnotationEntity>,
+        /** 套索縮放的字（原＋新，與墨圖同批 undo/redo；舊命令預設空，向後相容）。 */
+        val textOriginals: List<TextAnnotationEntity> = emptyList(),
+        val textUpdated: List<TextAnnotationEntity> = emptyList()
     ) : DrawCommand()
     data class AddSelectionCopies(
         val strokes: List<StrokeWithPoints>,

@@ -31,4 +31,7 @@ interface BookmarkDao {
 
     @Query("UPDATE bookmarks SET pageIndex = pageIndex + 1 WHERE documentUri = :documentUri AND pageIndex >= :toIndex AND pageIndex < :fromIndex")
     suspend fun shiftForMoveUp(documentUri: String, fromIndex: Int, toIndex: Int)
+
+    @Query("DELETE FROM bookmarks WHERE documentUri = :documentUri")
+    suspend fun deleteForDocument(documentUri: String)
 }

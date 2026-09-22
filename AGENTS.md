@@ -34,10 +34,10 @@
 - 手勢新規：空白區單指＋雙指全域二維平移（`panOffsetX`，已轉正）；`offset` 直給、禁大圖層、禁 spring 追；至少留 1/4 紙在區內；垂直一律走原生 `LazyColumn`。
 
 ## 觸控對接協議（TOUCH_CONTRACT，兩 agent 共同遵守）
-- 觸控流由外而內，贏家全拿：palm 採集（只看不攔）→ `twoFingerModifier`（≥2 非手掌觸點，鎖定即 consume）→ `blankPanModifier`（1 指＋起點在紙實際矩形外，首像素 consume；第二根**手指**出現整段作廢，手掌不算）→ `InkCanvas`（紙面單指 consume 畫畫，多指放行）。
+- 觸控流由外而內，贏家全拿：palm 採集（只看不攔）→ `twoFingerModifier`（≥2 非手掌觸點，見到即 consume，不等 slop 鎖定；否則空窗期內層 InkCanvas 會用第二指起筆）→ `blankPanModifier`（1 指＋起點在紙實際矩形外，首像素 consume；第二根**手指**出現整段作廢，手掌不算）→ `InkCanvas`（紙面單指 consume 畫畫，多指放行）。
 - 空白判定用紙**實際矩形**（置中＋當前 `panOffsetX`），禁拿置中假設。
 - `mainListState` 雙寫者（平移/錨定 vs 寫筆邊緣捲）靠指數互斥，不加鎖；新增寫者須先證互斥，一律 `dispatchRawDelta` 同步，禁 `scope.launch(scrollBy)`。
-- `pinchActive`：工作區寫、墨水讀；新增棄筆條件走同一旗子，禁另起旗子。
+- `pinchActive`：工作區寫、墨水讀；PAN 鎖定也立旗（兩指平移時寫筆邊緣捲必須停，否則跟主列表雙寫打架跳頁）；新增棄筆條件走同一旗子，禁另起旗子。
 - `pageLock`：墨水寫、跟隨讀；上鎖必須配超時自清（`programmaticTarget` 2.5s 同規），無超時的鎖視為 bug。
 - 放手後零外力：手勢結束後禁寫 `panOffsetX`／捲主列表；收斂只許寫入點＋viewport/zoom 變化時。
 - 側欄：主→側永遠被動跟隨（只動側欄）；側→主只許點按＋側欄親自拖，帶 epoch、中間頁忽略。
