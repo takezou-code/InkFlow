@@ -38,6 +38,9 @@ const val MAX_FRAME_DELTA_PX = 96f
  *   without unlocking, so there are no jumps.
  * - Applied deltas are capped per frame ([MAX_FRAME_DELTA_PX]) so coalesced
  *   post-jank batches can't teleport the page.
+ * - Why not Modifier.transformable (deliberate): it offers no palm hook, no
+ *   pre-lock consume control for ink coordination, and our content is a native
+ *   LazyColumn (centroid must map to list state anyway). Same math, custom shell.
  *
  * Pure Kotlin, no Compose/Android dependencies — unit tested in GestureArbitratorTest.
  */
@@ -78,7 +81,20 @@ class TwoFingerArbitrator(
         smoothSpan = span
         prevSmooth = span
         hasBaseline = true
-        // 新手指加入會改變 span 基準，升級比較也同步重錨，避免誤升級。
+        // 新手指加入会改变 span 基准，升级比较也同步重锚，避免误升级。
+        if (lock == Lock.PAN) panLockSpan = span
+    }
+
+    /**
+     * 加指/換指时的輕量重錨：只重錨 span 系（s0/平滑器/升級基線），
+     * PAN 賽局的起點（c0/last）不動——否則每次加指都重開 slop 競賽，
+     * 手指頻繁調整時永遠鎖不上（抓不住的主因之一）。
+     * 跨手勢空窗回來（wasSolo）走完整 [rebaseline]（單指段位移丟掉，不要算進來）。
+     */
+    fun rebaselineSpan(span: Float) {
+        s0 = span
+        smoothSpan = span
+        prevSmooth = span
         if (lock == Lock.PAN) panLockSpan = span
     }
 
@@ -114,7 +130,9 @@ class TwoFingerArbitrator(
         return when (lock) {
             Lock.PAN -> {
                 // 滾動中張開：升級成捏合（Maps/Chrome 行為），zoom 平滑器重錨無跳變。
-                if (span >= minSpanPx && abs(span - panLockSpan) > spanSlopPx * 2f) {
+                // 門檻 1x spanSlop（非 2x）：自然捏合重心本來就會動， tie 已經先判 PAN，
+                // 升級再要 2x 的話日常捏合根本轉不過去（實測：20 次鎖定只有 3 次 PINCH）。
+                if (span >= minSpanPx && abs(span - panLockSpan) > spanSlopPx) {
                     lock = Lock.PINCH
                     prevSmooth = span
                     smoothSpan = span
