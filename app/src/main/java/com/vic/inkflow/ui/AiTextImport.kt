@@ -351,14 +351,29 @@ fun measureContentBottom(
 ): Float? {
     if (texts.any { it.isStamp }) return null
     var bottom = 0f
-    for (s in strokes) bottom = maxOf(bottom, s.boundsBottom)
-    for (t in texts) {
+    var strokeB = 0f
+    for (s in strokes) {
+        strokeB = maxOf(strokeB, s.boundsBottom)
+    }
+    bottom = maxOf(bottom, strokeB)
+    var textB = 0f
+    for ((i, t) in texts.withIndex()) {
         val (lineH, descent) = metrics(t.fontSize)
         if (lineH <= 0f) return null
         val n = t.text.split("\n").size.coerceAtLeast(1)
-        bottom = maxOf(bottom, t.modelY + (n - 1) * lineH + descent)
+        val tb = t.modelY + (n - 1) * lineH + descent
+        android.util.Log.d("InkFlowDbg", "CONTINUE text[$i] modelY=${t.modelY} n=$n fontSize=${t.fontSize} lineH=$lineH descent=$descent bottom=$tb")
+        textB = maxOf(textB, tb)
     }
-    for (img in images) bottom = maxOf(bottom, img.modelY + img.modelHeight)
+    bottom = maxOf(bottom, textB)
+    var imageB = 0f
+    for ((i, img) in images.withIndex()) {
+        val ib = img.modelY + img.modelHeight
+        android.util.Log.d("InkFlowDbg", "CONTINUE image[$i] modelY=${img.modelY} h=${img.modelHeight} rot=${img.rotation} bottom=$ib")
+        imageB = maxOf(imageB, ib)
+    }
+    bottom = maxOf(bottom, imageB)
+    android.util.Log.d("InkFlowDbg", "CONTINUE measure strokes=${strokes.size} strokeB=$strokeB texts=${texts.size} textB=$textB images=${images.size} imageB=$imageB bottom=$bottom")
     return bottom
 }
 
