@@ -17,18 +17,15 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
-import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.pointerInteropFilter
-import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.runtime.withFrameNanos
 import com.vic.inkflow.util.DocLayout
 import com.vic.inkflow.util.DocTransform
-import com.vic.inkflow.util.MAX_FRAME_DELTA_PX
+import com.vic.inkflow.util.GestureStateMachine
 import com.vic.inkflow.util.PalmRejectionFilter
-import com.vic.inkflow.util.TwoFingerArbitrator
-import com.vic.inkflow.util.TwoFingerDecision
+import com.vic.inkflow.util.Pt
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.horizontalScroll
@@ -52,7 +49,6 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
-import androidx.compose.foundation.gestures.ScrollableDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
@@ -65,7 +61,6 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateSetOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -78,7 +73,6 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.onSizeChanged
 import android.content.Context
 import android.net.Uri
@@ -92,7 +86,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import com.vic.inkflow.data.AppDatabase
 import com.vic.inkflow.ui.theme.BrandIndigo
-import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
@@ -142,12 +136,7 @@ internal fun Workspace(
     var viewportWpx by remember { mutableIntStateOf(0) }
 
     val density = LocalDensity.current
-    // 放手慣性：單一可取消 fling（scroll 互斥內跑，接管即殺，禁多重排隊——
-    // 之前每幀 scope.launch scrollBy 的放手彈走就是反面教材）。
-    val gestureScope = rememberCoroutineScope()
-    var flingJob by remember { mutableStateOf<Job?>(null) }
-    // 原生 fling 行為（跟單指捲動同一套 spline 衰減）：版本無關，不碰已退役的 decay API。
-    val flingBehavior = ScrollableDefaults.flingBehavior()
+    // 手勢慣性已刪除（M2 規格：手指離開即停，fling 兩條全退役）。
     // 頁間隙 px：必須與下方 LazyColumn 的 Arrangement.spacedBy(18.dp) 一致（跨頁分段用）
     val pageGapPx = with(density) { 18.dp.toPx() }
     val bubbleGapPx = with(density) { 12.dp.toPx() }
@@ -231,310 +220,208 @@ internal fun Workspace(
         change.type == PointerType.Touch && !isPalmPointer(change.id.value) &&
             change.id.value.toInt() !in cancelledIds
 
-    // 雙指全域手勢（紙上＋空白＋跨頁，單一仲裁器，同時是唯一的縮放入口）：
-    // PAN → dx 寫 panOffsetX、dy 同步 dispatchRawDelta；PINCH → 寫 shared docZoom＋水平錨定。
-    // 掛外層 Box：兩指分落上下頁時 centroid/span 仍是同一座標系，跨頁捏合/平移都能動
-    // （之前 pinch 掛每頁 Box 內，跨頁雙指每頁只見 1 指 → 跨頁捏合永遠觸發不了）。
-    // 同步施加、無協程排隊：放手即停（之前每幀 scope.launch scrollBy，放手後還在消化佇列＝彈走主因）。
-    // 順序：twoFinger 先裝、blankPan 後裝——雙指接管時 consume 會取消單指拖，避免雙重施加。
+    // M2 單一手勢迴圈（手指模式）：空白單指＋雙指 PAN/PINCH 全收進 GestureStateMachine，
+    // 舊的雙層修飾＋補丁堆（arbitrator/carry/grace/fling/shadow/sight/panSpike）退役，blankPan 併入此迴圈。
+    // 消費策略（TOUCH_CONTRACT 不變）：未定＋起點空白→全攔（blank 歸我，原生餓死）；
+    // 未定＋起點紙上→只攔新指（墨水/原生繼續）；鎖定/接管後→全攔。放手零外力（無慣性）。
+    // PINCH 施加：機器給的 focus 已指數平滑＋snap；zoom 幀只做 anchor-set（直接定狀態），
+    // 不再另加一份 centroid-drift dispatch（舊碼兩份同施＝飄的嫌疑犯之一）。
     val twoFingerModifier = Modifier.pointerInput(Unit) {
-        val arbitrator = TwoFingerArbitrator(touchSlopPx = viewConfiguration.touchSlop)
+        val machine = GestureStateMachine(touchSlopPx = viewConfiguration.touchSlop)
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false)
-            var lastIds: Set<PointerId> = emptySet()
-            var gestureActive = false // 雙指接管中（PAN 或 PINCH 鎖定後）：墨水走 pinchActive 棄筆
-            var lastTwoFingerUptime = 0L // 上次見到雙指的事件時間（瞬斷寬限用）
-            var wasSolo = false // 上一幀只剩一指：回來先重錨，單指段位移不算進雙指（會跳）
-            var carryX = 0f // 封頂欠款：單幀超 96 的部分下幀先還（±300 上限），不斷流不丟失
-            var carryY = 0f
-            var sightUptime = 0L // 本輪起點時間（卡死 log 用）
-            var sightLogged = false
-            var lastShadowLog = 0L // 影子 log 節流（2 秒一次）
-            while (true) {
-                val event = awaitPointerEvent()
-                val pressedAll = event.changes.filter { it.pressed }
-                if (pressedAll.isEmpty()) {
-                    arbitrator.reset()
-                    lastIds = emptySet()
-                    if (gestureActive) {
-                        // 雙指無慣性：抓住紙，放手當幀定住（單手的滑走 blankPan 那條）。
-                        viewModel.setPinchActive(false)
-                        gestureActive = false
-                        pdfViewModel.flushPendingRenders()
-                    }
-                    break
+            val startedBlank = isBlankX(down.position.x)
+            val fedIds = mutableSetOf<Int>()
+            var gestureActive = false // 雙指鎖定接管中（墨水讀 pinchActive 棄筆）
+            var lockedKind: GestureStateMachine.Kind? = null
+            var lastZoomFx = 0f
+            var lastZoomFy = 0f
+            var haveZoomFocus = false
+
+            fun startKind(kind: GestureStateMachine.Kind) {
+                if (kind == GestureStateMachine.Kind.SINGLE_PAN) return // 空白單指不立旗（舊制）
+                if (!gestureActive) {
+                    android.util.Log.d("InkFlowGesture", "m2Lock=$kind blank=$startedBlank")
+                    viewModel.setPinchActive(true)
+                    gestureActive = true
+                    lockedKind = kind
+                    pdfViewModel.setRendersPaused(true)
+                } else if (lockedKind != kind) {
+                    android.util.Log.d("InkFlowGesture", "m2Upgrade=$lockedKind->$kind")
+                    lockedKind = kind
                 }
-                // 只算觸控手指：觸控筆書寫時不參與；手掌（大接觸面積）剔除——
-                // 手掌靜止＋手指拖時，不過濾的話重心只走一半速度、間距亂變還會誤判 PINCH，
-                // 就是半速＋亂縮放的來源。真雙指兩個都是小點，不過濾不受影響。
-                // （計數定義見 isCountedFinger，與空白層共用，禁各寫各的。）
-                val touch = pressedAll.filter { isCountedFinger(it) }
-                if (touch.size >= 2) {
-                    lastTwoFingerUptime = event.changes.maxOf { it.uptimeMillis }
-                    val ids = touch.map { it.id }.toSet()
-                    val cx = touch.sumOf { it.position.x.toDouble() }.toFloat() / touch.size
-                    val cy = touch.sumOf { it.position.y.toDouble() }.toFloat() / touch.size
-                    val span = (touch[0].position - touch[1].position).getDistance()
-                    if (wasSolo) {
-                        // 空窗回來：完整重錨（單指段丟掉）＋欠款清零。
-                        arbitrator.rebaseline(cx, cy, span)
-                        carryX = 0f
-                        carryY = 0f
-                        lastIds = ids
-                        wasSolo = false
-                        sightUptime = lastTwoFingerUptime
-                        sightLogged = false
-                    } else if (ids != lastIds) {
-                        if (lastIds.isEmpty()) {
-                            // 首見：完整錨定（起點必須定，否則從 (0,0) 起算必誤鎖）。
-                            arbitrator.rebaseline(cx, cy, span)
-                            sightUptime = lastTwoFingerUptime
-                            sightLogged = false
-                        } else {
-                            // 加指/換指：只重錨 span 系（PAN 賽局不斷、不跳），欠款清零。
-                            arbitrator.rebaselineSpan(span)
-                            carryX = 0f
-                            carryY = 0f
-                        }
-                        lastIds = ids
+                haveZoomFocus = false
+            }
+            fun endAll() {
+                if (gestureActive) {
+                    viewModel.setPinchActive(false)
+                    gestureActive = false
+                    lockedKind = null
+                    pdfViewModel.flushPendingRenders()
+                }
+                haveZoomFocus = false
+            }
+            // 捏合施加：zoom 幀 anchor-set 直接定狀態；factor==1 幀跟隨平滑 focus 漂移
+            //（舊碼捏合重心漂移照吃，行為保留，輸入換成平滑後的）。
+            fun applyZoom(fx: Float, fy: Float, factor: Float) {
+                if (!factor.isFinite() || factor.isNaN() || factor <= 0f) return
+                if (factor == 1f) {
+                    if (haveZoomFocus) {
+                        val dx = fx - lastZoomFx
+                        val dy = fy - lastZoomFy
+                        if (dx != 0f) viewModel.setPanOffsetX(clampPan(viewModel.panOffsetX.value + dx))
+                        if (dy != 0f) mainListState.dispatchRawDelta(-dy)
                     }
-                    val decision = arbitrator.onFrame(cx, cy, span)
-                    // 未定只攔新指：首指（down.id）放行不斷流（blankPan/原生繼續吃），
-                    // 新指全攔（內層 InkCanvas 起不了筆）；鎖定後照舊全攔。
-                    // 誤傷代價：雙指點按（本來就沒東西可點），可接受。
-                    if (decision is TwoFingerDecision.Undecided) {
-                        event.changes.filter { it.id != down.id }.forEach { it.consume() }
+                    lastZoomFx = fx
+                    lastZoomFy = fy
+                    haveZoomFocus = true
+                    return
+                }
+                val old = docZoom
+                val new = (old * factor).coerceIn(0.4f, 4f)
+                if (!new.isFinite() || new.isNaN() || new == old) return
+                val ratio = new / old
+                // 錨定在雙指中心 fx 下：內容點 = scrollX + fx - panX
+                //（整列被 panOffsetX 平移過，必須扣掉；不扣＝平移後再捏就偏）。
+                val panX = clampPan(viewModel.panOffsetX.value)
+                val currentScrollX = hScrollState.value
+                val maxScrollX = maxOf(0f, viewportWpx * (new - 1f))
+                val targetScrollX = ((currentScrollX + fx - panX) * ratio - fx + panX)
+                    .coerceIn(0f, maxScrollX)
+                viewModel.setDocZoom(new)
+                val deltaX = targetScrollX - currentScrollX
+                if (kotlin.math.abs(deltaX) > 0.5f) {
+                    hScrollState.dispatchRawDelta(deltaX)
+                }
+                // 垂直錨定 fy：uniform 紙高跟 zoom 線性走、縫/頂墊固定，直接定狀態一步到位
+                //（dispatchRawDelta 會跟框架原生保持疊加、每幀 1.8 倍飛走——禁，見 AGENTS）。
+                val paperHOld = paperHAtZoom(old)
+                val paperHNew = paperHAtZoom(new)
+                if (paperHOld > 0f && paperHNew > 0f) {
+                    val topPadPx = with(density) { 18.dp.toPx() }
+                    val itemFullOld = paperHOld + pageGapPx
+                    val scrollOld = topPadPx +
+                        mainListState.firstVisibleItemIndex * itemFullOld +
+                        mainListState.firstVisibleItemScrollOffset
+                    val relOld = (scrollOld + fy - topPadPx).coerceAtLeast(0f)
+                    val idx = (relOld / itemFullOld).toInt().coerceAtLeast(0)
+                    val fracOld = relOld - idx * itemFullOld
+                    val fracNew = if (fracOld <= paperHOld) {
+                        fracOld * paperHNew / paperHOld
                     } else {
-                        event.changes.forEach { it.consume() }
+                        // 落在縫裡：紙部縮放、縫部不動
+                        paperHNew + (fracOld - paperHOld)
                     }
-                    // 鎖定（PAN 或 PINCH）即立旗：墨水走同一 pinchActive 棄筆＋凍結，
-                    // 兩指 PAN 時寫筆邊緣捲不再跟主列表打架（垂直跳頁主因）。禁另起旗子。
-                    when (decision) {
-                        is TwoFingerDecision.Pan -> {
-                            if (!gestureActive) {
-                                // 診斷（臨時）：手掌誤算成第二指會在寫字時觸發此行，看數據定案後刪。
-                                // excluded＝被踢名單＋各自面積（面積案取證用）。
-                                android.util.Log.d("InkFlowGesture", "twoFingerLock=PAN pressed=${pressedAll.size} palms=${palmTouchMajors.toMap()} excluded=${pressedAll.filterNot { isCountedFinger(it) }.map { it.id.value to palmTouchMajors[it.id.value.toInt()] }}")
-                                viewModel.setPinchActive(true)
-                                gestureActive = true
-                                // 接管即殺：未跑完的慣性／舊動畫不許跟新手勢打架。
-                                flingJob?.cancel()
-                                flingJob = null
-                                pdfViewModel.setRendersPaused(true)
-                            }
-                            // 診斷（臨時）：單幀超大 dy＝重心跳變（閃頁嫌疑），抓 ids/cx/cy。
-                            if (kotlin.math.abs(decision.dy) > 150f) {
-                                android.util.Log.d("InkFlowGesture", "panSpike dy=${decision.dy} ids=$ids cx=$cx cy=$cy")
-                            }
-                            // 封頂欠款下期還：仲裁器已封頂 96，超的部分記帳下幀先還
-                            // （±300 上限），卡頓後 2~3 幀追上落點，不閃也不永久落後。
-                            val wantX = decision.dx + carryX
-                            val wantY = decision.dy + carryY
-                            val useX = wantX.coerceIn(-MAX_FRAME_DELTA_PX, MAX_FRAME_DELTA_PX)
-                            val useY = wantY.coerceIn(-MAX_FRAME_DELTA_PX, MAX_FRAME_DELTA_PX)
-                            carryX = (wantX - useX).coerceIn(-300f, 300f)
-                            carryY = (wantY - useY).coerceIn(-300f, 300f)
-                            if (useX != 0f) {
-                                viewModel.setPanOffsetX(clampPan(viewModel.panOffsetX.value + useX))
-                            }
-                            if (useY != 0f) {
-                                mainListState.dispatchRawDelta(-useY)
-                            }
+                    val scrollNew = topPadPx + idx * (paperHNew + pageGapPx) + fracNew
+                    // S_new = P_new − fy：在新版式下分解成 (index, offset) 直接定狀態。
+                    val relNew = (scrollNew - fy - topPadPx).coerceAtLeast(0f)
+                    val itemFullNew = paperHNew + pageGapPx
+                    val totalItems = mainListState.layoutInfo.totalItemsCount
+                    val idxNew = (relNew / itemFullNew).toInt().coerceAtLeast(0)
+                        .coerceAtMost((totalItems - 1).coerceAtLeast(0))
+                    val offNew = (relNew - idxNew * itemFullNew).coerceAtLeast(0f).toInt()
+                    android.util.Log.d("InkFlowPinch", "anchor2 old=$old new=$new cy=$fy idx=$idxNew off=$offNew first=${mainListState.firstVisibleItemIndex}+${mainListState.firstVisibleItemScrollOffset}")
+                    mainListState.requestScrollToItem(idxNew, offNew)
+                    android.util.Log.d("InkFlowPinch", "anchor2-post first=${mainListState.firstVisibleItemIndex}+${mainListState.firstVisibleItemScrollOffset}")
+                }
+                lastZoomFx = fx
+                lastZoomFy = fy
+                haveZoomFocus = true
+            }
+            fun apply(o: GestureStateMachine.Output?) {
+                machine.drainStart()?.let { startKind(it.kind) }
+                when (o) {
+                    // Start 永遠走 pendingStart（drainStart），這裡不會出現；分支只為窮舉。
+                    is GestureStateMachine.Output.GestureStart -> {}
+                    is GestureStateMachine.Output.ScrollBy -> {
+                        if (o.dx != 0f) {
+                            viewModel.setPanOffsetX(clampPan(viewModel.panOffsetX.value + o.dx))
                         }
-                        is TwoFingerDecision.Pinch -> {
-                            if (!gestureActive) {
-                                // 診斷（臨時）：同上。
-                                android.util.Log.d("InkFlowGesture", "twoFingerLock=PINCH pressed=${pressedAll.size} palms=${palmTouchMajors.toMap()} excluded=${pressedAll.filterNot { isCountedFinger(it) }.map { it.id.value to palmTouchMajors[it.id.value.toInt()] }}")
-                                viewModel.setPinchActive(true)
-                                gestureActive = true
-                                // 接管即殺：同上。
-                                flingJob?.cancel()
-                                flingJob = null
-                                pdfViewModel.setRendersPaused(true)
-                            }
-                            // 捏合重心漂移照吃：邊捏邊移時內容跟手，否則錨點丟失＝偏心感。
-                            if (decision.dx != 0f) {
-                                viewModel.setPanOffsetX(clampPan(viewModel.panOffsetX.value + decision.dx))
-                            }
-                            if (decision.dy != 0f) {
-                                mainListState.dispatchRawDelta(-decision.dy)
-                            }
-                            if (decision.zoomFactor.isFinite() && !decision.zoomFactor.isNaN() && decision.zoomFactor > 0f && decision.zoomFactor != 1f) {
-                                val old = docZoom
-                                val new = (old * decision.zoomFactor).coerceIn(0.4f, 4f)
-                                if (new.isFinite() && !new.isNaN() && new != old) {
-                                    val ratio = new / old
-                                    // 錨定在雙指中心 cx 下：內容點 = scrollX + cx - panX
-                                    //（整列被 panOffsetX 平移過，必須扣掉；不扣＝平移後再捏就偏）。
-                                    // 垂直見下方 cy 錨定（直接定狀態一步到位）。
-                                    val panX = clampPan(viewModel.panOffsetX.value)
-                                    val currentScrollX = hScrollState.value
-                                    val maxScrollX = maxOf(0f, viewportWpx * (new - 1f))
-                                    val targetScrollX = ((currentScrollX + cx - panX) * ratio - cx + panX)
-                                        .coerceIn(0f, maxScrollX)
-                                    viewModel.setDocZoom(new)
-                                    val deltaX = targetScrollX - currentScrollX
-                                    if (kotlin.math.abs(deltaX) > 0.5f) {
-                                        hScrollState.dispatchRawDelta(deltaX)
-                                    }
-                                    // 垂直錨定 cy：uniform 紙高跟 zoom 線性走、縫/頂墊固定。
-                                    // 直接定狀態（scrollToItem 同步）：dispatchRawDelta 會跟框架的
-                                    // (index,offset) 原生保持雙重施加、每幀約 1.8 倍指數飛走（實測）。
-                                    // 這裡把 cy 下的內容點換算成新版式的 (index,offset)，一步寫死，
-                                    // 重組保持的就是目標本身，無伺服、無疊加。
-                                    val paperHOld = paperHAtZoom(old)
-                                    val paperHNew = paperHAtZoom(new)
-                                    if (paperHOld > 0f && paperHNew > 0f) {
-                                        val topPadPx = with(density) { 18.dp.toPx() }
-                                        val itemFullOld = paperHOld + pageGapPx
-                                        val scrollOld = topPadPx +
-                                            mainListState.firstVisibleItemIndex * itemFullOld +
-                                            mainListState.firstVisibleItemScrollOffset
-                                        val relOld = (scrollOld + cy - topPadPx).coerceAtLeast(0f)
-                                        val idx = (relOld / itemFullOld).toInt().coerceAtLeast(0)
-                                        val fracOld = relOld - idx * itemFullOld
-                                        val fracNew = if (fracOld <= paperHOld) {
-                                            fracOld * paperHNew / paperHOld
-                                        } else {
-                                            // 落在縫裡：紙部縮放、縫部不動
-                                            paperHNew + (fracOld - paperHOld)
-                                        }
-                                        val scrollNew = topPadPx + idx * (paperHNew + pageGapPx) + fracNew
-                                        // S_new = P_new − cy：在新版式下分解成 (index, offset) 直接定狀態。
-                                        val relNew = (scrollNew - cy - topPadPx).coerceAtLeast(0f)
-                                        val itemFullNew = paperHNew + pageGapPx
-                                        val totalItems = mainListState.layoutInfo.totalItemsCount
-                                        val idxNew = (relNew / itemFullNew).toInt().coerceAtLeast(0)
-                                            .coerceAtMost((totalItems - 1).coerceAtLeast(0))
-                                        val offNew = (relNew - idxNew * itemFullNew).coerceAtLeast(0f).toInt()
-                                        // 診斷（臨時）：驗證收斂 + request 是否同步（調用後立刻讀，相等＝同步）。
-                                        android.util.Log.d("InkFlowPinch", "anchor2 old=$old new=$new cy=$cy idx=$idxNew off=$offNew first=${mainListState.firstVisibleItemIndex}+${mainListState.firstVisibleItemScrollOffset}")
-                                        mainListState.requestScrollToItem(idxNew, offNew)
-                                        android.util.Log.d("InkFlowPinch", "anchor2-post first=${mainListState.firstVisibleItemIndex}+${mainListState.firstVisibleItemScrollOffset}")
-                                    }
-                                }
-                            }
-                        }
-                        else -> {
-                            // 未定：已在上方預 consume，只等 slop 判決。
-                            // 卡死取證：起點 500ms 後還未定，打一次（此時手指請繼續畫圈）。
-                            if (!sightLogged && sightUptime > 0L &&
-                                lastTwoFingerUptime - sightUptime > 500L
-                            ) {
-                                sightLogged = true
-                                android.util.Log.d(
-                                    "InkFlowGesture",
-                                    "stuckRace ids=$ids majors=${touch.map { it.id.value to palmTouchMajors[it.id.value.toInt()] }} cancelled=${touch.map { it.id.value }.filter { it.toInt() in cancelledIds }}"
-                                )
-                            }
+                        if (o.dy != 0f) {
+                            mainListState.dispatchRawDelta(-o.dy)
                         }
                     }
-                } else {
-                    // 瞬斷寬限：剩一指≠結束（抬指調整常見），400ms 內回來不斷流；
-                    // 回來先重錨（wasSolo），單指段位移不算進雙指。超時或全放開才真正結束。
-                    // 筆出現＝拿筆要寫了：不等寬限，直接重開（墨水一刻不等）。
-                    val now = event.changes.maxOf { it.uptimeMillis }
-                    wasSolo = true
-                    if (event.changes.any { it.pressed && it.type == PointerType.Stylus }) {
-                        arbitrator.reset()
-                        lastIds = emptySet()
-                        if (gestureActive) {
-                            viewModel.setPinchActive(false)
-                            gestureActive = false
-                            pdfViewModel.flushPendingRenders()
-                        }
-                        break
+                    is GestureStateMachine.Output.ZoomBy -> applyZoom(o.focusX, o.focusY, o.factor)
+                    is GestureStateMachine.Output.GestureEnd -> {
+                        android.util.Log.d("InkFlowGesture", "m2End=${o.kind}")
+                        endAll()
                     }
-                    // 影子取證：明明兩指壓著卻湊不齊 2 隻（被踢掉），2 秒打一次。
-                    if (pressedAll.size >= 2 && now - lastShadowLog > 2000L) {
-                        lastShadowLog = now
-                        android.util.Log.d(
-                            "InkFlowGesture",
-                            "shadowed pressed=${pressedAll.map { it.id.value }} majors=${pressedAll.map { it.id.value to palmTouchMajors[it.id.value.toInt()] }}"
+                    GestureStateMachine.Output.YieldToStylus,
+                    GestureStateMachine.Output.AbortGesture -> {
+                        android.util.Log.d("InkFlowGesture", "m2$o")
+                        fedIds.clear() // 下幀還壓著的手指當新起點重吃（舊 reset 語義）
+                        endAll()
+                    }
+                    null -> {}
+                }
+            }
+            try {
+                run {
+                    val id = down.id.value.toInt()
+                    if (down.type == PointerType.Stylus) {
+                        apply(machine.stylusDown())
+                        return@awaitEachGesture
+                    }
+                    if (id !in cancelledIds) {
+                        fedIds.add(id)
+                        apply(
+                            machine.pointerDown(
+                                id, down.position.x, down.position.y,
+                                isPalmPointer(down.id.value), startedBlank, down.uptimeMillis
+                            )
                         )
                     }
-                    if (now - lastTwoFingerUptime > 400L) {
-                        arbitrator.reset()
-                        lastIds = emptySet()
-                        if (gestureActive) {
-                            viewModel.setPinchActive(false)
-                            gestureActive = false
-                            pdfViewModel.flushPendingRenders()
+                }
+                while (true) {
+                    val event = awaitPointerEvent()
+                    val now = event.changes.maxOf { it.uptimeMillis }
+                    // 筆出現＝拿筆要寫了：不等寬限，直接重開（墨水一刻不等，凍結契約）。
+                    if (event.changes.any { it.pressed && it.type == PointerType.Stylus }) {
+                        apply(machine.stylusDown())
+                        endAll()
+                        return@awaitEachGesture
+                    }
+                    val pressed = event.changes.filter { it.pressed }
+                    for (c in event.changes) {
+                        val id = c.id.value.toInt()
+                        if (!c.pressed && id in fedIds) {
+                            fedIds.remove(id)
+                            apply(machine.pointerUp(id, id in cancelledIds, now))
                         }
                     }
-                }
-            }
-        }
-    }
-    // 空白區單指二維拖曳：起點在空白才接管（紙上單指一律放過，繪圖/直捲不受影響），
-    // 之後 dx→panOffsetX、dy→主列表同步位移——斜上斜下自然支援，與雙指 Pan 同一語義。
-    // 零 slop 接管：第一個 move 像素即 consume，內層 LazyColumn 的 slop 永遠湊不滿、
-    // 整段手勢只有這裡在施加——之前用 detectDragGestures 跟原生捲動跑 slop 競賽，
-    // 原生先過的那次整段垂直被獨佔（consume 不分軸，dx 全死），就是「有時只能走直線」。
-    // 手寫 awaitPointerEvent 迴圈：被別人 consume 的幀只跳過不死（雙指接管時自動讓路，不雙重施加）。
-    val blankPanModifier = Modifier.pointerInput(Unit) {
-        awaitEachGesture {
-            val down = awaitFirstDown(requireUnconsumed = false)
-            if (isPalmPointer(down.id.value)) return@awaitEachGesture // 手掌先落：不接管
-            if (!isBlankX(down.position.x)) return@awaitEachGesture
-            // 起手殺舊 glide：甩完立刻再按住拖，不疊加不亂飛（跟雙指接管同規）。
-            flingJob?.cancel()
-            flingJob = null
-            val bTracker = VelocityTracker()
-            var bPoints = 0
-            var bT0 = 0L
-            var bCarry = Offset.Zero // 封頂欠款：同雙指，下幀先還
-            var sawPinch = false // 這輩子見過雙指接管：放手不射（影子跟隨的 glide 是驚嚇不是慣性）
-            while (true) {
-                val event = awaitPointerEvent()
-                // 第二根「手指」出現：整段手勢作廢，交給雙指修飾——手掌不算；
-                // 筆出現也讓路（畫布不能在筆下漂移）。手掌貼著時不作廢，否則一動就死。
-                val counted = event.changes.count { it.pressed && isCountedFinger(it) }
-                val stylusDown = event.changes.any { it.pressed && it.type == PointerType.Stylus }
-                if (counted > 1 || stylusDown) return@awaitEachGesture
-                if (viewModel.pinchActive.value) sawPinch = true
-                val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                if (!change.pressed) {
-                    // 放手慣性（單手）：品質門同舊制（點數≥3、跨度≥50ms），垃圾速度點不著火。
-                    val vy = runCatching { bTracker.calculateVelocity().y }.getOrDefault(0f)
-                    val span = if (bPoints > 0) change.uptimeMillis - bT0 else 0L
-                    android.util.Log.d("InkFlowGesture", "flingCheckBlank vy=$vy points=$bPoints span=$span")
-                    val minFling = viewConfiguration.minimumFlingVelocity * 3f
-                    if (!sawPinch && vy.isFinite() && bPoints >= 3 && span >= 50L && kotlin.math.abs(vy) > minFling) {
-                        flingJob?.cancel()
-                        flingJob = gestureScope.launch {
-                            mainListState.scroll {
-                                with(flingBehavior) {
-                                    performFling((-vy).coerceIn(-8000f, 8000f))
-                                }
-                            }
+                    for (c in pressed) {
+                        val id = c.id.value.toInt()
+                        if (id !in fedIds && id !in cancelledIds && c.type == PointerType.Touch) {
+                            fedIds.add(id)
+                            apply(
+                                machine.pointerDown(
+                                    id, c.position.x, c.position.y,
+                                    isPalmPointer(c.id.value), startedBlank, now
+                                )
+                            )
                         }
                     }
-                    break // up/cancel：tap 原樣放過（上面沒 consume 的話）
-                }
-                bTracker.addPosition(change.uptimeMillis, change.position)
-                if (bPoints == 0) bT0 = change.uptimeMillis
-                bPoints++
-                val delta = change.positionChange()
-                // 單幀封頂＋欠款下期還：與雙指同理（見 MAX_FRAME_DELTA_PX），不斷流不丟失。
-                val want = Offset(
-                    (delta + bCarry).x.coerceIn(-MAX_FRAME_DELTA_PX, MAX_FRAME_DELTA_PX),
-                    (delta + bCarry).y.coerceIn(-MAX_FRAME_DELTA_PX, MAX_FRAME_DELTA_PX)
-                )
-                bCarry = Offset(
-                    (delta.x + bCarry.x - want.x).coerceIn(-300f, 300f),
-                    (delta.y + bCarry.y - want.y).coerceIn(-300f, 300f)
-                )
-                if (want != Offset.Zero && !change.isConsumed) {
-                    change.consume()
-                    if (want.x != 0f) {
-                        viewModel.setPanOffsetX(clampPan(viewModel.panOffsetX.value + want.x))
+                    if (pressed.isEmpty()) {
+                        endAll()
+                        break
                     }
-                    if (want.y != 0f) {
-                        mainListState.dispatchRawDelta(-want.y)
+                    val snap = pressed
+                        .filter { it.id.value.toInt() in fedIds }
+                        .associate { it.id.value.toInt() to Pt(it.position.x, it.position.y) }
+                    apply(machine.tick(now))
+                    apply(machine.pointerMove(snap, now))
+                    if (startedBlank || gestureActive) {
+                        pressed.forEach { it.consume() }
+                    } else {
+                        // 起點紙上未定：只攔新指，首指放行（墨水/原生繼續吃，不斷流）。
+                        pressed.filter { it.id != down.id }.forEach { it.consume() }
                     }
                 }
+            } catch (e: CancellationException) {
+                apply(machine.cancelAll())
+                endAll()
             }
+            endAll()
         }
     }
     val showSelectionBubble = activeTool == Tool.LASSO && hasSelection && !isExtracting
@@ -644,7 +531,6 @@ internal fun Workspace(
                 false
             }
             .then(twoFingerModifier)
-            .then(blankPanModifier)
     ) {
         // 列表恒满视口宽（无死角）；纸在 item 内按比例缩、居中
         val listWdp = with(density) { (viewportWpx.toFloat() * maxOf(docZoom, 1f)).toDp() }
@@ -662,7 +548,10 @@ internal fun Workspace(
                     // 橫移：整列水平位移（offset 直給，無大圖層、無 spring）
                     .offset { IntOffset(clampedPanX.roundToInt(), 0) },
                 contentPadding = PaddingValues(vertical = 18.dp),
-                verticalArrangement = Arrangement.spacedBy(18.dp)
+                verticalArrangement = Arrangement.spacedBy(18.dp),
+                // M2：關系統橡皮筋（頂/底邊緣拉伸回彈跟手勢代碼無關，之前十幾輪修錯地方；
+                // 紙縫和邊界就是視覺邊界，不需要第二套）。只關主列表，側欄/對話框不動。
+                overscrollEffect = null
             ) {
         items(pageCount, key = { it }) { index ->
             val aspect = uniformAspect
