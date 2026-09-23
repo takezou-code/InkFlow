@@ -244,7 +244,9 @@ fun paginateAiBlocks(
     marginH: Float = 48f,
     marginTop: Float = 64f,
     marginBottom: Float = 64f,
-    blockGap: Float = 14f
+    blockGap: Float = 14f,
+    // 接續前頁：首頁游標起始高度（預設 marginTop = 舊行為，從空白頁頂開始排）
+    startTop: Float = marginTop
 ): List<List<Placed>> {
     // 與 InkCanvas 同字體/字號量測（DEFAULT_BOLD），行高公式與渲染器一致
     val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
@@ -261,7 +263,7 @@ fun paginateAiBlocks(
 
     val pages = mutableListOf<MutableList<Placed>>()
     var cur = mutableListOf<Placed>()
-    var cursorTop = marginTop
+    var cursorTop = startTop
     fun newPage() {
         if (cur.isNotEmpty()) pages.add(cur)
         cur = mutableListOf()
@@ -315,6 +317,63 @@ fun paginateAiBlocks(
     }
     if (cur.isNotEmpty()) pages.add(cur)
     return pages
+}
+
+// ---- 接續前頁：sourcePage 是自家頁且下方有空間 → 首頁從 contentBottom 往下排 ----
+
+/** 接續安全墊（量測底再往下墊，防疊字）。 */
+const val CONTINUE_SAFETY_PAD = 8f
+/** 自家頁白紙門檻（原生 PDF 有字通常 <0.95；自家墨壓不下來）。 */
+const val SELF_PAGE_WHITE = 0.98f
+
+/** 自家頁判定：DB 非空＋紙大致白。 */
+fun isSelfPage(dbEmpty: Boolean, whiteRatio: Float, whiteThreshold: Float = SELF_PAGE_WHITE): Boolean =
+    !dbEmpty && whiteRatio >= whiteThreshold
+
+/** 字 metrics（與 InkCanvas/PageWorkspace 同公式：首行 baseline＋fontMetrics 行高；已對實現驗過）。 */
+fun textMetricsOf(fontSize: Float): Pair<Float, Float> {
+    val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { textSize = fontSize }
+    val fm = p.fontMetrics
+    return (-fm.ascent + fm.descent + fm.leading) to fm.descent
+}
+
+/**
+ * 量 contentBottom（model pt）。null = 不接續（stamp 高度算不準／metrics 異常）。
+ * 筆用快取 boundsBottom；字 = 首行 baseline＋(n-1)行高＋descent
+ * （螢幕本來就不折行，\n 行數即行數，免 StaticLayout）；
+ * 圖用 modelY＋H（rotation 極少，安全墊吸收）。
+ */
+fun measureContentBottom(
+    strokes: List<com.vic.inkflow.data.StrokeEntity>,
+    texts: List<com.vic.inkflow.data.TextAnnotationEntity>,
+    images: List<com.vic.inkflow.data.ImageAnnotationEntity>,
+    metrics: (Float) -> Pair<Float, Float> = ::textMetricsOf
+): Float? {
+    if (texts.any { it.isStamp }) return null
+    var bottom = 0f
+    for (s in strokes) bottom = maxOf(bottom, s.boundsBottom)
+    for (t in texts) {
+        val (lineH, descent) = metrics(t.fontSize)
+        if (lineH <= 0f) return null
+        val n = t.text.split("\n").size.coerceAtLeast(1)
+        bottom = maxOf(bottom, t.modelY + (n - 1) * lineH + descent)
+    }
+    for (img in images) bottom = maxOf(bottom, img.modelY + img.modelHeight)
+    return bottom
+}
+
+/** 剩餘空間夠兩行才接續；回傳首頁起始游標（已含安全墊），不夠回 null。 */
+fun continueTop(
+    contentBottom: Float,
+    modelH: Float,
+    importLineH: Float,
+    marginTop: Float = 64f,
+    marginBottom: Float = 64f,
+    blockGap: Float = 14f
+): Float? {
+    val top = maxOf(contentBottom + CONTINUE_SAFETY_PAD, marginTop)
+    val room = modelH - marginBottom - top
+    return if (room >= 2 * importLineH + blockGap) top else null
 }
 
 // ---- M4b：LaTeX → Unicode 可讀版（免渲染引擎、離線即時；程式碼 fence 不進這裡） ----
