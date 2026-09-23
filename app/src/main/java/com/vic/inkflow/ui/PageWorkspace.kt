@@ -26,6 +26,7 @@ import com.vic.inkflow.util.DocTransform
 import com.vic.inkflow.util.GestureStateMachine
 import com.vic.inkflow.util.PalmRejectionFilter
 import com.vic.inkflow.util.Pt
+import com.vic.inkflow.util.TraceRecorder
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.horizontalScroll
@@ -228,6 +229,9 @@ internal fun Workspace(
     // 不再另加一份 centroid-drift dispatch（舊碼兩份同施＝飄的嫌疑犯之一）。
     val twoFingerModifier = Modifier.pointerInput(Unit) {
         val machine = GestureStateMachine(touchSlopPx = viewConfiguration.touchSlop)
+        // 嚴謹量測：每幀記「手指在哪／紙在哪」，手勢結束一次倒出來（tag InkFlowTrace），
+        // 離線算接合延遲、跟手保真度、抖動、放手後位移。不再憑感覺。
+        val tracer = TraceRecorder()
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false)
             val startedBlank = isBlankX(down.position.x)
@@ -331,6 +335,17 @@ internal fun Workspace(
                 lastZoomFy = fy
                 haveZoomFocus = true
             }
+            fun summarize(o: GestureStateMachine.Output?): String = when (o) {
+                null -> "-"
+                is GestureStateMachine.Output.ScrollBy ->
+                    "S(${o.dx.toInt()},${o.dy.toInt()})"
+                is GestureStateMachine.Output.ZoomBy ->
+                    "Z(${o.factor},${o.focusX.toInt()},${o.focusY.toInt()})"
+                is GestureStateMachine.Output.GestureEnd -> "E(${o.kind})"
+                is GestureStateMachine.Output.GestureStart -> "B(${o.kind})"
+                GestureStateMachine.Output.YieldToStylus -> "Y"
+                GestureStateMachine.Output.AbortGesture -> "A"
+            }
             fun apply(o: GestureStateMachine.Output?) {
                 machine.drainStart()?.let { startKind(it.kind) }
                 when (o) {
@@ -348,12 +363,14 @@ internal fun Workspace(
                     is GestureStateMachine.Output.GestureEnd -> {
                         android.util.Log.d("InkFlowGesture", "m2End=${o.kind}")
                         endAll()
+                        tracer.flush("END-${o.kind}").forEach { android.util.Log.d("InkFlowTrace", it) }
                     }
                     GestureStateMachine.Output.YieldToStylus,
                     GestureStateMachine.Output.AbortGesture -> {
                         android.util.Log.d("InkFlowGesture", "m2$o")
                         fedIds.clear() // 下幀還壓著的手指當新起點重吃（舊 reset 語義）
                         endAll()
+                        tracer.flush("$o").forEach { android.util.Log.d("InkFlowTrace", it) }
                     }
                     null -> {}
                 }
@@ -411,8 +428,23 @@ internal fun Workspace(
                     val snap = pressed
                         .filter { it.id.value.toInt() in fedIds }
                         .associate { it.id.value.toInt() to Pt(it.position.x, it.position.y) }
-                    apply(machine.tick(now))
-                    apply(machine.pointerMove(snap, now))
+                    val o1 = machine.tick(now)
+                    apply(o1)
+                    val o2 = machine.pointerMove(snap, now)
+                    apply(o2)
+                    // 施加後立刻讀列表位置（同步已驗證）：手指 vs 紙，同一幀。
+                    tracer.frame(
+                        now = now,
+                        fingers = pressed
+                            .filter { it.type == PointerType.Touch && !isPalmPointer(it.id.value) }
+                            .map { Pt(it.position.x, it.position.y) },
+                        state = machine.state.name,
+                        out = "${summarize(o1)}|${summarize(o2)}",
+                        listIndex = mainListState.firstVisibleItemIndex,
+                        listOffset = mainListState.firstVisibleItemScrollOffset,
+                        panX = viewModel.panOffsetX.value,
+                        zoom = viewModel.docZoom.value
+                    )
                     if (startedBlank || gestureActive) {
                         pressed.forEach { it.consume() }
                     } else {
@@ -554,7 +586,11 @@ internal fun Workspace(
                 verticalArrangement = Arrangement.spacedBy(18.dp),
                 // M2：關系統橡皮筋（頂/底邊緣拉伸回彈跟手勢代碼無關，之前十幾輪修錯地方；
                 // 紙縫和邊界就是視覺邊界，不需要第二套）。只關主列表，側欄/對話框不動。
-                overscrollEffect = null
+                overscrollEffect = null,
+                // 單一寫者：原生拖曳/slop/fling 全關。之前原生列表自己捲、我們又從外面推，
+                // 放手後原生還會用它偷看到的速度自己射 fling（殺不掉、看不見＝影子 glide）。
+                // 關掉後手勢迴圈是唯一寫者；程式化寫入（dispatch/request）不受影響。
+                userScrollEnabled = false
             ) {
         items(pageCount, key = { it }) { index ->
             val aspect = uniformAspect
