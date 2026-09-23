@@ -153,6 +153,46 @@ class GestureArbitratorTest {
     }
 
     @Test
+    fun panUpgradeNeedsOnlyOneSlop() {
+        // 自然捏合：span 開 40（> 1x spanSlop=33）就該升級，不要等到 2x。
+        val a = arb()
+        a.onFrame(500f, 800f, 200f)
+        var d = a.onFrame(500f, 860f, 200f)
+        assertTrue("should lock PAN first, got $d", d is TwoFingerDecision.Pan)
+        d = a.onFrame(500f, 865f, 240f)
+        assertTrue("40px span open must upgrade, got $d", d is TwoFingerDecision.Pinch)
+        assertTrue(a.isPinching)
+    }
+
+    @Test
+    fun fingerJoinKeepsPanRaceAlive() {
+        // 加指不重開 PAN 賽局：起點保留，累計位移照算，照樣鎖得上。
+        val a = arb()
+        a.onFrame(500f, 800f, 200f)
+        var d = a.onFrame(510f, 800f, 200f)
+        assertTrue("10px must stay Undecided, got $d", d is TwoFingerDecision.Undecided)
+        a.rebaselineSpan(200f) // 第三指加入（span 書籤同步，不動賽局起點）
+        d = a.onFrame(525f, 800f, 200f)
+        assertTrue("cumulative 25px must lock PAN, got $d", d is TwoFingerDecision.Pan)
+        assertTrue(a.isPanning)
+    }
+
+    @Test
+    fun joinSpanJumpProducesNoZoomSpike() {
+        // 加指造成 span 跳變：平滑器重錨後首幀係數必須是 1（不跳）。
+        val a = arb()
+        a.onFrame(500f, 800f, 200f)
+        var d = a.onFrame(500f, 800f, 260f)
+        assertTrue("should lock PINCH, got $d", d is TwoFingerDecision.Pinch)
+        a.rebaselineSpan(400f)
+        d = a.onFrame(500f, 800f, 400f)
+        assertTrue("must stay PINCH, got $d", d is TwoFingerDecision.Pinch)
+        if (d is TwoFingerDecision.Pinch) {
+            assertEquals(1f, d.zoomFactor, 0f)
+        }
+    }
+
+    @Test
     fun frameDeltaIsCapped() {
         val a = arb()
         a.onFrame(500f, 800f, 200f)
