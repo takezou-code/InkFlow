@@ -50,6 +50,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
+import androidx.compose.foundation.gestures.ScrollableDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
@@ -62,6 +63,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateSetOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -74,6 +76,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.onSizeChanged
 import android.content.Context
 import android.net.Uri
@@ -88,6 +91,7 @@ import androidx.compose.ui.zIndex
 import com.vic.inkflow.data.AppDatabase
 import com.vic.inkflow.ui.theme.BrandIndigo
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
@@ -137,7 +141,12 @@ internal fun Workspace(
     var viewportWpx by remember { mutableIntStateOf(0) }
 
     val density = LocalDensity.current
-    // 手勢慣性已刪除（M2 規格：手指離開即停，fling 兩條全退役）。
+    // 單指慣性（空白單指放手 glide）：唯一合法的動量源。原生捲動已關，
+    // 這條是唯一的 fling：接管即殺（新手勢/雙指鎖/筆），禁多重排隊。雙指放手即停（不變）。
+    val gestureScope = rememberCoroutineScope()
+    var flingJob by remember { mutableStateOf<Job?>(null) }
+    // 原生 fling 行為（spline 衰減）：只驅動 dispatch，不經原生手勢，無打架。
+    val flingBehavior = ScrollableDefaults.flingBehavior()
     // 頁間隙 px：必須與下方 LazyColumn 的 Arrangement.spacedBy(18.dp) 一致（跨頁分段用）
     val pageGapPx = with(density) { 18.dp.toPx() }
     val bubbleGapPx = with(density) { 12.dp.toPx() }
@@ -241,8 +250,16 @@ internal fun Workspace(
             var lastZoomFx = 0f
             var lastZoomFy = 0f
             var haveZoomFocus = false
+            // 單指速度追蹤（放手 glide 用）：只追空白單指，紙上單指是墨水的不產慣性。
+            val sTracker = VelocityTracker()
+            var sPoints = 0
+            var sT0 = 0L
+            var endedKind: GestureStateMachine.Kind? = null
 
             fun startKind(kind: GestureStateMachine.Kind) {
+                // 再按住即殺 glide（新起點不疊加不亂飛）。
+                flingJob?.cancel()
+                flingJob = null
                 if (kind == GestureStateMachine.Kind.SINGLE_PAN) return // 空白單指不立旗（舊制）
                 if (!gestureActive) {
                     android.util.Log.d("InkFlowGesture", "m2Lock=$kind blank=$startedBlank")
@@ -362,6 +379,7 @@ internal fun Workspace(
                     is GestureStateMachine.Output.ZoomBy -> applyZoom(o.focusX, o.focusY, o.factor)
                     is GestureStateMachine.Output.GestureEnd -> {
                         android.util.Log.d("InkFlowGesture", "m2End=${o.kind}")
+                        endedKind = o.kind
                         endAll()
                         tracer.flush("END-${o.kind}").forEach { android.util.Log.d("InkFlowTrace", it) }
                     }
@@ -377,6 +395,9 @@ internal fun Workspace(
             }
             try {
                 run {
+                    // 新起點殺舊 glide：甩完立刻再按住，不疊加不亂飛。
+                    flingJob?.cancel()
+                    flingJob = null
                     val id = down.id.value.toInt()
                     if (down.type == PointerType.Stylus) {
                         apply(machine.stylusDown())
@@ -422,6 +443,25 @@ internal fun Workspace(
                         }
                     }
                     if (pressed.isEmpty()) {
+                        // 單指放手 glide：只許 SINGLE_PAN（空白單指），雙指/筆/取消一律定住。
+                        // 品質門（點數≥3、跨度≥50ms、>3 倍 minFling）：垃圾速度點不著火。
+                        if (endedKind == GestureStateMachine.Kind.SINGLE_PAN) {
+                            val vy = runCatching { sTracker.calculateVelocity().y }.getOrDefault(0f)
+                            val span = if (sPoints > 0) now - sT0 else 0L
+                            val minFling = viewConfiguration.minimumFlingVelocity * 3f
+                            if (vy.isFinite() && sPoints >= 3 && span >= 50L &&
+                                kotlin.math.abs(vy) > minFling
+                            ) {
+                                flingJob?.cancel()
+                                flingJob = gestureScope.launch {
+                                    mainListState.scroll {
+                                        with(flingBehavior) {
+                                            performFling((-vy).coerceIn(-8000f, 8000f))
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         endAll()
                         break
                     }
@@ -432,6 +472,15 @@ internal fun Workspace(
                     apply(o1)
                     val o2 = machine.pointerMove(snap, now)
                     apply(o2)
+                    // 單指速度取樣（glide 用）：單指＋空白才記，雙指幀不污染速度。
+                    if (pressed.size == 1 && startedBlank) {
+                        val c = pressed[0]
+                        if (c.id.value.toInt() in fedIds) {
+                            sTracker.addPosition(c.uptimeMillis, c.position)
+                            if (sPoints == 0) sT0 = c.uptimeMillis
+                            sPoints++
+                        }
+                    }
                     // 施加後立刻讀列表位置（同步已驗證）：手指 vs 紙，同一幀。
                     tracer.frame(
                         now = now,
