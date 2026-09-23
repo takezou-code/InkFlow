@@ -277,7 +277,10 @@ internal fun Workspace(
                     haveZoomFocus = true
                     return
                 }
-                val old = docZoom
+                // pointerInput(Unit) 只跑一次：閉包裡的 docZoom delegate 是陳舊快照，
+                // 必須讀 viewModel.docZoom.value（新鮮值），否則每幀都拿初始值乘，
+                // zoom 永遠不疊加＝捏合看起來死了（AGENTS 快照訂閱地雷同族）。
+                val old = viewModel.docZoom.value
                 val new = (old * factor).coerceIn(0.4f, 4f)
                 if (!new.isFinite() || new.isNaN() || new == old) return
                 val ratio = new / old
