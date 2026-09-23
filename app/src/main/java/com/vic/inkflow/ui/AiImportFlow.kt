@@ -347,7 +347,7 @@ suspend fun resolveContinueTop(
             Log.d("InkFlowDbg", "CONTINUE skip p=$sourcePage ratio=$ratio (native?)")
             return null
         }
-        val bottom = measureContentBottom(strokes, texts, images) ?: run {
+        val bottom = measureContentBottom(strokes.map { it.stroke }, texts, images) ?: run {
             Log.d("InkFlowDbg", "CONTINUE skip p=$sourcePage unmeasurable (stamp?)")
             return null
         }
