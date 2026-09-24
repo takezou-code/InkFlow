@@ -487,6 +487,53 @@ private fun GlassDialogFrame(
     }
 }
 
+/** 分段選擇條：單顆玻璃槽＋選中藥丸＋按壓掃光，設定頁那種選項列走這裡，不單擺 chips。 */
+@Composable
+fun GlassSegmentedBar(
+    options: List<String>,
+    selectedIndex: Int,
+    onSelect: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+    isDark: Boolean = MaterialTheme.colorScheme.background.luminance() < 0.5f
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .fauxGlassPanel(isDark, CircleShape)
+            .padding(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        options.forEachIndexed { idx, label ->
+            val selected = idx == selectedIndex
+            val pillAlpha by animateFloatAsState(
+                targetValue = if (selected) 1f else 0f,
+                animationSpec = tween(180),
+                label = "SegmentPill"
+            )
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(CircleShape)
+                    .glassClickable(onClick = { onSelect(idx) }, shape = CircleShape)
+                    .background(
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.28f * pillAlpha),
+                        shape = CircleShape
+                    )
+                    .padding(vertical = 10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = if (selected) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
 /** 對話框選項丸（取代 M3 FilterChip）：選中靛底＋白字，未選中半透明＋主色字，零 M3 chrome。 */
 @Composable
 fun GlassOptionChip(

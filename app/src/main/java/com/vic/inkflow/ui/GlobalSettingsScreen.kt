@@ -210,79 +210,42 @@ fun GlobalSettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
                 )
-                FlowRow(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    BackdropKind.values().forEach { k ->
-                        GlassOptionChip(
-                            text = when (k) {
-                                BackdropKind.ORB -> "泡泡"
-                                BackdropKind.SCENE -> "特效"
-                                BackdropKind.IMAGE -> "圖片"
-                            },
-                            selected = kind == k,
-                            onClick = {
-                                kind = k
-                                prefs.edit().putString("backdrop_kind", k.name).apply()
-                                onBackdropKindChanged(k)
-                            }
-                        )
-                    }
-                }
+                GlassSegmentedBar(
+                    options = listOf("泡泡", "特效", "圖片"),
+                    selectedIndex = BackdropKind.values().indexOf(kind),
+                    onSelect = { idx ->
+                        val k = BackdropKind.values()[idx]
+                        kind = k
+                        prefs.edit().putString("backdrop_kind", k.name).apply()
+                        onBackdropKindChanged(k)
+                    },
+                    modifier = Modifier.padding(horizontal = 16.dp)
+                )
                 if (kind == BackdropKind.ORB) {
-                    FlowRow(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        BackdropTheme.values().forEach { t ->
-                            GlassOptionChip(
-                                text = when (t) {
-                                    BackdropTheme.SOFT -> "柔光"
-                                    BackdropTheme.VIVID -> "熾霞"
-                                    BackdropTheme.NIGHT -> "墨夜"
-                                    BackdropTheme.CLEAN -> "素"
-                                },
-                                selected = backdrop == t,
-                                onClick = {
-                                    backdrop = t
-                                    prefs.edit().putString("backdrop_theme", t.name).apply()
-                                    onBackdropThemeChanged(t)
-                                }
-                            )
-                        }
-                    }
+                    GlassSegmentedBar(
+                        options = listOf("柔光", "熾霞", "墨夜", "素"),
+                        selectedIndex = BackdropTheme.values().indexOf(backdrop),
+                        onSelect = { idx ->
+                            val t = BackdropTheme.values()[idx]
+                            backdrop = t
+                            prefs.edit().putString("backdrop_theme", t.name).apply()
+                            onBackdropThemeChanged(t)
+                        },
+                        modifier = Modifier.padding(horizontal = 16.dp)
+                    )
                 }
                 if (kind == BackdropKind.SCENE) {
-                    FlowRow(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        BackdropScene.values().forEach { s ->
-                            GlassOptionChip(
-                                text = when (s) {
-                                    BackdropScene.NEON_CITY -> "霓城"
-                                    BackdropScene.DUNE -> "沙丘"
-                                    BackdropScene.TIDE -> "汐"
-                                },
-                                selected = scene == s,
-                                onClick = {
-                                    scene = s
-                                    prefs.edit().putString("backdrop_scene", s.name).apply()
-                                    onBackdropSceneChanged(s)
-                                }
-                            )
-                        }
-                    }
+                    GlassSegmentedBar(
+                        options = listOf("霓城", "沙丘", "汐"),
+                        selectedIndex = BackdropScene.values().indexOf(scene),
+                        onSelect = { idx ->
+                            val s = BackdropScene.values()[idx]
+                            scene = s
+                            prefs.edit().putString("backdrop_scene", s.name).apply()
+                            onBackdropSceneChanged(s)
+                        },
+                        modifier = Modifier.padding(horizontal = 16.dp)
+                    )
                 }
                 if (kind == BackdropKind.IMAGE) {
                     GlassTextButton(

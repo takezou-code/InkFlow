@@ -144,10 +144,10 @@ private fun DrawScope.drawNeonCity(t: Float, w: Float, h: Float, isDark: Boolean
     )
     drawCircle(brush = sunBrush, radius = sunR * 1.6f, center = sunC)
     drawCircle(color = Color(0xFF8E6BFF), radius = sunR, center = sunC)
-    val skyBrush = Brush.verticalGradient(
-        colors = if (isDark) listOf(Color(0xFF070418), Color(0xFF1B0B3B), Color(0xFF2A1052))
-        else listOf(Color(0xFFE8E4FB), Color(0xFFC9BFF2), Color(0xFF9D8DE0))
-    )
+    // 條紋：brush 鎖螢幕座標（startY=0/endY=h），跟天空同一道漸層，否則接縫穿幫
+    val skyColors = if (isDark) listOf(Color(0xFF070418), Color(0xFF1B0B3B), Color(0xFF2A1052))
+    else listOf(Color(0xFFE8E4FB), Color(0xFFC9BFF2), Color(0xFF9D8DE0))
+    val skyBrush = Brush.verticalGradient(colors = skyColors, startY = 0f, endY = h)
     var bandY = sunC.y + sunR * 0.05f
     var bandH = sunR * 0.045f
     while (bandY < sunC.y + sunR) {
@@ -203,6 +203,18 @@ private fun DrawScope.drawNeonCity(t: Float, w: Float, h: Float, isDark: Boolean
         ),
         topLeft = Offset(0f, horizon - h * 0.06f),
         size = androidx.compose.ui.geometry.Size(w, h * 0.06f)
+    )
+    // 日影：太陽在地板上的反光柱，隨時間輕晃
+    val sway = sin(t * 0.5f) * w * 0.01f
+    drawRect(
+        brush = Brush.verticalGradient(
+            colors = listOf(
+                Color(0xFF7C4DFF).copy(alpha = if (isDark) 0.45f else 0.30f),
+                Color.Transparent
+            )
+        ),
+        topLeft = Offset(sunC.x - sunR * 0.55f + sway, horizon),
+        size = androidx.compose.ui.geometry.Size(sunR * 1.1f, h - horizon)
     )
 }
 
