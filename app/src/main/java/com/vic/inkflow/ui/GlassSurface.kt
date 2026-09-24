@@ -202,7 +202,7 @@ fun Modifier.pressableGlass(
     // 掃光：只在按壓期間播一次（0→1 去，1→0 回），靜止時 alpha=0 不多一層開銷
     val sweep by animateFloatAsState(
         targetValue = if (pressed) 1f else 0f,
-        animationSpec = tween(if (pressed) 350 else 200),
+        animationSpec = tween(if (pressed) 450 else 200),
         label = "PressSweep"
     )
     return this
@@ -216,14 +216,35 @@ fun Modifier.pressableGlass(
                 brush = Brush.linearGradient(
                     colorStops = arrayOf(
                         0f to Color.Transparent,
-                        ((0.15f + 0.55f * sweep).coerceIn(0f, 1f)) to Color.Transparent,
-                        ((0.35f + 0.55f * sweep).coerceIn(0f, 1f)) to Color.White.copy(alpha = 0.16f * sweep),
-                        ((0.55f + 0.55f * sweep).coerceIn(0f, 1f)) to Color.Transparent,
+                        ((0.05f + 0.55f * sweep).coerceIn(0f, 1f)) to Color.Transparent,
+                        ((0.30f + 0.55f * sweep).coerceIn(0f, 1f)) to Color.White.copy(alpha = 0.30f * sweep),
+                        ((0.60f + 0.55f * sweep).coerceIn(0f, 1f)) to Color.Transparent,
                         1f to Color.Transparent
                     )
                 ),
                 shape = shape
             ) else Modifier
+        )
+}
+
+/**
+ * 按壓統一入口：掃光＋縮放＋無漣漪點擊一次包好。
+ * 以後新增可壓玻璃一律走這裡，不各自拼 source/clickable。
+ */
+@Composable
+fun Modifier.glassClickable(
+    onClick: () -> Unit,
+    shape: Shape = ShapeLg,
+    enabled: Boolean = true,
+): Modifier {
+    val source = remember { MutableInteractionSource() }
+    return this
+        .pressableGlass(source, shape)
+        .clickable(
+            interactionSource = source,
+            indication = null,
+            enabled = enabled,
+            onClick = onClick
         )
 }
 
@@ -457,15 +478,11 @@ fun GlassOptionChip(
     Box(
         modifier = modifier
             .clip(CircleShape)
+            .glassClickable(onClick = onClick, shape = CircleShape)
             .background(
                 color = if (selected) MaterialTheme.colorScheme.primary
                 else Color.White.copy(alpha = if (isDark) 0.10f else 0.55f),
                 shape = CircleShape
-            )
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                onClick = onClick
             )
             .padding(horizontal = 14.dp, vertical = 8.dp),
         contentAlignment = Alignment.Center
@@ -491,12 +508,7 @@ fun GlassTextButton(
     Box(
         modifier = modifier
             .clip(CircleShape)
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                enabled = enabled,
-                onClick = onClick
-            )
+            .glassClickable(onClick = onClick, shape = CircleShape, enabled = enabled)
             .padding(horizontal = 12.dp, vertical = 10.dp),
         contentAlignment = if (alignStart) Alignment.CenterStart else Alignment.Center
     ) {

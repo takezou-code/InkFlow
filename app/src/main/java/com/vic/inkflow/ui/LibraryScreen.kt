@@ -918,7 +918,7 @@ internal fun GlassRailItem(
                 if (selected) Modifier.glassPanel(hazeState, isDarkTheme, CircleShape)
                 else Modifier
             )
-            .clickable(onClick = onClick)
+            .glassClickable(onClick = onClick, shape = CircleShape)
             .padding(horizontal = 16.dp, vertical = 8.dp)
     ) {
         Icon(
