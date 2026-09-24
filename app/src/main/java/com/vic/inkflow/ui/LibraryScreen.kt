@@ -75,6 +75,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -257,6 +258,9 @@ fun DocumentLibraryScreen(
     var createFolderInput by rememberSaveable { mutableStateOf("") }
     var isMergingPdfs by remember { mutableStateOf(false) }
     var mergeTotal by remember { mutableStateOf(0) }
+    // 多選合併待確認順序：第 1 項在成品最上方。SAF 回傳順序≠點選順序，故合併前讓用戶確認。
+    var mergeOrder by remember { mutableStateOf<List<Pair<Uri, String>>>(emptyList()) }
+    var showMergeOrderDialog by remember { mutableStateOf(false) }
 
     // Chromium 預熱：編輯器 AI 面板首建 WebView 會卡主執行緒數百毫秒，
     // 那幾百毫秒正好把玻璃採樣空窗的那幀凍在螢幕上 = 黑閃。書庫閒置 2s 後先建一個即丟，
@@ -283,8 +287,110 @@ fun DocumentLibraryScreen(
             onDismissRequest = {},
             isDark = isDarkTheme,
             title = { Text("合併 PDF") },
-            text = { Text("正在按選取順序合併 $mergeTotal 份文件，請稍候…") },
+            text = { Text("正在按確認順序合併 $mergeTotal 份文件，請稍候…") },
             buttons = {}
+        )
+    }
+
+    AnimatedDialog(visible = showMergeOrderDialog) {
+        GlassDialogCustom(
+            onDismissRequest = {
+                showMergeOrderDialog = false
+                mergeOrder = emptyList()
+            },
+            isDark = isDarkTheme,
+            title = { Text("合併順序") },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text("第 1 項會在成品最上方。如系統回傳順序不對，請先調好再合併。")
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 320.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        mergeOrder.forEachIndexed { index, (_, name) ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "${index + 1}.",
+                                    modifier = Modifier.width(28.dp)
+                                )
+                                Text(
+                                    text = name,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                GlassTextButton(
+                                    text = "上移",
+                                    enabled = index > 0,
+                                    onClick = {
+                                        mergeOrder = mergeOrder.toMutableList().also {
+                                            val tmp = it[index - 1]
+                                            it[index - 1] = it[index]
+                                            it[index] = tmp
+                                        }
+                                    }
+                                )
+                                GlassTextButton(
+                                    text = "下移",
+                                    enabled = index < mergeOrder.size - 1,
+                                    onClick = {
+                                        mergeOrder = mergeOrder.toMutableList().also {
+                                            val tmp = it[index + 1]
+                                            it[index + 1] = it[index]
+                                            it[index] = tmp
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            buttons = {
+                GlassTextButton(
+                    text = "取消",
+                    onClick = {
+                        showMergeOrderDialog = false
+                        mergeOrder = emptyList()
+                    },
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.width(8.dp))
+                GlassTextButton(
+                    text = "合併",
+                    onClick = {
+                        val ordered = mergeOrder.map { it.first }
+                        showMergeOrderDialog = false
+                        mergeOrder = emptyList()
+                        mergeTotal = ordered.size
+                        isMergingPdfs = true
+                        scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                            val (mergedUri, failed, baseName) = PdfManager.mergePdfs(context, ordered)
+                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                isMergingPdfs = false
+                                if (mergedUri != null) {
+                                    docViewModel.recordOpened(mergedUri.toString(), baseName ?: "合併筆記")
+                                    val encodedUri = URLEncoder.encode(mergedUri.toString(), StandardCharsets.UTF_8.toString())
+                                    navController.navigate("editor/$encodedUri")
+                                } else {
+                                    android.widget.Toast.makeText(context, "合併失敗，請重試", android.widget.Toast.LENGTH_SHORT).show()
+                                }
+                                if (failed.isNotEmpty()) {
+                                    android.widget.Toast.makeText(context, "有 ${failed.size} 份無法加入已跳過", android.widget.Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        }
+                    }
+                )
+            }
         )
     }
 
@@ -377,25 +483,17 @@ fun DocumentLibraryScreen(
                 }
                 return@rememberLauncherForActivityResult
             }
-            // 多份：按選取順序合併成一份再開。
-            mergeTotal = uris.size
-            isMergingPdfs = true
-            scope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                val (mergedUri, failed, baseName) = PdfManager.mergePdfs(context, uris)
-                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                    isMergingPdfs = false
-                    if (mergedUri != null) {
-                        docViewModel.recordOpened(mergedUri.toString(), baseName ?: "合併筆記")
-                        val encodedUri = URLEncoder.encode(mergedUri.toString(), StandardCharsets.UTF_8.toString())
-                        navController.navigate("editor/$encodedUri")
-                    } else {
-                        android.widget.Toast.makeText(context, "合併失敗，請重試", android.widget.Toast.LENGTH_SHORT).show()
-                    }
-                    if (failed.isNotEmpty()) {
-                        android.widget.Toast.makeText(context, "有 ${failed.size} 份無法加入已跳過", android.widget.Toast.LENGTH_SHORT).show()
-                    }
-                }
+            // 多份：SAF 回傳順序≠點選順序，先讓用戶確認順序再合併。
+            // 檔名在主執行緒同步解析（contentResolver.query 很快，幾份而已）。
+            mergeOrder = uris.map { uri ->
+                val name = context.contentResolver.query(
+                    uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null
+                )?.use { cursor ->
+                    if (cursor.moveToFirst()) cursor.getString(0) else null
+                } ?: uri.lastPathSegment ?: "未命名"
+                uri to name
             }
+            showMergeOrderDialog = true
         }
     )
 

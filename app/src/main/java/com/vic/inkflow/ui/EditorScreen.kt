@@ -226,6 +226,7 @@ import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
@@ -292,6 +293,16 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
             programmaticTarget = null
         }
     }
+    // 程式化捲動的命：手勢一接管（pinchActive）立刻取消，未跑完的動畫不許在手勢中/手勢後
+    // 把紙拽回舊目標（反方向回彈主因）。目標旗跟著清，2.5s 自清照舊當保險。
+    var programmaticScrollJob by remember { mutableStateOf<Job?>(null) }
+    androidx.compose.runtime.LaunchedEffect(pinchActive) {
+        if (pinchActive) {
+            programmaticScrollJob?.cancel()
+            programmaticScrollJob = null
+            programmaticTarget = null
+        }
+    }
     // 點選意圖（側欄/靜態頁）：換作用頁 + 主列表滑過去
     // 用戶親自點了 = 接管，初次捲動不再搶回去。
     val onRequestPage: (Int) -> Unit = { index ->
@@ -299,7 +310,8 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
         programmaticTarget = index
         currentPageIndex = index
         viewModel.setActivePage(index)
-        scope.launch { runCatching { mainListState.animateScrollToItem(index) } }
+        programmaticScrollJob?.cancel()
+        programmaticScrollJob = scope.launch { runCatching { mainListState.animateScrollToItem(index) } }
     }
     // R3：提取整組撤銷的頁操作接線（VM 碰不到 PdfViewModel/Context，由這層提供；
     // model 尺寸每次現讀，避免閉包陳舊）。
@@ -440,6 +452,9 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                 )
             }
         }
+        // R2：插入 PDF 頁也是結構操作，先清棧再動頁（清棧必須在 launch 前，
+        // 否則空窗內 undo 可插隊拿到錯位頁號）。
+        viewModel.clearUndoStacks()
         if (uris.size == 1) {
             pdfViewModel.insertPdfPages(
                 context = context,
@@ -455,8 +470,6 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                 afterIndex = currentPageIndex
             )
         }
-        // R2：插入 PDF 頁也是結構操作，清棧。
-        viewModel.clearUndoStacks()
     }
 
     // When the PDF first loads, initialize the EditorViewModel's model space to match the first page.
@@ -598,7 +611,8 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                 currentPageIndex = idx
                 viewModel.setActivePage(idx)
                 sidebarListState.animateScrollToCenter(idx)
-                runCatching { mainListState.animateScrollToItem(idx) }
+                programmaticScrollJob?.cancel()
+                programmaticScrollJob = scope.launch { runCatching { mainListState.animateScrollToItem(idx) } }
                 pdfViewModel.consumeInsertedPageEvent()
             }
         }

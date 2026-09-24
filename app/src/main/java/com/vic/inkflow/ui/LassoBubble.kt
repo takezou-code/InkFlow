@@ -171,7 +171,8 @@ internal fun sendRegionToAi(
     prompt: String?,
     pageIdx: Int
 ) {
-    if (isExtracting || !hasSelection || !hasRegionSnapshot) return
+    // AI/提取只看 region：空白區無墨照樣能送 PDF 底圖去解析。
+    if (isExtracting || !hasRegionSnapshot) return
     onExtractingChange(true)
     scope.launch {
         try {
@@ -256,9 +257,9 @@ internal fun LassoBubble(
                         icon = Icons.Filled.LibraryAdd,
                         label = "提取",
                         isDark = isDark,
-                        enabled = !isExtracting && hasSelection && hasRegionSnapshot,
+                        enabled = !isExtracting && hasRegionSnapshot,
                         onClick = {
-                            if (isExtracting || !hasSelection || !hasRegionSnapshot) return@SelectionBubbleAction
+                            if (isExtracting || !hasRegionSnapshot) return@SelectionBubbleAction
                             onExtractingChange(true)
                             scope.launch {
                                 try {
@@ -303,7 +304,7 @@ internal fun LassoBubble(
                         icon = Icons.Filled.AutoAwesome,
                         label = "AI 解析",
                         isDark = isDark,
-                        enabled = !isExtracting && hasSelection && hasRegionSnapshot,
+                        enabled = !isExtracting && hasRegionSnapshot,
                         // P0：用選取歸屬紙（同提取/快捷列），之前誤用作用頁，跨頁選取會送錯圖。
                         onClick = {
                             sendRegionToAi(
@@ -349,8 +350,8 @@ internal fun LassoBubble(
                         )
                     }
                 } // 氣泡第一排
-                // 快捷指令第二排：有圈選區才出現，按下後送圖 + prompt 自動送出
-                if (hasRegionSnapshot && hasSelection) {
+                // 快捷指令第二排：有圈選區就出現（空白區也出），按下後送圖 + prompt 自動送出
+                if (hasRegionSnapshot) {
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(2.dp),
                         verticalAlignment = Alignment.CenterVertically
