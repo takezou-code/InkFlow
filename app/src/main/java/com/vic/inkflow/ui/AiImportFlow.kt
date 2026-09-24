@@ -123,6 +123,7 @@ suspend fun importPickedJsonInner(
     webView: android.webkit.WebView?,
     json: String
 ) {
+    Log.d("InkFlowDbg", "IMPORT begin sourcePage=$sourcePage jsonLen=${json.length}")
     val picks = parsePicks(json)
     if (picks.isEmpty()) {
         Toast.makeText(context, "沒有可插入的內容", Toast.LENGTH_SHORT).show()
@@ -180,8 +181,15 @@ suspend fun importPickedJsonInner(
         katexFail = kf
     }
     val mathById = resolved.filterIsInstance<AiMathBlock>().associateBy { it.id }
+    // 接續前頁：sourcePage 是自家頁且有空間 → 首頁游標從 contentBottom 開始（IO 量測，null=舊路）
+    val contTop = withContext(Dispatchers.IO) {
+        resolveContinueTop(db, pdfViewModel, documentUri, sourcePage, viewModel.modelHeight)
+    }
     val pages = withContext(Dispatchers.Default) {
-        paginateAiBlocks(resolved, rendered, viewModel.modelWidth, viewModel.modelHeight)
+        paginateAiBlocks(
+            resolved, rendered, viewModel.modelWidth, viewModel.modelHeight,
+            startTop = contTop ?: 64f // = paginate 預設 marginTop
+        )
     }
     if (pages.isEmpty()) {
         Toast.makeText(context, "沒有可插入的內容", Toast.LENGTH_SHORT).show()
@@ -192,7 +200,8 @@ suspend fun importPickedJsonInner(
         if (katexFail > 0) "${katexFail} 式渲染失敗" else ""
     ).filter { it.isNotEmpty() }
     val failNote = if (failBits.isNotEmpty()) "（" + failBits.joinToString("，") + "已退文字）" else ""
-    placePages(context, viewModel, pdfViewModel, db, documentUri, sourcePage, onRequestPage, pages, mathById, failNote)
+    placePages(context, viewModel, pdfViewModel, db, documentUri, sourcePage, onRequestPage, pages, mathById, failNote,
+        headTarget = if (contTop != null) sourcePage else null)
 }
 
 /**
@@ -209,26 +218,17 @@ suspend fun placePages(
     onRequestPage: (Int) -> Unit,
     pages: List<List<Placed>>,
     mathById: Map<String, AiMathBlock>,
-    failNote: String
+    failNote: String,
+    // 接續前頁：pages[0] 直接寫回此頁（不掃空白不開新頁），其餘照舊；null=舊行為
+    headTarget: Int? = null
 ) {
-    // 先從第 0 頁掃空白頁（DB 先篩＋點陣確認），填滿才開新頁
-    val need = pages.size
-    val blanks = withContext(Dispatchers.IO) {
-        scanBlankPages(db, pdfViewModel, documentUri, need)
-    }
     var after = sourcePage
     var placed = 0
     var mathCount = 0
     var firstTarget = -1
-    for ((i, page) in pages.withIndex()) {
-        val pageIdx = if (i < blanks.size) {
-            blanks[i]
-        } else {
-            if (!insertOnePageAfter(pdfViewModel, viewModel, context, documentUri, after)) break
-            after += 1
-            after
-        }
+    suspend fun writeOne(pageIdx: Int, page: List<Placed>) {
         if (firstTarget < 0) firstTarget = pageIdx
+        Log.d("InkFlowDbg", "IMPORT-WRITE page=$pageIdx segs=${page.size} kinds=${page.map { if (it is Placed.T) "T" else "I" }}")
         // 點陣圖保證：重開空窗期建的 flow 可能永久 null，先預取＋等圖再寫入跳轉
         pdfViewModel.prefetchPage(pageIdx)
         withTimeoutOrNull(3000) {
@@ -269,9 +269,37 @@ suspend fun placePages(
         }
         placed++
     }
+    var rest = pages
+    if (headTarget != null && rest.isNotEmpty()) {
+        writeOne(headTarget, rest[0])
+        rest = rest.drop(1)
+    }
+    // 先從第 0 頁掃空白頁（DB 先篩＋點陣確認），填滿才開新頁
+    val need = rest.size
+    val blanks = withContext(Dispatchers.IO) {
+        scanBlankPages(db, pdfViewModel, documentUri, need)
+    }
+    // R2 結構操作：開新頁會讓舊復原格頁號錯位，動頁前清棧。
+    // 同批先寫入的匯入格一併作廢（整批匯入超出復原範圍）。
+    var stacksCleared = false
+    for ((i, page) in rest.withIndex()) {
+        val pageIdx = if (i < blanks.size) {
+            blanks[i]
+        } else {
+            if (!stacksCleared) {
+                viewModel.clearUndoStacks()
+                stacksCleared = true
+            }
+            if (!insertOnePageAfter(pdfViewModel, viewModel, context, documentUri, after)) break
+            after += 1
+            after
+        }
+        writeOne(pageIdx, page)
+    }
     if (placed > 0) {
+        Log.d("InkFlowDbg", "CONTINUE place headTarget=$headTarget blanks=$blanks firstTarget=$firstTarget placed=$placed")
         onRequestPage(firstTarget)
-        Toast.makeText(context, "已插入 ${pages.sumOf { it.size }} 段（公式圖 ${mathCount}，${placed} 頁" + (if (blanks.isNotEmpty()) "，含空白頁再利用" else "") + "）" + failNote, Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, "已插入 ${pages.sumOf { it.size }} 段（公式圖 ${mathCount}，${placed} 頁" + (if (headTarget != null) "，含接續前頁" else "") + (if (blanks.isNotEmpty()) "，含空白頁再利用" else "") + "）" + failNote, Toast.LENGTH_SHORT).show()
     } else {
         Toast.makeText(context, "開新頁失敗，請稍後再試", Toast.LENGTH_SHORT).show()
     }
@@ -303,6 +331,46 @@ suspend fun insertOnePageAfter(
         }
     }
     return false
+}
+
+// 接續前頁：sourcePage 是自家頁（DB 有墨＋紙大致白，原生 PDF 出局）且下方夠兩行
+// → 回傳首頁起始游標；否則 null（舊路：掃空白／開新頁）。在 IO 執行緒呼叫。
+suspend fun resolveContinueTop(
+    db: AppDatabase,
+    pdfViewModel: PdfViewModel,
+    documentUri: String,
+    sourcePage: Int,
+    modelH: Float
+): Float? {
+    if (sourcePage < 0 || sourcePage >= pdfViewModel.pageCount.value) return null
+    Log.d("InkFlowDbg", "CONTINUE begin p=$sourcePage pageCount=${pdfViewModel.pageCount.value} modelH=$modelH")
+    try {
+        val strokes = db.strokeDao().getStrokesForPageSync(documentUri, sourcePage)
+        val texts = db.textAnnotationDao().getForPageSync(documentUri, sourcePage)
+        val images = db.imageAnnotationDao().getForPageSync(documentUri, sourcePage)
+        val dbEmpty = strokes.isEmpty() && texts.isEmpty() && images.isEmpty()
+        Log.d("InkFlowDbg", "CONTINUE DB p=$sourcePage strokes=${strokes.size} texts=${texts.size} images=${images.size} dbEmpty=$dbEmpty")
+        if (dbEmpty) return null
+        val bmp = withTimeoutOrNull(1200) {
+            pdfViewModel.getPageBitmap(sourcePage).filterNotNull().first()
+        } ?: pdfViewModel.getPageBitmap(sourcePage).value
+        val ratio = if (bmp != null) whiteRatioOfBitmap(bmp) else 0f
+        Log.d("InkFlowDbg", "CONTINUE gate p=$sourcePage ratio=$ratio self=${isSelfPage(dbEmpty, ratio)} bmpNull=${bmp == null}")
+        if (!isSelfPage(dbEmpty, ratio)) {
+            Log.d("InkFlowDbg", "CONTINUE skip p=$sourcePage ratio=$ratio (native?)")
+            return null
+        }
+        val bottom = measureContentBottom(strokes.map { it.stroke }, texts, images) ?: run {
+            Log.d("InkFlowDbg", "CONTINUE skip p=$sourcePage unmeasurable (stamp?)")
+            return null
+        }
+        val top = continueTop(bottom, modelH, textMetricsOf(16f).first) // 16 = paginate 預設字號
+        Log.d("InkFlowDbg", "CONTINUE decision p=$sourcePage bottom=$bottom top=$top modelH=$modelH")
+        return top
+    } catch (t: Throwable) {
+        Log.w("InkFlowDbg", "continue p=$sourcePage failed: $t")
+        return null
+    }
 }
 
 // 從第 0 頁往後掃空白頁（DB 先篩：有墨/字/圖直接跳過；DB 空的才拿點陣確認）。

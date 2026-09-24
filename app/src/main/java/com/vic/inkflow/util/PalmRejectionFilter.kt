@@ -66,6 +66,21 @@ object PalmRejectionFilter {
     const val RAW_UNIT_PALM_THRESHOLD = 1.8f
 
     /**
+     * 純面積手掌判定（不含 [shouldReject] 的「多指即拒」條款）。
+     * 供手勢計數層（Workspace 雙指/空白）用：多指是正常捏合，只看接觸面積。
+     * touchMajor <= 0（裝置不回報）一律回 false——fail-open，寧放過不誤殺。
+     * 與 Workspace 舊內聯判據逐字同義，收斂到此 single source。
+     */
+    fun isPalmByArea(touchMajor: Float, density: Density): Boolean {
+        if (touchMajor <= 0f) return false
+        return if (touchMajor >= PIXEL_UNIT_THRESHOLD) {
+            touchMajor > with(density) { DEFAULT_MAX_TOUCH_MAJOR_DP.toPx() }
+        } else {
+            touchMajor > RAW_UNIT_PALM_THRESHOLD
+        }
+    }
+
+    /**
      * @param touchMajorRaw  Raw value from [android.view.MotionEvent.getTouchMajor].
      *                       Pass 0f if unavailable; only the multi-pointer check will apply.
      * @param concurrentPointers  Total active pointers in the current gesture frame.

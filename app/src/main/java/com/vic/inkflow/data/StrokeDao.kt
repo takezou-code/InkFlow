@@ -73,6 +73,10 @@ interface StrokeDao {
     @Query("UPDATE strokes SET docY = docY + :dy WHERE documentUri = :documentUri AND docY IS NOT NULL AND docY >= :yThreshold")
     suspend fun shiftDocYBelow(documentUri: String, yThreshold: Float, dy: Float): Int
 
+    /** 頁搬移用：只平移 [y0, y1) 區間內的墨（有 (documentUri, docY) 索引）。NULL 行不受影響。 */
+    @Query("UPDATE strokes SET docY = docY + :dy WHERE documentUri = :documentUri AND docY IS NOT NULL AND docY >= :y0 AND docY < :y1")
+    suspend fun shiftDocYRange(documentUri: String, y0: Float, y1: Float, dy: Float): Int
+
     @Query("SELECT COUNT(*) FROM strokes WHERE documentUri = :documentUri AND docY IS NULL")
     suspend fun countMissingDocY(documentUri: String): Int
 

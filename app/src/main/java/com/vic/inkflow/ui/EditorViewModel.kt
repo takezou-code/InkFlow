@@ -17,6 +17,7 @@ import com.vic.inkflow.data.StrokeEntity
 import com.vic.inkflow.data.StrokeWithPoints
 import com.vic.inkflow.data.TextAnnotationEntity
 import com.vic.inkflow.util.IntersectionUtils
+import com.vic.inkflow.util.DocTransform
 import com.vic.inkflow.util.EnvelopeUtils
 import com.vic.inkflow.util.StrokePoint
 import com.vic.inkflow.util.StrokeTransformUtils
@@ -34,26 +35,6 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.util.UUID
-
-enum class Tool {
-    PEN,
-    HIGHLIGHTER,
-    ERASER,
-    LASSO,
-    SHAPE,
-    TEXT,
-    IMAGE
-}
-
-enum class ShapeSubType { RECT, CIRCLE, LINE, ARROW }
-
-enum class LassoSubType { FREEFORM, RECT }
-
-enum class InputMode {
-    FREE,             // 全開放，所有觸控都可畫
-    PALM_REJECTION,   // 演算法過濾手掌，保留細筆跡
-    STYLUS_ONLY       // 僅硬體觸控筆（PointerType.Stylus）可畫
-}
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class EditorViewModel(
@@ -641,8 +622,8 @@ class EditorViewModel(
 
         // Normalize immediately on the caller thread so the just-finished stroke can move
         // from the active layer to the pending layer without a visible gap on stylus lift.
-        val scaleX = modelWidth / cW
-        val scaleY = modelHeight / cH
+        val scaleX = DocTransform.invScaleXUnchecked(cW, modelWidth)
+        val scaleY = DocTransform.invScaleYUnchecked(cH, modelHeight)
         // 寬度用 zoom=1 基準歸一（× docZoom 還原）：座標仍用實際 canvas 尺寸映射，
         // 新墨在任何縮放下存入同樣的 model 寬，放大等比變粗。
         val widthScaleX = scaleX * _docZoom.value.coerceAtLeast(0.1f)
@@ -779,8 +760,8 @@ class EditorViewModel(
         viewModelScope.launch(Dispatchers.Default) {
             eraserMutex.withLock {
             // Scale eraser points from canvas-pixel space to model space before comparing.
-            val scaleX = modelWidth / cW
-            val scaleY = modelHeight / cH
+            val scaleX = DocTransform.invScaleXUnchecked(cW, modelWidth)
+            val scaleY = DocTransform.invScaleYUnchecked(cH, modelHeight)
             val modelEraserPoints = pointsCopy.map { Offset(it.x * scaleX, it.y * scaleY) }
             val intersectingStrokes = IntersectionUtils.findIntersectingStrokes(
                 eraserPoints = modelEraserPoints,
@@ -923,8 +904,8 @@ class EditorViewModel(
         val shapeType = _selectedShapeSubType.value.name
         viewModelScope.launch(Dispatchers.IO) {
             val strokeId = UUID.randomUUID().toString()
-            val scaleX = modelWidth / cW
-            val scaleY = modelHeight / cH
+            val scaleX = DocTransform.invScaleXUnchecked(cW, modelWidth)
+            val scaleY = DocTransform.invScaleYUnchecked(cH, modelHeight)
             // 寬度用 zoom=1 基準歸一（× docZoom 還原），座標映射不動。
             val shapeWidthScale = scaleX * _docZoom.value.coerceAtLeast(0.1f)
             val p0 = Offset(startPoint.x * scaleX, startPoint.y * scaleY)
@@ -971,16 +952,16 @@ class EditorViewModel(
     ) {
         if (text.isBlank()) return
         val textPage = targetPage ?: pageIndex.value
-        val textModelY = canvasY * modelHeight / canvasH
+        val textModelY = canvasY * DocTransform.invScaleYUnchecked(canvasH, modelHeight)
         val ann = TextAnnotationEntity(
             documentUri = documentUri,
             pageIndex = textPage,
             // S1 雙寫：docY 錨點同步存。
             docY = textPage * docStride + textModelY,
             text = text,
-            modelX = canvasX * modelWidth / canvasW,
+            modelX = canvasX * DocTransform.invScaleXUnchecked(canvasW, modelWidth),
             modelY = textModelY,
-            fontSize = fontSize * modelWidth / canvasW,
+            fontSize = fontSize * DocTransform.invScaleXUnchecked(canvasW, modelWidth),
             colorArgb = color.toArgb(),
             isStamp = isStamp
         )
@@ -1049,8 +1030,8 @@ class EditorViewModel(
     fun commitTextAnnotationMove(id: String, canvasDeltaX: Float, canvasDeltaY: Float) {
         if (canvasDeltaX == 0f && canvasDeltaY == 0f) return
         val old = findTextAnnotation(id) ?: return
-        val scaleX = modelWidth / canvasW
-        val scaleY = modelHeight / canvasH
+        val scaleX = DocTransform.invScaleXUnchecked(canvasW, modelWidth)
+        val scaleY = DocTransform.invScaleYUnchecked(canvasH, modelHeight)
         val newModelY = old.modelY + canvasDeltaY * scaleY
         val updated = old.copy(
             modelX = old.modelX + canvasDeltaX * scaleX,
@@ -1111,8 +1092,8 @@ class EditorViewModel(
         canvasHeight: Float,
         targetPage: Int? = null
     ) {
-    val scaleX = modelWidth / canvasW
-    val scaleY = modelHeight / canvasH
+    val scaleX = DocTransform.invScaleXUnchecked(canvasW, modelWidth)
+    val scaleY = DocTransform.invScaleYUnchecked(canvasH, modelHeight)
     // S1 雙寫：docY 錨點同步存。
     val imgPage = targetPage ?: pageIndex.value
     val imgModelY = canvasY * scaleY
@@ -1211,8 +1192,8 @@ class EditorViewModel(
     fun commitImageAnnotationMove(id: String, canvasDeltaX: Float, canvasDeltaY: Float) {
         if (canvasDeltaX == 0f && canvasDeltaY == 0f) return
         val old = findImageAnnotation(id) ?: return
-        val scaleX = modelWidth / canvasW
-        val scaleY = modelHeight / canvasH
+        val scaleX = DocTransform.invScaleXUnchecked(canvasW, modelWidth)
+        val scaleY = DocTransform.invScaleYUnchecked(canvasH, modelHeight)
         val newModelY = old.modelY + canvasDeltaY * scaleY
         val updated = old.copy(
             modelX = old.modelX + canvasDeltaX * scaleX,
@@ -1381,6 +1362,7 @@ class EditorViewModel(
                         }
                     }
                     command.imageOriginals.forEach { imageAnnotationDao.update(it) }
+                    command.textOriginals.forEach { textAnnotationDao.update(it) }
                 }
                 is DrawCommand.AddSelectionCopies -> {
                     if (command.strokes.isNotEmpty()) {
@@ -1523,6 +1505,7 @@ class EditorViewModel(
                         }
                     }
                     command.imageUpdated.forEach { imageAnnotationDao.update(it) }
+                    command.textUpdated.forEach { textAnnotationDao.update(it) }
                 }
                 is DrawCommand.AddSelectionCopies -> {
                     command.strokes.forEach { strokeWithPoints ->
@@ -1551,6 +1534,8 @@ class EditorViewModel(
             }
             withContext(Dispatchers.Main) {
                 undoStack.addLast(command)
+                // R2：redo 回填也要裁頭（上限 200 格，與 pushUndo 同規）。
+                while (undoStack.size > 200) undoStack.removeFirst()
                 _canUndo.value = true
                 _canRedo.value = redoStack.isNotEmpty()
             }
@@ -1676,7 +1661,7 @@ class EditorViewModel(
         // 空白區也要留錨：AI 解析/提取只看 region，不看有沒有墨。
         val srcFirst = polygonsByPage[srcPage]?.firstOrNull().orEmpty()
         val srcNormSnapshot: List<Offset> = if (srcFirst.size >= 3) {
-            srcFirst.map { Offset(it.x * modelWidth / cW, it.y * modelHeight / cH) }
+            srcFirst.map { DocTransform.canvasToModel(it, cW, cH, modelWidth, modelHeight) }
         } else {
             emptyList()
         }
@@ -1693,7 +1678,7 @@ class EditorViewModel(
             val allTexts = mutableListOf<TextAnnotationEntity>()
             for ((pg, polys) in polygonsByPage) {
                 val norms = polys.filter { it.size >= 3 }
-                    .map { poly -> poly.map { Offset(it.x * modelWidth / cW, it.y * modelHeight / cH) } }
+                    .map { poly -> poly.map { DocTransform.canvasToModel(it, cW, cH, modelWidth, modelHeight) } }
                 if (norms.isEmpty()) continue
                 val data = snaps[pg] ?: continue
                 for (swp in data.strokes) {
@@ -1800,7 +1785,7 @@ class EditorViewModel(
     fun moveSelectedStrokes(delta: Offset) {
         if (delta == Offset.Zero) return
         // Normalise drag delta to model space so it lines up with stored stroke coordinates.
-        val normalizedDelta = Offset(delta.x * modelWidth / canvasW, delta.y * modelHeight / canvasH)
+        val normalizedDelta = DocTransform.canvasToModel(delta, canvasW, canvasH, modelWidth, modelHeight)
         _lassoMoveOffset.value = _lassoMoveOffset.value + normalizedDelta
         refreshSelectedStrokePreview()
     }
@@ -1970,9 +1955,10 @@ class EditorViewModel(
     fun commitResizedStrokes() {
         val originals = _selectedStrokes.value
         val images = selectedImagesSnapshot()
+        val texts = selectedTextsSnapshot()
         val translation = _lassoMoveOffset.value
         val scale = _selectedStrokeScale.value
-        if ((originals.isEmpty() && images.isEmpty()) || (kotlin.math.abs(scale - 1f) < 0.001f && translation == Offset.Zero)) {
+        if ((originals.isEmpty() && images.isEmpty() && texts.isEmpty()) || (kotlin.math.abs(scale - 1f) < 0.001f && translation == Offset.Zero)) {
             clearSelection()
             return
         }
@@ -1997,10 +1983,19 @@ class EditorViewModel(
                 modelHeight = (ann.modelHeight * clampedScale).coerceAtLeast(30f)
             )
         }
+        // 字與圖同式縮放：位置繞錨點，字級按同比例（下限 4f 與單字縮放一致）。
+        val updatedTexts = texts.map { ann ->
+            ann.copy(
+                modelX = anchor.x + (ann.modelX - anchor.x) * clampedScale + translation.x,
+                modelY = anchor.y + (ann.modelY - anchor.y) * clampedScale + translation.y,
+                fontSize = (ann.fontSize * clampedScale).coerceAtLeast(4f)
+            )
+        }
 
         // S1 雙寫：落庫/入 undo 指令前把 docY 重算（resize 不跨頁，頁不變只算值）
         val redocUpdated = updated.map { it.redoc() }
         val redocUpdatedImages = updatedImages.map { it.redoc() }
+        val redocUpdatedTexts = updatedTexts.map { it.redoc() }
 
         // Keep selection active
         _selectedStrokes.value = redocUpdated
@@ -2025,18 +2020,21 @@ class EditorViewModel(
                 replaceStrokeSnapshots(redocUpdated)
             }
             redocUpdatedImages.forEach { imageAnnotationDao.update(it) }
+            redocUpdatedTexts.forEach { textAnnotationDao.update(it) }
             withContext(Dispatchers.Main) {
                 if (_commitPreview.value === redocUpdated) {
                     _commitPreview.value = null
                 }
                 when {
-                    images.isEmpty() -> pushUndo(DrawCommand.ResizeStrokes(originals, redocUpdated))
+                    images.isEmpty() && texts.isEmpty() -> pushUndo(DrawCommand.ResizeStrokes(originals, redocUpdated))
                     else -> pushUndo(
                         DrawCommand.ResizeSelectionMixed(
                             strokeOriginals = originals,
                             strokeUpdated = redocUpdated,
                             imageOriginals = images,
-                            imageUpdated = redocUpdatedImages
+                            imageUpdated = redocUpdatedImages,
+                            textOriginals = texts,
+                            textUpdated = redocUpdatedTexts
                         )
                     )
                 }
