@@ -270,9 +270,9 @@ fun InkLayerApp(db: AppDatabase) {
         prefs.edit().putString("backdrop_kind", k.name).apply()
     }
     var backdropSceneStr by rememberSaveable(prefs) {
-        mutableStateOf(prefs.getString("backdrop_scene", BackdropScene.NEON_CITY.name) ?: BackdropScene.NEON_CITY.name)
+        mutableStateOf(prefs.getString("backdrop_scene", BackdropScene.DUNE.name) ?: BackdropScene.DUNE.name)
     }
-    val backdropScene = BackdropScene.values().find { it.name == backdropSceneStr } ?: BackdropScene.NEON_CITY
+    val backdropScene = BackdropScene.values().find { it.name == backdropSceneStr } ?: BackdropScene.DUNE
     fun setBackdropScene(s: BackdropScene) {
         backdropSceneStr = s.name
         prefs.edit().putString("backdrop_scene", s.name).apply()

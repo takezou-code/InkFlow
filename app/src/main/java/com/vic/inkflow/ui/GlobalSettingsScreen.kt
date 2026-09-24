@@ -97,7 +97,7 @@ fun GlobalSettingsScreen(
     onBackdropThemeChanged: (BackdropTheme) -> Unit = {},
     backdropKind: BackdropKind = BackdropKind.ORB,
     onBackdropKindChanged: (BackdropKind) -> Unit = {},
-    backdropScene: BackdropScene = BackdropScene.NEON_CITY,
+    backdropScene: BackdropScene = BackdropScene.DUNE,
     onBackdropSceneChanged: (BackdropScene) -> Unit = {},
     backdropImageUri: android.net.Uri? = null,
     onBackdropImageChanged: (android.net.Uri?) -> Unit = {}

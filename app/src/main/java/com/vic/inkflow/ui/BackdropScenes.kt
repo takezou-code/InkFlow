@@ -25,16 +25,14 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlin.math.max
 import kotlin.math.sin
-import kotlin.math.sqrt
 import kotlin.random.Random
 
 /** 背景三類：泡泡（現行）／特效場景／圖片。 */
 enum class BackdropKind { ORB, SCENE, IMAGE }
 
-/** 特效場景：霓城（賽博）／沙丘／汐（深海）。 */
-enum class BackdropScene { NEON_CITY, DUNE, TIDE }
+/** 特效場景：沙丘／汐（深海）。霓城已刪除（太陽條紋驗收失敗）。 */
+enum class BackdropScene { DUNE, TIDE }
 
 /**
  * 背景統一入口：三類在此分流，書庫＋編輯器只調這一支。
@@ -84,8 +82,6 @@ private fun SceneBackdrop(
     val tick = remember { mutableLongStateOf(0L) }
     val t0 = remember { System.nanoTime() }
     // 幾何只算一次：普通 List，不是 State，永不觸發重組
-    val stars = remember { makeStars() }
-    val towers = remember { makeTowers() }
     val sparks = remember { makeSparks() }
     LaunchedEffect(static) {
         if (!static) {
@@ -101,157 +97,13 @@ private fun SceneBackdrop(
         val w = size.width.coerceAtLeast(1f)
         val h = size.height.coerceAtLeast(1f)
         when (scene) {
-            BackdropScene.NEON_CITY -> drawNeonCity(t, w, h, isDarkTheme, stars, towers)
             BackdropScene.DUNE -> drawDune(t, w, h, isDarkTheme)
             BackdropScene.TIDE -> drawTide(t, w, h, isDarkTheme, sparks)
         }
     }
 }
 
-// ── 霓城：條紋日＋透視網格＋剪影天際線（藍紫調） ─────────────
-
-private data class Star(val x: Float, val y: Float, val r: Float, val speed: Float, val phase: Float)
-private data class Tower(val xFrac: Float, val wFrac: Float, val hFrac: Float, val seed: Long)
-
-private fun DrawScope.drawNeonCity(t: Float, w: Float, h: Float, isDark: Boolean, stars: List<Star>, towers: List<Tower>) {
-    // 天空
-    drawRect(
-        brush = Brush.verticalGradient(
-            colors = if (isDark) listOf(Color(0xFF070418), Color(0xFF1B0B3B), Color(0xFF2A1052))
-            else listOf(Color(0xFFE8E4FB), Color(0xFFC9BFF2), Color(0xFF9D8DE0))
-        )
-    )
-    val horizon = h * 0.62f
-    // 星（只在上半，天際線以上）
-    stars.forEach { s ->
-        val tw = 0.35f + 0.65f * (0.5f + 0.5f * sin(t * s.speed + s.phase))
-        drawCircle(
-            color = Color.White.copy(alpha = (if (isDark) 0.8f else 0.5f) * tw),
-            radius = s.r,
-            center = Offset(s.x * w, s.y * horizon)
-        )
-    }
-    // 條紋日：圓＋下半橫條紋（用天空漸層同刷重疊，視覺無縫）
-    val sunR = minOf(w, h) * 0.16f
-    val sunC = Offset(w * 0.5f, horizon - sunR * 1.35f)
-    val sunBrush = Brush.radialGradient(
-        colorStops = arrayOf(
-            0f to Color(0xFFB388FF),
-            0.55f to Color(0xFF7C4DFF),
-            0.85f to Color(0xFF22D3EE),
-            1f to Color.Transparent
-        ),
-        center = sunC,
-        radius = sunR * 1.6f
-    )
-    drawCircle(brush = sunBrush, radius = sunR * 1.6f, center = sunC)
-    drawCircle(color = Color(0xFF8E6BFF), radius = sunR, center = sunC)
-    // 條紋：brush 鎖螢幕座標（startY=0/endY=h），跟天空同一道漸層，否則接縫穿幫
-    val skyColors = if (isDark) listOf(Color(0xFF070418), Color(0xFF1B0B3B), Color(0xFF2A1052))
-    else listOf(Color(0xFFE8E4FB), Color(0xFFC9BFF2), Color(0xFF9D8DE0))
-    val skyBrush = Brush.verticalGradient(colors = skyColors, startY = 0f, endY = h)
-    // 條紋：只切圓盤內（按弦長收窄），光暈不動；上半實心、下半 5 道縫隙隙寬於條
-    var gapY = sunC.y + sunR * 0.10f
-    var gapH = sunR * 0.030f
-    repeat(5) {
-        if (gapY >= sunC.y + sunR) return@repeat
-        val dy = (gapY + gapH * 0.5f - sunC.y).coerceIn(-sunR, sunR)
-        val half = sqrt(max(0f, sunR * sunR - dy * dy))
-        drawRect(
-            brush = skyBrush,
-            topLeft = Offset(sunC.x - half, gapY),
-            size = androidx.compose.ui.geometry.Size(half * 2f, gapH)
-        )
-        gapY += gapH * 3.2f
-        gapH *= 1.5f
-    }
-    // 天際線剪影＋霓虹窗
-    towers.forEach { twr ->
-        val bx = twr.xFrac * w
-        val bw = twr.wFrac * w
-        val bh = twr.hFrac * h
-        drawRect(color = if (isDark) Color(0xFF0A0618) else Color(0xFF4C4490), topLeft = Offset(bx, horizon - bh), size = androidx.compose.ui.geometry.Size(bw, bh))
-        // 窗：頂緣一條霓虹線
-        drawRect(
-            color = Color(0xFF22D3EE).copy(alpha = 0.85f),
-            topLeft = Offset(bx, horizon - bh),
-            size = androidx.compose.ui.geometry.Size(bw, 2.5f)
-        )
-    }
-    // 地板：深底＋透視網格（橫線等比下移＋捲動，縱線收斂滅點）
-    drawRect(color = if (isDark) Color(0xFF0B0424) else Color(0xFF6F63C4), topLeft = Offset(0f, horizon), size = androidx.compose.ui.geometry.Size(w, h - horizon))
-    val gridColor = if (isDark) Color(0xFF22D3EE) else Color(0xFFE8F6FF)
-    val cx = w * 0.5f
-    val rails = 14
-    for (i in -rails..rails) {
-        val spread = i.toFloat() / rails
-        drawLine(
-            color = gridColor.copy(alpha = 0.55f),
-            start = Offset(cx + spread * w * 0.06f, horizon),
-            end = Offset(cx + spread * w * 0.9f, h),
-            strokeWidth = 2f
-        )
-    }
-    val rows = 9
-    val scroll = (t * 0.22f) % 1f
-    for (k in 0 until rows) {
-        val frac = (k + scroll) / rows
-        val y = horizon + (h - horizon) * frac * frac
-        val a = frac * (if (isDark) 0.7f else 0.5f)
-        drawLine(
-            color = gridColor.copy(alpha = a),
-            start = Offset(0f, y),
-            end = Offset(w, y),
-            strokeWidth = 2f
-        )
-    }
-    // 地平線輝光
-    drawRect(color = Color(0xFFB388FF).copy(alpha = 0.9f), topLeft = Offset(0f, horizon - 1.5f), size = androidx.compose.ui.geometry.Size(w, 3f))
-    drawRect(
-        brush = Brush.verticalGradient(
-            colors = listOf(Color(0xFFB388FF).copy(alpha = 0.35f), Color.Transparent),
-        ),
-        topLeft = Offset(0f, horizon - h * 0.06f),
-        size = androidx.compose.ui.geometry.Size(w, h * 0.06f)
-    )
-    // 日影：太陽在地板上的反光柱，隨時間輕晃
-    val sway = sin(t * 0.5f) * w * 0.01f
-    drawRect(
-        brush = Brush.verticalGradient(
-            colors = listOf(
-                Color(0xFF7C4DFF).copy(alpha = if (isDark) 0.45f else 0.30f),
-                Color.Transparent
-            )
-        ),
-        topLeft = Offset(sunC.x - sunR * 0.55f + sway, horizon),
-        size = androidx.compose.ui.geometry.Size(sunR * 1.1f, h - horizon)
-    )
-}
-
-private fun makeStars(): List<Star> {
-    val rnd = Random(0xC17E5L)
-    return List(70) {
-        Star(
-            x = rnd.nextFloat(),
-            y = rnd.nextFloat(),
-            r = 1f + rnd.nextFloat() * 2f,
-            speed = 0.6f + rnd.nextFloat() * 1.6f,
-            phase = rnd.nextFloat() * 6.28f
-        )
-    }
-}
-
-private fun makeTowers(): List<Tower> {
-    val rnd = Random(0x7E1A6L)
-    return List(13) {
-        Tower(
-            xFrac = rnd.nextFloat() * 0.94f,
-            wFrac = 0.03f + rnd.nextFloat() * 0.05f,
-            hFrac = 0.03f + rnd.nextFloat() * 0.10f,
-            seed = rnd.nextLong()
-        )
-    }
-}
+// ── 霓城已刪除（太陽條紋驗收失敗） ──
 
 // ── 沙丘：層疊正弦 ridge＋月暈 ───────────────────────────────
 

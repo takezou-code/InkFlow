@@ -244,7 +244,7 @@ fun TabletEditorScreen(
     isPowerSaver: Boolean = false,
     backdropTheme: BackdropTheme = BackdropTheme.SOFT,
     backdropKind: BackdropKind = BackdropKind.ORB,
-    backdropScene: BackdropScene = BackdropScene.NEON_CITY,
+    backdropScene: BackdropScene = BackdropScene.DUNE,
     backdropImageUri: android.net.Uri? = null,
     onTogglePowerSaver: () -> Unit = {}
 ) {
