@@ -860,6 +860,7 @@ internal fun DocumentCard(
         .graphicsLayer { scaleX = cardScale; scaleY = cardScale }
         .documentDragSource(document.uri)
         .then(if (hazeState != null) Modifier.glassPanel(hazeState, isDarkTheme, ShapeLg) else Modifier.fauxGlassPanel(isDarkTheme, ShapeLg))
+        .glassSweep(cardInteractionSource, ShapeLg)
     androidx.compose.material3.Card(
         onClick = onClick,
         modifier = cardModifier,
@@ -1031,6 +1032,8 @@ internal fun DocumentListRow(
         java.text.SimpleDateFormat("yyyy/MM/dd HH:mm", java.util.Locale.getDefault())
             .format(java.util.Date(document.lastOpenedAt))
     }
+    // 列表 rows：點擊走 Surface onClick，掃光借同一按壓源
+    val rowPressSource = remember { MutableInteractionSource() }
 
     androidx.compose.material3.Surface(
         onClick = onClick,
@@ -1038,12 +1041,14 @@ internal fun DocumentListRow(
             .fillMaxWidth()
             .height(88.dp)
             .documentDragSource(document.uri)
-            .then(if (hazeState != null) Modifier.glassPanel(hazeState, isDarkTheme, ShapeMd) else Modifier.fauxGlassPanel(isDarkTheme, ShapeMd)),
+            .then(if (hazeState != null) Modifier.glassPanel(hazeState, isDarkTheme, ShapeMd) else Modifier.fauxGlassPanel(isDarkTheme, ShapeMd))
+            .glassSweep(rowPressSource, ShapeMd),
         shape = ShapeMd,
         color = Color.Transparent,
         contentColor = MaterialTheme.colorScheme.onSurface,
         border = null,
-        shadowElevation = 0.dp
+        shadowElevation = 0.dp,
+        interactionSource = rowPressSource
     ) {
         Row(
             modifier = Modifier.fillMaxSize().padding(8.dp),

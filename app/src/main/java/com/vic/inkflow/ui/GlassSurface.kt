@@ -211,21 +211,42 @@ fun Modifier.pressableGlass(
             scaleY = scale
         }
         .background(Color.White.copy(alpha = glow), shape)
-        .then(
-            if (sweep > 0.01f) Modifier.background(
-                brush = Brush.linearGradient(
-                    colorStops = arrayOf(
-                        0f to Color.Transparent,
-                        ((0.05f + 0.55f * sweep).coerceIn(0f, 1f)) to Color.Transparent,
-                        ((0.30f + 0.55f * sweep).coerceIn(0f, 1f)) to Color.White.copy(alpha = 0.30f * sweep),
-                        ((0.60f + 0.55f * sweep).coerceIn(0f, 1f)) to Color.Transparent,
-                        1f to Color.Transparent
-                    )
-                ),
-                shape = shape
-            ) else Modifier
-        )
+        .sweepLayer(sweep, shape)
 }
+
+/**
+ * 純掃光疊層：給 M3 Card/Surface 用（點擊走它們自己的 onClick，只借按壓源畫掃光）。
+ * 一般可壓玻璃走 [glassClickable]，不要拆開調這裡。
+ */
+@Composable
+fun Modifier.glassSweep(
+    source: MutableInteractionSource,
+    shape: Shape = ShapeLg
+): Modifier {
+    val pressed by source.collectIsPressedAsState()
+    val sweep by animateFloatAsState(
+        targetValue = if (pressed) 1f else 0f,
+        animationSpec = tween(if (pressed) 450 else 200),
+        label = "GlassSweep"
+    )
+    return this.sweepLayer(sweep, shape)
+}
+
+/** 掃光實繪：靜止時 alpha=0 不多一層開銷。 */
+private fun Modifier.sweepLayer(sweep: Float, shape: Shape): Modifier = this.then(
+    if (sweep > 0.01f) Modifier.background(
+        brush = Brush.linearGradient(
+            colorStops = arrayOf(
+                0f to Color.Transparent,
+                ((0.05f + 0.55f * sweep).coerceIn(0f, 1f)) to Color.Transparent,
+                ((0.30f + 0.55f * sweep).coerceIn(0f, 1f)) to Color.White.copy(alpha = 0.30f * sweep),
+                ((0.60f + 0.55f * sweep).coerceIn(0f, 1f)) to Color.Transparent,
+                1f to Color.Transparent
+            )
+        ),
+        shape = shape
+    ) else Modifier
+)
 
 /**
  * 按壓統一入口：掃光＋縮放＋無漣漪點擊一次包好。

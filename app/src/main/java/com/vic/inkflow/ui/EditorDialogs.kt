@@ -125,7 +125,6 @@ import androidx.compose.material.icons.rounded.Gesture
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Scaffold
@@ -533,20 +532,23 @@ internal fun EditorIconButton(
         }
     }
 
-    Box(modifier = Modifier.size(size), contentAlignment = Alignment.Center) {
-        IconButton(onClick = onClick, modifier = Modifier.size(size)) {
-            Icon(
-                icon,
-                contentDescription = contentDescription,
-                tint = animatedTintColor,
-                modifier = Modifier
-                    .offset(y = iconOffsetY)
-                    .graphicsLayer {
-                        scaleX = iconScale; scaleY = iconScale
-                        rotationZ = iconWiggle.value
-                    }
-            )
-        }
+    Box(
+        modifier = Modifier
+            .size(size)
+            .glassClickable(onClick = onClick, shape = CircleShape),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            icon,
+            contentDescription = contentDescription,
+            tint = animatedTintColor,
+            modifier = Modifier
+                .offset(y = iconOffsetY)
+                .graphicsLayer {
+                    scaleX = iconScale; scaleY = iconScale
+                    rotationZ = iconWiggle.value
+                }
+        )
         Box(
             modifier = Modifier
                 .align(Alignment.BottomCenter)

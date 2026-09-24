@@ -46,8 +46,6 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.draganddrop.dragAndDropSource
 import androidx.compose.foundation.draganddrop.dragAndDropTarget
 import androidx.compose.foundation.gestures.animateScrollBy
@@ -60,8 +58,6 @@ import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -396,7 +392,7 @@ internal fun LibraryHeroPanel(
                             contentColor = MaterialTheme.colorScheme.primary,
                             modifier = Modifier
                                 .fauxGlassPanel(isDarkTheme, CircleShape)
-                                .clickable(onClick = onCreateFolder)
+                                .glassClickable(onClick = onCreateFolder, shape = CircleShape)
                         ) {
                             Row(
                                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
@@ -443,14 +439,11 @@ internal fun DocumentLibraryFab(
 ) {
     val fabContentColor = if (isDarkTheme) Color.White else MaterialTheme.colorScheme.primary
     Box {
-        // 啫喱按壓走共用 pressableGlass（縮放 + 提亮）
-        val fabInteractionSource = remember { MutableInteractionSource() }
-
+        // FAB 走統一入口 glassClickable（掃光＋縮放＋無漣漪）
         Box(
             modifier = Modifier
                 .smartGlass(hazeState, isDarkTheme)
-                .pressableGlass(fabInteractionSource)
-                .clickable(interactionSource = fabInteractionSource, indication = androidx.compose.foundation.LocalIndication.current, onClick = onToggleMenu)
+                .glassClickable(onClick = onToggleMenu)
                 .padding(horizontal = 18.dp, vertical = 14.dp)
         ) {
             Row(
@@ -598,7 +591,7 @@ internal fun LibraryEmptyState(
                                 contentColor = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier
                                     .fauxGlassPanel(isDarkTheme, ShapeLg)
-                                    .clickable(onClick = onClearSearch)
+                                    .glassClickable(onClick = onClearSearch, shape = ShapeLg)
                             ) {
                                 Text(
                                     text = "清除搜尋",
@@ -611,7 +604,7 @@ internal fun LibraryEmptyState(
                                 modifier = Modifier
                                     .clip(ShapeLg)
                                     .background(brandGradient)
-                                    .clickable(onClick = onOpenPdf)
+                                    .glassClickable(onClick = onOpenPdf, shape = ShapeLg)
                             ) {
                                 Text(
                                     text = "開啟 PDF",
@@ -628,7 +621,7 @@ internal fun LibraryEmptyState(
                             contentColor = MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier
                                 .fauxGlassPanel(isDarkTheme, ShapeLg)
-                                .clickable(onClick = onCreateBlank)
+                                .glassClickable(onClick = onCreateBlank, shape = ShapeLg)
                         ) {
                             Text(
                                 text = "建立空白筆記",
