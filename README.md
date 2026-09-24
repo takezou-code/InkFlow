@@ -1,41 +1,50 @@
 # InkFlow
 
-平板優先的 PDF 閱讀＋手寫筆記 App（Android, Jetpack Compose）。核心賣點是**跟筆記長在一起的 AI**：框選即問、問答直接寫回頁面。
+A tablet-first PDF reader and handwritten-notebook for Android, built with Jetpack Compose. The point of the app is simple: the AI works where your notes already are. You box something, you ask about it, and the answer ends up back on the page.
 
 ---
 ![IMG_20260408_224011](https://github.com/user-attachments/assets/ac6b68e7-a6fa-49a8-9f0e-575311146733)
 
 ---
 
-## AI 功能
+## AI features
 
-### 框選即問（套索 → AI）
-- 套索圈起任何區域，浮動氣泡直接給 **AI 解析**：把該區（含 PDF 底圖＋墨跡＋圖片＋文字）送去問答。
-- **空白區也照樣能問**：框裡沒有筆跡時氣泡一樣出現，照樣出圖送 AI（region 錨定，不依賴選中物）。
-- 一鍵快捷指令，送圖後自動送出（繁體中文）：**解釋**（詳細解釋＋重點）、**總結**（最多 5 點條列）、**翻譯**（圖中文字翻繁中）。
-- **提取成新頁**：把框選區渲染成圖，插一頁新的放好，可再編輯。
+### Box anything, ask about it (Lasso → AI)
+Draw a lasso around any region and a bubble offers **AI Parse**: the region — PDF content plus your ink, images, and text — is screenshotted and sent to the assistant.
 
-### AI 數學筆記管線（問答 → 寫回頁面）
-- 內嵌 AI 問答面板（`AiWebPanel`）：對話過程偵測數學含量（`MATHCOUNT`：mathml/mjx/annotation 訊號），含公式的回答走數學管線。
-- 文字切塊＋公式像素裁圖（S0/S1/S2 截圖裁切管線）＋ **KaTeX 離線第二引擎**（常駐隱藏 WebView，TeX 源渲染成圖，失敗退回文字）。
-- 圖文混合排版後掃描空白頁寫入筆記並自動跳轉：問完的數學直接長在筆記裡，不是貼一張死圖。
-- TeX 還原：從 `data-math` / KaTeX annotation 撈回真正的 TeX 源，不是 OCR 猜的。
+It works on empty regions too. The bubble anchors to the boxed area itself rather than to selected strokes, so boxing a blank patch of the page still produces a valid capture.
 
-### AI 文字引入
-- 問答文字分段整理後匯入筆記（`AiTextImport`），行內 `$..$` 數學轉 KaTeX 可渲染格式（避開金額誤判）。
+One-tap shortcuts submit automatically (in Traditional Chinese):
+- **Explain** — a thorough walkthrough of the content with key points
+- **Summarize** — at most five bullet points
+- **Translate** — translates pictured text into Traditional Chinese
 
-## 其他（一覽）
-手寫筆＋螢光筆＋橡皮擦＋形狀＋文字＋圖章＋圖片、縮放平移、縮圖側欄、插頁刪頁、undo/redo、PDF 向量匯出、`.inkbak` 備份還原——基本功都有，不贅述。
+**Extract to new page** renders the boxed region as an image, inserts a fresh page, and places it ready for further editing.
+
+### Math answers become notes, not screenshots
+The built-in Q&A panel watches for math in the conversation (MathML / MathJax / annotation signals). When an answer contains formulas, it takes a different path from plain text:
+
+1. Text is split into blocks; formula regions are pixel-cropped from screenshots (S0/S1/S2 crop pipeline).
+2. Blocks carrying TeX source are rendered offline by a bundled **KaTeX engine** (a persistent hidden WebView — no network round-trip, falls back to text on failure).
+3. Text and rendered math are laid out together, written into a blank page, and the reader jumps there.
+
+The TeX source is recovered from `data-math` attributes and KaTeX annotations — read out of the page, not guessed by OCR.
+
+### Text import
+Prose answers can be imported into notes as cleaned-up paragraphs (`AiTextImport`). Inline `$..$` math containing `\ ^ _` is converted to KaTeX-renderable form; plain dollar amounts are left alone.
+
+## Everything else
+Pen, highlighter, eraser, shapes, text, stamps, images; pinch zoom and pan; thumbnail sidebar; insert/delete pages; undo/redo; vector PDF export; `.inkbak` backup and restore. The basics are covered — this README won't enumerate them.
 
 ---
 
-## Tech Stack
+## Tech stack
 
 Kotlin 2.4.10 · Compose BOM 2026.08.00 · Room 2.8.4 · PdfBox-Android 2.0.27.0 · AGP 9.3.2 · Gradle 9.7.1 · minSdk 32 / targetSdk 36
 
 ---
 
-## Build & Run
+## Build & run
 
 ```bash
 git clone https://github.com/takezou-code/InkFlow.git
@@ -43,17 +52,17 @@ cd InkFlow
 ./gradlew assembleDebug
 ```
 
-Android Studio 開啟後直接跑 `app` 也行（平板實機建議 API 32+）。
+Or open the project in Android Studio and run the `app` configuration (a physical tablet on API 32+ is recommended).
 
 ---
 
-## 分支
+## Branches
 
-- `beta`：日常開發線
-- `main`：穩定線（user 確認才合入）
+- `beta` — day-to-day development
+- `main` — stable (merged only on explicit request)
 
 ---
 
 ## License
 
-個人與教育用途。
+For personal and educational use.
