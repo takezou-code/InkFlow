@@ -130,6 +130,7 @@ import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Spa
 import androidx.compose.material.icons.rounded.Brush
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Gesture
@@ -242,6 +243,8 @@ fun DocumentLibraryScreen(
     navController: NavController,
     db: AppDatabase,
     isDarkTheme: Boolean = false,
+    isPowerSaver: Boolean = false,
+    onTogglePowerSaver: () -> Unit = {},
     onToggleDarkTheme: () -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -565,7 +568,8 @@ fun DocumentLibraryScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .hazeSource(libraryHazeState),
-            orbCount = 12
+            orbCount = 12,
+            static = isPowerSaver
         )
 
     // 全螢幕：狀態列已藏，不再留白
@@ -623,6 +627,15 @@ fun DocumentLibraryScreen(
                 isDarkTheme = isDarkTheme
             )
             Spacer(Modifier.weight(1f))
+            // 靜模式快捷：開＝靜，關＝流光（跟設定頁同一開關）
+            IconButton(onClick = onTogglePowerSaver) {
+                Icon(
+                    imageVector = Icons.Outlined.Spa,
+                    contentDescription = "靜模式",
+                    tint = if (isPowerSaver) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
             // Dark / Light mode toggle（Dock 自繪無 M3 contentColor，需顯式 tint）
             IconButton(onClick = onToggleDarkTheme) {
                 Icon(

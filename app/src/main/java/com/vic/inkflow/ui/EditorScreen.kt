@@ -237,7 +237,13 @@ import kotlinx.coroutines.withContext
 enum class SidebarMode { COLLAPSED, NORMAL, FULLSCREEN }
 
 @Composable
-fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) {
+fun TabletEditorScreen(
+    navController: NavController,
+    uri: Uri,
+    db: AppDatabase,
+    isPowerSaver: Boolean = false,
+    onTogglePowerSaver: () -> Unit = {}
+) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val prefs = remember { context.getSharedPreferences("inkflow_settings", 0) }
     val settingsRepository = remember(db, prefs) {
@@ -571,7 +577,8 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
             modifier = Modifier
                 .fillMaxSize()
                 .hazeSource(editorHaze),
-            orbCount = 5
+            orbCount = 5,
+            static = isPowerSaver
         )
         Column(modifier = Modifier.fillMaxSize()) {
             TabletEditorTopBar(
@@ -586,6 +593,8 @@ fun TabletEditorScreen(navController: NavController, uri: Uri, db: AppDatabase) 
                 },
                 onDocumentSettings = { showDocumentSettingsDialog = true },
                 onToggleAiPanel = { showAiPanel = !showAiPanel },
+                isPowerSaver = isPowerSaver,
+                onTogglePowerSaver = onTogglePowerSaver,
                 hazeState = editorHaze,
                 isDarkTheme = isEditorDark
             )

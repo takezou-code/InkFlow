@@ -246,6 +246,13 @@ fun InkLayerApp(db: AppDatabase) {
 
     var dynamicColor by rememberSaveable(prefs) { mutableStateOf(prefs.getBoolean("dynamic_color", false)) }
 
+    // 流光／靜總開關：關＝流光（預設），開＝靜。往下透 isPowerSaver，各層內部分支。
+    var powerSaver by rememberSaveable(prefs) { mutableStateOf(prefs.getBoolean("power_saver", false)) }
+    fun setPowerSaver(v: Boolean) {
+        powerSaver = v
+        prefs.edit().putBoolean("power_saver", v).apply()
+    }
+
     InkFlowTheme(darkTheme = isDarkTheme, dynamicColor = dynamicColor) {
         val navController = rememberNavController()
     // 144Hz 解鎖：這台 High 檔只有 90Hz，直接點名 144（面板上限）。
@@ -274,6 +281,8 @@ fun InkLayerApp(db: AppDatabase) {
                 navController = navController,
                 db = db,
                 isDarkTheme = isDarkTheme,
+                isPowerSaver = powerSaver,
+                onTogglePowerSaver = { setPowerSaver(!powerSaver) },
                 onToggleDarkTheme = {
                     val newMode = if (isDarkTheme) ThemeMode.LIGHT else ThemeMode.DARK
                     themeModeStr = newMode.name
@@ -287,7 +296,8 @@ fun InkLayerApp(db: AppDatabase) {
                 onNavigateBack = { navController.popBackStack() },
                 currentThemeMode = themeMode,
                 onThemeModeChanged = { themeModeStr = it.name },
-                onDynamicColorChanged = { dynamicColor = it }
+                onDynamicColorChanged = { dynamicColor = it },
+                onPowerSaverChanged = { setPowerSaver(it) }
             )
         }
         composable(
@@ -301,7 +311,9 @@ fun InkLayerApp(db: AppDatabase) {
                 TabletEditorScreen(
                     navController = navController,
                     uri = pdfUri,
-                    db = db
+                    db = db,
+                    isPowerSaver = powerSaver,
+                    onTogglePowerSaver = { setPowerSaver(!powerSaver) }
                 )
             }
         }

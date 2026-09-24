@@ -139,6 +139,7 @@ import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.TouchApp
 import androidx.compose.material.icons.outlined.BackHand
+import androidx.compose.material.icons.outlined.Spa
 import androidx.compose.material.icons.rounded.Brush
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Gesture
@@ -253,6 +254,8 @@ fun TabletEditorTopBar(
     onExport: () -> Unit = {},
     onDocumentSettings: () -> Unit = {},
     onToggleAiPanel: () -> Unit = {},
+    isPowerSaver: Boolean = false,
+    onTogglePowerSaver: () -> Unit = {},
     hazeState: dev.chrisbanes.haze.HazeState,
     isDarkTheme: Boolean
 ) {
@@ -665,6 +668,15 @@ fun TabletEditorTopBar(
                                 InputMode.PALM_REJECTION -> MaterialTheme.colorScheme.tertiary
                                 InputMode.STYLUS_ONLY -> MaterialTheme.colorScheme.primary
                             }
+                        )
+                    }
+                    // 靜模式快捷：開＝靜，關＝流光（跟設定頁同一開關）
+                    IconButton(onClick = onTogglePowerSaver, modifier = Modifier.size(utilityButtonSize)) {
+                        Icon(
+                            imageVector = Icons.Outlined.Spa,
+                            contentDescription = "靜模式",
+                            tint = if (isPowerSaver) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurface
                         )
                     }
                 }

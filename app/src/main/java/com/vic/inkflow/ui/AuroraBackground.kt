@@ -66,6 +66,8 @@ fun AuroraBackground(
     orbCount: Int = 5,
     bubbleCount: Int? = null,
     bubbleRegion: BubbleRegion = BubbleRegion.Full,
+    // 靜模式：凍結在首幀，不跑 tick 迴圈（t 取真實秒數，切回流光自動續行）
+    static: Boolean = false,
 ) {
     val effectiveCount = bubbleCount ?: orbCount
     // 高級感配方：小而多、柔而慢。alpha 由繪製 stops 控制，這裡存純色。
@@ -121,10 +123,12 @@ fun AuroraBackground(
 
     val tick = remember { mutableLongStateOf(0L) }
     val t0 = remember { System.nanoTime() }
-    LaunchedEffect(Unit) {
-        while (true) {
-            kotlinx.coroutines.delay(22)
-            tick.longValue += 1
+    LaunchedEffect(static) {
+        if (!static) {
+            while (true) {
+                kotlinx.coroutines.delay(22)
+                tick.longValue += 1
+            }
         }
     }
 

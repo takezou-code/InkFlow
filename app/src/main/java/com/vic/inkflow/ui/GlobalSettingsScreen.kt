@@ -92,7 +92,8 @@ fun GlobalSettingsScreen(
     onNavigateBack: () -> Unit,
     currentThemeMode: ThemeMode,
     onThemeModeChanged: (ThemeMode) -> Unit,
-    onDynamicColorChanged: (Boolean) -> Unit = {}
+    onDynamicColorChanged: (Boolean) -> Unit = {},
+    onPowerSaverChanged: (Boolean) -> Unit = {}
 ) {
     val scrollState = rememberScrollState()
     // 對話框自判深淺
@@ -173,6 +174,18 @@ fun GlobalSettingsScreen(
                         dynamicColor = it
                         prefs.edit().putBoolean("dynamic_color", it).apply()
                         onDynamicColorChanged(it)
+                    }
+                )
+                // 流光／靜總開關：靜＝動畫靜幀＋背景凍結，功能不變
+                var powerSaver by remember { mutableStateOf(prefs.getBoolean("power_saver", false)) }
+                SettingsSwitchRow(
+                    title = "靜模式",
+                    subtitle = "動畫靜止、背景凍結，最省電；關閉回到流光",
+                    checked = powerSaver,
+                    onCheckedChange = {
+                        powerSaver = it
+                        prefs.edit().putBoolean("power_saver", it).apply()
+                        onPowerSaverChanged(it)
                     }
                 )
             }
