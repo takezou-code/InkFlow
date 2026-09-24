@@ -92,7 +92,9 @@ fun GlobalSettingsScreen(
     onNavigateBack: () -> Unit,
     currentThemeMode: ThemeMode,
     onThemeModeChanged: (ThemeMode) -> Unit,
-    onPowerSaverChanged: (Boolean) -> Unit = {}
+    onPowerSaverChanged: (Boolean) -> Unit = {},
+    backdropTheme: BackdropTheme = BackdropTheme.SOFT,
+    onBackdropThemeChanged: (BackdropTheme) -> Unit = {}
 ) {
     val scrollState = rememberScrollState()
     // 對話框自判深淺
@@ -175,6 +177,46 @@ fun GlobalSettingsScreen(
                         prefs.edit().putBoolean("power_saver", it).apply()
                         onPowerSaverChanged(it)
                     }
+                )
+                // 背景主題：四套泡泡，靜模式下凍結首幀
+                var backdrop by remember { mutableStateOf(backdropTheme) }
+                Text(
+                    "背景",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    BackdropTheme.values().forEach { t ->
+                        GlassOptionChip(
+                            text = when (t) {
+                                BackdropTheme.SOFT -> "柔光"
+                                BackdropTheme.VIVID -> "熾霞"
+                                BackdropTheme.NIGHT -> "墨夜"
+                                BackdropTheme.CLEAN -> "素"
+                            },
+                            selected = backdrop == t,
+                            onClick = {
+                                backdrop = t
+                                prefs.edit().putString("backdrop_theme", t.name).apply()
+                                onBackdropThemeChanged(t)
+                            }
+                        )
+                    }
+                }
+                GlassTextButton(
+                    text = "恢復預設背景",
+                    onClick = {
+                        backdrop = BackdropTheme.SOFT
+                        prefs.edit().putString("backdrop_theme", BackdropTheme.SOFT.name).apply()
+                        onBackdropThemeChanged(BackdropTheme.SOFT)
+                    },
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 

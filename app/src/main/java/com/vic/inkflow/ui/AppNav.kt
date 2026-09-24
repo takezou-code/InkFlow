@@ -251,6 +251,16 @@ fun InkLayerApp(db: AppDatabase) {
         prefs.edit().putBoolean("power_saver", v).apply()
     }
 
+    // 背景主題：SOFT 柔光預設，往下透給 AuroraBackground
+    var backdropThemeStr by rememberSaveable(prefs) {
+        mutableStateOf(prefs.getString("backdrop_theme", BackdropTheme.SOFT.name) ?: BackdropTheme.SOFT.name)
+    }
+    val backdropTheme = BackdropTheme.values().find { it.name == backdropThemeStr } ?: BackdropTheme.SOFT
+    fun setBackdropTheme(t: BackdropTheme) {
+        backdropThemeStr = t.name
+        prefs.edit().putString("backdrop_theme", t.name).apply()
+    }
+
     InkFlowTheme(darkTheme = isDarkTheme) {
         val navController = rememberNavController()
     // 144Hz 解鎖：這台 High 檔只有 90Hz，直接點名 144（面板上限）。
@@ -280,6 +290,7 @@ fun InkLayerApp(db: AppDatabase) {
                 db = db,
                 isDarkTheme = isDarkTheme,
                 isPowerSaver = powerSaver,
+                backdropTheme = backdropTheme,
                 onTogglePowerSaver = { setPowerSaver(!powerSaver) },
                 onToggleDarkTheme = {
                     val newMode = if (isDarkTheme) ThemeMode.LIGHT else ThemeMode.DARK
@@ -294,7 +305,9 @@ fun InkLayerApp(db: AppDatabase) {
                 onNavigateBack = { navController.popBackStack() },
                 currentThemeMode = themeMode,
                 onThemeModeChanged = { themeModeStr = it.name },
-                onPowerSaverChanged = { setPowerSaver(it) }
+                onPowerSaverChanged = { setPowerSaver(it) },
+                backdropTheme = backdropTheme,
+                onBackdropThemeChanged = { setBackdropTheme(it) }
             )
         }
         composable(
@@ -310,6 +323,7 @@ fun InkLayerApp(db: AppDatabase) {
                     uri = pdfUri,
                     db = db,
                     isPowerSaver = powerSaver,
+                    backdropTheme = backdropTheme,
                     onTogglePowerSaver = { setPowerSaver(!powerSaver) }
                 )
             }

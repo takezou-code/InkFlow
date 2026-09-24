@@ -244,6 +244,7 @@ fun DocumentLibraryScreen(
     db: AppDatabase,
     isDarkTheme: Boolean = false,
     isPowerSaver: Boolean = false,
+    backdropTheme: BackdropTheme = BackdropTheme.SOFT,
     onTogglePowerSaver: () -> Unit = {},
     onToggleDarkTheme: () -> Unit = {}
 ) {
@@ -569,7 +570,8 @@ fun DocumentLibraryScreen(
                 .fillMaxSize()
                 .hazeSource(libraryHazeState),
             orbCount = 12,
-            static = isPowerSaver
+            static = isPowerSaver,
+            theme = backdropTheme
         )
 
     // 全螢幕：狀態列已藏，不再留白

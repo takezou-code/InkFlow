@@ -242,6 +242,7 @@ fun TabletEditorScreen(
     uri: Uri,
     db: AppDatabase,
     isPowerSaver: Boolean = false,
+    backdropTheme: BackdropTheme = BackdropTheme.SOFT,
     onTogglePowerSaver: () -> Unit = {}
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -578,7 +579,8 @@ fun TabletEditorScreen(
                 .fillMaxSize()
                 .hazeSource(editorHaze),
             orbCount = 5,
-            static = isPowerSaver
+            static = isPowerSaver,
+            theme = backdropTheme
         )
         Column(modifier = Modifier.fillMaxSize()) {
             TabletEditorTopBar(

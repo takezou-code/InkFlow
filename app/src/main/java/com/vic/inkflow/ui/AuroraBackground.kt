@@ -19,6 +19,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.random.Random
 
@@ -59,6 +60,23 @@ enum class BubbleRegion {
     Custom
 }
 
+/** 背景主題：柔光＝現行預設；熾霞＝高對比高飽和（給折射鋪路）；墨夜＝少而暗；素＝近乎平坦。 */
+enum class BackdropTheme { SOFT, VIVID, NIGHT, CLEAN }
+
+private data class BackdropTune(
+    val countScale: Float,
+    val alphaScale: Float,
+    val speedScale: Float,
+    val radiusScale: Float
+)
+
+private fun tuneFor(theme: BackdropTheme) = when (theme) {
+    BackdropTheme.SOFT -> BackdropTune(1f, 1f, 1f, 1f)
+    BackdropTheme.VIVID -> BackdropTune(1.5f, 1.35f, 1.5f, 1.2f)
+    BackdropTheme.NIGHT -> BackdropTune(0.6f, 0.7f, 0.8f, 0.9f)
+    BackdropTheme.CLEAN -> BackdropTune(0.25f, 0.5f, 0.6f, 0.8f)
+}
+
 @Composable
 fun AuroraBackground(
     isDarkTheme: Boolean,
@@ -68,8 +86,11 @@ fun AuroraBackground(
     bubbleRegion: BubbleRegion = BubbleRegion.Full,
     // 靜模式：凍結在首幀，不跑 tick 迴圈（t 取真實秒數，切回流光自動續行）
     static: Boolean = false,
+    // 背景主題：SOFT 與舊行為逐像素一致，其他三套只調數量/透明/速度/半徑四個旋鈕
+    theme: BackdropTheme = BackdropTheme.SOFT,
 ) {
-    val effectiveCount = bubbleCount ?: orbCount
+    val tune = tuneFor(theme)
+    val effectiveCount = ((bubbleCount ?: orbCount) * tune.countScale).roundToInt().coerceAtLeast(1)
     // 高級感配方：小而多、柔而慢。alpha 由繪製 stops 控制，這裡存純色。
     // S1 預飽和：haze/RenderEffect 鏈塞不進 saturation 節點，玻璃會吃掉彩度，
     // 所以源頭直接給更鮮的色，透出來剛好（零成本替代 saturation boost 1.5x）。
@@ -107,9 +128,9 @@ fun AuroraBackground(
                 xAmp = 0.10f + rnd.nextFloat() * 0.28f,
                 xPeriod = 26f + rnd.nextFloat() * 34f,
                 xPhase = rnd.nextFloat() * 6.28f,
-                yRate = (0.012f + rnd.nextFloat() * 0.016f) * (1.1f / 1.3f),
+                yRate = (0.012f + rnd.nextFloat() * 0.016f) * (1.1f / 1.3f) * tune.speedScale,
                 yOffset = rnd.nextFloat() * 1.3f,
-                radiusFrac = radiusMin + rnd.nextFloat() * radiusRange,
+                radiusFrac = (radiusMin + rnd.nextFloat() * radiusRange) * tune.radiusScale,
                 pulseSpeed = 0.4f + rnd.nextFloat() * 0.9f,
                 pulsePhase = rnd.nextFloat() * 6.28f,
                 baseColor = palette[rnd.nextInt(palette.size)]
@@ -181,9 +202,9 @@ fun AuroraBackground(
 
             // 暗色 Plus 已拿掉：SrcOver 走硬體快路，視覺差異極小
             val orbBlend = BlendMode.SrcOver
-            // 柔光斑改硬芯：中心實色撐到 0.7 再衰減，泡泡清晰飽滿
-            val coreAlpha = if (isDarkTheme) 0.62f else 0.45f
-            val midAlpha = if (isDarkTheme) 0.30f else 0.20f
+            // 柔光芯：中心實色撐到 0.7 再衰減，泡泡清晰飽滿（主題只乘 alpha，不動形狀）
+            val coreAlpha = (if (isDarkTheme) 0.62f else 0.45f) * tune.alphaScale
+            val midAlpha = (if (isDarkTheme) 0.30f else 0.20f) * tune.alphaScale
             sortedOrbs.forEach { bubble ->
                 val radius = bubble.currentRadius(t, w, h)
                 val centerX = bubble.currentX(t, w)
