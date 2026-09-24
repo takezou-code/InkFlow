@@ -261,19 +261,23 @@ private fun DrawScope.drawDune(t: Float, w: Float, h: Float, isDark: Boolean) {
         Triple(0.83f, 0.070f, 0.34f)
     )
     layers.forEachIndexed { idx, (base, amp, speed) ->
-        val path = Path()
+        val topPath = Path()
         val steps = 48
         for (s in 0..steps) {
             val x = w * s / steps
             val y = h * base + h * amp * sin(x / w * 6.2832f * (1.2f + idx * 0.35f) + t * speed + idx * 1.7f)
-            if (s == 0) path.moveTo(x, y) else path.lineTo(x, y)
+            if (s == 0) topPath.moveTo(x, y) else topPath.lineTo(x, y)
         }
-        path.lineTo(w, h)
-        path.lineTo(0f, h)
-        path.close()
+        // 填色用閉合路徑，描邊只走頂緣（整圈描會描出底邊側邊，很框）
+        val fillPath = Path().apply {
+            addPath(topPath)
+            lineTo(w, h)
+            lineTo(0f, h)
+            close()
+        }
         val shade = idx / (layers.size - 1).toFloat()
         drawPath(
-            path = path,
+            path = fillPath,
             brush = Brush.verticalGradient(
                 colors = if (isDark) listOf(
                     Color(0xFF2E2360).copy(alpha = 0.75f + 0.25f * shade),
@@ -284,11 +288,11 @@ private fun DrawScope.drawDune(t: Float, w: Float, h: Float, isDark: Boolean) {
                 )
             )
         )
-        // ridge 受光緣
+        // ridge 受光緣：只描頂，只提一點
         drawPath(
-            path = path,
-            color = Color.White.copy(alpha = if (isDark) 0.10f else 0.25f),
-            style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f)
+            path = topPath,
+            color = Color.White.copy(alpha = if (isDark) 0.08f else 0.16f),
+            style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.5f)
         )
     }
 }
