@@ -260,6 +260,31 @@ fun InkLayerApp(db: AppDatabase) {
         backdropThemeStr = t.name
         prefs.edit().putString("backdrop_theme", t.name).apply()
     }
+    // 背景三類：泡泡／特效／圖片＋場景＋圖 URI
+    var backdropKindStr by rememberSaveable(prefs) {
+        mutableStateOf(prefs.getString("backdrop_kind", BackdropKind.ORB.name) ?: BackdropKind.ORB.name)
+    }
+    val backdropKind = BackdropKind.values().find { it.name == backdropKindStr } ?: BackdropKind.ORB
+    fun setBackdropKind(k: BackdropKind) {
+        backdropKindStr = k.name
+        prefs.edit().putString("backdrop_kind", k.name).apply()
+    }
+    var backdropSceneStr by rememberSaveable(prefs) {
+        mutableStateOf(prefs.getString("backdrop_scene", BackdropScene.NEON_CITY.name) ?: BackdropScene.NEON_CITY.name)
+    }
+    val backdropScene = BackdropScene.values().find { it.name == backdropSceneStr } ?: BackdropScene.NEON_CITY
+    fun setBackdropScene(s: BackdropScene) {
+        backdropSceneStr = s.name
+        prefs.edit().putString("backdrop_scene", s.name).apply()
+    }
+    var backdropImageStr by rememberSaveable(prefs) {
+        mutableStateOf(prefs.getString("backdrop_image", "") ?: "")
+    }
+    val backdropImageUri = backdropImageStr.ifEmpty { null }?.let { android.net.Uri.parse(it) }
+    fun setBackdropImage(uri: android.net.Uri?) {
+        backdropImageStr = uri?.toString() ?: ""
+        prefs.edit().putString("backdrop_image", uri?.toString() ?: "").apply()
+    }
 
     InkFlowTheme(darkTheme = isDarkTheme) {
         val navController = rememberNavController()
@@ -291,6 +316,9 @@ fun InkLayerApp(db: AppDatabase) {
                 isDarkTheme = isDarkTheme,
                 isPowerSaver = powerSaver,
                 backdropTheme = backdropTheme,
+                backdropKind = backdropKind,
+                backdropScene = backdropScene,
+                backdropImageUri = backdropImageUri,
                 onTogglePowerSaver = { setPowerSaver(!powerSaver) },
                 onToggleDarkTheme = {
                     val newMode = if (isDarkTheme) ThemeMode.LIGHT else ThemeMode.DARK
@@ -307,7 +335,13 @@ fun InkLayerApp(db: AppDatabase) {
                 onThemeModeChanged = { themeModeStr = it.name },
                 onPowerSaverChanged = { setPowerSaver(it) },
                 backdropTheme = backdropTheme,
-                onBackdropThemeChanged = { setBackdropTheme(it) }
+                onBackdropThemeChanged = { setBackdropTheme(it) },
+                backdropKind = backdropKind,
+                onBackdropKindChanged = { setBackdropKind(it) },
+                backdropScene = backdropScene,
+                onBackdropSceneChanged = { setBackdropScene(it) },
+                backdropImageUri = backdropImageUri,
+                onBackdropImageChanged = { setBackdropImage(it) }
             )
         }
         composable(
@@ -324,6 +358,9 @@ fun InkLayerApp(db: AppDatabase) {
                     db = db,
                     isPowerSaver = powerSaver,
                     backdropTheme = backdropTheme,
+                    backdropKind = backdropKind,
+                    backdropScene = backdropScene,
+                    backdropImageUri = backdropImageUri,
                     onTogglePowerSaver = { setPowerSaver(!powerSaver) }
                 )
             }

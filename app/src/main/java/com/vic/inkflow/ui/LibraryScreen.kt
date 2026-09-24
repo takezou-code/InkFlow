@@ -245,6 +245,9 @@ fun DocumentLibraryScreen(
     isDarkTheme: Boolean = false,
     isPowerSaver: Boolean = false,
     backdropTheme: BackdropTheme = BackdropTheme.SOFT,
+    backdropKind: BackdropKind = BackdropKind.ORB,
+    backdropScene: BackdropScene = BackdropScene.NEON_CITY,
+    backdropImageUri: android.net.Uri? = null,
     onTogglePowerSaver: () -> Unit = {},
     onToggleDarkTheme: () -> Unit = {}
 ) {
@@ -563,15 +566,18 @@ fun DocumentLibraryScreen(
     Box(
         modifier = Modifier.fillMaxSize()
     ) {
-        // 深空單一背景：只有 Aurora，讓薄玻璃有東西可糊
-        AuroraBackground(
+        // 深空單一背景：三類在此分流（泡泡／特效／圖片），靜模式凍結首幀
+        InkBackdrop(
+            kind = backdropKind,
+            orbTheme = backdropTheme,
+            scene = backdropScene,
+            imageUri = backdropImageUri,
+            static = isPowerSaver,
             isDarkTheme = isDarkTheme,
             modifier = Modifier
                 .fillMaxSize()
                 .hazeSource(libraryHazeState),
-            orbCount = 12,
-            static = isPowerSaver,
-            theme = backdropTheme
+            orbCount = 12
         )
 
     // 全螢幕：狀態列已藏，不再留白

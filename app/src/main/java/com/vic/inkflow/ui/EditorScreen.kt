@@ -243,6 +243,9 @@ fun TabletEditorScreen(
     db: AppDatabase,
     isPowerSaver: Boolean = false,
     backdropTheme: BackdropTheme = BackdropTheme.SOFT,
+    backdropKind: BackdropKind = BackdropKind.ORB,
+    backdropScene: BackdropScene = BackdropScene.NEON_CITY,
+    backdropImageUri: android.net.Uri? = null,
     onTogglePowerSaver: () -> Unit = {}
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -573,14 +576,17 @@ fun TabletEditorScreen(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        AuroraBackground(
+        InkBackdrop(
+            kind = backdropKind,
+            orbTheme = backdropTheme,
+            scene = backdropScene,
+            imageUri = backdropImageUri,
+            static = isPowerSaver,
             isDarkTheme = isEditorDark,
             modifier = Modifier
                 .fillMaxSize()
                 .hazeSource(editorHaze),
-            orbCount = 5,
-            static = isPowerSaver,
-            theme = backdropTheme
+            orbCount = 5
         )
         Column(modifier = Modifier.fillMaxSize()) {
             TabletEditorTopBar(

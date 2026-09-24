@@ -94,7 +94,13 @@ fun GlobalSettingsScreen(
     onThemeModeChanged: (ThemeMode) -> Unit,
     onPowerSaverChanged: (Boolean) -> Unit = {},
     backdropTheme: BackdropTheme = BackdropTheme.SOFT,
-    onBackdropThemeChanged: (BackdropTheme) -> Unit = {}
+    onBackdropThemeChanged: (BackdropTheme) -> Unit = {},
+    backdropKind: BackdropKind = BackdropKind.ORB,
+    onBackdropKindChanged: (BackdropKind) -> Unit = {},
+    backdropScene: BackdropScene = BackdropScene.NEON_CITY,
+    onBackdropSceneChanged: (BackdropScene) -> Unit = {},
+    backdropImageUri: android.net.Uri? = null,
+    onBackdropImageChanged: (android.net.Uri?) -> Unit = {}
 ) {
     val scrollState = rememberScrollState()
     // 對話框自判深淺
@@ -178,8 +184,26 @@ fun GlobalSettingsScreen(
                         onPowerSaverChanged(it)
                     }
                 )
-                // 背景主題：四套泡泡，靜模式下凍結首幀
+                // 背景三類：泡泡／特效／圖片；靜模式下動的全凍結首幀
+                var kind by remember { mutableStateOf(backdropKind) }
                 var backdrop by remember { mutableStateOf(backdropTheme) }
+                var scene by remember { mutableStateOf(backdropScene) }
+                val settingsContext = androidx.compose.ui.platform.LocalContext.current
+                // 選圖：SAF 單選圖片＋持久權限，不拷貝（無孤兒檔）
+                val pickImage = androidx.activity.compose.rememberLauncherForActivityResult(
+                    androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
+                ) { uri ->
+                    if (uri != null) {
+                        runCatching {
+                            settingsContext.contentResolver.takePersistableUriPermission(
+                                uri,
+                                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                            )
+                        }
+                        prefs.edit().putString("backdrop_image", uri.toString()).apply()
+                        onBackdropImageChanged(uri)
+                    }
+                }
                 Text(
                     "背景",
                     style = MaterialTheme.typography.labelLarge,
@@ -192,28 +216,87 @@ fun GlobalSettingsScreen(
                         .padding(horizontal = 16.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    BackdropTheme.values().forEach { t ->
+                    BackdropKind.values().forEach { k ->
                         GlassOptionChip(
-                            text = when (t) {
-                                BackdropTheme.SOFT -> "柔光"
-                                BackdropTheme.VIVID -> "熾霞"
-                                BackdropTheme.NIGHT -> "墨夜"
-                                BackdropTheme.CLEAN -> "素"
+                            text = when (k) {
+                                BackdropKind.ORB -> "泡泡"
+                                BackdropKind.SCENE -> "特效"
+                                BackdropKind.IMAGE -> "圖片"
                             },
-                            selected = backdrop == t,
+                            selected = kind == k,
                             onClick = {
-                                backdrop = t
-                                prefs.edit().putString("backdrop_theme", t.name).apply()
-                                onBackdropThemeChanged(t)
+                                kind = k
+                                prefs.edit().putString("backdrop_kind", k.name).apply()
+                                onBackdropKindChanged(k)
                             }
                         )
                     }
                 }
+                if (kind == BackdropKind.ORB) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        BackdropTheme.values().forEach { t ->
+                            GlassOptionChip(
+                                text = when (t) {
+                                    BackdropTheme.SOFT -> "柔光"
+                                    BackdropTheme.VIVID -> "熾霞"
+                                    BackdropTheme.NIGHT -> "墨夜"
+                                    BackdropTheme.CLEAN -> "素"
+                                },
+                                selected = backdrop == t,
+                                onClick = {
+                                    backdrop = t
+                                    prefs.edit().putString("backdrop_theme", t.name).apply()
+                                    onBackdropThemeChanged(t)
+                                }
+                            )
+                        }
+                    }
+                }
+                if (kind == BackdropKind.SCENE) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        BackdropScene.values().forEach { s ->
+                            GlassOptionChip(
+                                text = when (s) {
+                                    BackdropScene.NEON_CITY -> "霓城"
+                                    BackdropScene.DUNE -> "沙丘"
+                                    BackdropScene.TIDE -> "汐"
+                                },
+                                selected = scene == s,
+                                onClick = {
+                                    scene = s
+                                    prefs.edit().putString("backdrop_scene", s.name).apply()
+                                    onBackdropSceneChanged(s)
+                                }
+                            )
+                        }
+                    }
+                }
+                if (kind == BackdropKind.IMAGE) {
+                    GlassTextButton(
+                        text = if (backdropImageUri == null) "選擇圖片" else "更換圖片",
+                        onClick = { pickImage.launch(arrayOf("image/*")) }
+                    )
+                }
                 GlassTextButton(
                     text = "恢復預設背景",
                     onClick = {
+                        kind = BackdropKind.ORB
                         backdrop = BackdropTheme.SOFT
-                        prefs.edit().putString("backdrop_theme", BackdropTheme.SOFT.name).apply()
+                        prefs.edit()
+                            .putString("backdrop_kind", BackdropKind.ORB.name)
+                            .putString("backdrop_theme", BackdropTheme.SOFT.name)
+                            .apply()
+                        onBackdropKindChanged(BackdropKind.ORB)
                         onBackdropThemeChanged(BackdropTheme.SOFT)
                     },
                     color = MaterialTheme.colorScheme.onSurfaceVariant
