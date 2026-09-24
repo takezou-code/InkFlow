@@ -87,7 +87,40 @@ object PdfManager {
             }
         }
 
+    // ─── 原子存檔（五處頁操作共用）：tmp + rename，跨掛載 fallback 複製 ───
+
+    /**
+     * 把已改動的 [doc] 原子寫回 [file]（先寫 tmp 再 rename；失敗拋異常由呼叫方轉 false）。
+     * 內建存檔耗時 log（超大檔定位用；與 PdfViewModel 的 op 級 perf log 時間戳對齊）。
+     */
+    private fun saveAtomically(file: File, doc: PDDocument) {
+        val tmpFile = File(file.parent, "${file.nameWithoutExtension}.tmp_${System.currentTimeMillis()}.pdf")
+        val tSave0 = System.currentTimeMillis()
+        try {
+            doc.save(tmpFile)
+            if (!tmpFile.renameTo(file)) {
+                // renameTo can fail across mount points; fall back to copy+delete
+                tmpFile.copyTo(file, overwrite = true)
+                tmpFile.delete()
+            }
+            Log.d(TAG, "fileSplit: save=${System.currentTimeMillis() - tSave0}ms sizeMb=${file.length() / 1048576} pages=${doc.numberOfPages}")
+        } catch (e: Exception) {
+            tmpFile.delete()
+            throw e
+        }
+    }
+
     // ─── 新功能：在現有 PDF 末尾加入空白頁 ───────────────────────────────────
+
+    /**
+     * 將 [afterIndex] 換算成插入位置（新頁要放的索引）。
+     * Int.MAX_VALUE = 接尾（呼叫端慣例，見 mergePdfs / appendBlankPage）。
+     * 注意：不可寫 afterIndex + 1 再 coerce——MAX_VALUE + 1 會溢位成 MIN_VALUE
+     * 而被箍到 0 = 每次插到最前面（多選合併順序反轉的元兇）。
+     */
+    internal fun resolveInsertionIndex(afterIndex: Int, pageCount: Int): Int =
+        if (afterIndex == Int.MAX_VALUE || afterIndex >= pageCount - 1) pageCount
+        else (afterIndex + 1).coerceIn(0, pageCount)
 
     /** 在 file:// URI 的 PDF 中，於 [afterIndex] 頁之後插入一頁空白頁。
      *  頁面尺寸由 [pageWidthPt] 和 [pageHeightPt] 決定（預設為 A4 直向）。
@@ -106,9 +139,11 @@ object PdfManager {
             }
             try {
                 val file = File(fileUri.path!!)
+                val tLoad0 = System.currentTimeMillis()
                 PDDocument.load(file).use { doc ->
+                    Log.d(TAG, "fileSplit: load=${System.currentTimeMillis() - tLoad0}ms")
                     val newPage = PDPage(PDRectangle(pageWidthPt, pageHeightPt))
-                    val insertBefore = afterIndex + 1
+                    val insertBefore = resolveInsertionIndex(afterIndex, doc.numberOfPages)
                     if (insertBefore < doc.numberOfPages) {
                         doc.pages.insertBefore(newPage, doc.getPage(insertBefore))
                     } else {
@@ -116,18 +151,7 @@ object PdfManager {
                     }
                     // Atomic write: save to a temp file first, then rename over the original.
                     // This prevents file corruption if the process is killed mid-write.
-                    val tmpFile = File(file.parent, "${file.nameWithoutExtension}.tmp_${System.currentTimeMillis()}.pdf")
-                    try {
-                        doc.save(tmpFile)
-                        if (!tmpFile.renameTo(file)) {
-                            // renameTo can fail across mount points; fall back to copy+delete
-                            tmpFile.copyTo(file, overwrite = true)
-                            tmpFile.delete()
-                        }
-                    } catch (e: Exception) {
-                        tmpFile.delete()
-                        throw e
-                    }
+                    saveAtomically(file, doc)
                 }
                 true
             } catch (e: Exception) {
@@ -169,7 +193,9 @@ object PdfManager {
             try {
                 val targetFile = File(targetFileUri.path!!)
                 val sourceFile = File(sourceFileUri.path!!)
+                val tLoad0 = System.currentTimeMillis()
                 PDDocument.load(targetFile).use { targetDoc ->
+                    Log.d(TAG, "fileSplit: targetLoad=${System.currentTimeMillis() - tLoad0}ms")
                     PDDocument.load(sourceFile).use { sourceDoc ->
                         val sourceCount = sourceDoc.numberOfPages
                         if (sourceCount <= 0) {
@@ -177,7 +203,7 @@ object PdfManager {
                             return@use
                         }
 
-                        val insertionIndex = (afterIndex + 1).coerceIn(0, targetDoc.numberOfPages)
+                        val insertionIndex = resolveInsertionIndex(afterIndex, targetDoc.numberOfPages)
                         Log.d(
                             TAG,
                             "insertPdfPages: targetCount=${targetDoc.numberOfPages}, sourceCount=$sourceCount, afterIndex=$afterIndex, insertionIndex=$insertionIndex"
@@ -200,17 +226,7 @@ object PdfManager {
                             insertPos++
                         }
 
-                        val tmpFile = File(targetFile.parent, "${targetFile.nameWithoutExtension}.tmp_${System.currentTimeMillis()}.pdf")
-                        try {
-                            targetDoc.save(tmpFile)
-                            if (!tmpFile.renameTo(targetFile)) {
-                                tmpFile.copyTo(targetFile, overwrite = true)
-                                tmpFile.delete()
-                            }
-                        } catch (e: Exception) {
-                            tmpFile.delete()
-                            throw e
-                        }
+                        saveAtomically(targetFile, targetDoc)
                     }
                 }
                 true
@@ -295,7 +311,9 @@ object PdfManager {
             }
             try {
                 val file = File(fileUri.path!!)
+                val tLoad0 = System.currentTimeMillis()
                 PDDocument.load(file).use { doc ->
+                    Log.d(TAG, "fileSplit: load=${System.currentTimeMillis() - tLoad0}ms")
                     if (doc.numberOfPages <= 1) {
                         Log.w(TAG, "deletePage: cannot delete the only page")
                         return@withContext false
@@ -303,18 +321,7 @@ object PdfManager {
                     doc.removePage(pageIndex)
                     // Atomic write: save to a temp file first, then rename over the original.
                     // This prevents file corruption if the process is killed mid-write.
-                    val tmpFile = File(file.parent, "${file.nameWithoutExtension}.tmp_${System.currentTimeMillis()}.pdf")
-                    try {
-                        doc.save(tmpFile)
-                        if (!tmpFile.renameTo(file)) {
-                            // renameTo can fail across mount points; fall back to copy+delete
-                            tmpFile.copyTo(file, overwrite = true)
-                            tmpFile.delete()
-                        }
-                    } catch (e: Exception) {
-                        tmpFile.delete()
-                        throw e
-                    }
+                    saveAtomically(file, doc)
                 }
                 true
             } catch (e: Exception) {
@@ -334,7 +341,9 @@ object PdfManager {
             if (fromIndex == toIndex) return@withContext true
             try {
                 val file = File(fileUri.path!!)
+                val tLoad0 = System.currentTimeMillis()
                 PDDocument.load(file).use { doc ->
+                    Log.d(TAG, "fileSplit: load=${System.currentTimeMillis() - tLoad0}ms")
                     if (fromIndex < 0 || fromIndex >= doc.numberOfPages || 
                         toIndex < 0 || toIndex >= doc.numberOfPages) return@withContext false
                     
@@ -348,17 +357,7 @@ object PdfManager {
                         doc.pages.insertBefore(pageToMove, doc.getPage(toIndex))
                     }
 
-                    val tmpFile = File(file.parent, "${file.nameWithoutExtension}.tmp_${System.currentTimeMillis()}.pdf")
-                    try {
-                        doc.save(tmpFile)
-                        if (!tmpFile.renameTo(file)) {
-                            tmpFile.copyTo(file, overwrite = true)
-                            tmpFile.delete()
-                        }
-                    } catch (e: Exception) {
-                        tmpFile.delete()
-                        throw e
-                    }
+                    saveAtomically(file, doc)
                 }
                 true
             } catch (e: Exception) {
@@ -374,7 +373,9 @@ object PdfManager {
             if (fileUri.scheme != "file" || pageIndices.isEmpty()) return@withContext false
             try {
                 val file = File(fileUri.path!!)
+                val tLoad0 = System.currentTimeMillis()
                 PDDocument.load(file).use { doc ->
+                    Log.d(TAG, "fileSplit: load=${System.currentTimeMillis() - tLoad0}ms")
                     if (doc.numberOfPages <= pageIndices.size) {
                         Log.w(TAG, "deletePages: cannot delete all pages")
                         return@withContext false
@@ -388,17 +389,7 @@ object PdfManager {
                         }
                     }
 
-                    val tmpFile = File(file.parent, "${file.nameWithoutExtension}.tmp_${System.currentTimeMillis()}.pdf")
-                    try {
-                        doc.save(tmpFile)
-                        if (!tmpFile.renameTo(file)) {
-                            tmpFile.copyTo(file, overwrite = true)
-                            tmpFile.delete()
-                        }
-                    } catch (e: Exception) {
-                        tmpFile.delete()
-                        throw e
-                    }
+                    saveAtomically(file, doc)
                 }
                 true
             } catch (e: Exception) {
