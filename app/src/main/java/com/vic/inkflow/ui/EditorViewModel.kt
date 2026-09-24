@@ -1534,6 +1534,8 @@ class EditorViewModel(
             }
             withContext(Dispatchers.Main) {
                 undoStack.addLast(command)
+                // R2：redo 回填也要裁頭（上限 200 格，與 pushUndo 同規）。
+                while (undoStack.size > 200) undoStack.removeFirst()
                 _canUndo.value = true
                 _canRedo.value = redoStack.isNotEmpty()
             }
@@ -1562,6 +1564,10 @@ class EditorViewModel(
 
     private val _lastLassoPolygon = MutableStateFlow<List<Offset>>(emptyList())
     val lastLassoPolygon: StateFlow<List<Offset>> = _lastLassoPolygon.asStateFlow()
+
+    // 空白框選歸屬頁：無墨圖字時 selectionPage() 的錨（有物時仍以物為準）。
+    private val _lassoPage = MutableStateFlow(0)
+    val lassoPage: StateFlow<Int> = _lassoPage.asStateFlow()
 
     private val _lassoMoveOffset = MutableStateFlow(Offset.Zero)
     val lassoMoveOffset: StateFlow<Offset> = _lassoMoveOffset.asStateFlow()
@@ -1639,7 +1645,7 @@ class EditorViewModel(
      * 跨頁套索（唯一入口；單頁是它的特例）：每頁若干閉合圈（呼叫方已按紙界切分＋裁剪＋轉頁內，
      * 見 clipPolygonToRect；同頁多段保留，不可 toMap 丟棄）。
      * 命中＝重心落在該頁任一圈內，分頁查後聯集。等大文件各頁 canvas 同尺寸，
-     * 歸一化用傳入值。框取選中墨最多的那頁的包絡（一定有錨；選空則清殘影）。
+     * 歸一化用傳入值。框取選中墨最多的那頁的包絡；選空則框留原圈（空白區 AI/提取仍可用）。
      */
     fun selectStrokesInLassoAcross(
         polygonsByPage: Map<Int, List<List<Offset>>>,
@@ -1652,12 +1658,19 @@ class EditorViewModel(
         // 主線程一次快照：各頁資料流建流＋讀值都在這裡，協程內只用快照（同單頁版紀律）。
         val snaps = polygonsByPage.mapValues { (pg, _) -> pageDataFlow(pg).value }
         // src 首圈先行定位（框最終由選中墨最多的頁重算，見下；先給泡泡一個即時錨）。
+        // 空白區也要留錨：AI 解析/提取只看 region，不看有沒有墨。
         val srcFirst = polygonsByPage[srcPage]?.firstOrNull().orEmpty()
-        if (srcFirst.size >= 3) {
-            val srcNorm = srcFirst.map { DocTransform.canvasToModel(it, cW, cH, modelWidth, modelHeight) }
+        val srcNormSnapshot: List<Offset> = if (srcFirst.size >= 3) {
+            srcFirst.map { DocTransform.canvasToModel(it, cW, cH, modelWidth, modelHeight) }
+        } else {
+            emptyList()
+        }
+        if (srcNormSnapshot.size >= 3) {
+            val srcNorm = srcNormSnapshot
             _lassoPolygon.value = srcNorm
             _selectionFramePolygon.value = srcNorm
             _lastLassoPolygon.value = srcNorm
+            _lassoPage.value = srcPage
         }
         viewModelScope.launch(Dispatchers.Default) {
             val allStrokes = mutableListOf<StrokeWithPoints>()
@@ -1734,17 +1747,13 @@ class EditorViewModel(
             } else {
                 emptyList()
             }
-            val hasAny = distinct.isNotEmpty() || distinctImages.isNotEmpty() || distinctTexts.isNotEmpty()
             withContext(Dispatchers.Main) {
                 _selectedStrokes.value = distinct
                 _selectedImageAnnotationIds.value = distinctImages.map { it.id }.toSet()
                 _selectedTextAnnotationIds.value = distinctTexts.map { it.id }.toSet()
-                _selectionFramePolygon.value = frameNorm
-                if (!hasAny) {
-                    // 選空：遮罩框全清，不殘留上次的框到處飄。
-                    _lassoPolygon.value = emptyList()
-                    _lastLassoPolygon.value = emptyList()
-                }
+                // 有物用包絡框；選空（空白區）框留原圈，region 快照保留給泡泡＋AI/提取。
+                _selectionFramePolygon.value = frameNorm.ifEmpty { srcNormSnapshot }
+                // 注意不清空 _lassoPolygon/_lastLassoPolygon：那是提取遮罩＋泡泡錨點。
                 _lassoMoveOffset.value = Offset.Zero
                 _selectedStrokeScale.value = 1f
                 _selectedStrokeResizeAnchor.value = null
@@ -2051,7 +2060,7 @@ class EditorViewModel(
         return currentImageAnnotations.value.firstOrNull { it.id == id }
     }
 
-    /** 選取歸屬頁：筆看第一筆的頁，純圖選看圖所在頁，無選取退回作用頁。 */
+    /** 選取歸屬頁：筆看第一筆的頁，純圖選看圖所在頁，空白框選看框落在哪頁，都無才退回作用頁。 */
     fun selectionPage(): Int {
         _selectedStrokes.value.firstOrNull()?.let { return it.stroke.pageIndex }
         val ids = _selectedImageAnnotationIds.value
@@ -2064,6 +2073,9 @@ class EditorViewModel(
             currentImageAnnotations.value.firstOrNull { it.id in ids }?.let { return it.pageIndex }
         }
         selectedTextsSnapshot().firstOrNull()?.let { return it.pageIndex }
+        if (_lassoPolygon.value.isNotEmpty() || _lastLassoPolygon.value.isNotEmpty()) {
+            return _lassoPage.value
+        }
         return pageIndex.value
     }
 

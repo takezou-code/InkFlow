@@ -508,7 +508,8 @@ internal fun Workspace(
             endAll()
         }
     }
-    val showSelectionBubble = activeTool == Tool.LASSO && hasSelection && !isExtracting
+    // 氣泡錨定 region 而非可編輯物：空白區圈選也有框，AI/提取照樣出；複製/刪除才看 hasEditable。
+    val showSelectionBubble = activeTool == Tool.LASSO && hasRegionSnapshot && !isExtracting
 
     // pdfViewModel and LaunchedEffect(uri) are owned by TabletEditorScreen
     val pageCount by pdfViewModel.pageCount.collectAsState()

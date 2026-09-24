@@ -93,6 +93,18 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         ): Int? {
             return if (insertionIndex in 0 until pageCountAfter) insertionIndex else null
         }
+
+        /**
+         * 多份插頁的起始 cursor（第一份要插在誰後面）。
+         * 由正規化後的 insertionIndex 倒推，禁拿 afterIndex 直寫＋禁裸 +1：
+         * afterIndex==Int.MAX_VALUE 時 cursor 必須是 currentCount-1（接尾），
+         * 直接 afterIndex+=n 會溢位成負數（merge 反轉同族）。
+         */
+        internal fun multiInsertStartCursor(afterIndex: Int, currentCount: Int): Int {
+            val insertionIndex =
+                if (afterIndex >= currentCount - 1) currentCount else afterIndex + 1
+            return insertionIndex - 1
+        }
     }
 
     private val db by lazy { AppDatabase.getDatabase(getApplication()) }
@@ -241,6 +253,34 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
      */
     private var renderGen = 0L
     private var renderScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /**
+     * 手勢中暫停貼圖投送（治頓挫）：渲染照跑（暖機不停，IO 執行緒無影響），
+     * 但完成的新點陣圖先扣著不寫入 flow——手勢中不再有 Crossfade 風暴＋貼圖上傳脈衝。
+     * 放手由 Workspace 調 [flushPendingRenders] 一次貼上。plain var＋併發 Map，
+     * 不走 StateFlow（避免投送開關本身引發重組）。
+     */
+    private val rendersPaused = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val pendingBitmaps = java.util.concurrent.ConcurrentHashMap<Int, Bitmap>()
+    private val pendingThumbs = java.util.concurrent.ConcurrentHashMap<Int, Bitmap>()
+
+    fun setRendersPaused(paused: Boolean) {
+        rendersPaused.set(paused)
+    }
+
+    /** 放手：解除暫停＋把扣住的點陣圖貼上（已有 fresher 值的 flow 跳過）。 */
+    fun flushPendingRenders() {
+        rendersPaused.set(false)
+        if (pendingBitmaps.isEmpty() && pendingThumbs.isEmpty()) return
+        pendingBitmaps.forEach { (index, bmp) ->
+            bitmapFlowCache[index]?.let { flow -> if (flow.value == null) flow.value = bmp }
+        }
+        pendingBitmaps.clear()
+        pendingThumbs.forEach { (index, bmp) ->
+            thumbnailFlowCache[index]?.let { flow -> if (flow.value == null) flow.value = bmp }
+        }
+        pendingThumbs.clear()
+    }
 
     private val _pageSizeVersion = MutableStateFlow(0)
     val pageSizeVersion: StateFlow<Int> = _pageSizeVersion.asStateFlow()
@@ -733,7 +773,9 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
 
                 renderMutex.withLock { closeRendererOnly(clearFlows = false) }
                 val tFile0 = System.currentTimeMillis()
-                var cursor = afterIndex
+                // 從正規化後的 insertionIndex 倒推（見 multiInsertStartCursor）：
+                // afterIndex==MAX_VALUE 時接尾，禁拿 MAX 去 +=（溢位負數）。
+                var cursor = multiInsertStartCursor(afterIndex, currentCount)
                 for ((localUri, filePageCount) in locals) {
                     val merged = PdfManager.insertPdfPages(targetFileUri, localUri, cursor)
                     if (!merged) {
@@ -1169,7 +1211,8 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
             repeat(4) { attempt ->
                 val bmp = renderPage(pageIndex, highQuality = true)
                 if (bmp != null) {
-                    flow.value = bmp
+                    if (rendersPaused.get()) pendingBitmaps[pageIndex] = bmp
+                    else flow.value = bmp
                     return@launch
                 }
                 android.util.Log.d("PdfViewModel", "getPageBitmap retry $attempt page=$pageIndex")
@@ -1196,7 +1239,10 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun launchThumbnailRender(flow: MutableStateFlow<Bitmap?>, pageIndex: Int) {
         renderScope.launch {
-            renderPage(pageIndex, highQuality = false)?.let { flow.value = it }
+            renderPage(pageIndex, highQuality = false)?.let {
+                if (rendersPaused.get()) pendingThumbs[pageIndex] = it
+                else flow.value = it
+            }
         }
     }
 
