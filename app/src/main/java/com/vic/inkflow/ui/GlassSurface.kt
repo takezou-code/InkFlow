@@ -177,7 +177,7 @@ fun glassFieldColors(isDark: Boolean) = OutlinedTextFieldDefaults.colors(
 )
 
 /**
- * 啫喱按壓：縮放 + 提亮（gel-press 的 Compose 版前菜；局部鼓起/CA 閃要 shader 接線，後續）。
+ * 啫喱按壓：縮放 + 提亮 + 掃光（按下去一道光從左上掃到右下，靜止時零成本）。
  */
 @Composable
 fun Modifier.pressableGlass(
@@ -199,12 +199,32 @@ fun Modifier.pressableGlass(
         animationSpec = tween(120),
         label = "PressGlow"
     )
+    // 掃光：只在按壓期間播一次（0→1 去，1→0 回），靜止時 alpha=0 不多一層開銷
+    val sweep by animateFloatAsState(
+        targetValue = if (pressed) 1f else 0f,
+        animationSpec = tween(if (pressed) 350 else 200),
+        label = "PressSweep"
+    )
     return this
         .graphicsLayer {
             scaleX = scale
             scaleY = scale
         }
         .background(Color.White.copy(alpha = glow), shape)
+        .then(
+            if (sweep > 0.01f) Modifier.background(
+                brush = Brush.linearGradient(
+                    colorStops = arrayOf(
+                        0f to Color.Transparent,
+                        ((0.15f + 0.55f * sweep).coerceIn(0f, 1f)) to Color.Transparent,
+                        ((0.35f + 0.55f * sweep).coerceIn(0f, 1f)) to Color.White.copy(alpha = 0.16f * sweep),
+                        ((0.55f + 0.55f * sweep).coerceIn(0f, 1f)) to Color.Transparent,
+                        1f to Color.Transparent
+                    )
+                ),
+                shape = shape
+            ) else Modifier
+        )
 }
 
 /**

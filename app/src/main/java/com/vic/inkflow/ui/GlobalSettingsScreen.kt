@@ -92,7 +92,6 @@ fun GlobalSettingsScreen(
     onNavigateBack: () -> Unit,
     currentThemeMode: ThemeMode,
     onThemeModeChanged: (ThemeMode) -> Unit,
-    onDynamicColorChanged: (Boolean) -> Unit = {},
     onPowerSaverChanged: (Boolean) -> Unit = {}
 ) {
     val scrollState = rememberScrollState()
@@ -165,17 +164,6 @@ fun GlobalSettingsScreen(
                     onThemeModeChanged(mode)
                     prefs.edit().putString("theme_mode", mode.name).apply()
                 }
-                var dynamicColor by remember { mutableStateOf(prefs.getBoolean("dynamic_color", false)) }
-                SettingsSwitchRow(
-                    title = "跟隨系統配色 (Material You)",
-                    subtitle = "使用桌布產生的動態色彩，覆蓋上方品牌主題（Android 12+）",
-                    checked = dynamicColor,
-                    onCheckedChange = {
-                        dynamicColor = it
-                        prefs.edit().putBoolean("dynamic_color", it).apply()
-                        onDynamicColorChanged(it)
-                    }
-                )
                 // 流光／靜總開關：靜＝動畫靜幀＋背景凍結，功能不變
                 var powerSaver by remember { mutableStateOf(prefs.getBoolean("power_saver", false)) }
                 SettingsSwitchRow(

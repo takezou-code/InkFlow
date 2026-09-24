@@ -244,8 +244,6 @@ fun InkLayerApp(db: AppDatabase) {
         ThemeMode.DARK -> true
     }
 
-    var dynamicColor by rememberSaveable(prefs) { mutableStateOf(prefs.getBoolean("dynamic_color", false)) }
-
     // 流光／靜總開關：關＝流光（預設），開＝靜。往下透 isPowerSaver，各層內部分支。
     var powerSaver by rememberSaveable(prefs) { mutableStateOf(prefs.getBoolean("power_saver", false)) }
     fun setPowerSaver(v: Boolean) {
@@ -253,7 +251,7 @@ fun InkLayerApp(db: AppDatabase) {
         prefs.edit().putBoolean("power_saver", v).apply()
     }
 
-    InkFlowTheme(darkTheme = isDarkTheme, dynamicColor = dynamicColor) {
+    InkFlowTheme(darkTheme = isDarkTheme) {
         val navController = rememberNavController()
     // 144Hz 解鎖：這台 High 檔只有 90Hz，直接點名 144（面板上限）。
     // 掛根節點，全 App 穩在 144，不切換頁面閃頻。耗電會多一點，要絲滑就認了。
@@ -296,7 +294,6 @@ fun InkLayerApp(db: AppDatabase) {
                 onNavigateBack = { navController.popBackStack() },
                 currentThemeMode = themeMode,
                 onThemeModeChanged = { themeModeStr = it.name },
-                onDynamicColorChanged = { dynamicColor = it },
                 onPowerSaverChanged = { setPowerSaver(it) }
             )
         }
