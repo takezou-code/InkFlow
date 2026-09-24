@@ -25,7 +25,9 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlin.math.max
 import kotlin.math.sin
+import kotlin.math.sqrt
 import kotlin.random.Random
 
 /** 背景三類：泡泡（現行）／特效場景／圖片。 */
@@ -148,12 +150,20 @@ private fun DrawScope.drawNeonCity(t: Float, w: Float, h: Float, isDark: Boolean
     val skyColors = if (isDark) listOf(Color(0xFF070418), Color(0xFF1B0B3B), Color(0xFF2A1052))
     else listOf(Color(0xFFE8E4FB), Color(0xFFC9BFF2), Color(0xFF9D8DE0))
     val skyBrush = Brush.verticalGradient(colors = skyColors, startY = 0f, endY = h)
-    var bandY = sunC.y + sunR * 0.05f
-    var bandH = sunR * 0.045f
-    while (bandY < sunC.y + sunR) {
-        drawRect(brush = skyBrush, topLeft = Offset(sunC.x - sunR - 2f, bandY), size = androidx.compose.ui.geometry.Size(sunR * 2f + 4f, bandH))
-        bandY += bandH * 2.6f
-        bandH *= 1.35f
+    // 條紋：只切圓盤內（按弦長收窄），光暈不動；上半實心、下半 5 道縫隙隙寬於條
+    var gapY = sunC.y + sunR * 0.10f
+    var gapH = sunR * 0.030f
+    repeat(5) {
+        if (gapY >= sunC.y + sunR) return@repeat
+        val dy = (gapY + gapH * 0.5f - sunC.y).coerceIn(-sunR, sunR)
+        val half = sqrt(max(0f, sunR * sunR - dy * dy))
+        drawRect(
+            brush = skyBrush,
+            topLeft = Offset(sunC.x - half, gapY),
+            size = androidx.compose.ui.geometry.Size(half * 2f, gapH)
+        )
+        gapY += gapH * 3.2f
+        gapH *= 1.5f
     }
     // 天際線剪影＋霓虹窗
     towers.forEach { twr ->
