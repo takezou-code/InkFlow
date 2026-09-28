@@ -360,10 +360,12 @@ suspend fun resolveContinueTop(
             Log.d("InkFlowDbg", "CONTINUE skip p=$sourcePage ratio=$ratio (native?)")
             return null
         }
-        val bottom = measureContentBottom(strokes.map { it.stroke }, texts, images) ?: run {
+        val trace = mutableListOf<String>()
+        val bottom = measureContentBottom(strokes.map { it.stroke }, texts, images, trace = trace) ?: run {
             Log.d("InkFlowDbg", "CONTINUE skip p=$sourcePage unmeasurable (stamp?)")
             return null
         }
+        trace.forEach { Log.d("InkFlowDbg", "CONTINUE $it") }
         val top = continueTop(bottom, modelH, textMetricsOf(16f).first) // 16 = paginate 預設字號
         Log.d("InkFlowDbg", "CONTINUE decision p=$sourcePage bottom=$bottom top=$top modelH=$modelH")
         return top

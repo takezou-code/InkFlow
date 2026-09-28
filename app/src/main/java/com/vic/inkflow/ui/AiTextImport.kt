@@ -347,7 +347,9 @@ fun measureContentBottom(
     strokes: List<com.vic.inkflow.data.StrokeEntity>,
     texts: List<com.vic.inkflow.data.TextAnnotationEntity>,
     images: List<com.vic.inkflow.data.ImageAnnotationEntity>,
-    metrics: (Float) -> Pair<Float, Float> = ::textMetricsOf
+    metrics: (Float) -> Pair<Float, Float> = ::textMetricsOf,
+    // 診斷收集器（單測傳 null 保持純潔；device 端傳 list 再由呼叫方打 log）
+    trace: MutableList<String>? = null
 ): Float? {
     if (texts.any { it.isStamp }) return null
     var bottom = 0f
@@ -362,18 +364,18 @@ fun measureContentBottom(
         if (lineH <= 0f) return null
         val n = t.text.split("\n").size.coerceAtLeast(1)
         val tb = t.modelY + (n - 1) * lineH + descent
-        android.util.Log.d("InkFlowDbg", "CONTINUE text[$i] modelY=${t.modelY} n=$n fontSize=${t.fontSize} lineH=$lineH descent=$descent bottom=$tb")
+        trace?.add("text[$i] modelY=${t.modelY} n=$n fontSize=${t.fontSize} lineH=$lineH descent=$descent bottom=$tb")
         textB = maxOf(textB, tb)
     }
     bottom = maxOf(bottom, textB)
     var imageB = 0f
     for ((i, img) in images.withIndex()) {
         val ib = img.modelY + img.modelHeight
-        android.util.Log.d("InkFlowDbg", "CONTINUE image[$i] modelY=${img.modelY} h=${img.modelHeight} rot=${img.rotation} bottom=$ib")
+        trace?.add("image[$i] modelY=${img.modelY} h=${img.modelHeight} rot=${img.rotation} bottom=$ib")
         imageB = maxOf(imageB, ib)
     }
     bottom = maxOf(bottom, imageB)
-    android.util.Log.d("InkFlowDbg", "CONTINUE measure strokes=${strokes.size} strokeB=$strokeB texts=${texts.size} textB=$textB images=${images.size} imageB=$imageB bottom=$bottom")
+    trace?.add("measure strokes=${strokes.size} strokeB=$strokeB texts=${texts.size} textB=$textB images=${images.size} imageB=$imageB bottom=$bottom")
     return bottom
 }
 
