@@ -38,10 +38,11 @@ import com.vic.inkflow.ui.theme.ShapeLg
 import com.vic.inkflow.ui.theme.ShapeMd
 import com.vic.inkflow.ui.theme.ShapeSm
 import com.vic.inkflow.ui.theme.ShapeXl
+import dev.chrisbanes.haze.HazeInput
 import dev.chrisbanes.haze.HazeState
-import dev.chrisbanes.haze.HazeStyle
-import dev.chrisbanes.haze.HazeTint
-import dev.chrisbanes.haze.hazeEffect
+import dev.chrisbanes.haze.blur.HazeBlurStyle
+import dev.chrisbanes.haze.blur.HazeColorEffect
+import dev.chrisbanes.haze.blur.hazeBlur
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -74,14 +75,14 @@ fun rememberHazeState(): HazeState = remember { HazeState() }
 // 平時只是多一層薄紗（實色才會蓋掉 blur，半透明不會）。
 // S3：haze 沒有 vibrancy，只能靠「少悶」保鮮豔——打底＋tint 都減淡，讓背底顏色透出來。
 // （faux 無 blur，維持原濃度保文字可讀，不共用這組）
-fun glassStyle(isDark: Boolean): HazeStyle = HazeStyle(
-    backgroundColor = if (isDark) Color.Black.copy(alpha = 0.16f) else Color.White.copy(alpha = 0.08f),
-    tints = listOf(
-        HazeTint(if (isDark) Color(0x4D0F172A) else Color(0x30FFFFFF))
-    ),
-    blurRadius = 24.dp,
-    noiseFactor = 0.02f
-)
+fun glassStyle(isDark: Boolean): HazeBlurStyle = HazeBlurStyle {
+    backgroundColor(if (isDark) Color.Black.copy(alpha = 0.16f) else Color.White.copy(alpha = 0.08f))
+    colorEffects(
+        listOf(HazeColorEffect.tint(if (isDark) Color(0x4D0F172A) else Color(0x30FFFFFF)))
+    )
+    blurRadius(24.dp)
+    noiseFactor(0.02f)
+}
 
 /**
  * 全統一入口（Prismal 真折射已退役）：等同 [glassPanel]。
@@ -106,7 +107,7 @@ fun Modifier.glassPanel(
 ): Modifier {
     return this
         .clip(shape)
-        .hazeEffect(state, style = glassStyle(isDark))
+        .hazeBlur(input = HazeInput.Backdrop(state), style = glassStyle(isDark))
         .glassDressing(isDark, shape, specular)
 }
 

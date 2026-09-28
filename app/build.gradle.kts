@@ -107,6 +107,7 @@ dependencies {
 
     // Liquid-glass backdrop blur（全統一唯一材質；Prismal 真折射已退役）
     implementation(libs.haze)
+    implementation(libs.haze.blur)
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
