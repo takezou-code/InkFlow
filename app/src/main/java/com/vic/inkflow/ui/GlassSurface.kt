@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.LocalTextStyle
@@ -38,11 +39,11 @@ import com.vic.inkflow.ui.theme.ShapeLg
 import com.vic.inkflow.ui.theme.ShapeMd
 import com.vic.inkflow.ui.theme.ShapeSm
 import com.vic.inkflow.ui.theme.ShapeXl
+import dev.chrisbanes.haze.ExperimentalHazeApi
 import dev.chrisbanes.haze.HazeInput
 import dev.chrisbanes.haze.HazeState
-import dev.chrisbanes.haze.blur.HazeBlurStyle
-import dev.chrisbanes.haze.blur.HazeColorEffect
-import dev.chrisbanes.haze.blur.hazeBlur
+import dev.chrisbanes.haze.glass.GlassStyle
+import dev.chrisbanes.haze.glass.hazeGlass
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -75,14 +76,22 @@ fun rememberHazeState(): HazeState = remember { HazeState() }
 // 平時只是多一層薄紗（實色才會蓋掉 blur，半透明不會）。
 // S3：haze 沒有 vibrancy，只能靠「少悶」保鮮豔——打底＋tint 都減淡，讓背底顏色透出來。
 // （faux 無 blur，維持原濃度保文字可讀，不共用這組）
-fun glassStyle(isDark: Boolean): HazeBlurStyle = HazeBlurStyle {
-    backgroundColor(if (isDark) Color.Black.copy(alpha = 0.16f) else Color.White.copy(alpha = 0.08f))
-    colorEffects(
-        listOf(HazeColorEffect.tint(if (isDark) Color(0x4D0F172A) else Color(0x30FFFFFF)))
-    )
-    blurRadius(24.dp)
-    noiseFactor(0.02f)
-}
+/** 真折射玻璃：regular 為底＋自家 tint/blur 色散，靜模式走 faux（無 haze，一刀關）。 */
+@OptIn(ExperimentalHazeApi::class)
+fun glassStyle(isDark: Boolean, shape: Shape = ShapeLg): GlassStyle =
+    GlassStyle.regular.then {
+        backgroundColor(if (isDark) Color.Black.copy(alpha = 0.16f) else Color.White.copy(alpha = 0.08f))
+        tint(if (isDark) Color(0x4D0F172A) else Color(0x30FFFFFF))
+        optics(
+            blurRadius = 24.dp,
+            refractionStrength = 0.7f,
+            refractionHeightFraction = 0.2f,
+            depth = 0.6f
+        )
+        specularIntensity(0.5f)
+        chromaticAberrationStrength(0.15f)
+        shape((shape as? RoundedCornerShape) ?: RoundedCornerShape(24.dp))
+    }
 
 /**
  * 全統一入口（Prismal 真折射已退役）：等同 [glassPanel]。
@@ -99,6 +108,7 @@ fun Modifier.smartGlass(
  * Turn any surface into liquid glass. Attach [com.vic.inkflow.ui.hazeSource]
  * (Modifier.hazeSource) to the scene content BEHIND these panels first.
  */
+@OptIn(ExperimentalHazeApi::class)
 fun Modifier.glassPanel(
     state: HazeState,
     isDark: Boolean,
@@ -107,7 +117,7 @@ fun Modifier.glassPanel(
 ): Modifier {
     return this
         .clip(shape)
-        .hazeBlur(input = HazeInput.Backdrop(state), style = glassStyle(isDark))
+        .hazeGlass(input = HazeInput.Backdrop(state), style = glassStyle(isDark, shape))
         .glassDressing(isDark, shape, specular)
 }
 

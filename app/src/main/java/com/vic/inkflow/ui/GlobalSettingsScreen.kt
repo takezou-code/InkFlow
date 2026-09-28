@@ -211,8 +211,14 @@ fun GlobalSettingsScreen(
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
                 )
                 GlassSegmentedBar(
-                    options = listOf("泡泡", "特效", "圖片"),
-                    selectedIndex = BackdropKind.values().indexOf(kind),
+                    options = BackdropKind.values().map {
+                        when (it) {
+                            BackdropKind.ORB -> "泡泡"
+                            BackdropKind.SCENE -> "特效"
+                            BackdropKind.IMAGE -> "圖片"
+                        }
+                    },
+                    selectedIndex = BackdropKind.values().indexOf(kind).coerceAtLeast(0),
                     onSelect = { idx ->
                         val k = BackdropKind.values()[idx]
                         kind = k
@@ -223,8 +229,15 @@ fun GlobalSettingsScreen(
                 )
                 if (kind == BackdropKind.ORB) {
                     GlassSegmentedBar(
-                        options = listOf("柔光", "熾霞", "墨夜", "素"),
-                        selectedIndex = BackdropTheme.values().indexOf(backdrop),
+                        options = BackdropTheme.values().map {
+                            when (it) {
+                                BackdropTheme.SOFT -> "柔光"
+                                BackdropTheme.VIVID -> "熾霞"
+                                BackdropTheme.NIGHT -> "墨夜"
+                                BackdropTheme.CLEAN -> "素"
+                            }
+                        },
+                        selectedIndex = BackdropTheme.values().indexOf(backdrop).coerceAtLeast(0),
                         onSelect = { idx ->
                             val t = BackdropTheme.values()[idx]
                             backdrop = t
@@ -236,8 +249,13 @@ fun GlobalSettingsScreen(
                 }
                 if (kind == BackdropKind.SCENE) {
                     GlassSegmentedBar(
-                        options = listOf("霓城", "沙丘", "汐"),
-                        selectedIndex = BackdropScene.values().indexOf(scene),
+                        options = BackdropScene.values().map {
+                            when (it) {
+                                BackdropScene.DUNE -> "沙丘"
+                                BackdropScene.TIDE -> "汐"
+                            }
+                        },
+                        selectedIndex = BackdropScene.values().indexOf(scene).coerceAtLeast(0),
                         onSelect = { idx ->
                             val s = BackdropScene.values()[idx]
                             scene = s
