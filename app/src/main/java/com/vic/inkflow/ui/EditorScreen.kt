@@ -278,6 +278,8 @@ fun TabletEditorScreen(
     var aiPanelWeight by rememberSaveable { mutableFloatStateOf(0.4f) }
     var aiFileUri by remember { mutableStateOf<android.net.Uri?>(null) }
     var aiPrompt by remember { mutableStateOf<String?>(null) }
+    var aiAutoSend by remember { mutableStateOf(true) }
+    var isSendingPage by remember { mutableStateOf(false) }
     // M2b-2：聰明圈選 — 引入鈕兩段式：①進圈選模式（段落打勾）②收集打勾段落
     var aiPickMode by remember { mutableStateOf(false) }
     var aiPickEnterId by remember { mutableStateOf(0) }
@@ -340,6 +342,32 @@ fun TabletEditorScreen(
     // 薄包裝：勾選混排（文字＋公式裁圖），實作在 AiImportFlow.kt。
     fun importPickedJson(json: String) {
         scope.importPickedJson(json, context, viewModel, pdfViewModel, db, uri.toString(), currentPageIndex, onRequestPage, context as? android.app.Activity, aiWebView)
+    }
+    // AI 區「整頁送 AI」：整頁合成截圖 → 貼進 Gemini＋填「無題誓詞」，停住不送出
+    fun sendPageToAi() {
+        if (isSendingPage) return
+        isSendingPage = true
+        scope.launch {
+            try {
+                val pageIdx = currentPageIndex
+                val bmp = kotlinx.coroutines.withTimeoutOrNull(1200) {
+                    pdfViewModel.getPageBitmap(pageIdx).filterNotNull().first()
+                } ?: pdfViewModel.getPageBitmap(pageIdx).value
+                val file = viewModel.capturePageToShareFile(context, pageIdx, bmp)
+                if (file != null) {
+                    aiFileUri = androidx.core.content.FileProvider.getUriForFile(
+                        context, "${context.packageName}.fileprovider", file
+                    )
+                    aiPrompt = "無題誓詞"
+                    aiAutoSend = false
+                    showAiPanel = true
+                } else {
+                    android.widget.Toast.makeText(context, "整頁截圖失敗，請稍後再試", android.widget.Toast.LENGTH_SHORT).show()
+                }
+            } finally {
+                isSendingPage = false
+            }
+        }
     }
     // 卷動跟隨：主列表滑到哪頁就換作用頁（不捲主列表，避免打架；側欄由下方 effect 置中）
     val onScrollPage: (Int) -> Unit = { index ->
@@ -603,6 +631,9 @@ fun TabletEditorScreen(
                 },
                 onDocumentSettings = { showDocumentSettingsDialog = true },
                 onToggleAiPanel = { showAiPanel = !showAiPanel },
+                onSendPageToAi = { sendPageToAi() },
+                isAiPanelOpen = showAiPanel,
+                isSendingPage = isSendingPage,
                 isPowerSaver = isPowerSaver,
                 onTogglePowerSaver = onTogglePowerSaver,
                 hazeState = editorHaze,
@@ -855,10 +886,12 @@ fun TabletEditorScreen(
                             }
                         },
                         onWebView = { aiWebView = it },
+                        autoSend = aiAutoSend,
                         onClose = {
                             showAiPanel = false
                             aiFileUri = null
                             aiPrompt = null
+                            aiAutoSend = true
                             aiPickMode = false
                         }
                     )
@@ -885,6 +918,7 @@ fun TabletEditorScreen(
                                 showAiPanel = false
                                 aiFileUri = null
                                 aiPrompt = null
+                                aiAutoSend = true
                                 aiPickMode = false
                             },
                             modifier = Modifier
@@ -967,6 +1001,7 @@ fun TabletEditorScreen(
                         onAiFileReady = { fileUri, prompt ->
                             aiFileUri = fileUri
                             aiPrompt = prompt
+                            aiAutoSend = true
                             showAiPanel = true
                         },
                         hazeState = editorHaze,

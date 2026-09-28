@@ -132,6 +132,7 @@ import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Create
 import androidx.compose.material.icons.outlined.Brush
 import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.DocumentScanner
 import androidx.compose.material.icons.outlined.Gesture
 import androidx.compose.material.icons.outlined.CropSquare
 import androidx.compose.material.icons.outlined.Title
@@ -254,6 +255,9 @@ fun TabletEditorTopBar(
     onExport: () -> Unit = {},
     onDocumentSettings: () -> Unit = {},
     onToggleAiPanel: () -> Unit = {},
+    onSendPageToAi: () -> Unit = {},
+    isAiPanelOpen: Boolean = false,
+    isSendingPage: Boolean = false,
     isPowerSaver: Boolean = false,
     onTogglePowerSaver: () -> Unit = {},
     hazeState: dev.chrisbanes.haze.HazeState,
@@ -590,9 +594,26 @@ fun TabletEditorTopBar(
                                     .padding(horizontal = 10.dp, vertical = 7.dp),
                                 style = MaterialTheme.typography.labelMedium
                             )
-                        }
                     }
+                    VerticalDivider(Modifier.height(24.dp).padding(horizontal = 8.dp))
+
+                    // AI 區：Gemini 開關（右側搬過來）＋整頁送 AI（圖貼上＋填詞，不自動送出）
+                    IconButton(onClick = onToggleAiPanel, modifier = Modifier.size(toolButtonSize)) {
+                        Icon(
+                            painter = painterResource(id = R.drawable.ic_gemini),
+                            contentDescription = "Toggle AI Panel",
+                            tint = if (isAiPanelOpen) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                    EditorIconButton(
+                        onClick = { if (!isSendingPage) onSendPageToAi() },
+                        isActive = false,
+                        icon = Icons.Outlined.DocumentScanner,
+                        contentDescription = "整頁送 AI"
+                    )
                 }
+            }
             }
 
             Surface(
@@ -636,13 +657,6 @@ fun TabletEditorTopBar(
                                 tint = MaterialTheme.colorScheme.primary
                             )
                         }
-                    }
-                    IconButton(onClick = onToggleAiPanel, modifier = Modifier.size(utilityButtonSize)) {
-                        Icon(
-                            painter = painterResource(id = R.drawable.ic_gemini),
-                            contentDescription = "Toggle AI Panel",
-                            tint = MaterialTheme.colorScheme.onSurface
-                        )
                     }
                     IconButton(onClick = onDocumentSettings, modifier = Modifier.size(utilityButtonSize)) {
                         Icon(

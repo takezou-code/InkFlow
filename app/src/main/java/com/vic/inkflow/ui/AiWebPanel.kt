@@ -241,6 +241,8 @@ fun AiWebPanel(
     onWebView: (android.webkit.WebView?) -> Unit = {},
     webLight: Boolean = true,
     onClose: () -> Unit,
+    // 整頁送 AI 用 false：圖貼上＋提示詞填入即停，不自動送出（lasso 路徑預設 true 不變）
+    autoSend: Boolean = true,
     modifier: androidx.compose.ui.Modifier = androidx.compose.ui.Modifier
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -251,6 +253,7 @@ fun AiWebPanel(
     val pickedCallback = androidx.compose.runtime.rememberUpdatedState(onPickedJson)
     val webViewCallback = androidx.compose.runtime.rememberUpdatedState(onWebView)
     val currentWebLight = androidx.compose.runtime.rememberUpdatedState(webLight)
+    val currentAutoSend = androidx.compose.runtime.rememberUpdatedState(autoSend)
     val uploadState = androidx.compose.runtime.remember { 
         object {
             var lastProcessedUri: android.net.Uri? = null
@@ -262,7 +265,7 @@ fun AiWebPanel(
     fun injectPromptIfNeeded(target: android.webkit.WebView?, uri: android.net.Uri) {
         val p = currentPrompt.value ?: return
         try {
-            target?.evaluateJavascript(buildPromptSendJs(org.json.JSONObject.quote(p)), null)
+            target?.evaluateJavascript(buildPromptSendJs(org.json.JSONObject.quote(p), currentAutoSend.value), null)
             promptConsumedCallback.value()
         } catch (e: Exception) {
             e.printStackTrace()
@@ -606,10 +609,11 @@ fun AiWebPanel(
  * 與貼圖腳本並行執行，內部延遲 2.5s 等圖片先附著，避免圖文分家。
  * 執行結果透過 AndroidBridge.onPasteResult 回報（PROMPT_SENT / PROMPT_SENT_ENTER / …），可用 logcat 觀察。
  */
-private fun buildPromptSendJs(promptQuoted: String): String {
+private fun buildPromptSendJs(promptQuoted: String, send: Boolean = true): String {
     return """
         (function() {
             var PROMPT = $promptQuoted;
+            var SEND = $send;
             function report(s) {
                 try { if (window.AndroidBridge && window.AndroidBridge.onPasteResult) window.AndroidBridge.onPasteResult(s); } catch(e){}
             }
@@ -656,6 +660,7 @@ private fun buildPromptSendJs(promptQuoted: String): String {
                         } catch(e){}
                     }
                     if (!ok) return 'PROMPT_INSERT_FAILED';
+                    if (!SEND) return 'PROMPT_FILLED';
                     var sendBtn = document.querySelector('button[aria-label*="Send"]')
                         || document.querySelector('button[aria-label*="傳送"]')
                         || document.querySelector('button[aria-label*="发送"]');
