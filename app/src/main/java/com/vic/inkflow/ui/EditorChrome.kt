@@ -595,9 +595,23 @@ fun TabletEditorTopBar(
                                 style = MaterialTheme.typography.labelMedium
                             )
                     }
-                    VerticalDivider(Modifier.height(24.dp).padding(horizontal = 8.dp))
+                }
+            }
+            }
 
-                    // AI 區：Gemini 開關（右側搬過來）＋整頁送 AI（圖貼上＋填詞，不自動送出）
+            // AI 區（固定藥丸，不跟中區捲動，永遠可見）：Gemini 開關＋整頁送 AI
+            Surface(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .smartGlass(hazeState, isDarkTheme, ShapeLg),
+                shape = ShapeLg,
+                color = Color.Transparent
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxHeight().padding(horizontal = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
                     IconButton(onClick = onToggleAiPanel, modifier = Modifier.size(toolButtonSize)) {
                         Icon(
                             painter = painterResource(id = R.drawable.ic_gemini),
@@ -613,7 +627,6 @@ fun TabletEditorTopBar(
                         contentDescription = "整頁送 AI"
                     )
                 }
-            }
             }
 
             Surface(
