@@ -82,15 +82,14 @@ fun glassStyle(isDark: Boolean, shape: Shape = ShapeLg): GlassStyle =
     GlassStyle.clear.then {
         // 背底全透，讓折射有東西可彎；存在感只靠 tint＋rim，不靠悶
         backgroundColor(Color.Transparent)
-        // 奶味對沖：clear 底自帶 white-point 提亮，tint 壓黑按回去
-        tint(if (isDark) Color.Black.copy(alpha = 0.42f) else Color.Black.copy(alpha = 0.08f))
-        specularIntensity(0.45f)
+        // 透度：品牌靛 veil（灰奶改靛，不走黑）
+        tint(if (isDark) Color(0xFF1E1B4B).copy(alpha = 0.35f) else Color.White.copy(alpha = 0.12f))
         ambientResponse(0f)
         optics(
-            blurRadius = 14.dp,
+            blurRadius = 10.dp,
             refractionStrength = 0.85f,
             refractionHeightFraction = 0.25f,
-            depth = 0.35f
+            depth = 0.25f
         )
         specularIntensity(0.45f)
         chromaticAberrationStrength(0.15f)
@@ -285,6 +284,22 @@ fun Modifier.glassClickable(
 }
 
 /**
+ * 穿窗版：給對話框卡／下拉選單用（跟視窗同一 HazeState，Sources 穿過去；
+ * Backdrop 過不了視窗邊界，這裡必須用 Sources）。
+ */
+@OptIn(ExperimentalHazeApi::class)
+fun Modifier.glassPanelDialog(
+    state: HazeState,
+    isDark: Boolean,
+    shape: Shape = ShapeLg
+): Modifier {
+    return this
+        .clip(shape)
+        .hazeGlass(input = HazeInput.Sources(state), style = glassStyle(isDark, shape))
+        .glassDressing(isDark, shape, true)
+}
+
+/**
  * 無 blur 的仿玻璃：半透明底 + 同套高光亮邊，背景直接透過去。
  * 給大量重複的卡片用（每卡一個即時模糊是滾動卡頓主因），透光免費。
  */
@@ -384,11 +399,14 @@ fun GlassDialog(
     confirmColor: Color = Color.Unspecified,
     dismissText: String? = "取消",
     onDismissClick: () -> Unit = onDismissRequest,
+    // 穿窗真玻璃：傳入背後螢幕的 HazeState 即升 glassPanelDialog，不傳沿用 faux
+    hazeState: HazeState? = null,
     properties: DialogProperties = DialogProperties(usePlatformDefaultWidth = false)
 ) {
     GlassDialogFrame(
         onDismissRequest = onDismissRequest,
         isDark = isDark,
+        hazeState = hazeState,
         title = title,
         text = text,
         properties = properties
@@ -414,12 +432,15 @@ fun GlassDialogCustom(
     isDark: Boolean = MaterialTheme.colorScheme.background.luminance() < 0.5f,
     title: @Composable () -> Unit,
     text: (@Composable () -> Unit)? = null,
+    // 穿窗真玻璃：傳入背後螢幕的 HazeState 即升 glassPanelDialog，不傳沿用 faux
+    hazeState: HazeState? = null,
     properties: DialogProperties = DialogProperties(usePlatformDefaultWidth = false),
     buttons: @Composable RowScope.() -> Unit
 ) {
     GlassDialogFrame(
         onDismissRequest = onDismissRequest,
         isDark = isDark,
+        hazeState = hazeState,
         title = title,
         text = text,
         properties = properties,
@@ -432,6 +453,7 @@ fun GlassDialogCustom(
 private fun GlassDialogFrame(
     onDismissRequest: () -> Unit,
     isDark: Boolean,
+    hazeState: HazeState? = null,
     title: @Composable () -> Unit,
     text: (@Composable () -> Unit)?,
     properties: DialogProperties,
@@ -465,12 +487,15 @@ private fun GlassDialogFrame(
                 animationSpec = tween(180),
                 label = "DialogCardAlpha"
             )
-            // 全殼唯一背景層：玻璃卡（faux 底壓在已糊透的背底上＝厚玻璃讀感）。
+            // 全殼唯一背景層：有 state 穿窗真玻璃，無 state 沿用 faux
             Column(
                 modifier = Modifier
                     .padding(horizontal = 24.dp)
                     .widthIn(min = 280.dp, max = 560.dp)
-                    .fauxGlassPanel(isDark, ShapeLg)
+                    .then(
+                        if (hazeState != null) Modifier.glassPanelDialog(hazeState, isDark, ShapeLg)
+                        else Modifier.fauxGlassPanel(isDark, ShapeLg)
+                    )
                     .padding(24.dp)
                     .graphicsLayer {
                         scaleX = cardScale

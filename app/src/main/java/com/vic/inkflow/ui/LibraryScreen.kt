@@ -268,6 +268,8 @@ fun DocumentLibraryScreen(
     // 多選合併待確認順序：第 1 項在成品最上方。SAF 回傳順序≠點選順序，故合併前讓用戶確認。
     var mergeOrder by remember { mutableStateOf<List<Pair<Uri, String>>>(emptyList()) }
     var showMergeOrderDialog by remember { mutableStateOf(false) }
+    // 每屏一個 HazeState（對話框穿窗共用同一個，放前面讓 dialogs 也吃得到）
+    val libraryHazeState = rememberHazeState()
 
     // Chromium 預熱：編輯器 AI 面板首建 WebView 會卡主執行緒數百毫秒，
     // 那幾百毫秒正好把玻璃採樣空窗的那幀凍在螢幕上 = 黑閃。書庫閒置 2s 後先建一個即丟，
@@ -293,6 +295,7 @@ fun DocumentLibraryScreen(
         GlassDialogCustom(
             onDismissRequest = {},
             isDark = isDarkTheme,
+            hazeState = libraryHazeState,
             title = { Text("合併 PDF") },
             text = { Text("正在按確認順序合併 $mergeTotal 份文件，請稍候…") },
             buttons = {}
@@ -306,6 +309,7 @@ fun DocumentLibraryScreen(
                 mergeOrder = emptyList()
             },
             isDark = isDarkTheme,
+            hazeState = libraryHazeState,
             title = { Text("合併順序") },
             text = {
                 Column(
@@ -405,6 +409,7 @@ fun DocumentLibraryScreen(
         GlassDialogCustom(
             onDismissRequest = { showCreateFolderDialog = false },
             isDark = isDarkTheme,
+            hazeState = libraryHazeState,
             title = { Text("建立新資料夾") },
             text = {
                 androidx.compose.material3.OutlinedTextField(
@@ -560,7 +565,6 @@ fun DocumentLibraryScreen(
 
     // Outer Box does NOT read any animated State, so it never recomposes at 60 fps.
     // The animated gradient is drawn by the isolated AnimatedGradientBackground child.
-    val libraryHazeState = rememberHazeState()
     val gridScrollState = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
     val listScrollState = rememberLazyListState()
     Box(

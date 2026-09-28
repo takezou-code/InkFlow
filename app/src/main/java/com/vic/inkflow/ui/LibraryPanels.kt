@@ -471,7 +471,7 @@ internal fun DocumentLibraryFab(
             containerColor = Color.Transparent,
             shadowElevation = 0.dp,
             shape = ShapeLg,
-            modifier = Modifier.fauxGlassPanel(isDarkTheme, ShapeLg)
+            modifier = Modifier.glassPanelDialog(hazeState, isDarkTheme, ShapeLg)
         ) {
             androidx.compose.material3.DropdownMenuItem(
                 text = { Text("開啟 PDF") },

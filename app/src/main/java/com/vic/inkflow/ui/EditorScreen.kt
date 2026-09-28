@@ -515,6 +515,7 @@ fun TabletEditorScreen(
                 if (!isExportingPdf) showExportConfirmDialog = false
             },
             isDark = isEditorDark,
+            hazeState = editorHaze,
             title = { Text("確認輸出 PDF") },
             text = {
                 Text(
