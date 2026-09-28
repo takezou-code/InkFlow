@@ -448,6 +448,7 @@ fun DocumentLibraryScreen(
     if (showNewDocSizeDialog) {
         NewDocPaperSizeDialog(
             onDismiss = { showNewDocSizeDialog = false },
+            hazeState = libraryHazeState,
             onCreate = { widthPt, heightPt ->
                 showNewDocSizeDialog = false
                 scope.launch(kotlinx.coroutines.Dispatchers.IO) {

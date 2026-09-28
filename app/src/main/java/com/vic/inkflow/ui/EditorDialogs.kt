@@ -228,7 +228,8 @@ internal fun DocumentSettingsDialog(
     isPageOperationInProgress: Boolean,
     onDismiss: () -> Unit,
     onConfirmStyle: (PaperStyle) -> Unit,
-    onInsertPdf: () -> Unit
+    onInsertPdf: () -> Unit,
+    hazeState: dev.chrisbanes.haze.HazeState? = null
 ) {
     var selectedBackground by remember { mutableStateOf(currentStyle.background) }
     // 對話框自判深淺（不改簽名驚動呼叫端）
@@ -238,6 +239,7 @@ internal fun DocumentSettingsDialog(
     GlassDialogCustom(
         onDismissRequest = onDismiss,
         isDark = isDark,
+        hazeState = hazeState,
         title = { Text("文件設定中心") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -346,7 +348,8 @@ internal fun DocumentSettingsDialog(
 @Composable
 internal fun NewDocPaperSizeDialog(
     onDismiss: () -> Unit,
-    onCreate: (widthPt: Float, heightPt: Float) -> Unit
+    onCreate: (widthPt: Float, heightPt: Float) -> Unit,
+    hazeState: dev.chrisbanes.haze.HazeState? = null
 ) {
     var selectedWidth by remember { mutableFloatStateOf(595f) }
     var selectedHeight by remember { mutableFloatStateOf(842f) }
@@ -365,6 +368,7 @@ internal fun NewDocPaperSizeDialog(
     GlassDialogCustom(
         onDismissRequest = onDismiss,
         isDark = isDarkPaper,
+        hazeState = hazeState,
         title = { Text("選擇紙張大小") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {

@@ -505,7 +505,8 @@ fun TabletEditorScreen(
             onInsertPdf = {
                 showDocumentSettingsDialog = false
                 insertPdfLauncher.launch(arrayOf("application/pdf"))
-            }
+            },
+            hazeState = editorHaze
         )
     }
 

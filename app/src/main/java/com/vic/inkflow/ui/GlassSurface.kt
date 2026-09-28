@@ -82,14 +82,14 @@ fun glassStyle(isDark: Boolean, shape: Shape = ShapeLg): GlassStyle =
     GlassStyle.clear.then {
         // 背底全透，讓折射有東西可彎；存在感只靠 tint＋rim，不靠悶
         backgroundColor(Color.Transparent)
-        // 透度：品牌靛 veil（灰奶改靛，不走黑）
-        tint(if (isDark) Color(0xFF1E1B4B).copy(alpha = 0.35f) else Color.White.copy(alpha = 0.12f))
+        // 透度：tint 靛 0.15＋depth 0.15（透方向；奶回來就往回調）
+        tint(if (isDark) Color(0xFF1E1B4B).copy(alpha = 0.15f) else Color.White.copy(alpha = 0.10f))
         ambientResponse(0f)
         optics(
             blurRadius = 10.dp,
             refractionStrength = 0.85f,
             refractionHeightFraction = 0.25f,
-            depth = 0.25f
+            depth = 0.15f
         )
         specularIntensity(0.45f)
         chromaticAberrationStrength(0.15f)
