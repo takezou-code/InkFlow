@@ -101,7 +101,7 @@ class AiBlankPageTest {
 
     @Test fun measure_emptyZero_badMetrics() {
         assertEquals(0f, measureContentBottom(emptyList(), emptyList(), emptyList(), fakeMetrics)!!)
-        assertNull(measureContentBottom(emptyList(), listOf(text(100f, "hi")), emptyList()) { _ -> 0f to 0f })
+        assertNull(measureContentBottom(emptyList(), listOf(text(100f, "hi")), emptyList(), metrics = { _ -> 0f to 0f }))
     }
 
     @Test fun continueTop_room() {
