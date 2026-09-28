@@ -76,20 +76,23 @@ fun rememberHazeState(): HazeState = remember { HazeState() }
 // 平時只是多一層薄紗（實色才會蓋掉 blur，半透明不會）。
 // S3：haze 沒有 vibrancy，只能靠「少悶」保鮮豔——打底＋tint 都減淡，讓背底顏色透出來。
 // （faux 無 blur，維持原濃度保文字可讀，不共用這組）
-/** 真折射玻璃：regular 為底＋自家 tint/blur 色散，靜模式走 faux（無 haze，一刀關）。 */
+/** 真折射玻璃：clear 為底（淺擴散＋邊緣折射，背後近似照片場景）＋自家 tint，靜模式走 faux。 */
 @OptIn(ExperimentalHazeApi::class)
 fun glassStyle(isDark: Boolean, shape: Shape = ShapeLg): GlassStyle =
-    GlassStyle.regular.then {
+    GlassStyle.clear.then {
         // 背底全透，讓折射有東西可彎；存在感只靠 tint＋rim，不靠悶
         backgroundColor(Color.Transparent)
-        tint(if (isDark) Color(0x2E0F172A) else Color(0x1FFFFFFF))
+        // 奶味對沖：clear 底自帶 white-point 提亮，tint 壓黑按回去
+        tint(if (isDark) Color.Black.copy(alpha = 0.42f) else Color.Black.copy(alpha = 0.08f))
+        specularIntensity(0.45f)
+        ambientResponse(0f)
         optics(
-            blurRadius = 24.dp,
-            refractionStrength = 0.7f,
-            refractionHeightFraction = 0.2f,
-            depth = 0.6f
+            blurRadius = 14.dp,
+            refractionStrength = 0.85f,
+            refractionHeightFraction = 0.25f,
+            depth = 0.35f
         )
-        specularIntensity(0.5f)
+        specularIntensity(0.45f)
         chromaticAberrationStrength(0.15f)
         shape((shape as? RoundedCornerShape) ?: RoundedCornerShape(24.dp))
     }
