@@ -2199,31 +2199,26 @@ class EditorViewModel(
         _commitPreview.value = null
     }
 
+    /** 整頁合成結果（PDF＋圖/墨/字三層）＋渲染尺寸，供套索裁剪與整頁截圖共用。 */
+    private data class FullPage(
+        val bmp: android.graphics.Bitmap,
+        val scale: Float,
+        val w: Int,
+        val h: Int
+    )
+
     /**
-     * Shared pipeline for both lasso extraction flows: renders the full-page
-     * composite (PDF layer + image/stroke/text annotations), crops it to the
-     * lasso bounding box, applies the polygon mask and trims transparent
-     * edges. Returns the trimmed bitmap or null when the region is degenerate
-     * or the PDF layer is unavailable.
+     * 整頁合成：PDF 層＋image/stroke/text 三層畫到整頁點陣
+     * （原 renderLassoExtraction Step 1 原樣搬出；呼叫方負責 recycle 回傳點陣）。
      */
-    private suspend fun renderLassoExtraction(
+    private suspend fun renderFullPageComposite(
         context: android.content.Context,
         sourcePageIndex: Int,
-        pdfPageBitmap: android.graphics.Bitmap?,
-        polygon: List<Offset>
-    ): android.graphics.Bitmap? = withContext(Dispatchers.IO) {
+        pdfPageBitmap: android.graphics.Bitmap?
+    ): FullPage? = withContext(Dispatchers.IO) {
         val sourceStrokes = strokeDao.getStrokesForPage(documentUri, sourcePageIndex).first()
         val sourceImageAnnotations = imageAnnotationDao.getForPage(documentUri, sourcePageIndex).first()
         val sourceTextAnnotations = textAnnotationDao.getForPage(documentUri, sourcePageIndex).first()
-
-        val minX = polygon.minOf { it.x }
-        val minY = polygon.minOf { it.y }
-        val maxX = polygon.maxOf { it.x }
-        val maxY = polygon.maxOf { it.y }
-        if (maxX <= minX || maxY <= minY) return@withContext null
-
-        val cropW = maxX - minX
-        val cropH = maxY - minY
 
         // ── Step 1: Render full model page onto a bitmap ──────────────────────
         // Each model unit = renderScale pixels; capped so huge pages cannot OOM.
@@ -2322,6 +2317,64 @@ class EditorViewModel(
                 y += txt.fontSize * 1.2f
             }
         }
+
+        FullPage(fullBitmap, renderScale, fullW, fullH)
+    }
+
+    /** 整頁截圖存分享檔（工具列 AI 區「整頁送 AI」用；不裁剪不遮罩不寫 DB）。 */
+    suspend fun capturePageToShareFile(
+        context: android.content.Context,
+        sourcePageIndex: Int,
+        pdfPageBitmap: android.graphics.Bitmap?
+    ): java.io.File? {
+        if (!extractionMutex.tryLock()) return null
+        return try {
+            withContext(Dispatchers.IO) {
+                val fp = renderFullPageComposite(context, sourcePageIndex, pdfPageBitmap)
+                    ?: return@withContext null
+                val sharedDir = java.io.File(context.cacheDir, "shared")
+                if (!sharedDir.exists()) sharedDir.mkdirs()
+                val file = java.io.File(sharedDir, "page_${System.currentTimeMillis()}.png")
+                java.io.FileOutputStream(file).use { out ->
+                    fp.bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
+                }
+                fp.bmp.recycle()
+                file
+            }
+        } finally {
+            extractionMutex.unlock()
+        }
+    }
+
+    /**
+     * Shared pipeline for both lasso extraction flows: renders the full-page
+     * composite (PDF layer + image/stroke/text annotations), crops it to the
+     * lasso bounding box, applies the polygon mask and trims transparent
+     * edges. Returns the trimmed bitmap or null when the region is degenerate
+     * or the PDF layer is unavailable.
+     */
+    private suspend fun renderLassoExtraction(
+        context: android.content.Context,
+        sourcePageIndex: Int,
+        pdfPageBitmap: android.graphics.Bitmap?,
+        polygon: List<Offset>
+    ): android.graphics.Bitmap? = withContext(Dispatchers.IO) {
+        // Step 1（整頁合成＋三圖層）已抽成 renderFullPageComposite 共用
+        val fp = renderFullPageComposite(context, sourcePageIndex, pdfPageBitmap)
+            ?: return@withContext null
+        val fullBitmap = fp.bmp
+        val renderScale = fp.scale
+        val fullW = fp.w
+        val fullH = fp.h
+
+        val minX = polygon.minOf { it.x }
+        val minY = polygon.minOf { it.y }
+        val maxX = polygon.maxOf { it.x }
+        val maxY = polygon.maxOf { it.y }
+        if (maxX <= minX || maxY <= minY) return@withContext null
+
+        val cropW = maxX - minX
+        val cropH = maxY - minY
 
         // ── Step 2: Crop lasso bounding box from full bitmap ──────────────────
         val cropPixX    = (minX * renderScale).toInt().coerceIn(0, fullW - 1)
