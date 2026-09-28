@@ -80,8 +80,9 @@ fun rememberHazeState(): HazeState = remember { HazeState() }
 @OptIn(ExperimentalHazeApi::class)
 fun glassStyle(isDark: Boolean, shape: Shape = ShapeLg): GlassStyle =
     GlassStyle.regular.then {
-        backgroundColor(if (isDark) Color.Black.copy(alpha = 0.16f) else Color.White.copy(alpha = 0.08f))
-        tint(if (isDark) Color(0x4D0F172A) else Color(0x30FFFFFF))
+        // 背底全透，讓折射有東西可彎；存在感只靠 tint＋rim，不靠悶
+        backgroundColor(Color.Transparent)
+        tint(if (isDark) Color(0x2E0F172A) else Color(0x1FFFFFFF))
         optics(
             blurRadius = 24.dp,
             refractionStrength = 0.7f,
@@ -313,16 +314,16 @@ private fun Modifier.glassDressing(
     specular: Boolean
 ): Modifier {
     var m = this
-        // 頂部 Sheen v3：只留髮絲亮緣＋極淡罩紗。
-        // 底部內陰影保留做厚度。
+        // 頂部 Sheen v4：hazeGlass 自帶高光，妝只留髮絲亮緣＋極淡罩紗。
+        // 底部內陰影保留做厚度（減淡）。
         .background(
             brush = Brush.verticalGradient(
                 colorStops = arrayOf(
-                    0f to Color.White.copy(alpha = if (isDark) 0.12f else 0.14f),
-                    0.06f to Color.White.copy(alpha = if (isDark) 0.03f else 0.04f),
+                    0f to Color.White.copy(alpha = if (isDark) 0.07f else 0.08f),
+                    0.06f to Color.White.copy(alpha = if (isDark) 0.02f else 0.02f),
                     0.35f to Color.Transparent,
                     0.8f to Color.Transparent,
-                    1f to Color.Black.copy(alpha = if (isDark) 0.12f else 0.07f)
+                    1f to Color.Black.copy(alpha = if (isDark) 0.08f else 0.05f)
                 )
             ),
             shape = shape
