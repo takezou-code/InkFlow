@@ -43,6 +43,7 @@ import dev.chrisbanes.haze.ExperimentalHazeApi
 import dev.chrisbanes.haze.HazeInput
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.glass.GlassStyle
+import dev.chrisbanes.haze.glass.SurfaceProfile
 import dev.chrisbanes.haze.glass.hazeGlass
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -76,23 +77,27 @@ fun rememberHazeState(): HazeState = remember { HazeState() }
 // 平時只是多一層薄紗（實色才會蓋掉 blur，半透明不會）。
 // S3：haze 沒有 vibrancy，只能靠「少悶」保鮮豔——打底＋tint 都減淡，讓背底顏色透出來。
 // （faux 無 blur，維持原濃度保文字可讀，不共用這組）
-/** 真折射玻璃：clear 為底（淺擴散＋邊緣折射，背後近似照片場景）＋自家 tint，靜模式走 faux。 */
+/** 真折射玻璃：大火晶透（頂光＋凸緣＋淡 tint＋滿折射細節），靜模式走 faux。 */
 @OptIn(ExperimentalHazeApi::class)
 fun glassStyle(isDark: Boolean, shape: Shape = ShapeLg): GlassStyle =
     GlassStyle.clear.then {
-        // 背底全透，讓折射有東西可彎；存在感只靠 tint＋rim，不靠悶
         backgroundColor(Color.Transparent)
-        // 深靛：tint 靛 0.28（透度留著，灰轉深色；太悶往 0.2 調，太灰往 0.35 調）
-        tint(if (isDark) Color(0xFF1E1B4B).copy(alpha = 0.28f) else Color.White.copy(alpha = 0.10f))
+        // 本體放透：tint 靛 0.14
+        tint(if (isDark) Color(0xFF1E1B4B).copy(alpha = 0.14f) else Color.White.copy(alpha = 0.10f))
         ambientResponse(0f)
         optics(
             blurRadius = 10.dp,
             refractionStrength = 0.85f,
             refractionHeightFraction = 0.25f,
-            depth = 0.15f
+            depth = 0.15f,
+            refractionDetailIntensity = 1f
         )
-        specularIntensity(0.45f)
-        chromaticAberrationStrength(0.15f)
+        // 晶透四件：頂光＋凸緣＋高光＋色散；whitePoint 轉負抵消 clear 底提亮
+        lightPosition(Alignment.TopCenter)
+        surfaceProfile(SurfaceProfile.Lip)
+        specularIntensity(0.8f)
+        whitePoint(-0.15f)
+        chromaticAberrationStrength(0.25f)
         shape((shape as? RoundedCornerShape) ?: RoundedCornerShape(24.dp))
     }
 
@@ -347,9 +352,8 @@ private fun Modifier.glassDressing(
             shape = shape
         )
     if (specular) {
-        // iOS 式單向光 rim：頂緣受光亮、兩側速衰、底緣近乎隱形只留一絲環境光。
-        // 整圈等亮＝塑膠感來源；shader 高光已罩全邊，這根只負責「頂光」。
-        val rimTop = if (isDark) Color.White.copy(alpha = 0.55f) else Color.White.copy(alpha = 0.65f)
+        // 大火 rim：頂緣高光拉滿，跟 haze 頂光同方向疊
+        val rimTop = if (isDark) Color.White.copy(alpha = 0.9f) else Color.White.copy(alpha = 0.95f)
         m = m.border(
             border = BorderStroke(
                 width = 1.dp,

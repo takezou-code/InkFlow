@@ -619,39 +619,9 @@ fun TabletEditorScreen(
                 .hazeSource(editorHaze),
             orbCount = 5
         )
-        Column(modifier = Modifier.fillMaxSize()) {
-            TabletEditorTopBar(
-                documentTitle = documentTitle,
-                onBack = { navController.popBackStack() },
-                viewModel = viewModel,
-                showStrokeWidthSlider = showStrokeWidthSlider,
-                onToggleStrokeWidthSlider = { showStrokeWidthSlider = !showStrokeWidthSlider },
-                onHideStrokeWidthSlider = { showStrokeWidthSlider = false },
-                onExport = {
-                    showExportConfirmDialog = true
-                },
-                onDocumentSettings = { showDocumentSettingsDialog = true },
-                onToggleAiPanel = { showAiPanel = !showAiPanel },
-                onSendPageToAi = { sendPageToAi() },
-                isAiPanelOpen = showAiPanel,
-                isSendingPage = isSendingPage,
-                isPowerSaver = isPowerSaver,
-                onTogglePowerSaver = onTogglePowerSaver,
-                hazeState = editorHaze,
-                isDarkTheme = isEditorDark
-            )
-
-            AnimatedVisibility(
-                visible = showStrokeWidthSlider && (activeTool == Tool.PEN || activeTool == Tool.HIGHLIGHTER),
-                enter = expandVertically(),
-                exit = shrinkVertically()
-            ) {
-                StrokeWidthSlider(
-                    viewModel = viewModel,
-                    hazeState = editorHaze,
-                    isDarkTheme = isEditorDark,
-                )
-            }
+        // 整屏沉浸：工作區 Row 鋪滿全屏墊底，工具列疊在上面（後畫＝在上）。
+        // 觸控：工具列只佔自己那塊，其餘落到工作區，跟以前一模一樣。
+        Box(modifier = Modifier.fillMaxSize()) {
 
         // Auto-navigate to the newly inserted page
         val lastInsertedPage by pdfViewModel.lastInsertedPageIndex.collectAsState()
@@ -1017,6 +987,41 @@ fun TabletEditorScreen(
         } // 7 Box(weight 1f)
         } // 8 outer Row
         } // 9 BoxWithConstraints
-        } // 10 Column
-    } // 11 root Box(Aurora)
-} // 12 TabletEditorScreen
+        // 浮空工具列：疊在工作區上面，紙從下面透上來
+        Column(modifier = Modifier.fillMaxWidth()) {
+            TabletEditorTopBar(
+                documentTitle = documentTitle,
+                onBack = { navController.popBackStack() },
+                viewModel = viewModel,
+                showStrokeWidthSlider = showStrokeWidthSlider,
+                onToggleStrokeWidthSlider = { showStrokeWidthSlider = !showStrokeWidthSlider },
+                onHideStrokeWidthSlider = { showStrokeWidthSlider = false },
+                onExport = {
+                    showExportConfirmDialog = true
+                },
+                onDocumentSettings = { showDocumentSettingsDialog = true },
+                onToggleAiPanel = { showAiPanel = !showAiPanel },
+                onSendPageToAi = { sendPageToAi() },
+                isAiPanelOpen = showAiPanel,
+                isSendingPage = isSendingPage,
+                isPowerSaver = isPowerSaver,
+                onTogglePowerSaver = onTogglePowerSaver,
+                hazeState = editorHaze,
+                isDarkTheme = isEditorDark
+            )
+
+            AnimatedVisibility(
+                visible = showStrokeWidthSlider && (activeTool == Tool.PEN || activeTool == Tool.HIGHLIGHTER),
+                enter = expandVertically(),
+                exit = shrinkVertically()
+            ) {
+                StrokeWidthSlider(
+                    viewModel = viewModel,
+                    hazeState = editorHaze,
+                    isDarkTheme = isEditorDark,
+                )
+            }
+        } // 10 overlay Column
+        } // 11 content Box
+    } // 12 root Box(Aurora)
+} // 13 TabletEditorScreen
