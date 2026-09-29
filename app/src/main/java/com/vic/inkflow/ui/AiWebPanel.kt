@@ -354,6 +354,19 @@ fun AiWebPanel(
                         fun onPasteResult(result: String) {
                             try {
                                 android.util.Log.d("AiWebPanel", "onPasteResult: $result")
+                                android.util.Log.d("InkFlowDbg", "UPLOAD result=$result")
+                                // 終端失敗才 Toast（成功只記 log；PASTE_DISPATCH_FAILED 會走 file-input 退路，不算死）
+                                if (result == "NO_CHAT_INPUT_FOUND" || result == "PASTE_EXCEPTION" ||
+                                    result == "PROMPT_INSERT_FAILED" || result == "PROMPT_EXCEPTION" ||
+                                    result == "PROMPT_NO_INPUT_FOUND" || result == "PROMPT_NO_INPUT"
+                                ) {
+                                    val msg = if (result.startsWith("PROMPT")) "提示詞填入失敗（$result）" else "圖片貼上失敗（$result），請確認已登入 Gemini"
+                                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                        try {
+                                            android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
+                                        } catch (_: Throwable) { }
+                                    }
+                                }
                             } catch (t: Throwable) { }
                         }
                         @android.webkit.JavascriptInterface
@@ -485,10 +498,14 @@ fun AiWebPanel(
                                                     })();
                                                 """.trimIndent()
                                                 view?.evaluateJavascript(js, null)
+                                                android.util.Log.d("InkFlowDbg", "UPLOAD paste dispatched (first load) b64len=${base64.length}")
                                                 injectPromptIfNeeded(view, uri)
                                             }
                                         } catch (e: Exception) {
-                                            e.printStackTrace()
+                                            android.util.Log.e("InkFlowDbg", "UPLOAD first-load failed", e)
+                                            try {
+                                                android.widget.Toast.makeText(context, "送圖失敗：${e.message}", android.widget.Toast.LENGTH_LONG).show()
+                                            } catch (_: Throwable) { }
                                         }
                                 }
                             }
@@ -592,10 +609,14 @@ fun AiWebPanel(
                                 })();
                             """.trimIndent()
                             view.evaluateJavascript(js, null)
+                            android.util.Log.d("InkFlowDbg", "UPLOAD paste dispatched (update) b64len=${base64.length}")
                             injectPromptIfNeeded(view, fileUri)
                         }
                     } catch (e: Exception) {
-                        e.printStackTrace()
+                        android.util.Log.e("InkFlowDbg", "UPLOAD update failed", e)
+                        try {
+                            android.widget.Toast.makeText(context, "送圖失敗：${e.message}", android.widget.Toast.LENGTH_LONG).show()
+                        } catch (_: Throwable) { }
                     }
                 }
             },

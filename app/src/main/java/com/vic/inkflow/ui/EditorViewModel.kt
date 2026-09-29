@@ -2338,6 +2338,7 @@ class EditorViewModel(
                 java.io.FileOutputStream(file).use { out ->
                     fp.bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
                 }
+                android.util.Log.d("InkFlowDbg", "PAGESHOT file=${file.name} bytes=${file.length()} ${fp.w}x${fp.h}")
                 fp.bmp.recycle()
                 file
             }

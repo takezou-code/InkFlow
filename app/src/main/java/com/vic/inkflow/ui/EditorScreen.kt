@@ -343,7 +343,7 @@ fun TabletEditorScreen(
     fun importPickedJson(json: String) {
         scope.importPickedJson(json, context, viewModel, pdfViewModel, db, uri.toString(), currentPageIndex, onRequestPage, context as? android.app.Activity, aiWebView)
     }
-    // AI 區「整頁送 AI」：整頁合成截圖 → 貼進 Gemini＋填「無題誓詞」，停住不送出
+    // AI 區「整頁送 AI」：整頁版 AI 解析（整頁圖＋EXPLAIN＋自動送出，與套索「解釋」同參）
     fun sendPageToAi() {
         if (isSendingPage) return
         isSendingPage = true
@@ -354,12 +354,13 @@ fun TabletEditorScreen(
                     pdfViewModel.getPageBitmap(pageIdx).filterNotNull().first()
                 } ?: pdfViewModel.getPageBitmap(pageIdx).value
                 val file = viewModel.capturePageToShareFile(context, pageIdx, bmp)
+                android.util.Log.d("InkFlowDbg", "PAGESHOT send p=$pageIdx bmpNull=${bmp == null} bytes=${file?.length() ?: -1}")
                 if (file != null) {
                     aiFileUri = androidx.core.content.FileProvider.getUriForFile(
                         context, "${context.packageName}.fileprovider", file
                     )
-                    aiPrompt = "無題誓詞"
-                    aiAutoSend = false
+                    aiPrompt = AiQuickPrompt.EXPLAIN
+                    aiAutoSend = true
                     showAiPanel = true
                 } else {
                     android.widget.Toast.makeText(context, "整頁截圖失敗，請稍後再試", android.widget.Toast.LENGTH_SHORT).show()
