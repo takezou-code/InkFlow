@@ -82,8 +82,8 @@ fun rememberHazeState(): HazeState = remember { HazeState() }
 fun glassStyle(isDark: Boolean, shape: Shape = ShapeLg): GlassStyle =
     GlassStyle.clear.then {
         backgroundColor(Color.Transparent)
-        // 工作區可讀＋折射可見：tint 靛 0.30＋blur 20＋位移 48dp＋帶寬 0.35
-        tint(if (isDark) Color(0xFF1E1B4B).copy(alpha = 0.30f) else Color.White.copy(alpha = 0.10f))
+        // 工作區可讀＋折射可見：tint 靛 0.30（深）／白 0.25（亮，紙上藥丸 iOS 式）＋blur 20＋位移 48dp＋帶寬 0.35
+        tint(if (isDark) Color(0xFF1E1B4B).copy(alpha = 0.30f) else Color.White.copy(alpha = 0.25f))
         ambientResponse(0f)
         optics(
             blurRadius = 20.dp,

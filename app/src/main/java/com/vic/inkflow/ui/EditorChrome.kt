@@ -325,7 +325,7 @@ fun TabletEditorTopBar(
             Surface(
                 modifier = Modifier
                     .fillMaxHeight()
-                    .bubbleGlass(false, ShapeLg),
+                    .smartGlass(hazeState, false, ShapeLg), // 紙上亮玻璃：iOS 式亮 blur＋深內容
                 shape = ShapeLg,
                 color = Color.Transparent
             ) {
@@ -357,7 +357,7 @@ fun TabletEditorTopBar(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight()
-                    .bubbleGlass(false, ShapeLg),
+                    .smartGlass(hazeState, false, ShapeLg), // 紙上亮玻璃：iOS 式亮 blur＋深內容
                 shape = ShapeLg,
                 color = Color.Transparent
             ) {
@@ -604,7 +604,7 @@ fun TabletEditorTopBar(
             Surface(
                 modifier = Modifier
                     .fillMaxHeight()
-                    .bubbleGlass(false, ShapeLg),
+                    .smartGlass(hazeState, false, ShapeLg), // 紙上亮玻璃：iOS 式亮 blur＋深內容
                 shape = ShapeLg,
                 color = Color.Transparent
             ) {
@@ -633,7 +633,7 @@ fun TabletEditorTopBar(
             Surface(
                 modifier = Modifier
                     .fillMaxHeight()
-                    .bubbleGlass(false, ShapeLg),
+                    .smartGlass(hazeState, false, ShapeLg), // 紙上亮玻璃：iOS 式亮 blur＋深內容
                 shape = ShapeLg,
                 color = Color.Transparent
             ) {
