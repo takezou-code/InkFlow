@@ -107,8 +107,8 @@ fun InkFlowTheme(
         SideEffect {
             val window = (view.context as Activity).window
             val insetsController = WindowCompat.getInsetsController(window, view)
-            // 全螢幕：藏頂部狀態列（時間/電量），下滑可短暫叫回
-            insetsController.hide(WindowInsetsCompat.Type.statusBars())
+            // 全螢幕：藏頂部狀態列＋底部導航三鍵（時間/電量/返回/桌面），下滑/邊緣上滑可短暫叫回
+            insetsController.hide(WindowInsetsCompat.Type.systemBars())
             insetsController.systemBarsBehavior =
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             insetsController.isAppearanceLightStatusBars = !darkTheme

@@ -86,8 +86,8 @@ fun glassStyle(isDark: Boolean, shape: Shape = ShapeLg): GlassStyle =
         tint(if (isDark) Color(0xFF1E1B4B).copy(alpha = 0.14f) else Color.White.copy(alpha = 0.10f))
         ambientResponse(0f)
         optics(
-            blurRadius = 10.dp,
-            refractionStrength = 0.85f,
+            blurRadius = 16.dp,
+            refractionStrength = 1.0f,
             refractionHeightFraction = 0.25f,
             depth = 0.15f,
             refractionDetailIntensity = 1f
