@@ -621,7 +621,12 @@ fun TabletEditorScreen(
         )
         // 整屏沉浸：工作區 Row 鋪滿全屏墊底，工具列疊在上面（後畫＝在上）。
         // 觸控：工具列只佔自己那塊，其餘落到工作區，跟以前一模一樣。
-        Box(modifier = Modifier.fillMaxSize()) {
+    // 屏根標記 source：對話框穿窗（Sources）採到整屏，不只背景（跟書庫同做法）
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .hazeSource(editorHaze)
+    ) {
 
         // Auto-navigate to the newly inserted page
         val lastInsertedPage by pdfViewModel.lastInsertedPageIndex.collectAsState()

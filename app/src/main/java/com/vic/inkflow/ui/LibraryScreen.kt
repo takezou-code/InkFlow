@@ -568,8 +568,12 @@ fun DocumentLibraryScreen(
     // The animated gradient is drawn by the isolated AnimatedGradientBackground child.
     val gridScrollState = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
     val listScrollState = rememberLazyListState()
+    // 屏根標記 source：對話框穿窗（Sources）採到整屏，不只背景。
+    // 自糊由 haze 排除效果節點（有回授假影就退回只標背景）。
     Box(
-        modifier = Modifier.fillMaxSize()
+        modifier = Modifier
+            .fillMaxSize()
+            .hazeSource(libraryHazeState)
     ) {
         // 深空單一背景：三類在此分流（泡泡／特效／圖片），靜模式凍結首幀
         InkBackdrop(
