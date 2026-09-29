@@ -253,6 +253,12 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
      */
     private var renderGen = 0L
     private var renderScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    /**
+     * P0 快滑世代：快旗每次升/落（transition）+1，排隊中的高清渲染憑票驗證，
+     * 被超車的直接丟棄（落定由 ensureHighQualityVisible 只補可見頁）。
+     * 頁操作的 renderGen 不動，兩條世代正交。
+     */
+    private var scrollGen = 0L
 
     /**
      * 手勢中暫停貼圖投送（治頓挫）：渲染照跑（暖機不停，IO 執行緒無影響），
@@ -282,6 +288,21 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         pendingThumbs.clear()
     }
 
+    /**
+     * P0 落定：只貼可見範圍，其餘保留待下次（避免 N 個中間頁同幀 Crossfade＋GPU 爆發）。
+     * 不碰 rendersPaused（快滑路徑從不立暫停旗，與雙指手勢路徑正交）。
+     */
+    fun flushPendingRenders(visible: IntRange) {
+        visible.forEach { index ->
+            pendingBitmaps.remove(index)?.let { bmp ->
+                bitmapFlowCache[index]?.let { flow -> if (flow.value == null) flow.value = bmp }
+            }
+            pendingThumbs.remove(index)?.let { bmp ->
+                thumbnailFlowCache[index]?.let { flow -> if (flow.value == null) flow.value = bmp }
+            }
+        }
+    }
+
     private val _pageSizeVersion = MutableStateFlow(0)
     val pageSizeVersion: StateFlow<Int> = _pageSizeVersion.asStateFlow()
 
@@ -305,7 +326,7 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         bitmapFlowCache.forEach { (index, flow) ->
             if (flow.value != null) {
                 renderScope.launch {
-                    renderPage(index, highQuality = true)?.let { flow.value = it }
+                    renderPage(index, highQuality = true, ticket = scrollGen)?.let { flow.value = it }
                 }
             }
         }
@@ -1205,11 +1226,21 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun launchBitmapRender(flow: MutableStateFlow<Bitmap?>, pageIndex: Int) {
+        val ticket = scrollGen
         renderScope.launch {
+            // P0 快滑：高速期間高清等待落定；票被超車（快旗升/落）直接丟棄，
+            // 落定由 ensureHighQualityVisible 只補可見頁，中間頁不欠渲染債。
+            var waits = 0
+            while (_isScrollingFast.value && ticket == scrollGen && waits < 50) {
+                kotlinx.coroutines.delay(100)
+                waits++
+            }
+            if (ticket != scrollGen) return@launch
             // F2 黑頁修復：剛插頁重開空窗期 pdfRenderer 為 null，這次必回 null；
             // 以前只試一次就永久黑，現在退避重試（flow 留空等重試，不毒化快取）。
             repeat(4) { attempt ->
-                val bmp = renderPage(pageIndex, highQuality = true)
+                if (ticket != scrollGen) return@launch
+                val bmp = renderPage(pageIndex, highQuality = true, ticket = ticket)
                 if (bmp != null) {
                     if (rendersPaused.get()) pendingBitmaps[pageIndex] = bmp
                     else flow.value = bmp
@@ -1240,7 +1271,8 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
     private fun launchThumbnailRender(flow: MutableStateFlow<Bitmap?>, pageIndex: Int) {
         renderScope.launch {
             renderPage(pageIndex, highQuality = false)?.let {
-                if (rendersPaused.get()) pendingThumbs[pageIndex] = it
+                // P0 快滑掠過就靠縮圖：高速期間縮圖照投（不扣留），高清才等落定。
+                if (rendersPaused.get() && !_isScrollingFast.value) pendingThumbs[pageIndex] = it
                 else flow.value = it
             }
         }
@@ -1250,16 +1282,43 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         if (pageIndex < 0 || pageIndex >= pageCount.value) return
         if (bitmapCache[pageIndex] != null) return
 
+        val ticket = scrollGen
         renderScope.launch {
-            renderPage(pageIndex, highQuality = true)
+            renderPage(pageIndex, highQuality = true, ticket = ticket)
+        }
+    }
+
+    /** P0 快滑：高速期間鄰頁只預熱縮圖（便宜，240px 寬封頂），高清等落定。 */
+    fun prefetchThumbnail(pageIndex: Int) {
+        if (pageIndex < 0 || pageIndex >= pageCount.value) return
+        if (thumbnailCache[pageIndex] != null) return
+
+        renderScope.launch {
+            renderPage(pageIndex, highQuality = false)
+        }
+    }
+
+    /**
+     * P0 落定：只對可見範圍補高清（flow 存在但空、且快取也空才發；compose 中的
+     * getPageBitmap 會兜底剩餘，雙發時第二個命中快取直接返回）。
+     */
+    fun ensureHighQualityVisible(range: IntRange) {
+        range.forEach { index ->
+            if (index < 0 || index >= pageCount.value) return@forEach
+            if (bitmapCache[index] != null) return@forEach
+            val flow = bitmapFlowCache[index] ?: return@forEach
+            if (flow.value == null) launchBitmapRender(flow, index)
         }
     }
     
     fun setScrollingFast(isFast: Boolean) {
+        if (_isScrollingFast.value == isFast) return
         _isScrollingFast.value = isFast
+        // 每次升/落都換代：排隊中的中間頁高清憑舊票作廢，不欠渲染債。
+        scrollGen++
     }
 
-    private suspend fun renderPage(pageIndex: Int, highQuality: Boolean): Bitmap? {
+    private suspend fun renderPage(pageIndex: Int, highQuality: Boolean, ticket: Long? = null): Bitmap? {
         if (pageIndex < 0 || pageIndex >= _pageCount.value) return null
 
         val cache = if (highQuality) bitmapCache else thumbnailCache
@@ -1270,6 +1329,8 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
             renderMutex.withLock {
                 // 頁操作已換代：舊渲染直接丟棄，不畫不佔鎖。
                 if (gen != renderGen) return@withLock null
+                // P0 快滑：等鎖期間票被超車（快旗升/落），高清直接丟棄；縮圖便宜照渲。
+                if (highQuality && ticket != null && ticket != scrollGen) return@withLock null
                 pdfRenderer?.let { renderer ->
                     try {
                         val page = renderer.openPage(pageIndex)

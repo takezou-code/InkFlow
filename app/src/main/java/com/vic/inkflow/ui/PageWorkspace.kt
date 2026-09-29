@@ -519,6 +519,12 @@ internal fun Workspace(
     // 半露出的頁只能看不能寫。改最大可見面積後，露出一半以上就能直接寫。
     // （側欄置中由 EditorScreen 跟著做）
     LaunchedEffect(mainListState, pageCount) {
+        // P0 快滑偵測狀態（effect 作用域內常駐，跨排放累積；只寫 pdfViewModel 快旗，不碰捲動寫者）。
+        var lastFastT = 0L
+        var lastFastPos = -1L
+        var lastFastFirst = 0
+        var lastFastLast = -1
+        var settleJob: Job? = null
         snapshotFlow {
             val info = mainListState.layoutInfo
             val start = info.viewportStartOffset
@@ -540,15 +546,54 @@ internal fun Workspace(
             }
             Triple(best, first, last)
         }.collect { (idx, first, last) ->
+            // P0：首可見項位置估速度。>6000px/s（約 3 頁/秒）或單幀跳 ≥3 頁即立快旗；
+            // 高速期間只投縮圖（LOD 掠過），高清排隊憑票作廢。
+            val now = android.os.SystemClock.uptimeMillis()
+            val pos = first.toLong() * 10_000_000L + mainListState.firstVisibleItemScrollOffset.toLong()
+            if (lastFastT > 0 && lastFastPos >= 0) {
+                val dt = now - lastFastT
+                if (dt > 0) {
+                    val v = kotlin.math.abs(pos - lastFastPos) * 1000f / dt
+                    if (!pdfViewModel.isScrollingFast.value &&
+                        first != Int.MAX_VALUE && lastFastFirst != Int.MAX_VALUE &&
+                        (v > 6000f || kotlin.math.abs(first - lastFastFirst) >= 3)
+                    ) {
+                        pdfViewModel.setScrollingFast(true)
+                    }
+                }
+            }
+            lastFastT = now
+            lastFastPos = pos
+            lastFastFirst = first
+            lastFastLast = last
+            settleJob?.cancel()
             // 可視範圍預取：未露臉的鄰頁先查好，快取當初始值，第一幀就有墨
             if (first != Int.MAX_VALUE && last != Int.MIN_VALUE) {
                 viewModel.prefetchPages(first, last)
-                // 點陣預熱：可視 ±1 底先渲好，滑入直接顯示（API 自帶邊界守衛＋渲染排隊）
-                for (p in first - 1..last + 1) pdfViewModel.prefetchPage(p)
+                if (pdfViewModel.isScrollingFast.value) {
+                    // 高速：鄰頁只預熱縮圖，高清等落定（不欠渲染債）。
+                    for (p in first - 1..last + 1) pdfViewModel.prefetchThumbnail(p)
+                } else {
+                    // 點陣預熱：可視 ±1 底先渲好，滑入直接顯示（API 自帶邊界守衛＋渲染排隊）
+                    for (p in first - 1..last + 1) pdfViewModel.prefetchPage(p)
+                }
             }
             // 頁鎖期間（跨頁手勢中）：忽略自動捲帶來的頁面切換，避免中途換頁斷筆；
             // 全活頁下各頁本來就活著，手勢結束也無需激活跳轉。
             if (!viewModel.isPageLocked() && idx in 0 until pageCount) onScrollPage(idx)
+            // 落定：250ms 無新排放才補高清（快滑唯一的出口；慢滑從未立旗，ensure 冪等無害）。
+            settleJob = launch {
+                delay(250)
+                val f = lastFastFirst
+                val l = lastFastLast
+                pdfViewModel.setScrollingFast(false)
+                if (f != Int.MAX_VALUE && l >= 0 && f <= l) {
+                    pdfViewModel.ensureHighQualityVisible(f..l)
+                    pdfViewModel.flushPendingRenders(f..l)
+                    pdfViewModel.prefetchPage(f - 1)
+                    pdfViewModel.prefetchPage(l + 1)
+                }
+            }
         }
     }
 
@@ -663,6 +708,10 @@ internal fun Workspace(
             // （之前翻頁閃光的主因：分支內各自 remember，切換必重載 + Crossfade 重播）
             val bitmapFlow = remember(index, renderEpoch) { pdfViewModel.getPageBitmap(index) }
             val pageBitmap by bitmapFlow.collectAsState()
+            // P0 快滑 LOD：縮圖常駐訂閱，高清未到先頂著顯示，落定自動換上（同幀 Crossfade 接住）。
+            val thumbFlow = remember(index) { pdfViewModel.getPageThumbnail(index) }
+            val pageThumb by thumbFlow.collectAsState()
+            val shownBitmap = pageBitmap ?: pageThumb
             // 常駐熱流不斷線：捲動中反覆組成只換訂閱不重查；初始值吃預取快取，第一幀就有墨
             val pageData by remember(index) { viewModel.pageDataFlow(index) }
                 .collectAsState(initial = viewModel.cachedNeighbor(index) ?: EditorViewModel.NeighborPageData())
@@ -708,7 +757,7 @@ internal fun Workspace(
                     ) {
                         Box(modifier = Modifier.fillMaxSize()) {
             // 白紙墊底：點陣圖還沒來/渲染失敗時顯示白紙，不露深色主題底（永久黑頁主因）
-            if (pageBitmap == null) {
+            if (shownBitmap == null) {
                 Box(
                     modifier = Modifier.fillMaxSize()
                         .background(Color.White)
@@ -716,7 +765,7 @@ internal fun Workspace(
             }
             // PDF static layer (bottom) — crossfade between page bitmaps
             Crossfade(
-                targetState = pageBitmap,
+                targetState = shownBitmap,
                 animationSpec = tween(200),
                 label = "PageBitmapFade"
             ) { bitmap ->
