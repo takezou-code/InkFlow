@@ -359,7 +359,7 @@ fun TabletEditorScreen(
                     aiFileUri = androidx.core.content.FileProvider.getUriForFile(
                         context, "${context.packageName}.fileprovider", file
                     )
-                    aiPrompt = AiQuickPrompt.EXPLAIN
+                    aiPrompt = "解釋"
                     aiAutoSend = true
                     showAiPanel = true
                 } else {
