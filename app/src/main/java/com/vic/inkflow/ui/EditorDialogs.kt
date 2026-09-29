@@ -497,16 +497,22 @@ internal fun AnimatedDialog(
     ) { dialog() }
 }
 
+/** 紙墨色：浮在白紙上的工具列圖標/字恆用此色，不跟主題走。 */
+internal val PaperInkColor = androidx.compose.ui.graphics.Color(0xFF1E293B)
+
 @Composable
 internal fun EditorIconButton(
     onClick: () -> Unit,
     isActive: Boolean,
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     contentDescription: String,
-    size: androidx.compose.ui.unit.Dp = 32.dp
+    size: androidx.compose.ui.unit.Dp = 32.dp,
+    // 紙上工具列恆深色圖標（紙恆白，不跟主題走）
+    dark: Boolean = true
 ) {
     val animatedTintColor by animateColorAsState(
-        if (isActive) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
+        if (isActive) MaterialTheme.colorScheme.primary
+        else if (dark) PaperInkColor else MaterialTheme.colorScheme.onSurface,
         label = "EditorButtonTint"
     )
     val iconScale by animateFloatAsState(
