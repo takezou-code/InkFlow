@@ -358,7 +358,8 @@ fun AiWebPanel(
                                 // 終端失敗才 Toast（成功只記 log；PASTE_DISPATCH_FAILED 會走 file-input 退路，不算死）
                                 if (result == "NO_CHAT_INPUT_FOUND" || result == "PASTE_EXCEPTION" ||
                                     result == "PROMPT_INSERT_FAILED" || result == "PROMPT_EXCEPTION" ||
-                                    result == "PROMPT_NO_INPUT_FOUND" || result == "PROMPT_NO_INPUT"
+                                    result == "PROMPT_NO_INPUT_FOUND" || result == "PROMPT_NO_INPUT" ||
+                                    result == "PROMPT_SEND_NOT_READY"
                                 ) {
                                     val msg = if (result.startsWith("PROMPT")) "提示詞填入失敗（$result）" else "圖片貼上失敗（$result），請確認已登入 Gemini"
                                     android.os.Handler(android.os.Looper.getMainLooper()).post {
@@ -674,6 +675,9 @@ private fun buildPromptSendJs(promptQuoted: String, send: Boolean = true): Strin
                     try { ok = document.execCommand('insertText', false, text); } catch(e){}
                     if (!ok) {
                         try {
+                            el.dispatchEvent(new InputEvent('beforeinput', { data: text, inputType: 'insertText', bubbles: true, cancelable: true }));
+                        } catch(e){}
+                        try {
                             el.textContent = text;
                             el.dispatchEvent(new InputEvent('input', { bubbles: true }));
                             el.dispatchEvent(new Event('change', { bubbles: true }));
@@ -682,22 +686,47 @@ private fun buildPromptSendJs(promptQuoted: String, send: Boolean = true): Strin
                     }
                     if (!ok) return 'PROMPT_INSERT_FAILED';
                     if (!SEND) return 'PROMPT_FILLED';
-                    var sendBtn = document.querySelector('button[aria-label*="Send"]')
-                        || document.querySelector('button[aria-label*="傳送"]')
-                        || document.querySelector('button[aria-label*="发送"]');
-                    if (sendBtn) {
-                        sendBtn.click();
-                        return 'PROMPT_SENT';
+                    // rich-textarea 有內部狀態：填完立刻送會送空包。輪詢等字進去（或送出鈕亮起）再送。
+                    function findSendBtn() {
+                        return document.querySelector('button[aria-label*="Send"]')
+                            || document.querySelector('button[aria-label*="傳送"]')
+                            || document.querySelector('button[aria-label*="发送"]');
                     }
-                    var ev;
-                    try {
-                        ev = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true });
-                    } catch(e) {
-                        ev = document.createEvent('Event');
-                        ev.initEvent('keydown', true, true);
+                    function doSend() {
+                        var sendBtn = findSendBtn();
+                        if (sendBtn) {
+                            sendBtn.click();
+                            return 'PROMPT_SENT';
+                        }
+                        var ev;
+                        try {
+                            ev = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true });
+                        } catch(e) {
+                            ev = document.createEvent('Event');
+                            ev.initEvent('keydown', true, true);
+                        }
+                        (document.activeElement || el).dispatchEvent(ev);
+                        return 'PROMPT_SENT_ENTER';
                     }
-                    (document.activeElement || el).dispatchEvent(ev);
-                    return 'PROMPT_SENT_ENTER';
+                    var tries = 0;
+                    var waiter = setInterval(function() {
+                        var got = '';
+                        try { got = el.innerText || el.textContent || ''; } catch(e){}
+                        var btn = findSendBtn();
+                        var btnOn = false;
+                        try { btnOn = !!btn && !btn.disabled && btn.getAttribute('aria-disabled') !== 'true'; } catch(e){}
+                        if ((text && got.indexOf(text) >= 0) || btnOn) {
+                            clearInterval(waiter);
+                            report(doSend());
+                        } else {
+                            tries++;
+                            if (tries >= 12) {
+                                clearInterval(waiter);
+                                report('PROMPT_SEND_NOT_READY');
+                            }
+                        }
+                    }, 250);
+                    return 'PROMPT_FILL_WAIT_SEND';
                 } catch(err) {
                     return 'PROMPT_EXCEPTION';
                 }
