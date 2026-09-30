@@ -71,6 +71,13 @@ android {
         compose = true
         buildConfig = true
     }
+    testOptions {
+        unitTests {
+            // EditorViewModel 等類別在純 JVM 單元測試裡會打到 android.util.Log；
+            // 沒有這行會丟 "Method d in android.util.Log not mocked" 讓測試全紅。
+            isReturnDefaultValues = true
+        }
+    }
 }
 
 dependencies {
@@ -111,6 +118,11 @@ dependencies {
     implementation(libs.haze.glass)
 
     testImplementation(libs.junit)
+    // 單元測試地基（P1）：runTest/Dispatchers.setMain ＋ Flow 斷言 ＋ 介面 fake。
+    // 版本對齊 debugRuntimeClasspath 實際解析到的 coroutines 1.9.0。
+    testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.turbine)
+    testImplementation(libs.mockk)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))

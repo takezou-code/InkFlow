@@ -26,11 +26,35 @@ data class DrawingPreferences(
     val touchCalDyDp: Float
 )
 
-class EditorSettingsRepository(
+/**
+ * 編輯器設定的讀寫邊界（P1 測試地基）。
+ *
+ * 抽成介面是為了讓 EditorViewModel 可被單元測試：它原本直接依賴這個具體類別，
+ * 而類別內部綁 AppDatabase + DocumentPreferenceDao + SharedPreferences，
+ * 測試時只能整個類一起造、還得拉 Robolectric。介面化之後測試可以傳 hand-written
+ * fake（見 src/test 的 FakeEditorSettingsRepository），純 JVM 就能跑。
+ */
+interface EditorSettingsRepository {
+    suspend fun resolvePreferences(documentUri: String): DrawingPreferences
+    suspend fun setTool(documentUri: String, tool: Tool)
+    suspend fun setStrokeWidth(documentUri: String, tool: Tool, strokeWidth: Float)
+    suspend fun setShapeSubType(documentUri: String, shapeSubType: ShapeSubType)
+    suspend fun setInputMode(documentUri: String, inputMode: InputMode)
+    suspend fun setBackground(documentUri: String, background: PageBackground)
+    suspend fun setPaperStyle(documentUri: String, style: PaperStyle)
+    suspend fun setQuickSwipeEraserEnabled(documentUri: String, enabled: Boolean)
+    suspend fun setAutoSwitchToPenAfterErase(documentUri: String, enabled: Boolean)
+    suspend fun setStrokeSpeedSensitivity(documentUri: String, sensitivity: Float)
+
+    /** 粗細靈敏度是純全域偏好（不進 DB、不遷移），編輯器開啟時讀取。 */
+    fun getWidthResponsiveness(): Float
+}
+
+class DefaultEditorSettingsRepository(
     private val db: AppDatabase,
     private val documentPreferenceDao: DocumentPreferenceDao,
     private val prefs: android.content.SharedPreferences
-) {
+) : EditorSettingsRepository {
     companion object {
         private const val DEFAULT_PEN_STROKE_WIDTH = 4f
         private const val DEFAULT_HIGHLIGHTER_STROKE_WIDTH = 8f
@@ -46,9 +70,9 @@ class EditorSettingsRepository(
         )
     }
 
-    suspend fun resolvePreferences(documentUri: String): DrawingPreferences {
+    override suspend fun resolvePreferences(documentUri: String): DrawingPreferences {
         val local = documentPreferenceDao.getByDocumentUri(documentUri)
-        
+
         // Read global defaults
         val defaultPenColor = prefs.getInt("default_pen_color", 0xFF000000.toInt())
         val defaultHighlighterColor = prefs.getInt("default_highlighter_color", DEFAULT_HIGHLIGHTER_COLOR_ARGB)
@@ -92,11 +116,11 @@ class EditorSettingsRepository(
         )
     }
 
-    suspend fun setTool(documentUri: String, tool: Tool) {
+    override suspend fun setTool(documentUri: String, tool: Tool) {
         upsertDocument(documentUri) { copy(tool = tool.name) }
     }
 
-    suspend fun setStrokeWidth(documentUri: String, tool: Tool, strokeWidth: Float) {
+    override suspend fun setStrokeWidth(documentUri: String, tool: Tool, strokeWidth: Float) {
         upsertDocument(documentUri) {
             when (tool) {
                 Tool.HIGHLIGHTER -> copy(strokeWidth = strokeWidth, highlighterStrokeWidth = strokeWidth)
@@ -106,19 +130,19 @@ class EditorSettingsRepository(
         }
     }
 
-    suspend fun setShapeSubType(documentUri: String, shapeSubType: ShapeSubType) {
+    override suspend fun setShapeSubType(documentUri: String, shapeSubType: ShapeSubType) {
         upsertDocument(documentUri) { copy(shapeSubType = shapeSubType.name) }
     }
 
-    suspend fun setInputMode(documentUri: String, inputMode: InputMode) {
+    override suspend fun setInputMode(documentUri: String, inputMode: InputMode) {
         upsertDocument(documentUri) { copy(inputMode = inputMode.name) }
     }
 
-    suspend fun setBackground(documentUri: String, background: PageBackground) {
+    override suspend fun setBackground(documentUri: String, background: PageBackground) {
         upsertDocument(documentUri) { copy(pageBackground = background.name) }
     }
 
-    suspend fun setPaperStyle(documentUri: String, style: PaperStyle) {
+    override suspend fun setPaperStyle(documentUri: String, style: PaperStyle) {
         upsertDocument(documentUri) {
             copy(
                 pageBackground = style.background.name,
@@ -128,20 +152,19 @@ class EditorSettingsRepository(
         }
     }
 
-    suspend fun setQuickSwipeEraserEnabled(documentUri: String, enabled: Boolean) {
+    override suspend fun setQuickSwipeEraserEnabled(documentUri: String, enabled: Boolean) {
         prefs.edit().putBoolean("default_quick_swipe_eraser_enabled", enabled).apply()
     }
 
-    suspend fun setAutoSwitchToPenAfterErase(documentUri: String, enabled: Boolean) {
+    override suspend fun setAutoSwitchToPenAfterErase(documentUri: String, enabled: Boolean) {
         prefs.edit().putBoolean("default_auto_switch_to_pen_after_erase", enabled).apply()
     }
 
-    suspend fun setStrokeSpeedSensitivity(documentUri: String, sensitivity: Float) {
+    override suspend fun setStrokeSpeedSensitivity(documentUri: String, sensitivity: Float) {
         upsertDocument(documentUri) { copy(strokeSpeedSensitivity = sensitivity) }
     }
 
-    /** 粗細靈敏度是純全域偏好（不進 DB、不遷移），編輯器開啟時讀取。 */
-    fun getWidthResponsiveness(): Float =
+    override fun getWidthResponsiveness(): Float =
         prefs.getFloat("default_width_responsiveness", DEFAULT_WIDTH_RESPONSIVENESS)
 
     private suspend fun upsertDocument(
@@ -167,4 +190,3 @@ private fun String.toInputModeOrNull(): InputMode? =
 
 private fun String.toPageBackgroundOrNull(): PageBackground? =
     runCatching { PageBackground.valueOf(this) }.getOrNull()
-

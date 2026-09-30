@@ -249,7 +249,7 @@ fun TabletEditorScreen(
     val context = androidx.compose.ui.platform.LocalContext.current
     val prefs = remember { context.getSharedPreferences("inkflow_settings", 0) }
     val settingsRepository = remember(db, prefs) {
-        EditorSettingsRepository(
+        DefaultEditorSettingsRepository(
             db = db,
             documentPreferenceDao = db.documentPreferenceDao(),
             prefs = prefs
@@ -1006,9 +1006,15 @@ fun TabletEditorScreen(
             } // 6 inner Row
         } // 7 Box(weight 1f)
         } // 8 outer Row
-        } // 9 BoxWithConstraints
-        // 浮空工具列：疊在工作區上面，紙從下面透上來
-        Column(modifier = Modifier.fillMaxWidth()) {
+
+        // 浮空工具列：只蓋「工作區那一欄」，紙從它下面透上來；
+        // 側欄＋拖曳條維持自己的上邊界（不被工具列壓到），全螢幕態才吃滿寬。
+        val toolbarInset = if (sidebarMode == SidebarMode.FULLSCREEN) 0.dp else currentWidthDp + 24.dp
+        Column(
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(start = toolbarInset)
+        ) {
             TabletEditorTopBar(
                 documentTitle = documentTitle,
                 onBack = { navController.popBackStack() },
@@ -1041,7 +1047,8 @@ fun TabletEditorScreen(
                     isDarkTheme = isEditorDark,
                 )
             }
-        } // 10 overlay Column
+        } // 10 overlay Column（僅工作區欄）
+        } // 9 BoxWithConstraints
         } // 11 content Box
     } // 12 root Box(Aurora)
 } // 13 TabletEditorScreen
