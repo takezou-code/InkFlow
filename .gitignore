@@ -14,6 +14,9 @@
 .cxx
 local.properties
 
+# Windows desktop edition: separate git worktree (branch `windows`), not part of this repo tree
+/InkFlow-Windows/
+
 # Release signing key (never commit; back it up separately)
 *.pfx
 *.p12
