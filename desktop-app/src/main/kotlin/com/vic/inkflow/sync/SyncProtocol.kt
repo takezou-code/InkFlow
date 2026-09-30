@@ -30,7 +30,12 @@ object SyncPorts {
 }
 
 object SyncConstants {
-    const val PROTOCOL_VERSION = 2
+    /**
+     * v3. See [DiscoveryRequest.instanceId] for why this field exists and why it
+     * must ship now — it is the one field that cannot be retrofitted later.
+     * v2 = length-prefixed frames + manifest diff + SHA-256 + chunked transfer.
+     */
+    const val PROTOCOL_VERSION = 3
     const val APP_TAG = "InkFlow"
     const val DOCUMENTS_SUBDIR = "documents"
 }
@@ -45,7 +50,23 @@ data class DiscoveryRequest(
     val type: String = "discover",           // "discover" = Who is InkFlow Tablet?
     val requesterRole: String,               // "tablet" | "desktop"
     val deviceId: String,
-    val deviceName: String
+    val deviceName: String,
+    /**
+     * Identity of the SENDER's install of the tablet app (v3).
+     *
+     * A random UUID generated once per install. The tablet's `documents.uri` is
+     * a `file://` path with a random UUID filename inside app-private storage,
+     * which is destroyed by a reinstall — so the URI alone cannot distinguish
+     * "user deleted this" from "new install". With `instanceId` the desktop can
+     * detect a reinstall and drop the previous generation wholesale, and within
+     * a generation, absence from a complete manifest means deletion.
+     *
+     * Needs no Android schema change: the app generates and stores it in
+     * SharedPreferences. This is the one protocol field that cannot be added
+     * retroactively, because a desktop that already shipped without it has
+     * permanent, unrecoverable orphans on disk.
+     */
+    val instanceId: String? = null
 )
 
 data class DiscoveryResponse(
@@ -56,7 +77,9 @@ data class DiscoveryResponse(
     val role: String,                        // "tablet" | "desktop"
     val ip: String,
     val transferPort: Int = SyncPorts.TRANSFER_PORT,
-    val protocolVersion: Int = SyncConstants.PROTOCOL_VERSION
+    val protocolVersion: Int = SyncConstants.PROTOCOL_VERSION,
+    /** v3: see [DiscoveryRequest.instanceId]. Echoed so the desktop can record the generation. */
+    val instanceId: String? = null
 )
 
 // ─── TCP request / response envelopes ────────────────────────────────────────
@@ -68,13 +91,21 @@ data class DiscoveryResponse(
 data class SyncRequest(
     val type: String,                        // see TYPE_* constants
     val deviceId: String,
+    /** v3: the tablet's install identity; echoed on every request so the server can scope. */
+    val instanceId: String? = null,
     /** Only for TYPE_STROKE_DELTA / TYPE_FILE_META / TYPE_FILE_DATA. */
     val documentUri: String? = null,
     /** Only for TYPE_STROKE_PAGE. */
     val pageIndex: Int? = null,
     /** Only for TYPE_FILE_DATA. */
     val offset: Long? = null,
-    val limit: Int? = null
+    val limit: Int? = null,
+    /**
+     * v3: shared secret from the pairing flow, sent only on TYPE_HANDSHAKE.
+     * The server answers with a proof so the desktop can verify the tablet holds
+     * the same secret. Compared in constant time on both sides.
+     */
+    val psk: String? = null
 ) {
     companion object {
         const val TYPE_HANDSHAKE = "handshake"
@@ -101,7 +132,25 @@ data class SyncResponse(
 
 // ─── JSON payload bodies ─────────────────────────────────────────────────────
 
-/** Answer to TYPE_DOC_MANIFEST: lightweight list for diffing. */
+/**
+ * Answer to TYPE_DOC_MANIFEST: lightweight list for diffing (v3).
+ *
+ * [docVersion] is the field the desktop actually diffs on. It is a
+ * content-addressed hash, deliberately NOT a timestamp:
+ *
+ *  - `lastOpenedAt` produced false positives (open a document to read it, no
+ *    drawing, and the desktop re-pulled the row, every stroke and the whole PDF)
+ *    and false negatives (any write path that mutates strokes without touching
+ *    `lastOpenedAt` — undo/redo, import, page reorder — left the desktop
+ *    permanently stale with no way to self-heal, because the manifest said
+ *    "not newer").
+ *  - A hash of the actual content cannot do either. It also removes the need
+ *    for any clock agreement between the two machines, which matters because
+ *    the two devices' clocks are independent.
+ *
+ * The desktop stores this in its OWN `sync_state` table, so the Android schema
+ * is untouched. See SYNC_PROTOCOL.md §6.
+ */
 data class DocumentManifestEntry(
     val uri: String,
     val displayName: String,
@@ -109,7 +158,9 @@ data class DocumentManifestEntry(
     val strokeCount: Int,
     val filePresent: Boolean,
     val fileSha256: String? = null,
-    val fileSize: Long? = null
+    val fileSize: Long? = null,
+    /** v3: content hash of (instanceId, uri, strokeCount, fileSha256, fileSize). */
+    val docVersion: String? = null
 )
 
 /** Answer to TYPE_DOCUMENT_DETAIL: full row + all strokes with points. */
@@ -176,4 +227,39 @@ object SyncWire {
         }
         return digest.digest().joinToString("") { "%02x".format(it) }
     }
+
+    fun sha256Hex(bytes: ByteArray): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(bytes)
+            .joinToString("") { "%02x".format(it) }
+
+    /**
+     * v3 document version. Content-addressed, so it is correct by construction:
+     * identical content always yields an identical string, and any change to the
+     * stroke count, the file bytes or the file size changes it.
+     *
+     * The separator is a NUL byte, which cannot occur inside a file URI or a hex
+     * digest. A space would NOT be safe: document URIs routinely contain spaces
+     * (".../My Notes.pdf"), and ("/a b", "c") would then collide with
+     * ("/a", "b c"). The Android side must use the same separator — see
+     * `SyncIdentity.docVersion` in app/src/main/java/com/vic/inkflow/sync/.
+     */
+    fun docVersion(
+        instanceId: String,
+        uri: String,
+        strokeCount: Int,
+        fileSha256: String?,
+        fileSize: Long?
+    ): String = sha256Hex(
+        buildString {
+            append(instanceId); append(NUL)
+            append(uri); append(NUL)
+            append(strokeCount); append(NUL)
+            append(fileSha256 ?: "-"); append(NUL)
+            append(fileSize ?: -1L)
+        }.toByteArray(Charsets.UTF_8)
+    )
+
+    /** Field separator for [docVersion]. Must match the Android implementation. */
+    const val NUL: Char = '\u0000'
 }
