@@ -628,8 +628,9 @@ abstract class AppDatabase : RoomDatabase() {
                 .fallbackToDestructiveMigrationOnDowngrade(dropAllTables = true)
                 .build()
                 INSTANCE = instance
-                runCatching { com.vic.inkflow.util.PageOpJournal.reconcilePending(appContext, instance) }
-                    .onFailure { android.util.Log.e("AppDatabase", "journal reconcile failed", it) }
+                // P0：crash-journal 重放丟到 app scope 跑，不再在 Application 初始化
+                // 裡 runBlocking 等它完成（大 PDF 是同步磁碟 I/O，ANR 風險）。
+                com.vic.inkflow.util.PageOpJournal.scheduleReconcile(appContext, instance)
                 instance
             }
         }

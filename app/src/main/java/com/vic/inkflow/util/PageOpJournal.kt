@@ -5,7 +5,11 @@ import android.net.Uri
 import android.util.Log
 import com.vic.inkflow.data.AppDatabase
 import com.vic.inkflow.data.repository.InkFlowRepositories
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -107,31 +111,52 @@ object PageOpJournal {
     }
 
     /**
+     * P0：把重放丟到 app-lifetime scope 跑，呼叫端不用同步等。
+     *
+     * 改前 AppDatabase.getDatabase()（Application 初始化）裡是 runBlocking 等
+     * 「讀 PDF 頁數 ＋ 五張表交易」跑完——大 PDF 就是一次同步磁碟 I/O 加 Room
+     * 交易，ANR 風險。scope 放在這裡而不是 AppDatabase，是為了讓 AppDatabase
+     * 不需要引用 coroutine 型別（那會和 Room/KSP 形成跨檔型別循環）。
+     */
+    /** app-lifetime scope：SupervisorJob 讓重放失敗不拖垮其他任務。 */
+    private val reconcileScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    fun scheduleReconcile(context: Context, db: AppDatabase) {
+        reconcileScope.launch(Dispatchers.IO) {
+            runCatching { reconcilePending(context, db) }
+                .onFailure { Log.e(TAG, "journal reconcile failed", it) }
+        }
+    }
+
+    /**
      * Called once at app start (from AppDatabase init) to finish or roll back any
      * operation interrupted by process death.
+     *
+     * P0：改成 suspend。內部本來就全是 suspend（applyForwardLocked 尤其），
+     * 所以只把外層形狀改掉即可。正常路徑請走 [scheduleReconcile]。
      */
-    fun reconcilePending(context: Context, db: AppDatabase) {
+    suspend fun reconcilePending(context: Context, db: AppDatabase) {
+        val repos = InkFlowRepositories(db)
         val entry = read(context) ?: return
         Log.w(TAG, "Found pending page op from previous session: $entry")
-        val repos = InkFlowRepositories(db)
         try {
             val uri = Uri.parse(entry.documentUri)
             if (uri.scheme == "file" && entry.pageCountBefore > 0) {
-                runBlocking {
-                    val actual = PdfManager.getPdfPageCount(uri)
-                    if (actual > 0 && actual != entry.pageCountBefore) {
-                        repos.transaction {
-                            applyForwardLocked(repos, entry)
-                            // S1 docY 同搬：重放只在崩潰窗口發生，用首頁高重算（讀不到就跳過，不更壞）。
-                            PdfManager.readFirstPageSize(context, uri)?.second
-                                ?.takeIf { it > 0f }?.let { stride ->
-                                    repos.pageOps.backfillAllDocY(entry.documentUri, stride)
-                                }
-                        }
-                        Log.w(TAG, "Replayed DB shift for ${entry.op} on ${entry.documentUri}")
+                val actual = PdfManager.getPdfPageCount(uri)
+                if (actual > 0 && actual != entry.pageCountBefore) {
+                    repos.transaction {
+                        applyForwardLocked(repos, entry)
+                        // S1 docY 同搬：重放只在崩潰窗口發生，用首頁高重算（讀不到就跳過，不更壞）。
+                        PdfManager.readFirstPageSize(context, uri)?.second
+                            ?.takeIf { it > 0f }?.let { stride ->
+                                repos.pageOps.backfillAllDocY(entry.documentUri, stride)
+                            }
                     }
+                    Log.w(TAG, "Replayed DB shift for ${entry.op} on ${entry.documentUri}")
                 }
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "reconcilePending failed — manual page/annotation check may be needed", e)
         } finally {
