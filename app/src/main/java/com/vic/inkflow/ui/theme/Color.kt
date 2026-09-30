@@ -33,9 +33,11 @@ val PaperShadowDark = Color(0x40000000)
 /** 真玻璃 veil（壓在背景上，折射＋模糊仍透得出）。
  *  深色＝黑玻璃：70% 近黑藏青，存在感靠厚度不靠高光（亮色模式維持 55% 白不動）。 */
 val GlassVeilLight = Color(0x8CFFFFFF) // 55% 白
-val GlassVeilDark = Color(0x9E0F172A) // 62% 近黑藏青（黑玻璃；70% 太重，退回一點）
+// 深色別再壓到 62–70%：壓在暗極光上＝和背景同亮度＝看不出是玻璃（像素實測
+// 頂欄 22.9/20.9/37 vs 背景 22.4/19.5/51）。45% 讓背景透出來＝黑玻璃，靠 rim 定邊。
+val GlassVeilDark = Color(0x660F172A) // 40%（黑玻璃但別死黑，背景要透得出來）
 /** faux 玻璃底（無 blur，濃度略高於真玻璃保可讀）。 */
 val GlassTintLight = Color(0x4DFFFFFF) // 30%
-val GlassTintDark = Color(0x990F172A) // 60%
+val GlassTintDark = Color(0x800F172A) // 50%
 /** 壓在淺玻璃上的內容色（圖標/字）：iOS 亮欄配深內容。 */
 val PaperInkColor = Color(0xFF1E293B)

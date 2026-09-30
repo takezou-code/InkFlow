@@ -102,34 +102,31 @@ fun glassStyle(isDark: Boolean, shape: Shape = ShapeLg): GlassStyle =
         tint(if (isDark) com.vic.inkflow.ui.theme.GlassVeilDark else com.vic.inkflow.ui.theme.GlassVeilLight)
         ambientResponse(0f)
         optics(
-            blurRadius = 20.dp,
+            // 背景再糊一點（20→26dp），黑玻璃本體別再壓暗
+            blurRadius = 26.dp,
             refractionStrength = 1.0f,
-            refractionHeightFraction = 0.45f,
-            refractionDisplacement = 64.dp,
-            // 邊緣反摺：讓透鏡邊真正「翻」起來（0=單調折射，這是「特別」的關鍵旋鈕）
-            refractionFoldStrength = 0.55f,
+            refractionHeightFraction = 0.40f,
+            refractionDisplacement = 60.dp,
+            // fold 必須 0：它把 tint 從邊緣折走，黑玻璃會消失（像素實測 181/203/236）。
+            // 乾淨的折射（Lip＋位移）跟黑玻璃可以共存。
+            refractionFoldStrength = 0f,
             depth = 0.15f,
-            refractionDetailIntensity = 1f,
-            // 漸層模糊：上緣清、下緣厚，玻璃才有「厚度感」（Flat 全糊＝塑膠）
-            progressive = HazeProgressive.verticalGradient(
-                startIntensity = 1f,
-                endIntensity = 0.35f
-            )
+            refractionDetailIntensity = 1f
         )
         lightPosition(Alignment.TopCenter)
-        // Squircle：比 Lip 更鼓更 iOS，弧面把折射拉出圓潤的邊
-        surfaceProfile(SurfaceProfile.Squircle)
-        specularIntensity(0.8f)
-        specularExponent(2.0f)
-        fresnelExponent(3.0f)
-        edgeSoftness(6.dp)
+        // Lip（非 Squircle）：Squircle 弧面同樣會把 tint 折淡
+        surfaceProfile(SurfaceProfile.Lip)
+        specularIntensity(0.9f)
+        specularExponent(1.6f)
+        fresnelExponent(2.4f)
+        edgeSoftness(2.dp)
         whitePoint(-0.15f)
         // 飽和提升（vibrancy）：blur 會吃掉彩度，這裡補回來，玻璃才不發灰
         chromaMultiplier(1.35f)
         contrast(0.08f)
-        // 光譜色散（Full 比 Simple 貴，GPU 夠才上；邊緣 RGB 分光更明顯）
-        chromaticAberrationMode(ChromaticAberrationMode.Full)
-        chromaticAberrationStrength(0.32f)
+        // 光譜色散：Full 每幀多一層、實測掉幀；退回 Simple 0.3，邊緣一樣有 RGB 分光（shiny）。
+        chromaticAberrationMode(ChromaticAberrationMode.Simple)
+        chromaticAberrationStrength(0.34f)
         shape((shape as? RoundedCornerShape) ?: RoundedCornerShape(24.dp))
     }
 
@@ -434,16 +431,6 @@ private fun Modifier.glassDressing(
     shape: Shape,
     specular: Boolean
 ): Modifier {
-    val live = !LocalQuietMode.current
-    val sheenT by rememberInfiniteTransition(label = "GlassSheen").animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(7000, easing = androidx.compose.animation.core.LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "GlassSheenT"
-    )
     var m = this
         // 頂部 Sheen v4：hazeGlass 自帶高光，妝只留髮絲亮緣＋極淡罩紗。
         // 底部內陰影保留做厚度（減淡）。
@@ -460,17 +447,17 @@ private fun Modifier.glassDressing(
             shape = shape
         )
     if (specular) {
-        // 大火 rim：頂緣高光拉滿，跟 haze 頂光同方向疊
-        val rimTop = if (isDark) Color.White.copy(alpha = 0.9f) else Color.White.copy(alpha = 0.95f)
+        // 大火 rim：頂緣高光拉滿（黑玻璃靠這根定邊，不然暗 veil 壓暗背景＝看不出形狀）
+        val rimTop = Color.White.copy(alpha = 0.95f)
         m = m.border(
             border = BorderStroke(
-                width = 1.dp,
+                width = 1.5.dp,
                 brush = Brush.verticalGradient(
                     colorStops = arrayOf(
                         0f to rimTop,
-                        0.25f to Color.White.copy(alpha = 0.05f),
-                        0.7f to Color.White.copy(alpha = 0.02f),
-                        1f to Color.White.copy(alpha = 0.07f)
+                        0.25f to Color.White.copy(alpha = 0.08f),
+                        0.7f to Color.White.copy(alpha = 0.03f),
+                        1f to Color.White.copy(alpha = 0.10f)
                     )
                 )
             ),
@@ -485,21 +472,9 @@ private fun Modifier.glassDressing(
                 shape = shape
             )
         }
-        // 流光專屬：活 sheen。0.16 讓頂緣偶爾過亮一下，像光在玻璃上滑過去。
-        if (live) {
-            val p = sheenT * 1.7f - 0.35f
-            m = m.background(
-                brush = Brush.linearGradient(
-                    colorStops = arrayOf(
-                        p.coerceIn(0f, 1f) to Color.Transparent,
-                        (p + 0.12f).coerceIn(0f, 1f) to Color.White.copy(alpha = 0.16f),
-                        (p + 0.28f).coerceIn(0f, 1f) to Color.Transparent
-                    )
-                ),
-                shape = shape
-            )
+// 待機不播 sheen：每個玻璃件各掛一個無限動畫會強制整窗每秒重繪 60 次，
+        // 實測 fps 從 60 掉到 30–42（十幾個面板 × 真折射疊上去）。要動感用按壓那一下。
         }
-    }
     return m
 }
 
