@@ -217,8 +217,6 @@ import com.vic.inkflow.ui.theme.InkFlowTheme
 import com.vic.inkflow.ui.theme.Slate50
 import com.vic.inkflow.ui.theme.Slate100
 import com.vic.inkflow.ui.theme.Slate900
-import com.vic.inkflow.ui.theme.ToolbarGlassDark
-import com.vic.inkflow.ui.theme.ToolbarGlassLight
 import com.vic.inkflow.ui.theme.WorkspaceDeskDark
 import com.vic.inkflow.ui.theme.WorkspaceDeskLight
 import com.vic.inkflow.util.PdfManager
@@ -765,7 +763,7 @@ internal fun Sidebar(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = 6.dp, vertical = 5.dp)
-                                .smartGlass(hazeState, isDarkTheme, ShapeMd)
+                                .glassPanel(hazeState, isDarkTheme, ShapeMd)
                         ) {
                             Icon(
                                 Icons.Outlined.Add,

@@ -201,8 +201,6 @@ import com.vic.inkflow.ui.theme.InkFlowTheme
 import com.vic.inkflow.ui.theme.Slate50
 import com.vic.inkflow.ui.theme.Slate100
 import com.vic.inkflow.ui.theme.Slate900
-import com.vic.inkflow.ui.theme.ToolbarGlassDark
-import com.vic.inkflow.ui.theme.ToolbarGlassLight
 import com.vic.inkflow.ui.theme.WorkspaceDeskDark
 import com.vic.inkflow.ui.theme.WorkspaceDeskLight
 import com.vic.inkflow.util.PdfManager
@@ -450,7 +448,7 @@ internal fun StrokeWidthSlider(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .smartGlass(hazeState, isDarkTheme, shape = RectangleShape, specular = false),
+            .glassPanel(hazeState, isDarkTheme, shape = RectangleShape, specular = false),
         tonalElevation = 0.dp,
         color = Color.Transparent,
         contentColor = MaterialTheme.colorScheme.onSurface
@@ -497,22 +495,17 @@ internal fun AnimatedDialog(
     ) { dialog() }
 }
 
-/** 紙墨色：浮在白紙上的工具列圖標/字恆用此色，不跟主題走。 */
-internal val PaperInkColor = androidx.compose.ui.graphics.Color(0xFF1E293B)
-
 @Composable
 internal fun EditorIconButton(
     onClick: () -> Unit,
     isActive: Boolean,
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     contentDescription: String,
-    size: androidx.compose.ui.unit.Dp = 32.dp,
-    // 紙上工具列恆深色圖標（紙恆白，不跟主題走）
-    dark: Boolean = true
+    size: androidx.compose.ui.unit.Dp = 32.dp
 ) {
+    val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
     val animatedTintColor by animateColorAsState(
-        if (isActive) MaterialTheme.colorScheme.primary
-        else if (dark) PaperInkColor else MaterialTheme.colorScheme.onSurface,
+        if (isActive) MaterialTheme.colorScheme.primary else glassContentColor(isDark),
         label = "EditorButtonTint"
     )
     val iconScale by animateFloatAsState(

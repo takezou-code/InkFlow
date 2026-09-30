@@ -29,8 +29,13 @@ val PaperDark = Color(0xFF1E293B)
 val PaperShadowLight = Color(0x1F0F172A)
 val PaperShadowDark = Color(0x40000000)
 
-val GlassTintLight = Color(0x4DFFFFFF) // 30% thin glass (was 0xA6 65%)
+// ── 玻璃色票（唯一來源，GlassSurface 一律引用這裡，禁在 UI 檔另立） ──
+/** 真玻璃 veil（壓在背景上，折射＋模糊仍透得出）。濃度須夠高才保內容對比：
+ *  iOS barTintColor 混灰後接近半透明不透明，薄 veil 壓在近黑底會變深灰、深字看不見。 */
+val GlassVeilLight = Color(0x8CFFFFFF) // 55% 白
+val GlassVeilDark = Color(0x8C0F172A) // 55% 藏青
+/** faux 玻璃底（無 blur，靠不透明度保可讀，略濃於真玻璃）。 */
+val GlassTintLight = Color(0x4DFFFFFF) // 30%
 val GlassTintDark = Color(0x8C0F172A) // 55%
-
-val ToolbarGlassLight = GlassTintLight
-val ToolbarGlassDark = GlassTintDark
+/** 壓在淺玻璃上的內容色（圖標/字）：iOS 亮欄配深內容。 */
+val PaperInkColor = Color(0xFF1E293B)

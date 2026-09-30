@@ -216,8 +216,6 @@ import com.vic.inkflow.ui.theme.InkFlowTheme
 import com.vic.inkflow.ui.theme.Slate50
 import com.vic.inkflow.ui.theme.Slate100
 import com.vic.inkflow.ui.theme.Slate900
-import com.vic.inkflow.ui.theme.ToolbarGlassDark
-import com.vic.inkflow.ui.theme.ToolbarGlassLight
 import com.vic.inkflow.ui.theme.WorkspaceDeskDark
 import com.vic.inkflow.ui.theme.WorkspaceDeskLight
 import com.vic.inkflow.util.PdfManager
@@ -251,7 +249,7 @@ internal fun LibraryHeroPanel(
             .padding(horizontal = 18.dp, vertical = 14.dp)
     ) {
         Surface(
-            modifier = Modifier.smartGlass(hazeState, isDarkTheme),
+            modifier = Modifier.glassPanel(hazeState, isDarkTheme),
             color = Color.Transparent,
             contentColor = MaterialTheme.colorScheme.onSurface
         ) {
@@ -408,7 +406,7 @@ internal fun LibraryHeroPanel(
                     if (selectedNavIndex == 0) {
                         // 玻璃幽靈鈕：跟面板同一塊玻璃，不再用實心圓底
                         Box(
-                            modifier = Modifier.smartGlass(hazeState, isDarkTheme, CircleShape)
+                            modifier = Modifier.glassPanel(hazeState, isDarkTheme, CircleShape)
                         ) {
                             IconButton(onClick = onToggleGridView) {
                                 Icon(
@@ -442,7 +440,7 @@ internal fun DocumentLibraryFab(
         // FAB 走統一入口 glassClickable（掃光＋縮放＋無漣漪）
         Box(
             modifier = Modifier
-                .smartGlass(hazeState, isDarkTheme)
+                .glassPanel(hazeState, isDarkTheme)
                 .glassClickable(onClick = onToggleMenu)
                 .padding(horizontal = 18.dp, vertical = 14.dp)
         ) {
@@ -471,7 +469,7 @@ internal fun DocumentLibraryFab(
             containerColor = Color.Transparent,
             shadowElevation = 0.dp,
             shape = ShapeLg,
-            modifier = Modifier.glassPanelDialog(hazeState, isDarkTheme, ShapeLg)
+            modifier = Modifier.glassPanel(hazeState, isDarkTheme, ShapeLg, input = dev.chrisbanes.haze.HazeInput.Sources(hazeState))
         ) {
             androidx.compose.material3.DropdownMenuItem(
                 text = { Text("開啟 PDF") },
@@ -536,7 +534,7 @@ internal fun LibraryEmptyState(
                 modifier = Modifier
                     .fillMaxWidth()
                     .widthIn(max = 560.dp)
-                    .then(if (hazeState != null) Modifier.smartGlass(hazeState, isDarkTheme, ShapeXl) else Modifier),
+                    .then(if (hazeState != null) Modifier.glassPanel(hazeState, isDarkTheme, ShapeXl) else Modifier),
                 color = if (hazeState != null) Color.Transparent else MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.96f),
                 shape = ShapeXl,
                 border = if (hazeState != null) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),

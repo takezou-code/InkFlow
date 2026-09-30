@@ -66,24 +66,23 @@ import androidx.compose.ui.graphics.graphicsLayer
  * of curved glass.
  */
 
-/** Heavy liquid glass — deeper tint + stronger blur so panels stand out. */
-private val GlassTintLight = Color(0x40FFFFFF) // 25%:往 iOS 透亮派靠，折射扛存在感
-private val GlassTintDark = Color(0x660F172A) // 40%:haze/faux 共用同一罐，不再分家
-
+/** 玻璃色票唯一來源（theme/Color.kt）：faux 半透明底（無 blur，靠它保可讀）。 */
 @Composable
 fun rememberHazeState(): HazeState = remember { HazeState() }
 
-// backgroundColor 半透明打底：採樣空窗那幀看到的是深灰而不是純黑洞；
-// 平時只是多一層薄紗（實色才會蓋掉 blur，半透明不會）。
-// S3：haze 沒有 vibrancy，只能靠「少悶」保鮮豔——打底＋tint 都減淡，讓背底顏色透出來。
-// （faux 無 blur，維持原濃度保文字可讀，不共用這組）
-/** 真折射玻璃：大火晶透（頂光＋凸緣＋淡 tint＋滿折射細節），靜模式走 faux。 */
+/** 內容色：壓在玻璃上的圖標/字該用哪個色，由玻璃這裡單一宣告，呼叫端禁寫死。 */
+fun glassContentColor(isDark: Boolean): Color =
+    if (isDark) Color.White else com.vic.inkflow.ui.theme.PaperInkColor
+
+/**
+ * 真折射玻璃配方（唯一）：頂光＋凸緣＋滿折射細節＋色散。
+ * 深色＝靛 veil，淺色＝白 veil（iOS 亮欄配深內容）。tint 濃度只在這裡調。
+ */
 @OptIn(ExperimentalHazeApi::class)
 fun glassStyle(isDark: Boolean, shape: Shape = ShapeLg): GlassStyle =
     GlassStyle.clear.then {
         backgroundColor(Color.Transparent)
-        // 工作區可讀＋折射可見：tint 靛 0.30（深）／白 0.25（亮，紙上藥丸 iOS 式）＋blur 20＋位移 48dp＋帶寬 0.35
-        tint(if (isDark) Color(0xFF1E1B4B).copy(alpha = 0.30f) else Color.White.copy(alpha = 0.25f))
+        tint(if (isDark) com.vic.inkflow.ui.theme.GlassVeilDark else com.vic.inkflow.ui.theme.GlassVeilLight)
         ambientResponse(0f)
         optics(
             blurRadius = 20.dp,
@@ -93,7 +92,6 @@ fun glassStyle(isDark: Boolean, shape: Shape = ShapeLg): GlassStyle =
             depth = 0.15f,
             refractionDetailIntensity = 1f
         )
-        // 晶透四件：頂光＋凸緣＋高光＋色散；whitePoint 轉負抵消 clear 底提亮
         lightPosition(Alignment.TopCenter)
         surfaceProfile(SurfaceProfile.Lip)
         specularIntensity(0.8f)
@@ -103,32 +101,21 @@ fun glassStyle(isDark: Boolean, shape: Shape = ShapeLg): GlassStyle =
     }
 
 /**
- * 全統一入口（Prismal 真折射已退役）：等同 [glassPanel]。
- * 保留此別名是為了呼叫端收斂期少改一行；新 code 直接用 [glassPanel]。
- */
-fun Modifier.smartGlass(
-    state: HazeState,
-    isDark: Boolean,
-    shape: Shape = ShapeLg,
-    specular: Boolean = true
-): Modifier = glassPanel(state, isDark, shape, specular)
-
-/**
- * Turn any surface into liquid glass. Attach [com.vic.inkflow.ui.hazeSource]
- * (Modifier.hazeSource) to the scene content BEHIND these panels first.
+ * 全統一入口（真折射）。所有玻璃容器都走這一支：
+ *  - 同窗面板用預設 Backdrop；對話框/下拉（跨視窗）傳 [input] = HazeInput.Sources。
+ *  - 內容色由 [LocalContentOnGlass] 宣告，呼叫端禁自訂圖標色。
  */
 @OptIn(ExperimentalHazeApi::class)
 fun Modifier.glassPanel(
     state: HazeState,
     isDark: Boolean,
     shape: Shape = ShapeLg,
-    specular: Boolean = true
-): Modifier {
-    return this
-        .clip(shape)
-        .hazeGlass(input = HazeInput.Backdrop(state), style = glassStyle(isDark, shape))
-        .glassDressing(isDark, shape, specular)
-}
+    specular: Boolean = true,
+    input: HazeInput = HazeInput.Backdrop(state)
+): Modifier = this
+    .clip(shape)
+    .hazeGlass(input = input, style = glassStyle(isDark, shape))
+    .glassDressing(isDark, shape, specular)
 
 /**
  * 氣泡專用毛玻璃：高遮蓋打底（亮 85% 白 / 暗 90% 藏青）+ 同套高光亮邊。
@@ -290,22 +277,6 @@ fun Modifier.glassClickable(
 }
 
 /**
- * 穿窗版：給對話框卡／下拉選單用（跟視窗同一 HazeState，Sources 穿過去；
- * Backdrop 過不了視窗邊界，這裡必須用 Sources）。
- */
-@OptIn(ExperimentalHazeApi::class)
-fun Modifier.glassPanelDialog(
-    state: HazeState,
-    isDark: Boolean,
-    shape: Shape = ShapeLg
-): Modifier {
-    return this
-        .clip(shape)
-        .hazeGlass(input = HazeInput.Sources(state), style = glassStyle(isDark, shape))
-        .glassDressing(isDark, shape, true)
-}
-
-/**
  * 無 blur 的仿玻璃：半透明底 + 同套高光亮邊，背景直接透過去。
  * 給大量重複的卡片用（每卡一個即時模糊是滾動卡頓主因），透光免費。
  */
@@ -317,7 +288,7 @@ fun Modifier.fauxGlassPanel(
     return this
         .clip(shape)
         .background(
-            color = if (isDark) GlassTintDark else GlassTintLight,
+            color = if (isDark) com.vic.inkflow.ui.theme.GlassTintDark else com.vic.inkflow.ui.theme.GlassTintLight,
             shape = shape
         )
         .glassDressing(isDark, shape, specular)
@@ -498,7 +469,7 @@ private fun GlassDialogFrame(
                     .padding(horizontal = 24.dp)
                     .widthIn(min = 280.dp, max = 560.dp)
                     .then(
-                        if (hazeState != null) Modifier.glassPanelDialog(hazeState, isDark, ShapeLg)
+                        if (hazeState != null) Modifier.glassPanel(hazeState, isDark, ShapeLg, input = HazeInput.Sources(hazeState))
                         else Modifier.fauxGlassPanel(isDark, ShapeLg)
                     )
                     .padding(24.dp)

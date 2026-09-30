@@ -226,8 +226,6 @@ import com.vic.inkflow.ui.theme.InkFlowTheme
 import com.vic.inkflow.ui.theme.Slate50
 import com.vic.inkflow.ui.theme.Slate100
 import com.vic.inkflow.ui.theme.Slate900
-import com.vic.inkflow.ui.theme.ToolbarGlassDark
-import com.vic.inkflow.ui.theme.ToolbarGlassLight
 import com.vic.inkflow.ui.theme.WorkspaceDeskDark
 import com.vic.inkflow.ui.theme.WorkspaceDeskLight
 import com.vic.inkflow.util.PdfManager
@@ -325,7 +323,7 @@ fun TabletEditorTopBar(
             Surface(
                 modifier = Modifier
                     .fillMaxHeight()
-                    .smartGlass(hazeState, false, ShapeLg), // 紙上亮玻璃：iOS 式亮 blur＋深內容
+                    .glassPanel(hazeState, isDarkTheme, ShapeLg), // 紙上亮玻璃：iOS 式亮 blur＋深內容
                 shape = ShapeLg,
                 color = Color.Transparent
             ) {
@@ -334,13 +332,13 @@ fun TabletEditorTopBar(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     IconButton(onClick = onBack, modifier = Modifier.size(utilityButtonSize)) {
-                        Icon(Icons.Outlined.ArrowBack, contentDescription = "Back to Library", tint = PaperInkColor)
+                        Icon(Icons.Outlined.ArrowBack, contentDescription = "Back to Library", tint = glassContentColor(isDarkTheme))
                     }
                     Column(modifier = Modifier.widthIn(max = 156.dp)) {
                         Text(
                             text = documentTitle,
                             style = MaterialTheme.typography.titleSmall,
-                            color = PaperInkColor,
+                            color = glassContentColor(isDarkTheme),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -357,7 +355,7 @@ fun TabletEditorTopBar(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight()
-                    .smartGlass(hazeState, false, ShapeLg), // 紙上亮玻璃：iOS 式亮 blur＋深內容
+                    .glassPanel(hazeState, isDarkTheme, ShapeLg), // 紙上亮玻璃：iOS 式亮 blur＋深內容
                 shape = ShapeLg,
                 color = Color.Transparent
             ) {
@@ -604,7 +602,7 @@ fun TabletEditorTopBar(
             Surface(
                 modifier = Modifier
                     .fillMaxHeight()
-                    .smartGlass(hazeState, false, ShapeLg), // 紙上亮玻璃：iOS 式亮 blur＋深內容
+                    .glassPanel(hazeState, isDarkTheme, ShapeLg), // 紙上亮玻璃：iOS 式亮 blur＋深內容
                 shape = ShapeLg,
                 color = Color.Transparent
             ) {
@@ -618,7 +616,7 @@ fun TabletEditorTopBar(
                             painter = painterResource(id = R.drawable.ic_gemini),
                             contentDescription = "Toggle AI Panel",
                             tint = if (isAiPanelOpen) MaterialTheme.colorScheme.primary
-                            else PaperInkColor
+                            else glassContentColor(isDarkTheme)
                         )
                     }
                     EditorIconButton(
@@ -633,7 +631,7 @@ fun TabletEditorTopBar(
             Surface(
                 modifier = Modifier
                     .fillMaxHeight()
-                    .smartGlass(hazeState, false, ShapeLg), // 紙上亮玻璃：iOS 式亮 blur＋深內容
+                    .glassPanel(hazeState, isDarkTheme, ShapeLg), // 紙上亮玻璃：iOS 式亮 blur＋深內容
                 shape = ShapeLg,
                 color = Color.Transparent
             ) {
@@ -648,7 +646,7 @@ fun TabletEditorTopBar(
                             .size(utilityButtonSize)
                             .graphicsLayer { scaleX = undoScale; scaleY = undoScale }
                     ) {
-                        Icon(Icons.AutoMirrored.Outlined.Undo, contentDescription = "Undo", tint = PaperInkColor.copy(alpha = if (canUndo) 1f else 0.35f))
+                        Icon(Icons.AutoMirrored.Outlined.Undo, contentDescription = "Undo", tint = glassContentColor(isDarkTheme).copy(alpha = if (canUndo) 1f else 0.35f))
                     }
                     IconButton(
                         onClick = { viewModel.redo() },
@@ -657,7 +655,7 @@ fun TabletEditorTopBar(
                             .size(utilityButtonSize)
                             .graphicsLayer { scaleX = redoScale; scaleY = redoScale }
                     ) {
-                        Icon(Icons.AutoMirrored.Outlined.Redo, contentDescription = "Redo", tint = PaperInkColor.copy(alpha = if (canRedo) 1f else 0.35f))
+                        Icon(Icons.AutoMirrored.Outlined.Redo, contentDescription = "Redo", tint = glassContentColor(isDarkTheme).copy(alpha = if (canRedo) 1f else 0.35f))
                     }
                     Box(
                         modifier = Modifier
@@ -676,7 +674,7 @@ fun TabletEditorTopBar(
                         Icon(
                             imageVector = Icons.AutoMirrored.Outlined.Article,
                             contentDescription = "Document Settings",
-                            tint = PaperInkColor
+                            tint = glassContentColor(isDarkTheme)
                         )
                     }
                     IconButton(onClick = { viewModel.cycleInputMode() }, modifier = Modifier.size(utilityButtonSize)) {
@@ -692,7 +690,7 @@ fun TabletEditorTopBar(
                                 InputMode.STYLUS_ONLY -> "觸控筆模式（手指卷動）"
                             },
                             tint = when (inputMode) {
-                                InputMode.FREE -> PaperInkColor
+                                InputMode.FREE -> glassContentColor(isDarkTheme)
                                 InputMode.PALM_REJECTION -> MaterialTheme.colorScheme.tertiary
                                 InputMode.STYLUS_ONLY -> MaterialTheme.colorScheme.primary
                             }
@@ -704,7 +702,7 @@ fun TabletEditorTopBar(
                             imageVector = Icons.Outlined.Spa,
                             contentDescription = "靜模式",
                             tint = if (isPowerSaver) MaterialTheme.colorScheme.primary
-                            else PaperInkColor
+                            else glassContentColor(isDarkTheme)
                         )
                     }
                 }
