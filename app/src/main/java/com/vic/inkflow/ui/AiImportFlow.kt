@@ -5,7 +5,7 @@ import android.content.Context
 import android.net.Uri
 import android.util.Log
 import android.widget.Toast
-import com.vic.inkflow.data.AppDatabase
+import com.vic.inkflow.data.repository.InkFlowRepositories
 import com.vic.inkflow.data.MathSourceEntity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -65,7 +65,7 @@ fun CoroutineScope.importPickedJson(
     context: Context,
     viewModel: EditorViewModel,
     pdfViewModel: PdfViewModel,
-    db: AppDatabase,
+    repos: InkFlowRepositories,
     documentUri: String,
     sourcePage: Int,
     onRequestPage: (Int) -> Unit,
@@ -75,7 +75,7 @@ fun CoroutineScope.importPickedJson(
     if (json.isBlank()) return
     launch {
         try {
-            importPickedJsonInner(context, viewModel, pdfViewModel, db, documentUri, sourcePage, onRequestPage, activity, webView, json)
+            importPickedJsonInner(context, viewModel, pdfViewModel, repos, documentUri, sourcePage, onRequestPage, activity, webView, json)
         } catch (t: Throwable) {
             Log.e("InkFlowDbg", "import picked failed", t)
             try {
@@ -115,7 +115,7 @@ suspend fun importPickedJsonInner(
     context: Context,
     viewModel: EditorViewModel,
     pdfViewModel: PdfViewModel,
-    db: AppDatabase,
+    repos: InkFlowRepositories,
     documentUri: String,
     sourcePage: Int,
     onRequestPage: (Int) -> Unit,
@@ -183,7 +183,7 @@ suspend fun importPickedJsonInner(
     val mathById = resolved.filterIsInstance<AiMathBlock>().associateBy { it.id }
     // 接續前頁：sourcePage 是自家頁且有空間 → 首頁游標從 contentBottom 開始（IO 量測，null=舊路）
     val contTop = withContext(Dispatchers.IO) {
-        resolveContinueTop(db, pdfViewModel, documentUri, sourcePage, viewModel.modelHeight)
+        resolveContinueTop(repos, pdfViewModel, documentUri, sourcePage, viewModel.modelHeight)
     }
     val pages = withContext(Dispatchers.Default) {
         paginateAiBlocks(
@@ -200,7 +200,7 @@ suspend fun importPickedJsonInner(
         if (katexFail > 0) "${katexFail} 式渲染失敗" else ""
     ).filter { it.isNotEmpty() }
     val failNote = if (failBits.isNotEmpty()) "（" + failBits.joinToString("，") + "已退文字）" else ""
-    placePages(context, viewModel, pdfViewModel, db, documentUri, sourcePage, onRequestPage, pages, mathById, failNote,
+    placePages(context, viewModel, pdfViewModel, repos, documentUri, sourcePage, onRequestPage, pages, mathById, failNote,
         headTarget = if (contTop != null) sourcePage else null)
 }
 
@@ -212,7 +212,7 @@ suspend fun placePages(
     context: Context,
     viewModel: EditorViewModel,
     pdfViewModel: PdfViewModel,
-    db: AppDatabase,
+    repos: InkFlowRepositories,
     documentUri: String,
     sourcePage: Int,
     onRequestPage: (Int) -> Unit,
@@ -250,7 +250,7 @@ suspend fun placePages(
                     if (tex != null) {
                         withContext(Dispatchers.IO) {
                             try {
-                                db.mathSourceDao().insert(
+                                repos.mathSources.insert(
                                     MathSourceEntity(
                                         documentUri = documentUri,
                                         pageIndex = pageIdx,
@@ -277,7 +277,7 @@ suspend fun placePages(
     // 先從第 0 頁掃空白頁（DB 先篩＋點陣確認），填滿才開新頁
     val need = rest.size
     val blanks = withContext(Dispatchers.IO) {
-        scanBlankPages(db, pdfViewModel, documentUri, need)
+        scanBlankPages(repos, pdfViewModel, documentUri, need)
     }
     // R2 結構操作：開新頁會讓舊復原格頁號錯位，動頁前清棧。
     // 同批先寫入的匯入格一併作廢（整批匯入超出復原範圍）。
@@ -336,7 +336,7 @@ suspend fun insertOnePageAfter(
 // 接續前頁：sourcePage 是自家頁（DB 有墨＋紙大致白，原生 PDF 出局）且下方夠兩行
 // → 回傳首頁起始游標；否則 null（舊路：掃空白／開新頁）。在 IO 執行緒呼叫。
 suspend fun resolveContinueTop(
-    db: AppDatabase,
+    repos: InkFlowRepositories,
     pdfViewModel: PdfViewModel,
     documentUri: String,
     sourcePage: Int,
@@ -345,9 +345,9 @@ suspend fun resolveContinueTop(
     if (sourcePage < 0 || sourcePage >= pdfViewModel.pageCount.value) return null
     Log.d("InkFlowDbg", "CONTINUE begin p=$sourcePage pageCount=${pdfViewModel.pageCount.value} modelH=$modelH")
     try {
-        val strokes = db.strokeDao().getStrokesForPageSync(documentUri, sourcePage)
-        val texts = db.textAnnotationDao().getForPageSync(documentUri, sourcePage)
-        val images = db.imageAnnotationDao().getForPageSync(documentUri, sourcePage)
+        val strokes = repos.strokes.getStrokesForPageSync(documentUri, sourcePage)
+        val texts = repos.texts.getForPageSync(documentUri, sourcePage)
+        val images = repos.images.getForPageSync(documentUri, sourcePage)
         val dbEmpty = strokes.isEmpty() && texts.isEmpty() && images.isEmpty()
         Log.d("InkFlowDbg", "CONTINUE DB p=$sourcePage strokes=${strokes.size} texts=${texts.size} images=${images.size} dbEmpty=$dbEmpty")
         if (dbEmpty) return null
@@ -378,7 +378,7 @@ suspend fun resolveContinueTop(
 // 從第 0 頁往後掃空白頁（DB 先篩：有墨/字/圖直接跳過；DB 空的才拿點陣確認）。
 // 在 IO 執行緒呼叫；找到 need 個或掃完即停。
 suspend fun scanBlankPages(
-    db: AppDatabase,
+    repos: InkFlowRepositories,
     pdfViewModel: PdfViewModel,
     documentUri: String,
     need: Int
@@ -391,9 +391,9 @@ suspend fun scanBlankPages(
     while (p < count && found.size < need) {
         checked++
         try {
-            val strokes = db.strokeDao().getStrokesForPageSync(documentUri, p)
-            val texts = db.textAnnotationDao().getForPageSync(documentUri, p)
-            val images = db.imageAnnotationDao().getForPageSync(documentUri, p)
+            val strokes = repos.strokes.getStrokesForPageSync(documentUri, p)
+            val texts = repos.texts.getForPageSync(documentUri, p)
+            val images = repos.images.getForPageSync(documentUri, p)
             val dbEmpty = strokes.isEmpty() && texts.isEmpty() && images.isEmpty()
             if (dbEmpty) {
                 val bmp = withTimeoutOrNull(1200) {

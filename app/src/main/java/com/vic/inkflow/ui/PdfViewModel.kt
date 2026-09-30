@@ -21,7 +21,7 @@ import androidx.lifecycle.AndroidViewModel
 
 import androidx.lifecycle.viewModelScope
 
-import androidx.room.withTransaction
+import com.vic.inkflow.data.repository.InkFlowRepositories
 
 import com.vic.inkflow.data.AppDatabase
 
@@ -107,7 +107,7 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private val db by lazy { AppDatabase.getDatabase(getApplication()) }
+    private val repos by lazy { InkFlowRepositories(AppDatabase.getDatabase(getApplication())) }
 
     private var pdfRenderer: PdfRenderer? = null
     private var parcelFileDescriptor: ParcelFileDescriptor? = null
@@ -174,18 +174,14 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         val stride = currentStrideOrNull() ?: return
         val y0 = insertionIndex * stride
         val dy = amount * stride
-        db.strokeDao().shiftDocYBelow(documentUri, y0, dy)
-        db.textAnnotationDao().shiftDocYBelow(documentUri, y0, dy)
-        db.imageAnnotationDao().shiftDocYBelow(documentUri, y0, dy)
+        repos.pageOps.shiftDocYBelow(documentUri, y0, dy)
     }
 
     /** 刪頁：第 index 頁的列已先刪除，docY >= (index+1)*stride 上移一頁。 */
     private suspend fun shiftDocYForDeleteLocked(documentUri: String, deletedIndex: Int) {
         val stride = currentStrideOrNull() ?: return
         val y0 = (deletedIndex + 1) * stride
-        db.strokeDao().shiftDocYBelow(documentUri, y0, -stride)
-        db.textAnnotationDao().shiftDocYBelow(documentUri, y0, -stride)
-        db.imageAnnotationDao().shiftDocYBelow(documentUri, y0, -stride)
+        repos.pageOps.shiftDocYBelow(documentUri, y0, -stride)
     }
 
     /** 移頁：中間區間整批平移一頁，被搬頁跳到目標（兩區間不相交，順序無關）。 */
@@ -196,34 +192,28 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
             // (from, to] 上移一頁：docY [(from+1)*s, (to+1)*s) -= s
             val y0 = (fromIndex + 1) * stride
             val y1 = (toIndex + 1) * stride
-            db.strokeDao().shiftDocYRange(documentUri, y0, y1, -stride)
-            db.textAnnotationDao().shiftDocYRange(documentUri, y0, y1, -stride)
-            db.imageAnnotationDao().shiftDocYRange(documentUri, y0, y1, -stride)
+            repos.pageOps.shiftDocYRange(documentUri, y0, y1, -stride)
         } else {
             // [to, from) 下移一頁：docY [to*s, from*s) += s
             val y0 = toIndex * stride
             val y1 = fromIndex * stride
-            db.strokeDao().shiftDocYRange(documentUri, y0, y1, stride)
-            db.textAnnotationDao().shiftDocYRange(documentUri, y0, y1, stride)
-            db.imageAnnotationDao().shiftDocYRange(documentUri, y0, y1, stride)
+            repos.pageOps.shiftDocYRange(documentUri, y0, y1, stride)
         }
         // 被搬頁 from -> to
         val pageDy = (toIndex - fromIndex) * stride
-        db.strokeDao().shiftDocYRange(documentUri, fromIndex * stride, (fromIndex + 1) * stride, pageDy)
-        db.textAnnotationDao().shiftDocYRange(documentUri, fromIndex * stride, (fromIndex + 1) * stride, pageDy)
-        db.imageAnnotationDao().shiftDocYRange(documentUri, fromIndex * stride, (fromIndex + 1) * stride, pageDy)
+        repos.pageOps.shiftDocYRange(documentUri, fromIndex * stride, (fromIndex + 1) * stride, pageDy)
     }
 
     fun getBookmarkedPages(documentUri: String): kotlinx.coroutines.flow.Flow<List<Int>> {
-        return db.bookmarkDao().getBookmarkedPages(documentUri)
+        return repos.bookmarks.getBookmarkedPages(documentUri)
     }
 
     fun toggleBookmark(documentUri: String, pageIndex: Int, isBookmarked: Boolean) {
         viewModelScope.launch(Dispatchers.IO) {
             if (isBookmarked) {
-                db.bookmarkDao().insert(com.vic.inkflow.data.BookmarkEntity(documentUri, pageIndex))
+                repos.bookmarks.insert(com.vic.inkflow.data.BookmarkEntity(documentUri, pageIndex))
             } else {
-                db.bookmarkDao().deleteForPage(documentUri, pageIndex)
+                repos.bookmarks.deleteForPage(documentUri, pageIndex)
             }
         }
     }
@@ -591,12 +581,8 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
 
                 PageOpJournal.markFileDone(getApplication(), entry)
                 val tDb0 = System.currentTimeMillis()
-                db.withTransaction {
-                    db.strokeDao().shiftPageIndicesUp(documentUri, optimisticNewIndex, 1)
-                    db.textAnnotationDao().shiftPageIndicesUp(documentUri, optimisticNewIndex, 1)
-                    db.imageAnnotationDao().shiftPageIndicesUp(documentUri, optimisticNewIndex, 1)
-                    db.bookmarkDao().shiftPageIndicesUp(documentUri, optimisticNewIndex, 1)
-                    db.mathSourceDao().shiftPageIndicesUp(documentUri, optimisticNewIndex, 1)
+                repos.transaction {
+                repos.pageOps.insertPagesAfter(documentUri, optimisticNewIndex, 1)
                     shiftDocYForInsertLocked(documentUri, optimisticNewIndex, 1)
                 }
                 val tDbMs = System.currentTimeMillis() - tDb0
@@ -693,12 +679,8 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
 
                 PageOpJournal.markFileDone(getApplication(), entry)
                 val tDb0 = System.currentTimeMillis()
-                db.withTransaction {
-                    db.strokeDao().shiftPageIndicesUp(documentUri, insertionIndex, insertedPageCount)
-                    db.textAnnotationDao().shiftPageIndicesUp(documentUri, insertionIndex, insertedPageCount)
-                    db.imageAnnotationDao().shiftPageIndicesUp(documentUri, insertionIndex, insertedPageCount)
-                    db.bookmarkDao().shiftPageIndicesUp(documentUri, insertionIndex, insertedPageCount)
-                    db.mathSourceDao().shiftPageIndicesUp(documentUri, insertionIndex, insertedPageCount)
+                repos.transaction {
+                repos.pageOps.insertPagesAfter(documentUri, insertionIndex, insertedPageCount)
                     shiftDocYForInsertLocked(documentUri, insertionIndex, insertedPageCount)
                 }
                 val tDbMs = System.currentTimeMillis() - tDb0
@@ -817,12 +799,8 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                 PageOpJournal.markFileDone(getApplication(), entry)
                 val tFileMs = System.currentTimeMillis() - tFile0
                 val tDb0 = System.currentTimeMillis()
-                db.withTransaction {
-                    db.strokeDao().shiftPageIndicesUp(documentUri, insertionIndex, totalInserted)
-                    db.textAnnotationDao().shiftPageIndicesUp(documentUri, insertionIndex, totalInserted)
-                    db.imageAnnotationDao().shiftPageIndicesUp(documentUri, insertionIndex, totalInserted)
-                    db.bookmarkDao().shiftPageIndicesUp(documentUri, insertionIndex, totalInserted)
-                    db.mathSourceDao().shiftPageIndicesUp(documentUri, insertionIndex, totalInserted)
+                repos.transaction {
+                repos.pageOps.insertPagesAfter(documentUri, insertionIndex, totalInserted)
                     shiftDocYForInsertLocked(documentUri, insertionIndex, totalInserted)
                 }
                 val tDbMs = System.currentTimeMillis() - tDb0
@@ -905,42 +883,10 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
 
                     // 2. Transact DB index updates
                     val tDb0 = System.currentTimeMillis()
-                    db.withTransaction {
-                    // Update StrokeDao
-                    with(db.strokeDao()) {
-                        moveToTempIndex(documentUri, fromIndex, -1)
-                        if (fromIndex < toIndex) shiftForMoveDown(documentUri, fromIndex, toIndex)
-                        else shiftForMoveUp(documentUri, fromIndex, toIndex)
-                        moveToTempIndex(documentUri, -1, toIndex)
-                    }
-                    // Update TextAnnotationDao
-                    with(db.textAnnotationDao()) {
-                        moveToTempIndex(documentUri, fromIndex, -1)
-                        if (fromIndex < toIndex) shiftForMoveDown(documentUri, fromIndex, toIndex)
-                        else shiftForMoveUp(documentUri, fromIndex, toIndex)
-                        moveToTempIndex(documentUri, -1, toIndex)
-                    }
-                    // Update ImageAnnotationDao
-                    with(db.imageAnnotationDao()) {
-                        moveToTempIndex(documentUri, fromIndex, -1)
-                        if (fromIndex < toIndex) shiftForMoveDown(documentUri, fromIndex, toIndex)
-                        else shiftForMoveUp(documentUri, fromIndex, toIndex)
-                        moveToTempIndex(documentUri, -1, toIndex)
-                    }
-                    // Update BookmarkDao
-                    with(db.bookmarkDao()) {
-                        moveToTempIndex(documentUri, fromIndex, -1)
-                        if (fromIndex < toIndex) shiftForMoveDown(documentUri, fromIndex, toIndex)
-                        else shiftForMoveUp(documentUri, fromIndex, toIndex)
-                        moveToTempIndex(documentUri, -1, toIndex)
-                    }
-                    // Update MathSourceDao（公式 TeX 跟頁走）
-                    with(db.mathSourceDao()) {
-                        moveToTempIndex(documentUri, fromIndex, -1)
-                        if (fromIndex < toIndex) shiftForMoveDown(documentUri, fromIndex, toIndex)
-                        else shiftForMoveUp(documentUri, fromIndex, toIndex)
-                        moveToTempIndex(documentUri, -1, toIndex)
-                    }
+                    repos.transaction {
+                    // P2：五張頁範圍表的搬頁三步驟收成一個呼叫（原本是 5 段 with(dao){} 重複）。
+                    // 內部順序（tempIndex → shift → tempIndex 回填）與重構前逐表相同。
+                    repos.pageOps.movePage(documentUri, fromIndex, toIndex)
                     shiftDocYForMoveLocked(documentUri, fromIndex, toIndex)
                 }
                     val tDbMs = System.currentTimeMillis() - tDb0
@@ -1046,28 +992,10 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                     PageOpJournal.markFileDone(getApplication(), entry)
                 // 同步下修所有 annotation 的頁碼索引。
                 val tDb0 = System.currentTimeMillis()
-                db.withTransaction {
+                repos.transaction {
                     for (index in sortedIndices) {
-                        with(db.strokeDao()) {
-                            clearPage(documentUri, index)
-                            shiftPageIndicesDown(documentUri, index)
-                        }
-                        with(db.textAnnotationDao()) {
-                            deleteForPage(documentUri, index)
-                            shiftPageIndicesDown(documentUri, index)
-                        }
-                        with(db.imageAnnotationDao()) {
-                            deleteForPage(documentUri, index)
-                            shiftPageIndicesDown(documentUri, index)
-                        }
-                        with(db.bookmarkDao()) {
-                            deleteForPage(documentUri, index)
-                            shiftPageIndicesDown(documentUri, index)
-                        }
-                        with(db.mathSourceDao()) {
-                            deleteForPage(documentUri, index)
-                            shiftPageIndicesDown(documentUri, index)
-                        }
+                        // P2：五張頁範圍表的刪頁+位移收成一個呼叫（原本是 5 段 with(dao){} 重複）。
+                        repos.pageOps.deletePage(documentUri, index)
                         shiftDocYForDeleteLocked(documentUri, index)
                     }
                     PageOpJournal.deleteBackup(getApplication(), backup)

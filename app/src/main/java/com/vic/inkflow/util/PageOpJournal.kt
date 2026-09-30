@@ -4,7 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.util.Log
 import com.vic.inkflow.data.AppDatabase
-import androidx.room.withTransaction
+import com.vic.inkflow.data.repository.InkFlowRepositories
 import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
@@ -113,20 +113,19 @@ object PageOpJournal {
     fun reconcilePending(context: Context, db: AppDatabase) {
         val entry = read(context) ?: return
         Log.w(TAG, "Found pending page op from previous session: $entry")
+        val repos = InkFlowRepositories(db)
         try {
             val uri = Uri.parse(entry.documentUri)
             if (uri.scheme == "file" && entry.pageCountBefore > 0) {
                 runBlocking {
                     val actual = PdfManager.getPdfPageCount(uri)
                     if (actual > 0 && actual != entry.pageCountBefore) {
-                        db.withTransaction {
-                            applyForwardLocked(db, entry)
+                        repos.transaction {
+                            applyForwardLocked(repos, entry)
                             // S1 docY 同搬：重放只在崩潰窗口發生，用首頁高重算（讀不到就跳過，不更壞）。
                             PdfManager.readFirstPageSize(context, uri)?.second
                                 ?.takeIf { it > 0f }?.let { stride ->
-                                    db.strokeDao().backfillStrokeDocY(entry.documentUri, stride)
-                                    db.textAnnotationDao().backfillTextDocY(entry.documentUri, stride)
-                                    db.imageAnnotationDao().backfillImageDocY(entry.documentUri, stride)
+                                    repos.pageOps.backfillAllDocY(entry.documentUri, stride)
                                 }
                         }
                         Log.w(TAG, "Replayed DB shift for ${entry.op} on ${entry.documentUri}")
@@ -141,33 +140,24 @@ object PageOpJournal {
         }
     }
 
-    private suspend fun applyForwardLocked(db: AppDatabase, entry: Entry) {
+    /**
+     * P2：跨 5 張表的頁操作收斂到 [PageOps]，這裡原本是 5 段逐字相同的程式碼
+     * （insert/delete/move 各對 strokes/text/image/bookmark/math 各寫一遍）。
+     * 語意與收斂前逐行等價。
+     */
+    private suspend fun applyForwardLocked(repos: InkFlowRepositories, entry: Entry) {
         when (entry.op) {
             "insert" -> {
-                val idx = entry.indices.first()
-                db.strokeDao().shiftPageIndicesUp(entry.documentUri, idx, entry.count)
-                db.textAnnotationDao().shiftPageIndicesUp(entry.documentUri, idx, entry.count)
-                db.imageAnnotationDao().shiftPageIndicesUp(entry.documentUri, idx, entry.count)
-                db.bookmarkDao().shiftPageIndicesUp(entry.documentUri, idx, entry.count)
-                db.mathSourceDao().shiftPageIndicesUp(entry.documentUri, idx, entry.count)
+                repos.pageOps.insertPagesAfter(entry.documentUri, entry.indices.first(), entry.count)
             }
             "delete" -> {
+                // 從後往前刪，否則前面的刪除會移動後面的索引。
                 for (index in entry.indices.sortedDescending()) {
-                    with(db.strokeDao()) { clearPage(entry.documentUri, index); shiftPageIndicesDown(entry.documentUri, index) }
-                    with(db.textAnnotationDao()) { deleteForPage(entry.documentUri, index); shiftPageIndicesDown(entry.documentUri, index) }
-                    with(db.imageAnnotationDao()) { deleteForPage(entry.documentUri, index); shiftPageIndicesDown(entry.documentUri, index) }
-                    with(db.bookmarkDao()) { deleteForPage(entry.documentUri, index); shiftPageIndicesDown(entry.documentUri, index) }
-                    with(db.mathSourceDao()) { deleteForPage(entry.documentUri, index); shiftPageIndicesDown(entry.documentUri, index) }
+                    repos.pageOps.deletePage(entry.documentUri, index)
                 }
             }
             "move" -> {
-                val from = entry.indices.first()
-                val to = entry.toIndex
-                with(db.strokeDao()) { moveToTempIndex(entry.documentUri, from, -1); if (from < to) shiftForMoveDown(entry.documentUri, from, to) else shiftForMoveUp(entry.documentUri, from, to); moveToTempIndex(entry.documentUri, -1, to) }
-                with(db.textAnnotationDao()) { moveToTempIndex(entry.documentUri, from, -1); if (from < to) shiftForMoveDown(entry.documentUri, from, to) else shiftForMoveUp(entry.documentUri, from, to); moveToTempIndex(entry.documentUri, -1, to) }
-                with(db.imageAnnotationDao()) { moveToTempIndex(entry.documentUri, from, -1); if (from < to) shiftForMoveDown(entry.documentUri, from, to) else shiftForMoveUp(entry.documentUri, from, to); moveToTempIndex(entry.documentUri, -1, to) }
-                with(db.bookmarkDao()) { moveToTempIndex(entry.documentUri, from, -1); if (from < to) shiftForMoveDown(entry.documentUri, from, to) else shiftForMoveUp(entry.documentUri, from, to); moveToTempIndex(entry.documentUri, -1, to) }
-                with(db.mathSourceDao()) { moveToTempIndex(entry.documentUri, from, -1); if (from < to) shiftForMoveDown(entry.documentUri, from, to) else shiftForMoveUp(entry.documentUri, from, to); moveToTempIndex(entry.documentUri, -1, to) }
+                repos.pageOps.movePage(entry.documentUri, entry.indices.first(), entry.toIndex)
             }
         }
     }

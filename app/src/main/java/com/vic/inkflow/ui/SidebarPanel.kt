@@ -205,7 +205,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.vic.inkflow.R
-import com.vic.inkflow.data.AppDatabase
+import com.vic.inkflow.data.repository.InkFlowRepositories
 import com.vic.inkflow.data.DocumentEntity
 import com.vic.inkflow.data.FolderEntity
 import com.vic.inkflow.data.ImageAnnotationEntity
@@ -242,7 +242,7 @@ internal fun Sidebar(
     pdfViewModel: PdfViewModel,
     pageCount: Int,
     currentPageIndex: Int,
-    db: AppDatabase,
+    repos: InkFlowRepositories,
     documentUri: String,
     modelWidth: Float,
     modelHeight: Float,
@@ -418,15 +418,15 @@ internal fun Sidebar(
                         }
                         val thumb by thumbFlow.collectAsState()
                         val strokesFlow = androidx.compose.runtime.remember(index) {
-                            db.strokeDao().getStrokesForPage(documentUri, index)
+                            repos.strokes.getStrokesForPage(documentUri, index)
                         }
                         val strokes by strokesFlow.collectAsState(initial = emptyList())
                         val imagesFlow = androidx.compose.runtime.remember(index) {
-                            db.imageAnnotationDao().getForPage(documentUri, index)
+                            repos.images.getForPage(documentUri, index)
                         }
                         val images by imagesFlow.collectAsState(initial = emptyList())
                         val textsFlow = androidx.compose.runtime.remember(index) {
-                            db.textAnnotationDao().getForPage(documentUri, index)
+                            repos.texts.getForPage(documentUri, index)
                         }
                         val texts by textsFlow.collectAsState(initial = emptyList())
                         val canDrag = !showOnlyBookmarked && !isSelectionMode && !isPageOperationInProgress
@@ -702,15 +702,15 @@ internal fun Sidebar(
                         }
                         val thumb by thumbFlow.collectAsState()
                         val strokesFlow = androidx.compose.runtime.remember(index) {
-                            db.strokeDao().getStrokesForPage(documentUri, index)
+                            repos.strokes.getStrokesForPage(documentUri, index)
                         }
                         val strokes by strokesFlow.collectAsState(initial = emptyList())
                         val imagesFlow = androidx.compose.runtime.remember(index) {
-                            db.imageAnnotationDao().getForPage(documentUri, index)
+                            repos.images.getForPage(documentUri, index)
                         }
                         val images by imagesFlow.collectAsState(initial = emptyList())
                         val textsFlow = androidx.compose.runtime.remember(index) {
-                            db.textAnnotationDao().getForPage(documentUri, index)
+                            repos.texts.getForPage(documentUri, index)
                         }
                         val texts by textsFlow.collectAsState(initial = emptyList())
                         Box(

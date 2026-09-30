@@ -7,6 +7,7 @@ import android.os.Environment
 import android.util.Log
 import com.vic.inkflow.BuildConfig
 import com.vic.inkflow.data.AppDatabase
+import com.vic.inkflow.data.repository.InkFlowRepositories
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -80,10 +81,11 @@ object BackupManager {
     ): Int {
         return runCatching {
             val db = AppDatabase.getDatabase(context)
-            val docs = db.documentDao().getAllDocumentsSync()
+            val repos = InkFlowRepositories(db)
+            val docs = repos.documents.getAllDocumentsSync()
             onProgress("收集註解資料…")
             val imagesByDocument = docs.associate { doc ->
-                doc.uri to db.imageAnnotationDao().getAllForDocument(doc.uri)
+                doc.uri to repos.images.getAllForDocument(doc.uri)
             }
 
             onProgress("建立資料庫快照…")

@@ -1,6 +1,7 @@
 package com.vic.inkflow.ui
 
 import androidx.compose.ui.graphics.Color
+import com.vic.inkflow.data.repository.InkFlowRepositories
 import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -42,7 +43,9 @@ class EditorViewModelInitTest {
     }
 
     private fun buildVm(repo: EditorSettingsRepository) = EditorViewModel(
-        db = mockk(relaxed = true),
+        // P2 後 EditorViewModel 只依賴 repository 容器，不再持有 AppDatabase。
+        // init 區塊本來就不碰 DB，所以寬鬆 mock 足夠。
+        repos = mockk<InkFlowRepositories>(relaxed = true),
         documentUri = "file:///storage/emulated/0/Documents/test.pdf",
         settingsRepository = repo
     )

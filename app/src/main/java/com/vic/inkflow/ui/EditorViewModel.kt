@@ -1,4 +1,4 @@
-﻿package com.vic.inkflow.ui
+package com.vic.inkflow.ui
 
 import android.util.Log
 import androidx.compose.ui.geometry.Offset
@@ -8,11 +8,10 @@ import androidx.compose.ui.graphics.asAndroidPath
 import androidx.compose.ui.graphics.toArgb
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import androidx.room.withTransaction
 import com.vic.inkflow.data.AppDatabase
 import com.vic.inkflow.data.ImageAnnotationEntity
 import com.vic.inkflow.data.PointEntity
-import com.vic.inkflow.data.StrokeDao
+import com.vic.inkflow.data.repository.InkFlowRepositories
 import com.vic.inkflow.data.StrokeEntity
 import com.vic.inkflow.data.StrokeWithPoints
 import com.vic.inkflow.data.TextAnnotationEntity
@@ -38,7 +37,7 @@ import java.util.UUID
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class EditorViewModel(
-    private val db: AppDatabase,
+    private val repos: InkFlowRepositories,
     val documentUri: String,
     private val settingsRepository: EditorSettingsRepository
 ) : ViewModel() {
@@ -94,29 +93,29 @@ class EditorViewModel(
                 // 原「維持閃退」決議收回：以下全部降級為記 log＋繼續；髒數據走 rebase 修，不擋開檔。
                 // S1 只寫不讀＋影子探針只記 log，開檔路徑無任何實質依賴，降級零行為變化。
                 runCatching {
-                    db.withTransaction {
-                        val ns = strokeDao.backfillStrokeDocY(documentUri, stride)
-                        val nt = textAnnotationDao.backfillTextDocY(documentUri, stride)
-                        val ni = imageAnnotationDao.backfillImageDocY(documentUri, stride)
+                    repos.transaction {
+                        val ns = repos.strokes.backfillStrokeDocY(documentUri, stride)
+                        val nt = repos.texts.backfillTextDocY(documentUri, stride)
+                        val ni = repos.images.backfillImageDocY(documentUri, stride)
                         // Breadcrumb：記哪個斷言＋哪份文件＋計數，出事看 log 一次定位。
                         fun crumb(tag: String, n: Any?) =
                             android.util.Log.e("DocSpace", "ASSERT-FAIL $tag doc=$documentUri stride=$stride detail=$n")
-                        val missS = strokeDao.countMissingDocY(documentUri)
-                        val missT = textAnnotationDao.countMissingDocY(documentUri)
-                        val missI = imageAnnotationDao.countMissingDocY(documentUri)
+                        val missS = repos.strokes.countMissingDocY(documentUri)
+                        val missT = repos.texts.countMissingDocY(documentUri)
+                        val missI = repos.images.countMissingDocY(documentUri)
                         if (missS != 0) crumb("backfill-incomplete/strokes", missS)
                         if (missT != 0) crumb("backfill-incomplete/texts", missT)
                         if (missI != 0) crumb("backfill-incomplete/images", missI)
-                        val mmS = strokeDao.countStrokeDocMismatch(documentUri, stride)
-                        val mmT = textAnnotationDao.countTextDocMismatch(documentUri, stride)
-                        val mmI = imageAnnotationDao.countImageDocMismatch(documentUri, stride)
+                        val mmS = repos.strokes.countStrokeDocMismatch(documentUri, stride)
+                        val mmT = repos.texts.countTextDocMismatch(documentUri, stride)
+                        val mmI = repos.images.countImageDocMismatch(documentUri, stride)
                         if (mmS != 0) crumb("invariant-broken/strokes", mmS)
                         if (mmT != 0) crumb("invariant-broken/texts", mmT)
                         if (mmI != 0) crumb("invariant-broken/images", mmI)
                         // 範圍查vs頁查一致性抽查（第 0 頁）：探針性質，只記不拋。
                         // 紙改小後舊墨合法地落在窗口外（parities 必然破），等 rebase 收。
-                        val page0 = strokeDao.getStrokesForPageSync(documentUri, 0).map { it.stroke.id }.toSet()
-                        val range0 = strokeDao.getStrokesForRange(documentUri, -1f, stride + 1)
+                        val page0 = repos.strokes.getStrokesForPageSync(documentUri, 0).map { it.stroke.id }.toSet()
+                        val range0 = repos.strokes.getStrokesForRange(documentUri, -1f, stride + 1)
                             .filter { it.stroke.pageIndex == 0 }.map { it.stroke.id }.toSet()
                         if (page0 != range0) crumb("range-page-parity", "page0=${page0.size} range0=${range0.size}")
                         android.util.Log.i(
@@ -171,9 +170,6 @@ class EditorViewModel(
         }
     }
 
-    private val strokeDao: StrokeDao = db.strokeDao()
-    private val textAnnotationDao = db.textAnnotationDao()
-    private val imageAnnotationDao = db.imageAnnotationDao()
 
     // Canvas pixel dimensions — reported by InkCanvas via setCanvasSize().
     // Default to MODEL dimensions so normalisation is identity before the first size report.
@@ -402,7 +398,7 @@ class EditorViewModel(
     private val _pendingStrokes = MutableStateFlow<Map<String, StrokeWithPoints>>(emptyMap())
 
     val currentStrokes: StateFlow<List<StrokeWithPoints>> = kotlinx.coroutines.flow.combine(
-        pageIndex.flatMapLatest { index -> strokeDao.getStrokesForPage(documentUri, index) },
+        pageIndex.flatMapLatest { index -> repos.strokes.getStrokesForPage(documentUri, index) },
         _pendingStrokes
     ) { dbStrokes, pending ->
         val dbIds = dbStrokes.map { it.stroke.id }.toSet()
@@ -418,11 +414,11 @@ class EditorViewModel(
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val currentTextAnnotations: StateFlow<List<TextAnnotationEntity>> = pageIndex.flatMapLatest { index ->
-        textAnnotationDao.getForPage(documentUri, index)
+        repos.texts.getForPage(documentUri, index)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val currentImageAnnotations: StateFlow<List<ImageAnnotationEntity>> = pageIndex.flatMapLatest { index ->
-        imageAnnotationDao.getForPage(documentUri, index)
+        repos.images.getForPage(documentUri, index)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     // Undo / Redo stacks
@@ -527,9 +523,9 @@ class EditorViewModel(
     private val pageFlows = mutableMapOf<Int, StateFlow<NeighborPageData>>()
     fun pageDataFlow(page: Int): StateFlow<NeighborPageData> = pageFlows.getOrPut(page) {
         kotlinx.coroutines.flow.combine(
-            strokeDao.getStrokesForPage(documentUri, page),
-            textAnnotationDao.getForPage(documentUri, page),
-            imageAnnotationDao.getForPage(documentUri, page)
+            repos.strokes.getStrokesForPage(documentUri, page),
+            repos.texts.getForPage(documentUri, page),
+            repos.images.getForPage(documentUri, page)
         ) { s, t, i -> NeighborPageData(s, t, i) }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), cachedNeighbor(page) ?: NeighborPageData())
     }
@@ -546,9 +542,9 @@ class EditorViewModel(
             val window = (lo..hi).filter { it >= 0 }
             val fresh = window.associateWith { p ->
                 NeighborPageData(
-                    strokes = strokeDao.getStrokesForPageSync(documentUri, p),
-                    texts = textAnnotationDao.getForPageSync(documentUri, p),
-                    images = imageAnnotationDao.getForPageSync(documentUri, p)
+                    strokes = repos.strokes.getStrokesForPageSync(documentUri, p),
+                    texts = repos.texts.getForPageSync(documentUri, p),
+                    images = repos.images.getForPageSync(documentUri, p)
                 )
             }
             if (gen == prefetchGen) _neighborCache.value = fresh
@@ -561,7 +557,7 @@ class EditorViewModel(
                     val y0 = p * stride
                     val y1 = (p + 1) * stride
                     val pageIds = fresh[p]?.strokes?.map { it.stroke.id }?.toSet().orEmpty()
-                    val rangeIds = strokeDao.getStrokesForRange(documentUri, y0, y1)
+                    val rangeIds = repos.strokes.getStrokesForRange(documentUri, y0, y1)
                         .map { it.stroke.id }.toSet()
                     val missing = pageIds - rangeIds
                     val extra = rangeIds - pageIds
@@ -658,9 +654,9 @@ class EditorViewModel(
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                db.withTransaction {
-                    strokeDao.insertStroke(strokeEntity)
-                    strokeDao.insertPoints(pointEntities)
+                repos.transaction {
+                    repos.strokes.insertStroke(strokeEntity)
+                    repos.strokes.insertPoints(pointEntities)
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
@@ -770,7 +766,7 @@ class EditorViewModel(
             var erasedAnything = false
             if (intersectingStrokes.isNotEmpty()) {
                 withContext(Dispatchers.IO) {
-                    strokeDao.deleteStrokesByIds(intersectingStrokes.map { it.stroke.id })
+                    repos.strokes.deleteStrokesByIds(intersectingStrokes.map { it.stroke.id })
                 }
                 if (accumulateToGesture) {
                     withContext(Dispatchers.Main) {
@@ -813,7 +809,7 @@ class EditorViewModel(
                 android.graphics.RectF.intersects(eraserBounds, annBounds)
             }
             hitTexts.forEach { ann ->
-                withContext(Dispatchers.IO) { textAnnotationDao.deleteById(ann.id) }
+                withContext(Dispatchers.IO) { repos.texts.deleteById(ann.id) }
                 if (accumulateToGesture) {
                     withContext(Dispatchers.Main) {
                         if (eraseGestureOpen) eraseGestureTexts += ann
@@ -931,9 +927,9 @@ class EditorViewModel(
                 PointEntity(strokeId = strokeId, x = p0.x, y = p0.y),
                 PointEntity(strokeId = strokeId, x = p1.x, y = p1.y)
             )
-            db.withTransaction {
-                strokeDao.insertStroke(strokeEntity)
-                strokeDao.insertPoints(pointEntities)
+            repos.transaction {
+                repos.strokes.insertStroke(strokeEntity)
+                repos.strokes.insertPoints(pointEntities)
             }
             val command = DrawCommand.AddStroke(StrokeWithPoints(strokeEntity, pointEntities))
             withContext(Dispatchers.Main) { pushUndo(command) }
@@ -966,7 +962,7 @@ class EditorViewModel(
             isStamp = isStamp
         )
         viewModelScope.launch(Dispatchers.IO) {
-            textAnnotationDao.insert(ann)
+            repos.texts.insert(ann)
             withContext(Dispatchers.Main) { pushUndo(DrawCommand.AddTextAnnotation(ann)) }
         }
     }
@@ -985,7 +981,7 @@ class EditorViewModel(
             fontSize = fontSize
         )
         viewModelScope.launch(Dispatchers.IO) {
-            textAnnotationDao.insert(ann)
+            repos.texts.insert(ann)
             withContext(Dispatchers.Main) { pushUndo(DrawCommand.AddTextAnnotation(ann)) }
         }
     }
@@ -1005,7 +1001,7 @@ class EditorViewModel(
             modelHeight = modelH
         )
         viewModelScope.launch(Dispatchers.IO) {
-            imageAnnotationDao.insert(ann)
+            repos.images.insert(ann)
             withContext(Dispatchers.Main) { pushUndo(DrawCommand.AddImageAnnotation(ann)) }
         }
     }
@@ -1015,14 +1011,14 @@ class EditorViewModel(
         if (old.text == newText || newText.isBlank()) return
         val updated = old.copy(text = newText)
         viewModelScope.launch(Dispatchers.IO) {
-            textAnnotationDao.update(updated)
+            repos.texts.update(updated)
             withContext(Dispatchers.Main) { pushUndo(DrawCommand.EditTextAnnotation(old, updated)) }
         }
     }
     fun deleteTextAnnotation(id: String) {
         val ann = findTextAnnotation(id) ?: return
         viewModelScope.launch(Dispatchers.IO) {
-            textAnnotationDao.deleteById(id)
+            repos.texts.deleteById(id)
             withContext(Dispatchers.Main) { pushUndo(DrawCommand.RemoveTextAnnotation(ann)) }
         }
     }
@@ -1040,7 +1036,7 @@ class EditorViewModel(
             docY = old.pageIndex * docStride + newModelY
         )
         viewModelScope.launch(Dispatchers.IO) {
-            textAnnotationDao.update(updated)
+            repos.texts.update(updated)
             withContext(Dispatchers.Main) { pushUndo(DrawCommand.MoveTextAnnotation(old, updated)) }
         }
     }
@@ -1063,7 +1059,7 @@ class EditorViewModel(
         )
         if (updated == old) return
         viewModelScope.launch(Dispatchers.IO) {
-            textAnnotationDao.update(updated)
+            repos.texts.update(updated)
             withContext(Dispatchers.Main) { pushUndo(DrawCommand.MoveTextAnnotation(old, updated)) }
         }
     }
@@ -1079,7 +1075,7 @@ class EditorViewModel(
             docY = old.pageIndex * docStride + newY
         )
         viewModelScope.launch(Dispatchers.IO) {
-            textAnnotationDao.update(updated)
+            repos.texts.update(updated)
             withContext(Dispatchers.Main) { pushUndo(DrawCommand.ResizeTextAnnotation(old, updated)) }
         }
     }
@@ -1108,7 +1104,7 @@ class EditorViewModel(
             modelHeight = canvasHeight * scaleY
         )
         viewModelScope.launch(Dispatchers.IO) {
-            imageAnnotationDao.insert(ann)
+            repos.images.insert(ann)
             withContext(Dispatchers.Main) { pushUndo(DrawCommand.AddImageAnnotation(ann)) }
         }
     }
@@ -1166,7 +1162,7 @@ class EditorViewModel(
     ): String {
         val ann = buildPlacedImageAnnotation(uri, targetPageIndex, imagePixelWidth, imagePixelHeight, anchorModel)
         withContext(Dispatchers.IO) {
-            imageAnnotationDao.insert(ann)
+            repos.images.insert(ann)
         }
         withContext(Dispatchers.Main) {
             pushUndo(DrawCommand.AddImageAnnotation(ann))
@@ -1183,7 +1179,7 @@ class EditorViewModel(
     ): String {
         val ann = buildPlacedImageAnnotation(uri, targetPage ?: pageIndex.value, imagePixelWidth, imagePixelHeight)
         viewModelScope.launch(Dispatchers.IO) {
-            imageAnnotationDao.insert(ann)
+            repos.images.insert(ann)
             withContext(Dispatchers.Main) { pushUndo(DrawCommand.AddImageAnnotation(ann)) }
         }
         return ann.id
@@ -1202,7 +1198,7 @@ class EditorViewModel(
             docY = old.pageIndex * docStride + newModelY
         )
         viewModelScope.launch(Dispatchers.IO) {
-            imageAnnotationDao.update(updated)
+            repos.images.update(updated)
             withContext(Dispatchers.Main) { pushUndo(DrawCommand.MoveImageAnnotation(old, updated)) }
         }
     }
@@ -1229,7 +1225,7 @@ class EditorViewModel(
     )
     if (updated == old) return
         viewModelScope.launch(Dispatchers.IO) {
-            imageAnnotationDao.update(updated)
+            repos.images.update(updated)
             withContext(Dispatchers.Main) { pushUndo(DrawCommand.MoveImageAnnotation(old, updated)) }
         }
     }
@@ -1245,7 +1241,7 @@ class EditorViewModel(
             docY = old.pageIndex * docStride + newY
         )
         viewModelScope.launch(Dispatchers.IO) {
-            imageAnnotationDao.update(updated)
+            repos.images.update(updated)
             withContext(Dispatchers.Main) { pushUndo(DrawCommand.ResizeImageAnnotation(old, updated)) }
         }
     }
@@ -1257,7 +1253,7 @@ class EditorViewModel(
         if (old.rotation == normalized) return
         val updated = old.copy(rotation = normalized)
         viewModelScope.launch(Dispatchers.IO) {
-            imageAnnotationDao.update(updated)
+            repos.images.update(updated)
             withContext(Dispatchers.Main) { pushUndo(DrawCommand.ResizeImageAnnotation(old, updated)) }
         }
     }
@@ -1265,7 +1261,7 @@ class EditorViewModel(
     fun deleteImageAnnotation(id: String) {
         val ann = findImageAnnotation(id) ?: return
         viewModelScope.launch(Dispatchers.IO) {
-            imageAnnotationDao.deleteById(id)
+            repos.images.deleteById(id)
             withContext(Dispatchers.Main) { pushUndo(DrawCommand.RemoveImageAnnotation(ann)) }
         }
     }
@@ -1277,116 +1273,116 @@ class EditorViewModel(
         viewModelScope.launch(Dispatchers.IO) {
             when (command) {
                 is DrawCommand.AddStroke -> {
-                    strokeDao.deleteStrokesByIds(listOf(command.stroke.stroke.id))
+                    repos.strokes.deleteStrokesByIds(listOf(command.stroke.stroke.id))
                 }
                 is DrawCommand.RemoveStrokes -> {
                     command.strokes.forEach { strokeWithPoints ->
-                        db.withTransaction {
-                            strokeDao.insertStroke(strokeWithPoints.stroke)
-                            strokeDao.insertPoints(strokeWithPoints.points)
+                        repos.transaction {
+                            repos.strokes.insertStroke(strokeWithPoints.stroke)
+                            repos.strokes.insertPoints(strokeWithPoints.points)
                         }
                     }
                 }
                 is DrawCommand.EraseGesture -> {
                     // R1：一筆擦的整包戰果一次還原（墨＋字）。
                     command.strokes.forEach { strokeWithPoints ->
-                        db.withTransaction {
-                            strokeDao.insertStroke(strokeWithPoints.stroke)
-                            strokeDao.insertPoints(strokeWithPoints.points)
+                        repos.transaction {
+                            repos.strokes.insertStroke(strokeWithPoints.stroke)
+                            repos.strokes.insertPoints(strokeWithPoints.points)
                         }
                     }
-                    command.texts.forEach { textAnnotationDao.insert(it) }
+                    command.texts.forEach { repos.texts.insert(it) }
                 }
                 is DrawCommand.MoveStrokes -> {
                     command.originals.forEach { swp ->
-                        db.withTransaction {
-                            strokeDao.deletePointsForStroke(swp.stroke.id)
-                            strokeDao.insertStroke(swp.stroke)
-                            strokeDao.insertPoints(swp.points)
+                        repos.transaction {
+                            repos.strokes.deletePointsForStroke(swp.stroke.id)
+                            repos.strokes.insertStroke(swp.stroke)
+                            repos.strokes.insertPoints(swp.points)
                         }
                     }
                 }
                 is DrawCommand.ResizeStrokes -> {
                     command.originals.forEach { swp ->
-                        db.withTransaction {
-                            strokeDao.deletePointsForStroke(swp.stroke.id)
-                            strokeDao.insertStroke(swp.stroke)
-                            strokeDao.insertPoints(swp.points)
+                        repos.transaction {
+                            repos.strokes.deletePointsForStroke(swp.stroke.id)
+                            repos.strokes.insertStroke(swp.stroke)
+                            repos.strokes.insertPoints(swp.points)
                         }
                     }
                 }
                 is DrawCommand.AddTextAnnotation -> {
-                    textAnnotationDao.deleteById(command.annotation.id)
+                    repos.texts.deleteById(command.annotation.id)
                 }
                 is DrawCommand.RemoveTextAnnotation -> {
-                    textAnnotationDao.insert(command.annotation)
+                    repos.texts.insert(command.annotation)
                 }
                 is DrawCommand.MoveTextAnnotation -> {
-                    textAnnotationDao.update(command.original)
+                    repos.texts.update(command.original)
                 }
                 is DrawCommand.ResizeTextAnnotation -> {
-                    textAnnotationDao.update(command.original)
+                    repos.texts.update(command.original)
                 }
                 is DrawCommand.EditTextAnnotation -> {
-                    textAnnotationDao.update(command.original)
+                    repos.texts.update(command.original)
                 }
                 is DrawCommand.AddImageAnnotation -> {
-                    imageAnnotationDao.deleteById(command.annotation.id)
+                    repos.images.deleteById(command.annotation.id)
                 }
                 is DrawCommand.RemoveImageAnnotation -> {
-                    imageAnnotationDao.insert(command.annotation)
+                    repos.images.insert(command.annotation)
                 }
                 is DrawCommand.MoveImageAnnotation -> {
-                    imageAnnotationDao.update(command.original)
+                    repos.images.update(command.original)
                 }
                 is DrawCommand.ResizeImageAnnotation -> {
-                    imageAnnotationDao.update(command.original)
+                    repos.images.update(command.original)
                 }
                 is DrawCommand.MoveSelectionMixed -> {
                     command.strokeOriginals.forEach { swp ->
-                        db.withTransaction {
-                            strokeDao.deletePointsForStroke(swp.stroke.id)
-                            strokeDao.insertStroke(swp.stroke)
-                            strokeDao.insertPoints(swp.points)
+                        repos.transaction {
+                            repos.strokes.deletePointsForStroke(swp.stroke.id)
+                            repos.strokes.insertStroke(swp.stroke)
+                            repos.strokes.insertPoints(swp.points)
                         }
                     }
-                    command.imageOriginals.forEach { imageAnnotationDao.update(it) }
-                    command.textOriginals.forEach { textAnnotationDao.update(it) }
+                    command.imageOriginals.forEach { repos.images.update(it) }
+                    command.textOriginals.forEach { repos.texts.update(it) }
                 }
                 is DrawCommand.ResizeSelectionMixed -> {
                     command.strokeOriginals.forEach { swp ->
-                        db.withTransaction {
-                            strokeDao.deletePointsForStroke(swp.stroke.id)
-                            strokeDao.insertStroke(swp.stroke)
-                            strokeDao.insertPoints(swp.points)
+                        repos.transaction {
+                            repos.strokes.deletePointsForStroke(swp.stroke.id)
+                            repos.strokes.insertStroke(swp.stroke)
+                            repos.strokes.insertPoints(swp.points)
                         }
                     }
-                    command.imageOriginals.forEach { imageAnnotationDao.update(it) }
-                    command.textOriginals.forEach { textAnnotationDao.update(it) }
+                    command.imageOriginals.forEach { repos.images.update(it) }
+                    command.textOriginals.forEach { repos.texts.update(it) }
                 }
                 is DrawCommand.AddSelectionCopies -> {
                     if (command.strokes.isNotEmpty()) {
-                        strokeDao.deleteStrokesByIds(command.strokes.map { it.stroke.id })
+                        repos.strokes.deleteStrokesByIds(command.strokes.map { it.stroke.id })
                     }
-                    command.images.forEach { imageAnnotationDao.deleteById(it.id) }
-                    command.texts.forEach { textAnnotationDao.deleteById(it.id) }
+                    command.images.forEach { repos.images.deleteById(it.id) }
+                    command.texts.forEach { repos.texts.deleteById(it.id) }
                 }
                 is DrawCommand.RemoveSelectionMixed -> {
                     command.strokes.forEach { strokeWithPoints ->
-                        db.withTransaction {
-                            strokeDao.insertStroke(strokeWithPoints.stroke)
-                            strokeDao.insertPoints(strokeWithPoints.points)
+                        repos.transaction {
+                            repos.strokes.insertStroke(strokeWithPoints.stroke)
+                            repos.strokes.insertPoints(strokeWithPoints.points)
                         }
                     }
-                    command.images.forEach { imageAnnotationDao.insert(it) }
-                    command.texts.forEach { textAnnotationDao.insert(it) }
+                    command.images.forEach { repos.images.insert(it) }
+                    command.texts.forEach { repos.texts.insert(it) }
                 }
                 is DrawCommand.ExtractToNewPage -> {
-                    imageAnnotationDao.deleteById(command.image.id)
+                    repos.images.deleteById(command.image.id)
                     // 整組撤銷：頁上若無別的內容，連頁一起收掉；否則只拿掉圖、留頁。
-                    val hasStrokes = strokeDao.getStrokesForPageSync(documentUri, command.targetPage).isNotEmpty()
-                    val hasTexts = textAnnotationDao.getForPageSync(documentUri, command.targetPage).isNotEmpty()
-                    val hasImages = imageAnnotationDao.getForPageSync(documentUri, command.targetPage).isNotEmpty()
+                    val hasStrokes = repos.strokes.getStrokesForPageSync(documentUri, command.targetPage).isNotEmpty()
+                    val hasTexts = repos.texts.getForPageSync(documentUri, command.targetPage).isNotEmpty()
+                    val hasImages = repos.images.getForPageSync(documentUri, command.targetPage).isNotEmpty()
                     if (!hasStrokes && !hasTexts && !hasImages) {
                         withContext(Dispatchers.Main) { extractPageOps?.deletePage(command.targetPage) }
                     } else {
@@ -1407,19 +1403,19 @@ class EditorViewModel(
         viewModelScope.launch(Dispatchers.IO) {
             when (command) {
                 is DrawCommand.AddStroke -> {
-                    db.withTransaction {
-                        strokeDao.insertStroke(command.stroke.stroke)
-                        strokeDao.insertPoints(command.stroke.points)
+                    repos.transaction {
+                        repos.strokes.insertStroke(command.stroke.stroke)
+                        repos.strokes.insertPoints(command.stroke.points)
                     }
                 }
                 is DrawCommand.RemoveStrokes -> {
-                    strokeDao.deleteStrokesByIds(command.strokes.map { it.stroke.id })
+                    repos.strokes.deleteStrokesByIds(command.strokes.map { it.stroke.id })
                 }
                 is DrawCommand.EraseGesture -> {
                     if (command.strokes.isNotEmpty()) {
-                        strokeDao.deleteStrokesByIds(command.strokes.map { it.stroke.id })
+                        repos.strokes.deleteStrokesByIds(command.strokes.map { it.stroke.id })
                     }
-                    command.texts.forEach { textAnnotationDao.deleteById(it.id) }
+                    command.texts.forEach { repos.texts.deleteById(it.id) }
                 }
                 is DrawCommand.MoveStrokes -> {
                     // 跨頁移動：updated 帶新 pageIndex，直接恢復快照；
@@ -1441,95 +1437,95 @@ class EditorViewModel(
                             // S1 雙寫：redo 重建的實體把 docY 重算。
                             it.copy(docY = it.pageIndex * docStride + it.boundsTop)
                         }
-                            db.withTransaction {
-                                strokeDao.deletePointsForStroke(swp.stroke.id)
-                                strokeDao.insertStroke(shiftedStroke)
-                                strokeDao.insertPoints(shiftedPoints)
+                            repos.transaction {
+                                repos.strokes.deletePointsForStroke(swp.stroke.id)
+                                repos.strokes.insertStroke(shiftedStroke)
+                                repos.strokes.insertPoints(shiftedPoints)
                             }
                         }
                     }
                 }
                 is DrawCommand.ResizeStrokes -> {
                     command.updated.forEach { swp ->
-                        db.withTransaction {
-                            strokeDao.deletePointsForStroke(swp.stroke.id)
-                            strokeDao.insertStroke(swp.stroke)
-                            strokeDao.insertPoints(swp.points)
+                        repos.transaction {
+                            repos.strokes.deletePointsForStroke(swp.stroke.id)
+                            repos.strokes.insertStroke(swp.stroke)
+                            repos.strokes.insertPoints(swp.points)
                         }
                     }
                 }
                 is DrawCommand.AddTextAnnotation -> {
-                    textAnnotationDao.insert(command.annotation)
+                    repos.texts.insert(command.annotation)
                 }
                 is DrawCommand.RemoveTextAnnotation -> {
-                    textAnnotationDao.deleteById(command.annotation.id)
+                    repos.texts.deleteById(command.annotation.id)
                 }
                 is DrawCommand.MoveTextAnnotation -> {
-                    textAnnotationDao.update(command.updated)
+                    repos.texts.update(command.updated)
                 }
                 is DrawCommand.ResizeTextAnnotation -> {
-                    textAnnotationDao.update(command.updated)
+                    repos.texts.update(command.updated)
                 }
                 is DrawCommand.EditTextAnnotation -> {
-                    textAnnotationDao.update(command.updated)
+                    repos.texts.update(command.updated)
                 }
                 is DrawCommand.AddImageAnnotation -> {
-                    imageAnnotationDao.insert(command.annotation)
+                    repos.images.insert(command.annotation)
                 }
                 is DrawCommand.RemoveImageAnnotation -> {
-                    imageAnnotationDao.deleteById(command.annotation.id)
+                    repos.images.deleteById(command.annotation.id)
                 }
                 is DrawCommand.MoveImageAnnotation -> {
-                    imageAnnotationDao.update(command.updated)
+                    repos.images.update(command.updated)
                 }
                 is DrawCommand.ResizeImageAnnotation -> {
-                    imageAnnotationDao.update(command.updated)
+                    repos.images.update(command.updated)
                 }
                 is DrawCommand.MoveSelectionMixed -> {
                     command.strokeUpdated.forEach { swp ->
-                        db.withTransaction {
-                            strokeDao.deletePointsForStroke(swp.stroke.id)
-                            strokeDao.insertStroke(swp.stroke)
-                            strokeDao.insertPoints(swp.points)
+                        repos.transaction {
+                            repos.strokes.deletePointsForStroke(swp.stroke.id)
+                            repos.strokes.insertStroke(swp.stroke)
+                            repos.strokes.insertPoints(swp.points)
                         }
                     }
-                    command.imageUpdated.forEach { imageAnnotationDao.update(it) }
-                    command.textUpdated.forEach { textAnnotationDao.update(it) }
+                    command.imageUpdated.forEach { repos.images.update(it) }
+                    command.textUpdated.forEach { repos.texts.update(it) }
                 }
                 is DrawCommand.ResizeSelectionMixed -> {
                     command.strokeUpdated.forEach { swp ->
-                        db.withTransaction {
-                            strokeDao.deletePointsForStroke(swp.stroke.id)
-                            strokeDao.insertStroke(swp.stroke)
-                            strokeDao.insertPoints(swp.points)
+                        repos.transaction {
+                            repos.strokes.deletePointsForStroke(swp.stroke.id)
+                            repos.strokes.insertStroke(swp.stroke)
+                            repos.strokes.insertPoints(swp.points)
                         }
                     }
-                    command.imageUpdated.forEach { imageAnnotationDao.update(it) }
-                    command.textUpdated.forEach { textAnnotationDao.update(it) }
+                    command.imageUpdated.forEach { repos.images.update(it) }
+                    command.textUpdated.forEach { repos.texts.update(it) }
                 }
                 is DrawCommand.AddSelectionCopies -> {
                     command.strokes.forEach { strokeWithPoints ->
-                        db.withTransaction {
-                            strokeDao.insertStroke(strokeWithPoints.stroke)
-                            strokeDao.insertPoints(strokeWithPoints.points)
+                        repos.transaction {
+                            repos.strokes.insertStroke(strokeWithPoints.stroke)
+                            repos.strokes.insertPoints(strokeWithPoints.points)
                         }
                     }
-                    command.images.forEach { imageAnnotationDao.insert(it) }
-                    command.texts.forEach { textAnnotationDao.insert(it) }
+                    command.images.forEach { repos.images.insert(it) }
+                    command.texts.forEach { repos.texts.insert(it) }
                 }
                 is DrawCommand.RemoveSelectionMixed -> {
                     if (command.strokes.isNotEmpty()) {
-                        strokeDao.deleteStrokesByIds(command.strokes.map { it.stroke.id })
+                        repos.strokes.deleteStrokesByIds(command.strokes.map { it.stroke.id })
                     }
-                    command.images.forEach { imageAnnotationDao.deleteById(it.id) }
-                    command.texts.forEach { textAnnotationDao.deleteById(it.id) }
+                    command.images.forEach { repos.images.deleteById(it.id) }
+                    command.texts.forEach { repos.texts.deleteById(it.id) }
                 }
                 is DrawCommand.ExtractToNewPage -> {
                     // pageKept（undo 守衛留頁）時不再建頁，只重貼圖。
                     if (!command.pageKept) {
                         withContext(Dispatchers.Main) { extractPageOps?.insertPageAfter(command.targetPage - 1) }
                     }
-                    imageAnnotationDao.insert(command.image)
+                    repos.images.insert(command.image)
                 }
             }
             withContext(Dispatchers.Main) {
@@ -1611,12 +1607,12 @@ class EditorViewModel(
         copy(docY = pageIndex * docStride + modelY)
 
     private suspend fun replaceStrokeSnapshots(strokes: List<StrokeWithPoints>) {
-        db.withTransaction {
+        repos.transaction {
             strokes.forEach { swp ->
                 val fixed = swp.redoc()
-                strokeDao.deletePointsForStroke(fixed.stroke.id)
-                strokeDao.insertStroke(fixed.stroke)
-                strokeDao.insertPoints(fixed.points)
+                repos.strokes.deletePointsForStroke(fixed.stroke.id)
+                repos.strokes.insertStroke(fixed.stroke)
+                repos.strokes.insertPoints(fixed.points)
             }
         }
     }
@@ -1923,8 +1919,8 @@ class EditorViewModel(
             if (movedStrokes.isNotEmpty()) {
                 replaceStrokeSnapshots(movedStrokes)
             }
-            movedImages.forEach { imageAnnotationDao.update(it) }
-            movedTexts.forEach { textAnnotationDao.update(it) }
+            movedImages.forEach { repos.images.update(it) }
+            movedTexts.forEach { repos.texts.update(it) }
             withContext(Dispatchers.Main) {
                 if (_commitPreview.value === movedStrokes) {
                     _commitPreview.value = null
@@ -2019,8 +2015,8 @@ class EditorViewModel(
             if (redocUpdated.isNotEmpty()) {
                 replaceStrokeSnapshots(redocUpdated)
             }
-            redocUpdatedImages.forEach { imageAnnotationDao.update(it) }
-            redocUpdatedTexts.forEach { textAnnotationDao.update(it) }
+            redocUpdatedImages.forEach { repos.images.update(it) }
+            redocUpdatedTexts.forEach { repos.texts.update(it) }
             withContext(Dispatchers.Main) {
                 if (_commitPreview.value === redocUpdated) {
                     _commitPreview.value = null
@@ -2121,10 +2117,10 @@ class EditorViewModel(
 
         viewModelScope.launch(Dispatchers.IO) {
             if (selectedStrokeSnapshots.isNotEmpty()) {
-                strokeDao.deleteStrokesByIds(selectedStrokeSnapshots.map { it.stroke.id })
+                repos.strokes.deleteStrokesByIds(selectedStrokeSnapshots.map { it.stroke.id })
             }
-            selectedImageSnapshots.forEach { imageAnnotationDao.deleteById(it.id) }
-            selectedTextSnapshots.forEach { textAnnotationDao.deleteById(it.id) }
+            selectedImageSnapshots.forEach { repos.images.deleteById(it.id) }
+            selectedTextSnapshots.forEach { repos.texts.deleteById(it.id) }
             withContext(Dispatchers.Main) {
                 clearSelection(keepLastRegion = true)
                 pushUndo(
@@ -2149,22 +2145,22 @@ class EditorViewModel(
                 val copiedPoints = original.points.map { pt ->
                     pt.copy(id = 0, strokeId = newStrokeId)
                 }
-                db.withTransaction {
-                    strokeDao.insertStroke(copiedStroke)
-                    strokeDao.insertPoints(copiedPoints)
+                repos.transaction {
+                    repos.strokes.insertStroke(copiedStroke)
+                    repos.strokes.insertPoints(copiedPoints)
                 }
                 StrokeWithPoints(copiedStroke, copiedPoints)
             }
 
             val copiedImages = sourceImages.map { original ->
                 val copied = original.copy(id = UUID.randomUUID().toString())
-                imageAnnotationDao.insert(copied)
+                repos.images.insert(copied)
                 copied
             }
 
             val copiedTexts = sourceTexts.map { original ->
                 val copied = original.copy(id = UUID.randomUUID().toString())
-                textAnnotationDao.insert(copied)
+                repos.texts.insert(copied)
                 copied
             }
 
@@ -2216,9 +2212,9 @@ class EditorViewModel(
         sourcePageIndex: Int,
         pdfPageBitmap: android.graphics.Bitmap?
     ): FullPage? = withContext(Dispatchers.IO) {
-        val sourceStrokes = strokeDao.getStrokesForPage(documentUri, sourcePageIndex).first()
-        val sourceImageAnnotations = imageAnnotationDao.getForPage(documentUri, sourcePageIndex).first()
-        val sourceTextAnnotations = textAnnotationDao.getForPage(documentUri, sourcePageIndex).first()
+        val sourceStrokes = repos.strokes.getStrokesForPage(documentUri, sourcePageIndex).first()
+        val sourceImageAnnotations = repos.images.getForPage(documentUri, sourcePageIndex).first()
+        val sourceTextAnnotations = repos.texts.getForPage(documentUri, sourcePageIndex).first()
 
         // ── Step 1: Render full model page onto a bitmap ──────────────────────
         // Each model unit = renderScale pixels; capped so huge pages cannot OOM.
@@ -2452,7 +2448,7 @@ class EditorViewModel(
                 uri         = android.net.Uri.fromFile(file).toString()
             )
 
-            db.withTransaction { imageAnnotationDao.insert(newImage) }
+            repos.transaction { repos.images.insert(newImage) }
 
             withContext(Dispatchers.Main) {
                 // R3：整組記一格（圖＋新建頁），復原整組撤銷。

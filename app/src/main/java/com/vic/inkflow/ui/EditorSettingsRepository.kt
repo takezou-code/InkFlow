@@ -2,7 +2,7 @@ package com.vic.inkflow.ui
 
 import androidx.room.withTransaction
 import com.vic.inkflow.data.AppDatabase
-import com.vic.inkflow.data.DocumentPreferenceDao
+import com.vic.inkflow.data.repository.DocumentPreferenceRepository
 import com.vic.inkflow.data.DocumentPreferenceEntity
 
 data class DrawingPreferences(
@@ -52,7 +52,7 @@ interface EditorSettingsRepository {
 
 class DefaultEditorSettingsRepository(
     private val db: AppDatabase,
-    private val documentPreferenceDao: DocumentPreferenceDao,
+    private val documentPreferences: DocumentPreferenceRepository,
     private val prefs: android.content.SharedPreferences
 ) : EditorSettingsRepository {
     companion object {
@@ -71,7 +71,7 @@ class DefaultEditorSettingsRepository(
     }
 
     override suspend fun resolvePreferences(documentUri: String): DrawingPreferences {
-        val local = documentPreferenceDao.getByDocumentUri(documentUri)
+        val local = documentPreferences.getByDocumentUri(documentUri)
 
         // Read global defaults
         val defaultPenColor = prefs.getInt("default_pen_color", 0xFF000000.toInt())
@@ -172,9 +172,9 @@ class DefaultEditorSettingsRepository(
         update: DocumentPreferenceEntity.() -> DocumentPreferenceEntity
     ) {
         db.withTransaction {
-            val current = documentPreferenceDao.getByDocumentUri(documentUri)
+            val current = documentPreferences.getByDocumentUri(documentUri)
                 ?: DocumentPreferenceEntity(documentUri = documentUri)
-            documentPreferenceDao.upsert(current.update())
+            documentPreferences.upsert(current.update())
         }
     }
 }

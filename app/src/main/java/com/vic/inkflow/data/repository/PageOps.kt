@@ -34,6 +34,12 @@ interface PageOps {
      */
     suspend fun backfillAllDocY(documentUri: String, stride: Float)
 
+    /** 門檻以下的墨整批平移（頁增刪用）。收斂前 util/PdfViewModel 對 3 張表各寫一遍。 */
+    suspend fun shiftDocYBelow(documentUri: String, yThreshold: Float, dy: Float)
+
+    /** 只平移 [y0, y1) 區間內的墨（頁搬移用）。收斂前 util/PdfViewModel 對 3 張表各寫一遍。 */
+    suspend fun shiftDocYRange(documentUri: String, y0: Float, y1: Float, dy: Float)
+
     /** docY 不變量抽查結果。任一項 > 0 即代表回填不完整或紙張尺寸中途變過。 */
     suspend fun docYSanity(documentUri: String, stride: Float): DocYSanity
 }
@@ -112,8 +118,19 @@ class RoomPageOps(
         images.backfillImageDocY(documentUri, stride)
     }
 
-    override suspend fun docYSanity(documentUri: String, stride: Float) = DocYSanity(
-        missingStrokes = strokes.countMissingDocY(documentUri),
+    override suspend fun shiftDocYBelow(documentUri: String, yThreshold: Float, dy: Float) {
+        strokes.shiftDocYBelow(documentUri, yThreshold, dy)
+        texts.shiftDocYBelow(documentUri, yThreshold, dy)
+        images.shiftDocYBelow(documentUri, yThreshold, dy)
+    }
+
+    override suspend fun shiftDocYRange(documentUri: String, y0: Float, y1: Float, dy: Float) {
+        strokes.shiftDocYRange(documentUri, y0, y1, dy)
+        texts.shiftDocYRange(documentUri, y0, y1, dy)
+        images.shiftDocYRange(documentUri, y0, y1, dy)
+    }
+
+    override suspend fun docYSanity(documentUri: String, stride: Float) = DocYSanity(        missingStrokes = strokes.countMissingDocY(documentUri),
         missingTexts = texts.countMissingDocY(documentUri),
         missingImages = images.countMissingDocY(documentUri),
         mismatchedStrokes = strokes.countStrokeDocMismatch(documentUri, stride),

@@ -201,6 +201,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.vic.inkflow.R
+import com.vic.inkflow.data.repository.InkFlowRepositories
 import com.vic.inkflow.data.AppDatabase
 import com.vic.inkflow.data.DocumentEntity
 import com.vic.inkflow.data.FolderEntity
@@ -248,22 +249,24 @@ fun TabletEditorScreen(
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val prefs = remember { context.getSharedPreferences("inkflow_settings", 0) }
+    // P2：整個畫面只建一次 repository 容器，取代到處直接摸 AppDatabase。
+    val repos = remember(db) { InkFlowRepositories(db) }
     val settingsRepository = remember(db, prefs) {
         DefaultEditorSettingsRepository(
             db = db,
-            documentPreferenceDao = db.documentPreferenceDao(),
+            documentPreferences = repos.documentPreferences,
             prefs = prefs
         )
     }
     val viewModel: EditorViewModel = viewModel(
-        factory = EditorViewModelFactory(db, uri.toString(), settingsRepository)
+        factory = EditorViewModelFactory(repos, uri.toString(), settingsRepository)
     )
     val pdfViewModel: PdfViewModel = viewModel()
     val strokes by viewModel.currentStrokes.collectAsState()
     val scope = rememberCoroutineScope()
 
     val docViewModel: DocumentViewModel = viewModel(
-        factory = DocumentViewModelFactory(db.documentDao(), db.folderDao(), db.strokeDao(), db)
+        factory = DocumentViewModelFactory(repos)
     )
     var sidebarMode by rememberSaveable { mutableStateOf(SidebarMode.COLLAPSED) }
     val activeTool by viewModel.selectedTool.collectAsState()
@@ -339,7 +342,7 @@ fun TabletEditorScreen(
     // AI 引入管線實作見 AiImportFlow.kt（切塊→KaTeX→排版→掃空白頁→寫入→跳轉）。
     // 薄包裝：勾選混排（文字＋公式裁圖），實作在 AiImportFlow.kt。
     fun importPickedJson(json: String) {
-        scope.importPickedJson(json, context, viewModel, pdfViewModel, db, uri.toString(), currentPageIndex, onRequestPage, context as? android.app.Activity, aiWebView)
+        scope.importPickedJson(json, context, viewModel, pdfViewModel, repos, uri.toString(), currentPageIndex, onRequestPage, context as? android.app.Activity, aiWebView)
     }
     // AI 區「整頁送 AI」：整頁版 AI 解析（整頁圖＋EXPLAIN＋自動送出，與套索「解釋」同參）
     fun sendPageToAi() {
@@ -591,13 +594,13 @@ fun TabletEditorScreen(
                                     pageDataProvider = { pageIndex ->
                                         Triple(
                                             withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                                db.strokeDao().getStrokesForPageSync(docUriStr, pageIndex)
+                                                repos.strokes.getStrokesForPageSync(docUriStr, pageIndex)
                                             },
                                             withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                                db.textAnnotationDao().getForPageSync(docUriStr, pageIndex)
+                                                repos.texts.getForPageSync(docUriStr, pageIndex)
                                             },
                                             withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                                db.imageAnnotationDao().getForPageSync(docUriStr, pageIndex)
+                                                repos.images.getForPageSync(docUriStr, pageIndex)
                                             }
                                         )
                                     }
@@ -679,8 +682,8 @@ fun TabletEditorScreen(
             val totalWidth = maxWidth
             val density = androidx.compose.ui.platform.LocalDensity.current
             
-            val collapsedWidth = 68.dp
-            val normalWidth = 160.dp
+            val collapsedWidth = 56.dp
+            val normalWidth = 128.dp
             
             val targetWidth = when (sidebarMode) {
                 SidebarMode.COLLAPSED -> collapsedWidth
@@ -691,9 +694,9 @@ fun TabletEditorScreen(
             val animatableWidth = remember {
                 androidx.compose.animation.core.Animatable(
                     when (sidebarMode) {
-                        SidebarMode.COLLAPSED -> 68f
-                        SidebarMode.NORMAL -> 160f
-                        SidebarMode.FULLSCREEN -> 160f
+                        SidebarMode.COLLAPSED -> 56f
+                        SidebarMode.NORMAL -> 128f
+                        SidebarMode.FULLSCREEN -> 128f
                     }
                 )
             }
@@ -707,16 +710,21 @@ fun TabletEditorScreen(
             }
 
             val currentWidthDp = animatableWidth.value.dp
+            // 工具列高度＝側欄／AI 欄要讓出的上邊界。只有紙（工作區）不讓，
+            // 讓它往上穿過工具列從玻璃底下透出來。
+            val sliderShown = showStrokeWidthSlider &&
+                (activeTool == Tool.PEN || activeTool == Tool.HIGHLIGHTER)
+            val toolbarH = 56.dp + if (sliderShown) 42.dp else 0.dp
 
             Row(Modifier.fillMaxSize()) {
-                Box(Modifier.width(currentWidthDp).fillMaxHeight()) {
+                Box(Modifier.width(currentWidthDp).fillMaxHeight().padding(top = toolbarH)) {
                     Sidebar(
                 sidebarMode = sidebarMode,
                 onModeChange = { sidebarMode = it },
                 pdfViewModel = pdfViewModel,
                 pageCount = pageCount,
                 currentPageIndex = currentPageIndex,
-                db = db,
+                repos = repos,
                 documentUri = uri.toString(),
                 modelWidth = viewModel.modelWidth,
                 modelHeight = viewModel.modelHeight,
@@ -761,6 +769,7 @@ fun TabletEditorScreen(
                 modifier = Modifier
                     .width(24.dp)
                     .fillMaxHeight()
+                    .padding(top = toolbarH)
                     .pointerInput(totalWidth) {
                         val anchors = listOf(
                             SidebarMode.COLLAPSED to collapsedWidth.value,
@@ -855,7 +864,7 @@ fun TabletEditorScreen(
                 // Instant layout (1 remeasure) + fade = single invisible frame; bitmaps persist via Fix2c.
                 androidx.compose.animation.AnimatedVisibility(
                     visible = showAiPanel,
-                    modifier = Modifier.weight(aiPanelWeight).fillMaxHeight(),
+                    modifier = Modifier.weight(aiPanelWeight).fillMaxHeight().padding(top = toolbarH),
                     enter = fadeIn(tween(220)),
                     exit = fadeOut(tween(180))
                 ) {
@@ -894,6 +903,7 @@ fun TabletEditorScreen(
                             .fillMaxHeight()
                             .width(24.dp)
                             .background(Color.Transparent)
+                            .padding(top = toolbarH)
                             .pointerInput(Unit) {
                                 detectHorizontalDragGestures { change, dragAmount ->
                                     change.consume()
@@ -1009,12 +1019,7 @@ fun TabletEditorScreen(
 
         // 浮空工具列：只蓋「工作區那一欄」，紙從它下面透上來；
         // 側欄＋拖曳條維持自己的上邊界（不被工具列壓到），全螢幕態才吃滿寬。
-        val toolbarInset = if (sidebarMode == SidebarMode.FULLSCREEN) 0.dp else currentWidthDp + 24.dp
-        Column(
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .padding(start = toolbarInset)
-        ) {
+        Column(modifier = Modifier.align(Alignment.TopStart).fillMaxWidth()) {
             TabletEditorTopBar(
                 documentTitle = documentTitle,
                 onBack = { navController.popBackStack() },

@@ -1,4 +1,4 @@
-﻿package com.vic.inkflow.ui
+package com.vic.inkflow.ui
 
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeSource
@@ -205,6 +205,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.vic.inkflow.R
+import com.vic.inkflow.data.repository.InkFlowRepositories
 import com.vic.inkflow.data.AppDatabase
 import com.vic.inkflow.data.DocumentEntity
 import com.vic.inkflow.data.FolderEntity
@@ -251,7 +252,7 @@ fun DocumentLibraryScreen(
 ) {
     val context = LocalContext.current
     val docViewModel: DocumentViewModel = androidx.lifecycle.viewmodel.compose.viewModel(
-        factory = DocumentViewModelFactory(db.documentDao(), db.folderDao(), db.strokeDao(), db)
+        factory = DocumentViewModelFactory(InkFlowRepositories(db))
     )
     val documents by docViewModel.documents.collectAsState()
     val folders by docViewModel.folders.collectAsState()

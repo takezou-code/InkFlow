@@ -8,13 +8,9 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import androidx.room.withTransaction
-import com.vic.inkflow.data.AppDatabase
-import com.vic.inkflow.data.DocumentDao
+import com.vic.inkflow.data.repository.InkFlowRepositories
 import com.vic.inkflow.data.DocumentEntity
-import com.vic.inkflow.data.FolderDao
 import com.vic.inkflow.data.FolderEntity
-import com.vic.inkflow.data.StrokeDao
 import com.vic.inkflow.util.PdfManager
 import com.vic.inkflow.util.ThumbnailCacheManager
 import kotlinx.coroutines.Dispatchers
@@ -37,16 +33,13 @@ private data class DocumentThumbnailEntry(
 )
 
 class DocumentViewModel(
-    private val documentDao: DocumentDao,
-    private val folderDao: FolderDao,
-    private val strokeDao: StrokeDao,
-    private val db: AppDatabase
+    private val repos: InkFlowRepositories
 ) : ViewModel() {
 
-    val documents: StateFlow<List<DocumentEntity>> = documentDao.getAllDocuments()
+    val documents: StateFlow<List<DocumentEntity>> = repos.documents.getAllDocuments()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    val folders: StateFlow<List<FolderEntity>> = folderDao.getAllFolders()
+    val folders: StateFlow<List<FolderEntity>> = repos.folders.getAllFolders()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     private val _folderOperationMessage = MutableStateFlow<String?>(null)
@@ -86,13 +79,13 @@ class DocumentViewModel(
 
     fun recordOpened(uri: String, displayName: String) {
         viewModelScope.launch {
-            documentDao.upsert(DocumentEntity(uri = uri, displayName = displayName))
+            repos.documents.upsert(DocumentEntity(uri = uri, displayName = displayName))
         }
     }
 
     fun markDocumentOpened(uri: String) {
         viewModelScope.launch(Dispatchers.IO) {
-            documentDao.updateLastOpenedAt(uri)
+            repos.documents.updateLastOpenedAt(uri)
         }
     }
 
@@ -101,14 +94,12 @@ class DocumentViewModel(
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             invalidateThumbnail(appContext, uri)
             // 整份連帶清（含書籤/公式源，不留孤兒）＋文件列，同一交易。
-            db.withTransaction {
-                strokeDao.deleteStrokesForDocument(uri)
-                db.textAnnotationDao().deleteForDocument(uri)
-                db.imageAnnotationDao().deleteForDocument(uri)
-                db.mathSourceDao().deleteForDocument(uri)
-                db.bookmarkDao().deleteForDocument(uri)
-                db.documentPreferenceDao().deleteByDocumentUri(uri)
-                documentDao.delete(uri)
+            repos.transaction {
+                // P2：五張頁範圍表收斂成一個呼叫。順序與重構前逐表相同，
+                // document_preferences 不在頁範圍表內所以另外清。
+                repos.pageOps.deleteAllForDocument(uri)
+                repos.documentPreferences.deleteByDocumentUri(uri)
+                repos.documents.delete(uri)
             }
             // Delete the physical file for app-private documents (file:// URIs).
             try {
@@ -123,23 +114,23 @@ class DocumentViewModel(
 
     fun updateLastPage(uri: String, pageIndex: Int) {
         viewModelScope.launch {
-            documentDao.updateLastPage(uri, pageIndex)
+            repos.documents.updateLastPage(uri, pageIndex)
         }
     }
 
     suspend fun getLastPageIndex(uri: String): Int {
-        return documentDao.getLastPageIndex(uri) ?: 0
+        return repos.documents.getLastPageIndex(uri) ?: 0
     }
 
     fun rename(uri: String, newName: String) {
         viewModelScope.launch(Dispatchers.IO) {
-            documentDao.renameDocument(uri, newName.trim().ifEmpty { "未命名筆記" })
+            repos.documents.renameDocument(uri, newName.trim().ifEmpty { "未命名筆記" })
         }
     }
 
     fun toggleFavorite(uri: String, isFavorite: Boolean) {
         viewModelScope.launch(Dispatchers.IO) {
-            documentDao.updateFavoriteStatus(uri, isFavorite)
+            repos.documents.updateFavoriteStatus(uri, isFavorite)
         }
     }
 
@@ -154,8 +145,8 @@ class DocumentViewModel(
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val now = System.currentTimeMillis()
-                val nextSortOrder = folderDao.getNextSortOrder(effectiveParent)
-                folderDao.insert(
+                val nextSortOrder = repos.folders.getNextSortOrder(effectiveParent)
+                repos.folders.insert(
                     FolderEntity(
                         id = UUID.randomUUID().toString(),
                         name = trimmed,
@@ -180,7 +171,7 @@ class DocumentViewModel(
         if (trimmed.isEmpty()) return
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                folderDao.rename(folderId, trimmed)
+                repos.folders.rename(folderId, trimmed)
             } catch (error: Throwable) {
                 _folderOperationMessage.value = if (isFolderNameConflict(error)) {
                     "同一層已有相同名稱的資料夾"
@@ -194,11 +185,11 @@ class DocumentViewModel(
     fun deleteFolder(folderId: String) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val folderIds = folderDao.getFolderAndDescendantIds(folderId)
+                val folderIds = repos.folders.getFolderAndDescendantIds(folderId)
                 if (folderIds.isEmpty()) return@launch
 
-                documentDao.clearFolderAssignmentsInFolders(folderIds)
-                folderDao.deleteByIds(folderIds)
+                repos.documents.clearFolderAssignmentsInFolders(folderIds)
+                repos.folders.deleteByIds(folderIds)
             } catch (_: Throwable) {
                 _folderOperationMessage.value = "刪除資料夾失敗，請稍後再試"
             }
@@ -207,7 +198,7 @@ class DocumentViewModel(
 
     fun moveDocumentToFolder(uri: String, folderId: String?) {
         viewModelScope.launch(Dispatchers.IO) {
-            documentDao.updateFolder(uri, folderId)
+            repos.documents.updateFolder(uri, folderId)
         }
     }
 
@@ -232,7 +223,7 @@ class DocumentViewModel(
             val now = System.currentTimeMillis()
             reordered.forEachIndexed { index, folder ->
                 if (folder.sortOrder != index) {
-                    folderDao.updateSortOrder(folder.id, index, now)
+                    repos.folders.updateSortOrder(folder.id, index, now)
                 }
             }
         }
@@ -312,7 +303,7 @@ class DocumentViewModel(
                 canvas.scale(scale, scale)
 
                 // 1. Draw Images
-                val images = db.imageAnnotationDao().getForPageSync(documentUri, 0)
+                val images = repos.images.getForPageSync(documentUri, 0)
                 for (img in images) {
                     val bmp = loadBitmapFromUri(context, img.uri)
                     if (bmp != null) {
@@ -326,7 +317,7 @@ class DocumentViewModel(
                 }
 
                 // 2. Draw Strokes
-                val strokes = strokeDao.getStrokesForPageSync(documentUri, 0)
+                val strokes = repos.strokes.getStrokesForPageSync(documentUri, 0)
                 val strokePaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                     style = android.graphics.Paint.Style.STROKE
                     strokeCap = android.graphics.Paint.Cap.ROUND
@@ -369,7 +360,7 @@ class DocumentViewModel(
                 }
 
                 // 3. Draw Texts
-                val texts = db.textAnnotationDao().getForPageSync(documentUri, 0)
+                val texts = repos.texts.getForPageSync(documentUri, 0)
                 val textPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                     style = android.graphics.Paint.Style.FILL
                 }
@@ -445,13 +436,10 @@ class DocumentViewModel(
 }
 
 class DocumentViewModelFactory(
-    private val dao: DocumentDao,
-    private val folderDao: FolderDao,
-    private val strokeDao: StrokeDao,
-    private val db: AppDatabase
+    private val repos: InkFlowRepositories
 ) : ViewModelProvider.Factory {
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         @Suppress("UNCHECKED_CAST")
-        return DocumentViewModel(dao, folderDao, strokeDao, db) as T
+        return DocumentViewModel(repos) as T
     }
 }
