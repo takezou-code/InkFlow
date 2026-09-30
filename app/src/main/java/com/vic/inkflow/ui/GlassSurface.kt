@@ -75,6 +75,12 @@ fun glassContentColor(isDark: Boolean): Color =
     if (isDark) Color.White else com.vic.inkflow.ui.theme.PaperInkColor
 
 /**
+ * 靜模式旗標，全 App 唯一來源（AppNav 提供）。開＝靜：玻璃轉 faux（無真折射）、
+ * 無限動畫凍結、幀率降 60。呼叫端禁自己再存一份。
+ */
+val LocalQuietMode = androidx.compose.runtime.staticCompositionLocalOf { false }
+
+/**
  * 真折射玻璃配方（唯一）：頂光＋凸緣＋滿折射細節＋色散。
  * 深色＝靛 veil，淺色＝白 veil（iOS 亮欄配深內容）。tint 濃度只在這裡調。
  */
@@ -103,19 +109,24 @@ fun glassStyle(isDark: Boolean, shape: Shape = ShapeLg): GlassStyle =
 /**
  * 全統一入口（真折射）。所有玻璃容器都走這一支：
  *  - 同窗面板用預設 Backdrop；對話框/下拉（跨視窗）傳 [input] = HazeInput.Sources。
- *  - 內容色由 [LocalContentOnGlass] 宣告，呼叫端禁自訂圖標色。
+ *  - 內容色由 [glassContentColor] 單一宣告，呼叫端禁自訂圖標色。
+ *  - 靜模式（[LocalQuietMode]）自動降級 faux，呼叫端零分支。
  */
 @OptIn(ExperimentalHazeApi::class)
+@Composable
 fun Modifier.glassPanel(
     state: HazeState,
     isDark: Boolean,
     shape: Shape = ShapeLg,
     specular: Boolean = true,
     input: HazeInput = HazeInput.Backdrop(state)
-): Modifier = this
-    .clip(shape)
-    .hazeGlass(input = input, style = glassStyle(isDark, shape))
-    .glassDressing(isDark, shape, specular)
+): Modifier {
+    if (LocalQuietMode.current) return this.fauxGlassPanel(isDark, shape, specular)
+    return this
+        .clip(shape)
+        .hazeGlass(input = input, style = glassStyle(isDark, shape))
+        .glassDressing(isDark, shape, specular)
+}
 
 /**
  * 氣泡專用毛玻璃：高遮蓋打底（亮 85% 白 / 暗 90% 藏青）+ 同套高光亮邊。

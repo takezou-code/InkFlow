@@ -183,8 +183,8 @@ fun InkCanvas(
     val onEdgeAutoScrollRef = rememberUpdatedState(onEdgeAutoScroll)
     // 拖曳 overlay 接手時，紙內選取預覽讓位（同像素只畫一次，螢光筆疊色會變深）
     val dragPreviewActive by viewModel.dragPreviewActive.collectAsState()
-    // 套索虛線動畫按需組成：無選取時不跑 choreographer，省常駐喚醒
-    val needLassoAnim = activeTool == Tool.LASSO && selectedStrokePreview.isNotEmpty()
+    // 套索虛線動畫按需組成：無選取時不跑 choreographer，省常駐喚醒；靜模式凍結
+    val needLassoAnim = activeTool == Tool.LASSO && selectedStrokePreview.isNotEmpty() && !LocalQuietMode.current
     val lassoDashPhase = if (needLassoAnim) {
         val lassoFrameTransition = rememberInfiniteTransition(label = "lasso-frame")
         lassoFrameTransition.animateFloat(

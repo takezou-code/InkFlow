@@ -143,6 +143,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -286,12 +287,13 @@ fun InkLayerApp(db: AppDatabase) {
 
     InkFlowTheme(darkTheme = isDarkTheme) {
         val navController = rememberNavController()
-    // 144Hz 解鎖：這台 High 檔只有 90Hz，直接點名 144（面板上限）。
-    // 掛根節點，全 App 穩在 144，不切換頁面閃頻。耗電會多一點，要絲滑就認了。
+    // 幀率：流光鎖 144（面板上限，要絲滑就認了）；靜模式降到 60  省電大戶。
+    // 靜模式旗標由這裡單一提供，全 App（玻璃/動畫/幀率）都讀這一份。
+    CompositionLocalProvider(LocalQuietMode provides powerSaver) {
     Box(
         Modifier
             .fillMaxSize()
-            .preferredFrameRate(144f)
+            .preferredFrameRate(if (powerSaver) 60f else 144f)
     ) {
     // 主題切換淡入淡出：整棵樹交叉淡化 350ms，不硬切
     androidx.compose.animation.Crossfade(
@@ -362,9 +364,10 @@ fun InkLayerApp(db: AppDatabase) {
                     onTogglePowerSaver = { setPowerSaver(!powerSaver) }
                 )
             }
-        }
-    }
-    }
-    }
-}
-}
+        }       // if (pdfUri != null) ＋ composable editor
+        }       // NavHost
+    }       // Crossfade
+    }       // Box（幀率）
+    }       // CompositionLocalProvider(LocalQuietMode)
+    }       // InkFlowTheme
+}           // InkLayerApp

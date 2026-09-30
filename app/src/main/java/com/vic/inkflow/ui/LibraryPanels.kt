@@ -282,7 +282,9 @@ internal fun LibraryHeroPanel(
                     animationSpec = tween(550, delayMillis = 200, easing = androidx.compose.animation.core.FastOutSlowInEasing),
                     label = "WordStudioSlide"
                 )
-                val shimmerX by rememberInfiniteTransition(label = "WordShimmer")
+                // 靜模式：shimmer 凍結（不跑無限動畫）
+                val quiet = LocalQuietMode.current
+                val shimmerX = if (quiet) 0.45f else rememberInfiniteTransition(label = "WordShimmer")
                     .animateFloat(
                         initialValue = 0f,
                         targetValue = 1f,
@@ -291,7 +293,7 @@ internal fun LibraryHeroPanel(
                             repeatMode = RepeatMode.Restart
                         ),
                         label = "WordShimmerX"
-                    )
+                    ).value
                 var inkWidth by remember { mutableFloatStateOf(0f) }
                 val sweep = inkWidth.coerceAtLeast(1f) * (shimmerX * 1.8f - 0.4f)
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -502,7 +504,9 @@ internal fun LibraryEmptyState(
     hazeState: dev.chrisbanes.haze.HazeState? = null,
     isDarkTheme: Boolean = false
 ) {
-    val emptyStateFloat by rememberInfiniteTransition(label = "EmptyIconFloat")
+    // 靜模式：空態浮動/脈衝凍結（靜止值）
+    val quietEmpty = LocalQuietMode.current
+    val emptyStateFloat = if (quietEmpty) 0f else rememberInfiniteTransition(label = "EmptyIconFloat")
         .animateFloat(
             initialValue = 0f,
             targetValue = -14f,
@@ -511,8 +515,8 @@ internal fun LibraryEmptyState(
                 repeatMode = RepeatMode.Reverse
             ),
             label = "EmptyFloatY"
-        )
-    val emptyStateAlpha by rememberInfiniteTransition(label = "EmptyIconPulse")
+        ).value
+    val emptyStateAlpha = if (quietEmpty) 0.42f else rememberInfiniteTransition(label = "EmptyIconPulse")
         .animateFloat(
             initialValue = 0.28f,
             targetValue = 0.58f,
@@ -521,7 +525,7 @@ internal fun LibraryEmptyState(
                 repeatMode = RepeatMode.Reverse
             ),
             label = "EmptyAlpha"
-        )
+        ).value
     var emptyVisible by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { delay(90); emptyVisible = true }
 
