@@ -120,7 +120,8 @@ fun glassStyle(isDark: Boolean, shape: Shape = ShapeLg): GlassStyle =
         specularExponent(1.6f)
         fresnelExponent(2.4f)
         edgeSoftness(2.dp)
-        whitePoint(-0.15f)
+        // whitePoint 負值＝把 clear 底自帶的提亮壓回去（少了這行白紙上會發奶白＝沒黑化）
+        whitePoint(-0.45f)
         // 飽和提升（vibrancy）：blur 會吃掉彩度，這裡補回來，玻璃才不發灰
         chromaMultiplier(1.35f)
         contrast(0.08f)
@@ -132,7 +133,7 @@ fun glassStyle(isDark: Boolean, shape: Shape = ShapeLg): GlassStyle =
 
 /**
  * 全統一入口（真折射）。所有玻璃容器都走這一支：
- *  - 同窗面板用預設 Backdrop；對話框/下拉（跨視窗）傳 [input] = HazeInput.Sources。
+ *  - 同窗面板與對話框/下拉（跨視窗）都用 [HazeInput.Sources]：可攜路徑，真的去 source 採樣。
  *  - 內容色由 [glassContentColor] 單一宣告，呼叫端禁自訂圖標色。
  *  - 靜模式（[LocalQuietMode]）自動降級 faux，呼叫端零分支。
  */
@@ -143,7 +144,7 @@ fun Modifier.glassPanel(
     isDark: Boolean,
     shape: Shape = ShapeLg,
     specular: Boolean = true,
-    input: HazeInput = HazeInput.Backdrop(state)
+    input: HazeInput = HazeInput.Sources(state)
 ): Modifier {
     val quiet = LocalQuietMode.current
     // 每個 state 只印一次材質選擇（真折射 vs 靜模式降假）

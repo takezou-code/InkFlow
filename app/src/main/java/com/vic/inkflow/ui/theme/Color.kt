@@ -35,7 +35,9 @@ val PaperShadowDark = Color(0x40000000)
 val GlassVeilLight = Color(0x8CFFFFFF) // 55% 白
 // 深色別再壓到 62–70%：壓在暗極光上＝和背景同亮度＝看不出是玻璃（像素實測
 // 頂欄 22.9/20.9/37 vs 背景 22.4/19.5/51）。45% 讓背景透出來＝黑玻璃，靠 rim 定邊。
-val GlassVeilDark = Color(0x660F172A) // 40%（黑玻璃但別死黑，背景要透得出來）
+// 深色 veil：白紙上才看得出黑玻璃，濃度不能低（低＝沒黑化）；
+// 暗底上靠 rim 定形就好，veil 略低避免跟背景糊成一片。50% 兩邊都成立。
+val GlassVeilDark = Color(0x800F172A) // 50%
 /** faux 玻璃底（無 blur，濃度略高於真玻璃保可讀）。 */
 val GlassTintLight = Color(0x4DFFFFFF) // 30%
 val GlassTintDark = Color(0x800F172A) // 50%

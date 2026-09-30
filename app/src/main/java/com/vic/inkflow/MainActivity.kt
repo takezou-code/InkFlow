@@ -14,6 +14,15 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // Haze 診斷（debug）：開了才看得到「選到哪個 source / 為什麼走 fallback」。
+        // 曾經因為 HazeInput.Backdrop 的 native 路徑預設關閉，整個玻璃效果 no-op
+        // （不採樣、不 blur、tint 也不畫），畫面看起來跟沒套玻璃一樣。這行就是保險。
+        if (com.vic.inkflow.BuildConfig.DEBUG) {
+            runCatching {
+                dev.chrisbanes.haze.HazeFeatureFlags.isPlatformBackdropEnabled = true
+                dev.chrisbanes.haze.HazeLogger.enabled = true
+            }
+        }
         // 144Hz：修飾符投票沒被系統採納，改視窗級偏好（保證註冊）。
         // 面板上限 144，開 App 切一次，之後全程 144。耗電會多一點，要絲滑就認了。
         try {
