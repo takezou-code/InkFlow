@@ -1,6 +1,14 @@
 # Gradle
 .gradle/
 build/
-.gradle/
-build/
+kotlin-js-store/
+
+# IDE
+.idea/
+.kotlin/
+.vscode/
+
+# Runtime artifacts
+*.log
 hs_err_pid*.log
+out/
