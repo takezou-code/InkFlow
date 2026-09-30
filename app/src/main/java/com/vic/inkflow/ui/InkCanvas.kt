@@ -2299,40 +2299,22 @@ fun InkCanvas(
 
         // Inline text editor — spawns at the tap point / annotation, commits on Done or outside tap
         if (inlineOpen && activeTool == Tool.TEXT && canvasPixelSize != Size.Zero) {
-            val cs  = canvasPixelSize
+            val cs = canvasPixelSize
             val osx = if (cs.width > 0f) cs.width / viewModel.modelWidth else 1f
             val osy = if (cs.height > 0f) cs.height / viewModel.modelHeight else 1f
             val editAnn = inlineTextEditId?.let { id -> textAnnotations.firstOrNull { it.id == id } }
-            val anchorPx = when {
-                editAnn != null       -> Offset(editAnn.modelX * osx, editAnn.modelY * osy)
-                inlineTextNewPos != null -> inlineTextNewPos!!
-                else                  -> Offset.Zero
-            }
-            val fontPx  = editAnn?.fontSize?.times(osy) ?: defaultTextFontPx
-            val boxX    = anchorPx.x.coerceIn(0f, (cs.width - 160f).coerceAtLeast(0f))
-            // anchorPx is the first-line baseline; the box top sits one line above it
-            val boxY    = (anchorPx.y - fontPx - 8f).coerceAtLeast(0f)
-            val maxBoxW = with(density) { (cs.width - boxX - 8f).coerceAtLeast(120f).toDp() }
-            BasicTextField(
+            InlineTextEditor(
                 value = inlineTextValue,
                 onValueChange = { inlineTextValue = it },
-                modifier = Modifier
-                    .offset { IntOffset(boxX.toInt(), boxY.toInt()) }
-                    .widthIn(min = 140.dp, max = maxBoxW)
-                    .background(Color.White, RoundedCornerShape(6.dp))
-                    .border(1.5.dp, BrandIndigo, RoundedCornerShape(6.dp))
-                    .padding(6.dp)
-                    .focusRequester(inlineFocusRequester),
-                textStyle = TextStyle(
-                    fontSize   = with(density) { fontPx.toSp() },
-                    fontWeight = FontWeight.Bold,
-                    color      = Color(editAnn?.colorArgb ?: inlineTextColor.toArgb())
-                ),
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                keyboardActions = KeyboardActions(onDone = { commitInlineText() }),
-                singleLine = false,
-                maxLines   = 8,
-                cursorBrush = androidx.compose.ui.graphics.SolidColor(BrandIndigo)
+                onDone = { commitInlineText() },
+                focusRequester = inlineFocusRequester,
+                editing = editAnn,
+                newAnchorPx = inlineTextNewPos,
+                canvasWidthPx = cs.width,
+                scaleX = osx,
+                scaleY = osy,
+                defaultFontPx = defaultTextFontPx,
+                cursorColorArgb = inlineTextColor.toArgb()
             )
         }
     }
