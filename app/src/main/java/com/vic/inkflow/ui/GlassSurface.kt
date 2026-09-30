@@ -44,6 +44,7 @@ import com.vic.inkflow.ui.theme.ShapeXl
 import dev.chrisbanes.haze.ExperimentalHazeApi
 import dev.chrisbanes.haze.HazeInput
 import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.glass.ChromaticAberrationMode
 import dev.chrisbanes.haze.glass.GlassStyle
 import dev.chrisbanes.haze.glass.SurfaceProfile
 import dev.chrisbanes.haze.glass.hazeGlass
@@ -98,19 +99,27 @@ fun glassStyle(isDark: Boolean, shape: Shape = ShapeLg): GlassStyle =
         optics(
             blurRadius = 20.dp,
             refractionStrength = 1.0f,
-            refractionHeightFraction = 0.35f,
-            refractionDisplacement = 48.dp,
+            refractionHeightFraction = 0.45f,
+            refractionDisplacement = 64.dp,
+            // 邊緣反摺：讓透鏡邊真正「翻」起來（0=單調折射，這是「特別」的關鍵旋鈕）
+            refractionFoldStrength = 0.55f,
             depth = 0.15f,
             refractionDetailIntensity = 1f
         )
         lightPosition(Alignment.TopCenter)
-        surfaceProfile(SurfaceProfile.Lip)
+        // Squircle：比 Lip 更鼓更 iOS，弧面把折射拉出圓潤的邊
+        surfaceProfile(SurfaceProfile.Squircle)
         specularIntensity(0.8f)
+        specularExponent(2.0f)
+        fresnelExponent(3.0f)
+        edgeSoftness(6.dp)
         whitePoint(-0.15f)
         // 飽和提升（vibrancy）：blur 會吃掉彩度，這裡補回來，玻璃才不發灰
         chromaMultiplier(1.35f)
         contrast(0.08f)
-        chromaticAberrationStrength(0.25f)
+        // 光譜色散（Full 比 Simple 貴，GPU 夠才上；邊緣 RGB 分光更明顯）
+        chromaticAberrationMode(ChromaticAberrationMode.Full)
+        chromaticAberrationStrength(0.32f)
         shape((shape as? RoundedCornerShape) ?: RoundedCornerShape(24.dp))
     }
 
