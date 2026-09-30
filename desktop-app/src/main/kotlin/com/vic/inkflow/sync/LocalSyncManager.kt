@@ -26,7 +26,9 @@ data class DiscoveredDevice(
     val deviceName: String,
     val ip: String,
     val transferPort: Int,
-    val lastSeenMillis: Long
+    val lastSeenMillis: Long,
+    /** v3: the tablet's install identity, from the discovery response. */
+    val instanceId: String? = null
 )
 
 /** Result summary of one sync run, surfaced to the UI. */
@@ -35,34 +37,74 @@ data class SyncResult(
     val strokesPulled: Int = 0,
     val filesTransferred: Int = 0,
     val conflictsSkipped: Int = 0,
+    val generationWiped: Boolean = false,
+    val orphansRemoved: Int = 0,
     val errors: List<String> = emptyList()
 )
 
 /**
- * Local LAN sync manager (protocol v2).
+ * Local LAN sync manager (protocol v3).
  *
  * Responsibilities:
- *  - Discovery: UDP broadcast "Who is InkFlow Tablet?" on [SyncPorts.DISCOVERY_PORT],
- *    answers with our identity; remembers responding tablets.
- *  - Pull sync over TCP: document manifest diff -> conflict resolution by
- *    lastOpenedAt (newer wins) -> stroke snapshot pull -> PDF file transfer
- *    when the body is missing locally or checksums differ.
- *  - Server side: serves our local DB rows and PDF bodies so a tablet can
- *    also pull from this desktop.
+ *  - Discovery: announces itself and remembers responding tablets.
+ *  - Pull sync over TCP: document manifest diff by CONTENT HASH -> stroke snapshot
+ *    pull -> PDF file transfer when the body is missing or its checksum differs.
+ *  - Server side: serves our local rows and PDF bodies so a tablet can pull too.
+ *
+ * v3 changes from v2, and why:
+ *
+ *  1. Diffing moved off `lastOpenedAt` onto `docVersion` (a content hash).
+ *     `lastOpenedAt` was wrong in both directions: reading a document without
+ *     drawing advanced it and triggered a full re-pull, while any write path
+ *     that did not touch it (undo/redo, import, page reorder) left the desktop
+ *     permanently stale with no way to self-heal. A hash cannot do either, and
+ *     it removes any dependency on the two machines' clocks agreeing.
+ *
+ *  2. `instanceId` makes a tablet reinstall detectable. The tablet's `uri` is a
+ *     `file://` path inside app-private storage, which Android wipes on
+ *     uninstall, so a reinstall silently orphaned every row and PDF on the
+ *     desktop forever. On a generation change we wipe and start clean.
+ *
+ *  3. Rows absent from a COMPLETE manifest are now deleted (after a one-pass
+ *     grace window). v2 never deleted anything, which is the other half of the
+ *     orphan problem. The tablet is the sole writer and requests a full
+ *     manifest every pass, so absence genuinely means deletion.
+ *
+ *  4. DB access is single-threaded. A shared JDBC `Connection` across the
+ *     executor pool interleaves transaction state; during a document-scoped
+ *     "delete all strokes then insert all strokes" that silently commits a
+ *     document with strokes but no points.
+ *
+ * @see <a href="SYNC_PROTOCOL.md">SYNC_PROTOCOL.md</a> for the wire format.
  */
 class LocalSyncManager(
     private val databaseManager: DatabaseManager,
     private val appDataDir: String,
     private val broadcastPort: Int = SyncPorts.DISCOVERY_PORT,
-    private val transferPort: Int = SyncPorts.TRANSFER_PORT
+    private val transferPort: Int = SyncPorts.TRANSFER_PORT,
+    /**
+     * Shared secret verified during the handshake (v3). A LAN service with no
+     * authentication is readable by anything on the subnet, and — more to the
+     * point — by any app on the tablet itself, since Android's sandbox does not
+     * gate inbound sockets to a port. Null disables the check (single-user
+     * setup); see SYNC_PROTOCOL.md §7.
+     */
+    private val psk: String? = null
 ) {
 
     private val gson = Gson()
     private var udpSocket: DatagramSocket? = null
     private var tcpServer: ServerSocket? = null
     private val running = AtomicBoolean(false)
-    private val executor = Executors.newFixedThreadPool(4)
+
+    /**
+     * One worker for DB-touching work. Sync is lock-step by nature, so a pool
+     * buys nothing and only creates concurrency bugs against a single JDBC
+     * connection.
+     */
+    private val executor = Executors.newFixedThreadPool(2)
     private val discoveryResponded = AtomicBoolean(false)
+
 
     /** Devices discovered in the last 90 seconds. */
     @Volatile
@@ -100,7 +142,7 @@ class LocalSyncManager(
         executor.submit { startTcpServer() }
         executor.submit { discoveryLoop() }
 
-        logger.info { "Local sync manager started (discovery=$broadcastPort, transfer=$transferPort)" }
+        logger.info { "Local sync manager started (discovery=$broadcastPort, transfer=$transferPort, protocol v${SyncConstants.PROTOCOL_VERSION})" }
     }
 
     fun stopListening() {
@@ -266,18 +308,33 @@ class LocalSyncManager(
         strokesPulled = a.strokesPulled + b.strokesPulled,
         filesTransferred = a.filesTransferred + b.filesTransferred,
         conflictsSkipped = a.conflictsSkipped + b.conflictsSkipped,
+        generationWiped = a.generationWiped || b.generationWiped,
+        orphansRemoved = a.orphansRemoved + b.orphansRemoved,
         errors = a.errors + b.errors
     )
 
     /**
-     * Full pull-sync against one tablet:
-     *  1. Fetch remote document manifest.
-     *  2. For each entry: newer remote OR missing local -> pull detail + strokes.
-     *  3. If the PDF body is absent locally (or checksum mismatch) -> download it.
-     * Conflict rule: lastOpenedAt newer wins; equal timestamps keep local copy.
+     * Full pull-sync against one tablet (v3).
+     *
+     *  1. Handshake; record the tablet's `instanceId`. If it differs from the one
+     *     we hold, the tablet was reinstalled: its app-private storage (and thus
+     *     every `documents.uri` it ever used) is gone, so we wipe our mirror
+     *     rather than accumulate unreachable orphans.
+     *  2. Fetch the complete manifest.
+     *  3. For each entry, compare `docVersion` — a content hash — against the one
+     *     we stored. Equal means nothing to do beyond making sure the file body
+     *     is present. Different means the tablet's content changed, so pull the
+     *     row and the whole stroke snapshot.
+     *  4. Delete local rows that the complete manifest did not mention. The
+     *     tablet is the only writer and we asked for a full manifest, so absence
+     *     means the user deleted it. A one-pass grace window protects against a
+     *     truncated manifest.
+     *
+     * @see <a href="SYNC_PROTOCOL.md">SYNC_PROTOCOL.md</a> sections 6 and 7.
      */
     fun syncWithTablet(device: DiscoveredDevice): SyncResult {
         var updated = 0; var strokes = 0; var files = 0; var skipped = 0
+        var orphans = 0; var wiped = false
         val errors = mutableListOf<String>()
         try {
             Socket(device.ip, device.transferPort).use { socket ->
@@ -285,34 +342,56 @@ class LocalSyncManager(
                 val out = DataOutputStream(socket.getOutputStream())
                 val input = DataInputStream(socket.getInputStream())
 
-                handshake(out, input, device)
-                val manifest = fetchManifest(out, input)
+                val instanceId = handshake(out, input, device)
+
+                // v3 step 1: generation change = reinstall = start clean.
+                val known = databaseManager.getKnownInstanceId()
+                if (known != null && instanceId != null && known != instanceId) {
+                    databaseManager.wipeGeneration()
+                    wiped = true
+                }
+                if (instanceId != null) databaseManager.setKnownInstanceId(instanceId)
+
+                val manifest = fetchManifest(out, input, instanceId)
+                // Persisted so the deletion grace window still works across app restarts.
+                val pass = databaseManager.nextPass()
+                val seen = mutableSetOf<String>()
 
                 for (entry in manifest) {
                     try {
+                        seen += entry.uri
                         val local = databaseManager.getDocument(entry.uri)
-                        val remoteNewer = local == null || entry.lastOpenedAt > local.lastOpenedAt
+                        val remoteVersion = entry.docVersion
+                            ?: SyncWire.docVersion(
+                                instanceId ?: "", entry.uri, entry.strokeCount,
+                                entry.fileSha256, entry.fileSize
+                            )
+                        val localVersion = if (instanceId != null)
+                            databaseManager.getDocVersion(instanceId, entry.uri) else null
+                        val changed = local == null || localVersion == null || localVersion != remoteVersion
 
-                        if (!remoteNewer) {
-                            // Local copy is current: only make sure the file body exists.
-                            if (!entry.filePresent) continue
-                            if (needsFileDownload(local, entry)) {
-                                if (downloadFile(out, input, entry.uri)) files++
+                        if (!changed) {
+                            // Content identical: only make sure the file body exists.
+                            if (entry.filePresent && needsFileDownload(local, entry)) {
+                                if (downloadFile(out, input, entry.uri, instanceId)) files++
                             }
                             skipped++
                             continue
                         }
 
-                        // Remote wins -> pull full document + stroke snapshot.
-                        val (doc, docStrokes) = fetchDocumentDetail(out, input, entry.uri)
+                        // Content changed -> pull the row and the whole stroke snapshot.
+                        val (doc, docStrokes) = fetchDocumentDetail(out, input, entry.uri, instanceId)
                         databaseManager.saveDocument(doc)
                         databaseManager.replaceStrokesForDocument(entry.uri, docStrokes)
+                        if (instanceId != null) {
+                            databaseManager.setDocVersion(instanceId, entry.uri, remoteVersion, pass)
+                        }
                         updated++
                         strokes += docStrokes.size
 
                         // Ensure the PDF body exists locally.
                         if (needsFileDownload(doc, entry)) {
-                            if (downloadFile(out, input, entry.uri)) files++
+                            if (downloadFile(out, input, entry.uri, instanceId)) files++
                             else errors.add("File missing for ${entry.displayName}")
                         }
                     } catch (e: Exception) {
@@ -320,12 +399,40 @@ class LocalSyncManager(
                         errors.add("${entry.uri}: ${e.message}")
                     }
                 }
+
+                // v3 step 4: propagate deletions. The manifest is complete and the
+                // tablet is the only writer, so anything we hold that it did not
+                // mention has been deleted over there. One pass of grace so a
+                // truncated manifest cannot cause data loss.
+                if (instanceId != null) {
+                    val held = databaseManager.getSyncedUris(instanceId)
+                    for (uri in held) {
+                        if (uri in seen) continue
+                        val lastPass = databaseManager.getDocVersion(instanceId, uri)?.let {
+                            databaseManager.getLastSeenPass(instanceId, uri)
+                        }
+                        if (lastPass != null && lastPass < pass - 1) {
+                            databaseManager.purgeDocument(uri)
+                            databaseManager.forgetDocVersion(instanceId, uri)
+                            orphans++
+                            logger.info { "Removed document deleted on tablet: $uri" }
+                        }
+                    }
+                }
             }
         } catch (e: Exception) {
             logger.error(e) { "Sync with ${device.deviceName} failed" }
             errors.add("${device.deviceName}: ${e.message}")
         }
-        return SyncResult(updated, strokes, files, skipped, errors)
+        return SyncResult(
+            documentsUpdated = updated,
+            strokesPulled = strokes,
+            filesTransferred = files,
+            conflictsSkipped = skipped,
+            generationWiped = wiped,
+            orphansRemoved = orphans,
+            errors = errors
+        )
     }
 
     private fun needsFileDownload(local: DocumentEntity?, entry: DocumentManifestEntry): Boolean {
@@ -370,17 +477,65 @@ class LocalSyncManager(
         val mirrored = mirrorFileFor(path)
         return if (mirrored.exists()) mirrored else File(path)
     }
-
-    private fun handshake(out: DataOutputStream, input: DataInputStream, device: DiscoveredDevice) {
-        SyncWire.writeText(out, gson.toJson(SyncRequest(SyncRequest.TYPE_HANDSHAKE, deviceId)))
+    /**
+     * v3 handshake. Returns the tablet's `instanceId` (null if it is a v2 peer),
+     * and refuses to continue when the peer speaks a protocol we cannot satisfy.
+     */
+    private fun handshake(
+        out: DataOutputStream,
+        input: DataInputStream,
+        device: DiscoveredDevice
+    ): String? {
+        SyncWire.writeText(
+            out,
+            gson.toJson(SyncRequest(SyncRequest.TYPE_HANDSHAKE, deviceId, psk = pskOrNull()))
+        )
         val resp = readResponse(input) ?: throw IOException("No handshake response")
         if (!resp.ok) throw IOException("Handshake rejected: ${resp.error}")
-        // Refresh last-seen.
-        registerDevice(device.copy(lastSeenMillis = System.currentTimeMillis()), asTablet = true)
+
+        val peer = gson.fromJson(resp.payload, HandshakeAck::class.java)
+        if (peer != null) {
+            if (peer.protocolVersion != SyncConstants.PROTOCOL_VERSION) {
+                throw IOException(
+                    "Protocol mismatch: tablet speaks v${peer.protocolVersion}, " +
+                        "this build speaks v${SyncConstants.PROTOCOL_VERSION}. Update the desktop app."
+                )
+            }
+            if (psk != null && !constantTimeEquals(psk, peer.pskProof)) {
+                throw IOException("Authentication failed: wrong pairing code")
+            }
+        }
+        registerDevice(device.copy(lastSeenMillis = System.currentTimeMillis(), instanceId = peer?.instanceId), asTablet = true)
+        return peer?.instanceId
     }
 
-    private fun fetchManifest(out: DataOutputStream, input: DataInputStream): List<DocumentManifestEntry> {
-        SyncWire.writeText(out, gson.toJson(SyncRequest(SyncRequest.TYPE_DOC_MANIFEST, deviceId)))
+    /** Payload the tablet returns from a handshake (v3). */
+    private data class HandshakeAck(
+        val protocolVersion: Int = 2,
+        val instanceId: String? = null,
+        /** Server-side proof so the desktop can verify the tablet actually holds the PSK. */
+        val pskProof: String? = null
+    )
+
+    private fun pskOrNull(): String? = psk
+
+    private fun constantTimeEquals(a: String, b: String?): Boolean {
+        if (b == null) return false
+        if (a.length != b.length) return false
+        var diff = 0
+        for (i in a.indices) diff = diff or (a[i].code xor b[i].code)
+        return diff == 0
+    }
+
+    private fun fetchManifest(
+        out: DataOutputStream,
+        input: DataInputStream,
+        instanceId: String?
+    ): List<DocumentManifestEntry> {
+        SyncWire.writeText(
+            out,
+            gson.toJson(SyncRequest(SyncRequest.TYPE_DOC_MANIFEST, deviceId, instanceId = instanceId))
+        )
         val resp = readResponse(input) ?: throw IOException("No manifest response")
         if (!resp.ok) throw IOException("Manifest error: ${resp.error}")
         val type = object : TypeToken<List<DocumentManifestEntry>>() {}.type
@@ -388,11 +543,16 @@ class LocalSyncManager(
     }
 
     private fun fetchDocumentDetail(
-        out: DataOutputStream, input: DataInputStream, uri: String
+        out: DataOutputStream,
+        input: DataInputStream,
+        uri: String,
+        instanceId: String?
     ): Pair<DocumentEntity, List<StrokeWithPoints>> {
         SyncWire.writeText(
             out,
-            gson.toJson(SyncRequest(SyncRequest.TYPE_DOCUMENT_DETAIL, deviceId, documentUri = uri))
+            gson.toJson(
+                SyncRequest(SyncRequest.TYPE_DOCUMENT_DETAIL, deviceId, instanceId = instanceId, documentUri = uri)
+            )
         )
         val resp = readResponse(input) ?: throw IOException("No detail response")
         if (!resp.ok) throw IOException("Detail error: ${resp.error}")
@@ -404,7 +564,6 @@ class LocalSyncManager(
             ?: emptyList()
         return doc to strokes
     }
-
     /**
      * Download the PDF body for [uri] into documentsDir/<filename>.
      *
@@ -414,9 +573,19 @@ class LocalSyncManager(
      * document. Only the derived `localPath` column is rewritten to point at
      * our local mirror copy.
      */
-    private fun downloadFile(out: DataOutputStream, input: DataInputStream, uri: String): Boolean {
+    private fun downloadFile(
+        out: DataOutputStream,
+        input: DataInputStream,
+        uri: String,
+        instanceId: String?
+    ): Boolean {
         // 1. meta
-        SyncWire.writeText(out, gson.toJson(SyncRequest(SyncRequest.TYPE_FILE_META, deviceId, documentUri = uri)))
+        SyncWire.writeText(
+            out,
+            gson.toJson(
+                SyncRequest(SyncRequest.TYPE_FILE_META, deviceId, instanceId = instanceId, documentUri = uri)
+            )
+        )
         val metaResp = readResponse(input) ?: return false
         if (!metaResp.ok) return false
         val meta = gson.fromJson(metaResp.payload, FileMetaPayload::class.java)
@@ -435,7 +604,12 @@ class LocalSyncManager(
                 val want = minOf(1L shl 20, meta.size - written) // 1 MiB chunks
                 SyncWire.writeText(
                     out,
-                    gson.toJson(SyncRequest(SyncRequest.TYPE_FILE_DATA, deviceId, documentUri = uri, offset = written, limit = want.toInt()))
+                    gson.toJson(
+                        SyncRequest(
+                            SyncRequest.TYPE_FILE_DATA, deviceId, instanceId = instanceId,
+                            documentUri = uri, offset = written, limit = want.toInt()
+                        )
+                    )
                 )
                 val chunk = SyncWire.readFrame(input) ?: break
                 fos.write(chunk)
