@@ -19,10 +19,11 @@ import androidx.compose.ui.window.rememberWindowState
 import com.vic.inkflow.data.DatabaseManager
 import com.vic.inkflow.sync.LocalSyncManager
 import com.vic.inkflow.ui.AiAssistantPanel
+import com.vic.inkflow.ui.PdfViewer
 import com.vic.inkflow.ui.InkFlowTheme
 import com.vic.inkflow.ui.InkThemeState
 import com.vic.inkflow.ui.LibraryView
-import com.vic.inkflow.ui.PdfViewerWithPdfBox
+
 import mu.KotlinLogging
 import java.io.File
 
@@ -249,7 +250,7 @@ fun InkFlowApp() {
                         modifier = Modifier.fillMaxSize()
                     )
                     else -> Row(Modifier.fillMaxSize()) {
-                        PdfViewerWithPdfBox(
+                        PdfViewer(
                             documentUri = selectedDocument!!,
                             pageIndex = currentPageIndex,
                             databaseManager = databaseManager,

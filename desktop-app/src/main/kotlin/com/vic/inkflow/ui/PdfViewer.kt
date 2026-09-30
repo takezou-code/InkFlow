@@ -37,15 +37,18 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
-import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.vic.inkflow.data.DatabaseManager
 import com.vic.inkflow.data.StrokeWithPoints
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import mu.KotlinLogging
 import org.apache.pdfbox.Loader
 import org.apache.pdfbox.rendering.PDFRenderer
@@ -312,7 +315,7 @@ private fun renderPage(documentUri: String, pageIndex: Int): PageRender {
             val wPt = page.mediaBox.width
             val hPt = page.mediaBox.height
             val bmp: BufferedImage = PDFRenderer(doc).renderImageWithDPI(pageIndex, RENDER_DPI)
-            PageRender.Ok(bmp.asImageBitmap(), wPt to hPt)
+            PageRender.Ok(bmp.toImageBitmap(), wPt to hPt)
         }
     }.getOrElse { e ->
         logger.error(e) { "Failed to render page $pageIndex of ${file.name}" }
@@ -323,9 +326,17 @@ private fun renderPage(documentUri: String, pageIndex: Int): PageRender {
 /** 150 DPI is a good balance: sharp on a 1080p screen without rendering a 600-page PDF eagerly. */
 private const val RENDER_DPI = 150f
 
-// Local aliases so the import list above stays readable.
-private typealias IntSize = androidx.compose.ui.unit.IntSize
-private typealias Dispatchers = kotlinx.coroutines.Dispatchers
-
-private suspend fun <T> withContext(dispatcher: Dispatchers, block: suspend () -> T): T =
-    kotlinx.coroutines.withContext(dispatcher) { block() }
+/**
+ * PDFBox hands back an AWT `BufferedImage`; Compose draws `ImageBitmap`. Compose Desktop
+ * ships no direct bridge, so encode to PNG and let Skia decode it.
+ *
+ * A PNG round-trip per page render is a few milliseconds at 150 DPI and happens off
+ * the UI thread, which is a far better trade than hand-rolling a pixel-format
+ * conversion (Skia's N32 memory layout is BGRA on little-endian only, and that
+ * assumption is easy to get subtly wrong).
+ */
+private fun BufferedImage.toImageBitmap(): ImageBitmap {
+    val out = java.io.ByteArrayOutputStream()
+    javax.imageio.ImageIO.write(this, "png", out)
+    return org.jetbrains.skia.Image.makeFromEncoded(out.toByteArray()).toComposeImageBitmap()
+}
