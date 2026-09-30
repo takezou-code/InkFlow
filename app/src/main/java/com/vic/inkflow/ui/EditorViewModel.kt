@@ -11,6 +11,8 @@ import androidx.lifecycle.viewModelScope
 import com.vic.inkflow.data.AppDatabase
 import com.vic.inkflow.data.ImageAnnotationEntity
 import com.vic.inkflow.data.PointEntity
+import com.vic.inkflow.data.repository.DocSpaceMigrator
+import com.vic.inkflow.util.PageRaster
 import com.vic.inkflow.data.repository.InkFlowRepositories
 import com.vic.inkflow.data.StrokeEntity
 import com.vic.inkflow.data.StrokeWithPoints
@@ -76,58 +78,13 @@ class EditorViewModel(
     }
 
     /**
-     * S1 單畫布回填：v24 前舊資料的 docY 欄是 NULL，在此用開文件時的 live modelH
-     * 當 stride 全量重算（無 NULL 守衛：每次開文件跑一次，頁增刪/改紙的陳舊值自動修正）。
-     * S1 只寫不讀，UI 零變化。斷言失敗即拋異常 → withTransaction 回滾（S0 備份是第二道鎖）。
+     * S1 單畫布 docY 回填已於 P3 抽到 [DocSpaceMigrator]（舊檔案墨跡位置正確性的
+     * 關鍵路徑，值得有自己的名字與測試）。這裡保留這個薄封裝，因為
+     * initializePaperSize 是它的唯一觸發點，註解要留在觸發處才看得到因果。
      */
-    private val docSpaceMutex = Mutex()
-    private var docSpaceMigrationDone = false
+    private val docSpaceMigrator = DocSpaceMigrator(repos, documentUri)
     private fun ensureDocSpaceMigrated(modelH: Float) {
-        viewModelScope.launch(Dispatchers.IO) {
-            docSpaceMutex.withLock {
-                if (docSpaceMigrationDone) return@withLock
-                docSpaceMigrationDone = true
-                val stride = modelH.coerceAtLeast(1f)
-                // P0-hotfix(9/17)：開檔永不因遷移檢查而死——9/16 起真實文件被 parity check 磚掉
-                // （紙改尺寸後舊墨超出新紙界，範圍查合法查不到，回填自洽卻判死刑；重開必閃）。
-                // 原「維持閃退」決議收回：以下全部降級為記 log＋繼續；髒數據走 rebase 修，不擋開檔。
-                // S1 只寫不讀＋影子探針只記 log，開檔路徑無任何實質依賴，降級零行為變化。
-                runCatching {
-                    repos.transaction {
-                        val ns = repos.strokes.backfillStrokeDocY(documentUri, stride)
-                        val nt = repos.texts.backfillTextDocY(documentUri, stride)
-                        val ni = repos.images.backfillImageDocY(documentUri, stride)
-                        // Breadcrumb：記哪個斷言＋哪份文件＋計數，出事看 log 一次定位。
-                        fun crumb(tag: String, n: Any?) =
-                            android.util.Log.e("DocSpace", "ASSERT-FAIL $tag doc=$documentUri stride=$stride detail=$n")
-                        val missS = repos.strokes.countMissingDocY(documentUri)
-                        val missT = repos.texts.countMissingDocY(documentUri)
-                        val missI = repos.images.countMissingDocY(documentUri)
-                        if (missS != 0) crumb("backfill-incomplete/strokes", missS)
-                        if (missT != 0) crumb("backfill-incomplete/texts", missT)
-                        if (missI != 0) crumb("backfill-incomplete/images", missI)
-                        val mmS = repos.strokes.countStrokeDocMismatch(documentUri, stride)
-                        val mmT = repos.texts.countTextDocMismatch(documentUri, stride)
-                        val mmI = repos.images.countImageDocMismatch(documentUri, stride)
-                        if (mmS != 0) crumb("invariant-broken/strokes", mmS)
-                        if (mmT != 0) crumb("invariant-broken/texts", mmT)
-                        if (mmI != 0) crumb("invariant-broken/images", mmI)
-                        // 範圍查vs頁查一致性抽查（第 0 頁）：探針性質，只記不拋。
-                        // 紙改小後舊墨合法地落在窗口外（parities 必然破），等 rebase 收。
-                        val page0 = repos.strokes.getStrokesForPageSync(documentUri, 0).map { it.stroke.id }.toSet()
-                        val range0 = repos.strokes.getStrokesForRange(documentUri, -1f, stride + 1)
-                            .filter { it.stroke.pageIndex == 0 }.map { it.stroke.id }.toSet()
-                        if (page0 != range0) crumb("range-page-parity", "page0=${page0.size} range0=${range0.size}")
-                        android.util.Log.i(
-                            "DocSpace",
-                            "backfilled doc=$documentUri stride=$stride strokes=$ns texts=$nt images=$ni"
-                        )
-                    }
-                }.onFailure { e ->
-                    android.util.Log.e("DocSpace", "migration failed (open continues) doc=$documentUri", e)
-                }
-            }
-        }
+        docSpaceMigrator.launch(viewModelScope, modelH)
     }
 
     /** S1 雙寫步幅：live modelH（與回填同源；紙改尺寸後 S2 接 rebase）。 */
@@ -2230,7 +2187,9 @@ class EditorViewModel(
 
         // PDF layer: prefer UI snapshot; if unavailable, render directly from source PDF.
         // Track whether the bitmap was created locally so we can recycle it after drawing.
-        val localFallbackBitmap = if (pdfPageBitmap == null) renderPdfPageFromDocumentUri(sourcePageIndex, fullW, fullH) else null
+        val localFallbackBitmap = if (pdfPageBitmap == null) {
+            PageRaster.renderPdfPageFromDocumentUri(documentUri, sourcePageIndex, fullW, fullH)
+        } else null
         val resolvedPdfBitmap = pdfPageBitmap ?: localFallbackBitmap
         if (resolvedPdfBitmap == null) {
             // Avoid generating a wrong composite (missing PDF layer).
@@ -2247,7 +2206,7 @@ class EditorViewModel(
 
         // Image annotations layer
         for (img in sourceImageAnnotations) {
-            val bmp = loadBitmapFromUri(context, img.uri)
+            val bmp = PageRaster.loadBitmapFromUri(context, img.uri)
             if (bmp != null) {
                 fullCanvas.drawBitmap(
                     bmp, null,
@@ -2397,7 +2356,7 @@ class EditorViewModel(
         croppedBitmap.recycle()
 
         // Trim transparent borders so placement/aspect matches the actually selected region.
-        val trimmedBitmap = trimTransparentEdges(maskedBitmap)
+        val trimmedBitmap = PageRaster.trimTransparentEdges(maskedBitmap)
         if (trimmedBitmap !== maskedBitmap) maskedBitmap.recycle()
         trimmedBitmap
     }
@@ -2496,99 +2455,5 @@ class EditorViewModel(
             extractionMutex.unlock()
         }
     }
-
-    /** Load a bitmap from content:// or file:// or raw file-path URI. */
-    private fun loadBitmapFromUri(context: android.content.Context, uri: String): android.graphics.Bitmap? {
-        return try {
-            val parsed = android.net.Uri.parse(uri)
-            if (parsed.scheme == "content") {
-                context.contentResolver.openInputStream(parsed)?.use { android.graphics.BitmapFactory.decodeStream(it) }
-            } else {
-                // file:// or raw path
-                val path = if (parsed.scheme == "file") parsed.path ?: uri else uri
-                android.graphics.BitmapFactory.decodeFile(path)
-            }
-        } catch (_: Exception) { null }
-    }
-
-    /** Render a source PDF page directly from documentUri (file://) for extraction fallback. */
-    private fun renderPdfPageFromDocumentUri(
-        pageIndex: Int,
-        outWidth: Int,
-        outHeight: Int
-    ): android.graphics.Bitmap? {
-        return try {
-            val parsed = android.net.Uri.parse(documentUri)
-            if (parsed.scheme != "file") return null
-            val path = parsed.path ?: return null
-            val fd = android.os.ParcelFileDescriptor.open(
-                java.io.File(path),
-                android.os.ParcelFileDescriptor.MODE_READ_ONLY
-            )
-            try {
-                val renderer = android.graphics.pdf.PdfRenderer(fd)
-                try {
-                    if (pageIndex < 0 || pageIndex >= renderer.pageCount) return null
-                    val bmp = android.graphics.Bitmap.createBitmap(
-                        outWidth.coerceAtLeast(1),
-                        outHeight.coerceAtLeast(1),
-                        android.graphics.Bitmap.Config.ARGB_8888
-                    )
-                    bmp.eraseColor(android.graphics.Color.WHITE)
-                    val page = renderer.openPage(pageIndex)
-                    try {
-                        page.render(bmp, null, null, android.graphics.pdf.PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                    } finally {
-                        page.close()
-                    }
-                    bmp
-                } finally {
-                    renderer.close()
-                }
-            } finally {
-                fd.close()
-            }
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    /** Crop transparent margins from ARGB bitmap; returns same instance if no trimming is needed. */
-    private fun trimTransparentEdges(src: android.graphics.Bitmap, onTrimOffsets: (Float, Float) -> Unit = { _, _ -> }): android.graphics.Bitmap {
-        val w = src.width
-        val h = src.height
-        if (w <= 0 || h <= 0) return src
-
-        var minX = w
-        var minY = h
-        var maxX = -1
-        var maxY = -1
-
-        // Scan row by row to minimise memory allocation (avoids 16MB array for full page)
-        val rowPixels = IntArray(w)
-        for (y in 0 until h) {
-            src.getPixels(rowPixels, 0, w, 0, y, w, 1)
-            var rowHasOpaque = false
-            for (x in 0 until w) {
-                if (android.graphics.Color.alpha(rowPixels[x]) > 0) {
-                    rowHasOpaque = true
-                    if (x < minX) minX = x
-                    if (x > maxX) maxX = x
-                }
-            }
-            if (rowHasOpaque) {
-                if (y < minY) minY = y
-                if (y > maxY) maxY = y
-            }
-        }
-
-        if (maxX < minX || maxY < minY) return src
-        onTrimOffsets(minX.toFloat(), minY.toFloat())
-
-        val outW = (maxX - minX + 1).coerceAtLeast(1)
-        val outH = (maxY - minY + 1).coerceAtLeast(1)
-        if (outW == w && outH == h) return src
-        return android.graphics.Bitmap.createBitmap(src, minX, minY, outW, outH)
-    }
-
 }
+

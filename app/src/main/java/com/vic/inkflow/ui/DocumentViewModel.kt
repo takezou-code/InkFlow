@@ -11,6 +11,7 @@ import androidx.lifecycle.viewModelScope
 import com.vic.inkflow.data.repository.InkFlowRepositories
 import com.vic.inkflow.data.DocumentEntity
 import com.vic.inkflow.data.FolderEntity
+import com.vic.inkflow.util.PageRaster
 import com.vic.inkflow.util.PdfManager
 import com.vic.inkflow.util.ThumbnailCacheManager
 import kotlinx.coroutines.Dispatchers
@@ -305,7 +306,7 @@ class DocumentViewModel(
                 // 1. Draw Images
                 val images = repos.images.getForPageSync(documentUri, 0)
                 for (img in images) {
-                    val bmp = loadBitmapFromUri(context, img.uri)
+                    val bmp = PageRaster.loadBitmapFromUri(context, img.uri)
                     if (bmp != null) {
                         canvas.drawBitmap(
                             bmp, null,
@@ -387,18 +388,6 @@ class DocumentViewModel(
                 pfd.close()
             } catch (_: Exception) { }
         }
-    }
-
-    private fun loadBitmapFromUri(context: Context, uri: String): Bitmap? {
-        return try {
-            val parsed = Uri.parse(uri)
-            if (parsed.scheme == "content") {
-                context.contentResolver.openInputStream(parsed)?.use { android.graphics.BitmapFactory.decodeStream(it) }
-            } else {
-                val path = if (parsed.scheme == "file") parsed.path ?: uri else uri
-                android.graphics.BitmapFactory.decodeFile(path)
-            }
-        } catch (_: Exception) { null }
     }
 
     private fun buildThumbnailCacheKey(documentUri: String): String {
