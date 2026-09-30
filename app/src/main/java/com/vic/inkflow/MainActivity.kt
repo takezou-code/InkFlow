@@ -25,23 +25,41 @@ class MainActivity : ComponentActivity() {
         if (com.vic.inkflow.BuildConfig.DEBUG &&
             android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N
         ) {
-            // 每 10 秒摘要一次（平均/p90/慢幀），流光 vs 靜 對照就看這行
-            val samples = ArrayList<Long>(512)
+            // 真實顯示幀率用 Choreographer 數（window frame metrics 只在 View 重繪時回報，
+            // 背景動畫不改變整窗 invalidation，會漏掉大部分幀 → 量不準）。
+            val vsync = intArrayOf(0)
+            val frameCb = object : android.view.Choreographer.FrameCallback {
+                override fun doFrame(frameTimeNanos: Long) {
+                    vsync[0]++
+                    android.view.Choreographer.getInstance().postFrameCallback(this)
+                }
+            }
+            android.view.Choreographer.getInstance().postFrameCallback(frameCb)
+            // 每 10 秒摘要一次（幀率 + 慢幀），流光 vs 靜 對照就看這行
+            val samples = ArrayList<Long>(4096)
             var tick = 0
             val summary = object : Runnable {
                 override fun run() {
+                    try {
                     tick++
-                    if (samples.isNotEmpty()) {
+                    val fps = vsync[0] / 10.0
+                    vsync[0] = 0
+                    if (tick > 1 && samples.isNotEmpty()) {
+                        // 第一個窗口是冷開機，不算
                         val sorted = samples.sorted()
                         val avg = samples.sum() / samples.size
                         val p90 = sorted[(sorted.size * 9 / 10).coerceAtMost(sorted.size - 1)]
-                        val slow = samples.count { it > 12_000_000L }
+                        val p99 = sorted[(sorted.size * 99 / 100).coerceAtMost(sorted.size - 1)]
+                        val slow = samples.count { it > 16_666_000L }
                         com.vic.inkflow.util.InkLog.perf(
-                            "FRAMES #%d n=%d avg=%.1fms p90=%.1fms slow(>12ms)=%d".format(
-                                tick, samples.size, avg / 1_000_000.0, p90 / 1_000_000.0, slow
-                            )
+                            "FRAMES #$tick fps=$fps drawn=${samples.size} " +
+                                "avg=${avg / 1_000_000.0}ms p90=${p90 / 1_000_000.0}ms " +
+                                "p99=${p99 / 1_000_000.0}ms over16=$slow"
                         )
-                        samples.clear()
+                    }
+                    samples.clear()
+                    } catch (t: Throwable) {
+                        android.util.Log.d("InkFlowPerf", "summary failed: $t")
                     }
                     android.os.Handler(mainLooper).postDelayed(this, 10_000L)
                 }
@@ -78,6 +96,13 @@ class MainActivity : ComponentActivity() {
         com.vic.inkflow.util.InkLog.mode(
             "BACKUP ensureScheduled quiet=$quiet autoEnabled=${AutoBackupScheduler.isEnabled(this)}"
         )
+        runCatching {
+            val d = display
+            com.vic.inkflow.util.InkLog.mode(
+                "DISPLAY panel=${d?.mode?.physicalWidth}x${d?.mode?.physicalHeight} " +
+                    "refresh=${d?.refreshRate} supported=${d?.supportedModes?.joinToString { it.refreshRate.toString() }}"
+            )
+        }
         setContent {
             InkLayerApp(db = db)
         }
