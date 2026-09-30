@@ -27,12 +27,13 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 //      nullable；舊資料懶回填，不在此搬運）＋ (documentUri, docY) 索引。
 // v25: M7 公式源 sidecar：新增 math_sources 表（imageUri 唯一關聯 image_annotations.uri，
 //      只加表不動現有表）。
+// v26: 補 document_preferences.palmThresholdDp 的 migration（見 MIGRATION_25_26 註解）。
 @Database(
     entities = [StrokeEntity::class, PointEntity::class, DocumentEntity::class, FolderEntity::class,
                 TextAnnotationEntity::class, ImageAnnotationEntity::class,
                 DocumentPreferenceEntity::class, BookmarkEntity::class,
                 MathSourceEntity::class],
-    version = 25
+    version = 26
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun strokeDao(): StrokeDao
@@ -554,6 +555,37 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v26：補 `document_preferences.palmThresholdDp` 這一個欄位的 migration。
+         *
+         * 這個欄位在 DocumentPreferenceEntity:26 有宣告，但**從來沒有任何 migration 建立過它**：
+         * v7_8 建立 7 欄、v17_18 重建 14 欄、v18_19 加 quickSwipeEraserEnabled、
+         * v20_21 加 strokeSpeedSensitivity/fingerTouchThresholdDp、v21_22 加 autoSwitchToPenAfterErase
+         * ——都沒有它。而且全專案零使用（死欄位，只出現在 entity 宣告那一行）。
+         *
+         * 後果：任何從 v17～v25 **原地升級**上來的舊 DB 都缺這一欄，Room 開啟時
+         * schema identity check 直接丟 IllegalStateException("Migration didn't properly
+         * handle: document_preferences")，而 getDatabase() 只設了
+         * fallbackToDestructiveMigrationOnDowngrade（只管降版）→ App 開不起來。
+         * 全新安裝不會中（Room 照 entity 直接 CREATE TABLE，欄位本來就在）。
+         *
+         * **必須冪等**：已經有該欄的 DB（平板上 debug 裝置就是 user_version=25 且欄位已存在）
+         * 跑裸 ALTER TABLE 會炸 "duplicate column name"。所以先讀 PRAGMA table_info 判斷，
+         * 只補缺的那一欄。冪等後新舊兩種 DB 都能安全升到 v26。
+         */
+        private val MIGRATION_25_26 = object : Migration(25, 26) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                val existing = mutableSetOf<String>()
+                db.query("PRAGMA table_info(document_preferences)").use { c ->
+                    val nameIdx = c.getColumnIndexOrThrow("name")
+                    while (c.moveToNext()) existing.add(c.getString(nameIdx))
+                }
+                if ("palmThresholdDp" !in existing) {
+                    db.execSQL("ALTER TABLE document_preferences ADD COLUMN palmThresholdDp REAL")
+                }
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val appContext = context.applicationContext
@@ -587,7 +619,8 @@ abstract class AppDatabase : RoomDatabase() {
                     MIGRATION_21_22,
                     MIGRATION_22_23,
                     MIGRATION_23_24,
-                    MIGRATION_24_25
+                    MIGRATION_24_25,
+                    MIGRATION_25_26
                 )
                 // Only allow destructive migration on downgrade (e.g. user reverts to an
                 // older APK). Unknown *upgrade* paths surface as a hard crash rather than
