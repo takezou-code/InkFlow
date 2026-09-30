@@ -43,12 +43,17 @@ import com.vic.inkflow.ui.theme.ShapeSm
 import com.vic.inkflow.ui.theme.ShapeXl
 import dev.chrisbanes.haze.ExperimentalHazeApi
 import dev.chrisbanes.haze.HazeInput
+import dev.chrisbanes.haze.HazeProgressive
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.glass.ChromaticAberrationMode
 import dev.chrisbanes.haze.glass.GlassStyle
 import dev.chrisbanes.haze.glass.SurfaceProfile
 import dev.chrisbanes.haze.glass.hazeGlass
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -104,7 +109,12 @@ fun glassStyle(isDark: Boolean, shape: Shape = ShapeLg): GlassStyle =
             // 邊緣反摺：讓透鏡邊真正「翻」起來（0=單調折射，這是「特別」的關鍵旋鈕）
             refractionFoldStrength = 0.55f,
             depth = 0.15f,
-            refractionDetailIntensity = 1f
+            refractionDetailIntensity = 1f,
+            // 漸層模糊：上緣清、下緣厚，玻璃才有「厚度感」（Flat 全糊＝塑膠）
+            progressive = HazeProgressive.verticalGradient(
+                startIntensity = 1f,
+                endIntensity = 0.35f
+            )
         )
         lightPosition(Alignment.TopCenter)
         // Squircle：比 Lip 更鼓更 iOS，弧面把折射拉出圓潤的邊
@@ -260,12 +270,19 @@ fun Modifier.pressableGlass(
         animationSpec = tween(if (pressed) 450 else 200),
         label = "PressSweep"
     )
+    // 按壓 rim 閃一下：玻璃被壓時邊緣亮起來（凝膠感）
+    val rimFlash by animateFloatAsState(
+        targetValue = if (pressed) 0.55f else 0f,
+        animationSpec = tween(if (pressed) 90 else 260),
+        label = "PressRim"
+    )
     return this
         .graphicsLayer {
             scaleX = scale
             scaleY = scale
         }
         .background(Color.White.copy(alpha = glow), shape)
+        .border(BorderStroke(1.dp, Color.White.copy(alpha = rimFlash)), shape)
         .sweepLayer(sweep, shape)
 }
 
@@ -381,6 +398,7 @@ fun ColumnScope.GlassMenuItem(
     }
 }
 
+@Composable
 fun Modifier.fauxGlassPanel(
     isDark: Boolean,
     shape: Shape = ShapeLg,
@@ -404,11 +422,28 @@ fun Modifier.fauxGlassPanel(
  * 深度改由 rim＋底內陰影撐，不要加 shadow 回來。
  * 壓在底（blur 或半透明色）上、內容下。
  */
+/**
+ * 共用打光：薄 Sheen＋頂光 rim＋亮邊，全 App 唯一玻璃妝。
+ * haze/faux 路徑沒有 shader 高光，靠這層薄妝＋rim 維持玻璃讀感。
+ * 流光模式額外疊一道「活 sheen」：光沿頂緣慢慢掃過（待機也在動，只多一層漸層重繪）。
+ * 靜模式不播動畫（LocalQuietMode）。
+ */
+@Composable
 private fun Modifier.glassDressing(
     isDark: Boolean,
     shape: Shape,
     specular: Boolean
 ): Modifier {
+    val live = !LocalQuietMode.current
+    val sheenT by rememberInfiniteTransition(label = "GlassSheen").animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(7000, easing = androidx.compose.animation.core.LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "GlassSheenT"
+    )
     var m = this
         // 頂部 Sheen v4：hazeGlass 自帶高光，妝只留髮絲亮緣＋極淡罩紗。
         // 底部內陰影保留做厚度（減淡）。
@@ -446,6 +481,20 @@ private fun Modifier.glassDressing(
                 border = BorderStroke(
                     width = 0.5.dp,
                     color = Color(0xFF0F172A).copy(alpha = 0.10f)
+                ),
+                shape = shape
+            )
+        }
+        // 流光專屬：活 sheen。0.16 讓頂緣偶爾過亮一下，像光在玻璃上滑過去。
+        if (live) {
+            val p = sheenT * 1.7f - 0.35f
+            m = m.background(
+                brush = Brush.linearGradient(
+                    colorStops = arrayOf(
+                        p.coerceIn(0f, 1f) to Color.Transparent,
+                        (p + 0.12f).coerceIn(0f, 1f) to Color.White.copy(alpha = 0.16f),
+                        (p + 0.28f).coerceIn(0f, 1f) to Color.Transparent
+                    )
                 ),
                 shape = shape
             )
