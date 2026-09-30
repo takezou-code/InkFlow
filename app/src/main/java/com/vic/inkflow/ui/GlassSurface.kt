@@ -7,12 +7,14 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
@@ -51,6 +53,9 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material.icons.Icons
+import androidx.compose.material3.Icon
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -304,6 +309,59 @@ fun Modifier.glassClickable(
  * 無 blur 的仿玻璃：半透明底 + 同套高光亮邊，背景直接透過去。
  * 給大量重複的卡片用（每卡一個即時模糊是滾動卡頓主因），透光免費。
  */
+/** 卡片類容器的理璃底：有 hazeState 走真理璃，無就 faux（省 blur）。分支單一雖在這裡。 */
+@Composable
+fun Modifier.glassCardSurface(
+    isDark: Boolean,
+    shape: Shape = ShapeLg,
+    hazeState: HazeState? = null
+): Modifier = if (hazeState != null) this.glassPanel(hazeState, isDark, shape)
+    else this.fauxGlassPanel(isDark, shape)
+
+/** 玻璃下拉（唯一入口）：壳自帶理璃卡，列走 [GlassMenuItem]，零 M3 chrome。 */
+@Composable
+fun GlassMenu(
+    expanded: Boolean,
+    onDismissRequest: () -> Unit,
+    shape: Shape = ShapeMd,
+    isDark: Boolean = MaterialTheme.colorScheme.background.luminance() < 0.5f,
+    hazeState: HazeState? = null,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    androidx.compose.material3.DropdownMenu(
+        expanded = expanded,
+        onDismissRequest = onDismissRequest,
+        containerColor = Color.Transparent,
+        shadowElevation = 0.dp,
+        shape = shape,
+        modifier = Modifier.glassCardSurface(isDark, shape, hazeState)
+    ) { content() }
+}
+
+/** 下拉列：圖標＋文字，統一理璃按壓（掃光＋觸感）。 */
+@Composable
+fun ColumnScope.GlassMenuItem(
+    text: String,
+    icon: ImageVector? = null,
+    isDark: Boolean = MaterialTheme.colorScheme.background.luminance() < 0.5f,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .glassClickable(onClick = onClick, shape = ShapeMd)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        val ink = glassContentColor(isDark)
+        if (icon != null) {
+            Icon(icon, contentDescription = null, tint = ink, modifier = Modifier.size(20.dp))
+        }
+        Text(text, style = MaterialTheme.typography.labelLarge, color = ink)
+    }
+}
+
 fun Modifier.fauxGlassPanel(
     isDark: Boolean,
     shape: Shape = ShapeLg,

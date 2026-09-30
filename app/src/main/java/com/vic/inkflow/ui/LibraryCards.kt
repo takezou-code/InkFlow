@@ -288,7 +288,7 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
                                 return true
                             }
                         }
-                    ).then(if (hazeState != null) Modifier.glassPanel(hazeState, isDarkTheme, ShapeMd) else Modifier.fauxGlassPanel(isDarkTheme, ShapeMd)),
+                    ).glassCardSurface(isDarkTheme, ShapeMd, hazeState),
                     shape = ShapeMd,
                     color = if (isDropTargetActive) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f) else Color.Transparent,
                     contentColor = MaterialTheme.colorScheme.onSurface,
@@ -527,7 +527,7 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
                                 return true
                             }
                         }
-                    ).then(if (hazeState != null) Modifier.glassPanel(hazeState, isDarkTheme, ShapeMd) else Modifier.fauxGlassPanel(isDarkTheme, ShapeMd)),
+                    ).glassCardSurface(isDarkTheme, ShapeMd, hazeState),
                 shape = ShapeMd,
                 color = if (isFolderDropTargetActive) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f) else Color.Transparent,
                 contentColor = MaterialTheme.colorScheme.onSurface,
@@ -604,31 +604,20 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
                                 IconButton(onClick = { showFolderMenu = true }) {
                                     Icon(Icons.Outlined.MoreVert, contentDescription = "資料夾操作")
                                 }
-                                androidx.compose.material3.DropdownMenu(
+                                GlassMenu(
                                     expanded = showFolderMenu,
                                     onDismissRequest = { showFolderMenu = false },
-                                    containerColor = Color.Transparent,
-                                    shadowElevation = 0.dp,
-                                    shape = ShapeMd,
-                                    modifier = Modifier.fauxGlassPanel(isDarkTheme, ShapeMd)
+                                    isDark = isDarkTheme
                                 ) {
-                                    androidx.compose.material3.DropdownMenuItem(
-                                        text = { Text("重新命名") },
-                                        leadingIcon = { Icon(Icons.Outlined.Create, contentDescription = null) },
-                                        onClick = {
-                                            showFolderMenu = false
-                                            renameFolderInput = folder.name
-                                            showRenameFolderDialog = true
-                                        }
-                                    )
-                                    androidx.compose.material3.DropdownMenuItem(
-                                        text = { Text("刪除資料夾") },
-                                        leadingIcon = { Icon(Icons.Outlined.DeleteOutline, contentDescription = null) },
-                                        onClick = {
-                                            showFolderMenu = false
-                                            showDeleteFolderDialog = true
-                                        }
-                                    )
+                                    GlassMenuItem("重新命名", Icons.Outlined.Create, isDarkTheme) {
+                                        showFolderMenu = false
+                                        renameFolderInput = folder.name
+                                        showRenameFolderDialog = true
+                                    }
+                                    GlassMenuItem("刪除資料夾", Icons.Outlined.DeleteOutline, isDarkTheme) {
+                                        showFolderMenu = false
+                                        showDeleteFolderDialog = true
+                                    }
                                 }
                             }
                         }
@@ -857,7 +846,7 @@ internal fun DocumentCard(
         .aspectRatio(0.85f)
         .graphicsLayer { scaleX = cardScale; scaleY = cardScale }
         .documentDragSource(document.uri)
-        .then(if (hazeState != null) Modifier.glassPanel(hazeState, isDarkTheme, ShapeLg) else Modifier.fauxGlassPanel(isDarkTheme, ShapeLg))
+        .glassCardSurface(isDarkTheme, ShapeLg, hazeState)
         .glassSweep(cardInteractionSource, ShapeLg)
     androidx.compose.material3.Card(
         onClick = onClick,
@@ -950,47 +939,28 @@ internal fun DocumentCard(
                         IconButton(onClick = { showMenu = true }, modifier = Modifier.size(24.dp)) {
                             Icon(Icons.Outlined.MoreVert, contentDescription = "More", modifier = Modifier.size(16.dp))
                         }
-                        androidx.compose.material3.DropdownMenu(
+                        GlassMenu(
                             expanded = showMenu,
                             onDismissRequest = { showMenu = false },
-                            containerColor = Color.Transparent,
-                            shadowElevation = 0.dp,
-                            shape = ShapeMd,
-                            modifier = Modifier.fauxGlassPanel(isDarkTheme, ShapeMd)
+                            isDark = isDarkTheme
                         ) {
-                            androidx.compose.material3.DropdownMenuItem(
-                                text = { Text("移到資料夾") },
-                                leadingIcon = { Icon(Icons.Outlined.Folder, contentDescription = null) },
-                                onClick = {
-                                    showMenu = false
-                                    showMoveDialog = true
-                                }
-                            )
-                            androidx.compose.material3.DropdownMenuItem(
-                                text = { Text("新增資料夾") },
-                                leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null) },
-                                onClick = {
-                                    showMenu = false
-                                    showCreateFolderDialog = true
-                                }
-                            )
-                            androidx.compose.material3.DropdownMenuItem(
-                                text = { Text("重新命名") },
-                                leadingIcon = { Icon(Icons.Outlined.Create, contentDescription = null) },
-                                onClick = {
-                                    showMenu = false
-                                    renameInput = document.displayName
-                                    showRenameDialog = true
-                                }
-                            )
-                            androidx.compose.material3.DropdownMenuItem(
-                                text = { Text("刪除") },
-                                leadingIcon = { Icon(Icons.Outlined.DeleteOutline, contentDescription = null) },
-                                onClick = {
-                                    showMenu = false
-                                    showDeleteDialog = true
-                                }
-                            )
+                            GlassMenuItem("移到資料夾", Icons.Outlined.Folder, isDarkTheme) {
+                                showMenu = false
+                                showMoveDialog = true
+                            }
+                            GlassMenuItem("新增資料夾", Icons.Outlined.Add, isDarkTheme) {
+                                showMenu = false
+                                showCreateFolderDialog = true
+                            }
+                            GlassMenuItem("重新命名", Icons.Outlined.Create, isDarkTheme) {
+                                showMenu = false
+                                renameInput = document.displayName
+                                showRenameDialog = true
+                            }
+                            GlassMenuItem("刪除", Icons.Outlined.DeleteOutline, isDarkTheme) {
+                                showMenu = false
+                                showDeleteDialog = true
+                            }
                         }
                     }
                 }
@@ -1039,7 +1009,7 @@ internal fun DocumentListRow(
             .fillMaxWidth()
             .height(88.dp)
             .documentDragSource(document.uri)
-            .then(if (hazeState != null) Modifier.glassPanel(hazeState, isDarkTheme, ShapeMd) else Modifier.fauxGlassPanel(isDarkTheme, ShapeMd))
+            .glassCardSurface(isDarkTheme, ShapeMd, hazeState)
             .glassSweep(rowPressSource, ShapeMd),
         shape = ShapeMd,
         color = Color.Transparent,
@@ -1106,47 +1076,28 @@ internal fun DocumentListRow(
                 IconButton(onClick = { showMenu = true }) {
                     Icon(Icons.Outlined.MoreVert, contentDescription = "More")
                 }
-                androidx.compose.material3.DropdownMenu(
+                GlassMenu(
                     expanded = showMenu,
                     onDismissRequest = { showMenu = false },
-                    containerColor = Color.Transparent,
-                    shadowElevation = 0.dp,
-                    shape = ShapeMd,
-                    modifier = Modifier.fauxGlassPanel(isDarkTheme, ShapeMd)
+                    isDark = isDarkTheme
                 ) {
-                    androidx.compose.material3.DropdownMenuItem(
-                        text = { Text("移到資料夾") },
-                        leadingIcon = { Icon(Icons.Outlined.Folder, contentDescription = null) },
-                        onClick = {
-                            showMenu = false
-                            showMoveDialog = true
-                        }
-                    )
-                    androidx.compose.material3.DropdownMenuItem(
-                        text = { Text("新增資料夾") },
-                        leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null) },
-                        onClick = {
-                            showMenu = false
-                            showCreateFolderDialog = true
-                        }
-                    )
-                    androidx.compose.material3.DropdownMenuItem(
-                        text = { Text("重新命名") },
-                        leadingIcon = { Icon(Icons.Outlined.Create, contentDescription = null) },
-                        onClick = {
-                            showMenu = false
-                            renameInput = document.displayName
-                            showRenameDialog = true
-                        }
-                    )
-                    androidx.compose.material3.DropdownMenuItem(
-                        text = { Text("刪除") },
-                        leadingIcon = { Icon(Icons.Outlined.DeleteOutline, contentDescription = null) },
-                        onClick = {
-                            showMenu = false
-                            showDeleteDialog = true
-                        }
-                    )
+                    GlassMenuItem("移到資料夾", Icons.Outlined.Folder, isDarkTheme) {
+                        showMenu = false
+                        showMoveDialog = true
+                    }
+                    GlassMenuItem("新增資料夾", Icons.Outlined.Add, isDarkTheme) {
+                        showMenu = false
+                        showCreateFolderDialog = true
+                    }
+                    GlassMenuItem("重新命名", Icons.Outlined.Create, isDarkTheme) {
+                        showMenu = false
+                        renameInput = document.displayName
+                        showRenameDialog = true
+                    }
+                    GlassMenuItem("刪除", Icons.Outlined.DeleteOutline, isDarkTheme) {
+                        showMenu = false
+                        showDeleteDialog = true
+                    }
                 }
             }
         }

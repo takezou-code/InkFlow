@@ -465,29 +465,16 @@ internal fun DocumentLibraryFab(
             }
         }
 
-        androidx.compose.material3.DropdownMenu(
+        GlassMenu(
             expanded = showFabMenu,
             onDismissRequest = onDismissMenu,
-            containerColor = Color.Transparent,
-            shadowElevation = 0.dp,
             shape = ShapeLg,
-            modifier = Modifier.glassPanel(hazeState, isDarkTheme, ShapeLg, input = dev.chrisbanes.haze.HazeInput.Sources(hazeState))
+            isDark = isDarkTheme,
+            hazeState = hazeState
         ) {
-            androidx.compose.material3.DropdownMenuItem(
-                text = { Text("開啟 PDF") },
-                leadingIcon = { Icon(Icons.Outlined.Description, contentDescription = null) },
-                onClick = onOpenPdf
-            )
-            androidx.compose.material3.DropdownMenuItem(
-                text = { Text("空白筆記") },
-                leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null) },
-                onClick = onCreateBlank
-            )
-            androidx.compose.material3.DropdownMenuItem(
-                text = { Text("新增資料夾") },
-                leadingIcon = { Icon(Icons.Outlined.Folder, contentDescription = null) },
-                onClick = onCreateFolder
-            )
+            GlassMenuItem("開啟 PDF", Icons.Outlined.Description, isDarkTheme, onOpenPdf)
+            GlassMenuItem("空白筆記", Icons.Outlined.Add, isDarkTheme, onCreateBlank)
+            GlassMenuItem("新增資料夾", Icons.Outlined.Folder, isDarkTheme, onCreateFolder)
         }
     }
 }
