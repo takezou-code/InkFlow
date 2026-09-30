@@ -289,11 +289,25 @@ fun InkLayerApp(db: AppDatabase) {
         val navController = rememberNavController()
     // 幀率：流光鎖 144（面板上限，要絲滑就認了）；靜模式降到 60  省電大戶。
     // 靜模式旗標由這裡單一提供，全 App（玻璃/動畫/幀率）都讀這一份。
+    // 啟動進場：冷啟動時整棵樹淡入＋微升（一次，600ms）。靜模式直接現身不播。
+    // 用 remember 而非 rememberSaveable：旋轉/回來不重播。
+    var launched by remember { mutableStateOf(powerSaver) }
+    LaunchedEffect(Unit) { if (!launched) launched = true }
+    val introT by animateFloatAsState(
+        targetValue = if (launched) 1f else 0f,
+        animationSpec = tween(600, easing = androidx.compose.animation.core.FastOutSlowInEasing),
+        label = "LaunchIntro"
+    )
     CompositionLocalProvider(LocalQuietMode provides powerSaver) {
     Box(
         Modifier
             .fillMaxSize()
             .preferredFrameRate(if (powerSaver) 60f else 144f)
+            .graphicsLayer {
+                alpha = introT
+                scaleX = 0.985f + 0.015f * introT
+                scaleY = 0.985f + 0.015f * introT
+            }
     ) {
     // 主題切換淡入淡出：整棵樹交叉淡化 350ms，不硬切
     androidx.compose.animation.Crossfade(

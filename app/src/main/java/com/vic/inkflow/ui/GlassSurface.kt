@@ -102,6 +102,9 @@ fun glassStyle(isDark: Boolean, shape: Shape = ShapeLg): GlassStyle =
         surfaceProfile(SurfaceProfile.Lip)
         specularIntensity(0.8f)
         whitePoint(-0.15f)
+        // 飽和提升（vibrancy）：blur 會吃掉彩度，這裡補回來，玻璃才不發灰
+        chromaMultiplier(1.35f)
+        contrast(0.08f)
         chromaticAberrationStrength(0.25f)
         shape((shape as? RoundedCornerShape) ?: RoundedCornerShape(24.dp))
     }
@@ -195,7 +198,8 @@ fun glassFieldColors(isDark: Boolean) = OutlinedTextFieldDefaults.colors(
 )
 
 /**
- * 啫喱按壓：縮放 + 提亮 + 掃光（按下去一道光從左上掃到右下，靜止時零成本）。
+ * 啫喱按壓：縮放 + 提亮 + 掃光（按下去一道光從左上掃到右下，靜止時零成本）
+ * ＋輕觸感（流光限定，靜模式不震；滑動拖曳不震，只認按下那一下）。
  */
 @Composable
 fun Modifier.pressableGlass(
@@ -204,6 +208,15 @@ fun Modifier.pressableGlass(
     pressedScale: Float = 0.96f
 ): Modifier {
     val pressed by interactionSource.collectIsPressedAsState()
+    val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
+    val quiet = LocalQuietMode.current
+    // 只在「由未按→按」那一刻震一次；放開不震，長按滑動不重複
+    androidx.compose.runtime.LaunchedEffect(pressed, quiet) {
+        // TextHandleMove 映射到平台輕點擊，比 LongPress 輕、比無回饋有感
+        if (pressed && !quiet) {
+            haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+        }
+    }
     val scale by animateFloatAsState(
         targetValue = if (pressed) pressedScale else 1f,
         animationSpec = spring(
@@ -267,7 +280,7 @@ private fun Modifier.sweepLayer(sweep: Float, shape: Shape): Modifier = this.the
 )
 
 /**
- * 按壓統一入口：掃光＋縮放＋無漣漪點擊一次包好。
+ * 按壓統一入口：掃光＋縮放＋觸感＋無漣漪點擊一次包好。
  * 以後新增可壓玻璃一律走這裡，不各自拼 source/clickable。
  */
 @Composable
