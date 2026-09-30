@@ -1,6 +1,7 @@
 package com.vic.inkflow.util
 
 import mu.KotlinLogging
+import org.apache.pdfbox.Loader
 import org.apache.pdfbox.pdmodel.PDDocument
 import org.apache.pdfbox.rendering.PDFRenderer
 import org.apache.pdfbox.pdmodel.PDPage
@@ -25,7 +26,7 @@ class PdfManager {
                 logger.error { "PDF file not found: $filePath" }
                 return null
             }
-            PDDocument.load(file)
+            Loader.loadPDF(file)
         } catch (e: Exception) {
             logger.error(e) { "Failed to load PDF: $filePath" }
             null

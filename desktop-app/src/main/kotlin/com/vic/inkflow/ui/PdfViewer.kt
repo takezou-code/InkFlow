@@ -19,6 +19,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.awt.SwingPanel
+import org.apache.pdfbox.Loader
 import org.apache.pdfbox.pdmodel.PDDocument
 import org.apache.pdfbox.rendering.PDFRenderer
 import java.awt.image.BufferedImage
@@ -113,12 +114,20 @@ fun PdfViewerWithPdfBox(
     // Load PDF page image
     LaunchedEffect(documentUri, pageIndex) {
         try {
-            // Extract file path from URI (remove "file://" prefix if present)
+            // Extract file path from URI (remove "file://" prefix if present).
+            // Synced tablet documents are mirrored under <appdata>/documents/<name>,
+            // so fall back to that location when the recorded absolute path
+            // (an Android path on Windows) does not exist here.
             val filePath = documentUri.removePrefix("file://")
-            val file = File(filePath)
+            var file = File(filePath)
+            if (!file.exists()) {
+                val mirrored = File(System.getProperty("user.home") + File.separator + ".inkflow" +
+                        File.separator + "documents" + File.separator + file.name)
+                if (mirrored.exists()) file = mirrored
+            }
             
             if (file.exists()) {
-                val document = PDDocument.load(file)
+                val document = Loader.loadPDF(file)
                 try {
                     val pdfRenderer = PDFRenderer(document)
                     // Render at 2x DPI for better quality
@@ -217,9 +226,11 @@ fun PdfViewerWithPdfBox(
 fun DocumentLibraryView(
     databaseManager: DatabaseManager,
     onDocumentSelected: (String) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    refreshToken: Int = 0,
+    syncStatusText: String? = null
 ) {
-    val documents by remember { 
+    val documents by remember(refreshToken) { 
         mutableStateOf(databaseManager.getAllDocuments()) 
     }
     
@@ -232,12 +243,20 @@ fun DocumentLibraryView(
         Text(
             text = "Document Library",
             style = MaterialTheme.typography.headlineMedium,
-            modifier = Modifier.padding(bottom = 16.dp)
+            modifier = Modifier.padding(bottom = 4.dp)
         )
+        if (syncStatusText != null) {
+            Text(
+                text = "\u540c\u6b65\u72c0\u614b\uff1a$syncStatusText",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(bottom = 12.dp)
+            )
+        }
         
         if (documents.isEmpty()) {
             Text(
-                text = "No documents found. Open a PDF file to get started.",
+                text = "No documents found. Open a PDF file or wait for LAN sync to pull notes from your tablet.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -261,7 +280,8 @@ fun DocumentLibraryView(
                                 style = MaterialTheme.typography.titleMedium
                             )
                             Text(
-                                text = "Last opened: ${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm").format(java.util.Date(document.lastOpenedAt))}",
+                                text = "Last opened: ${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm").format(java.util.Date(document.lastOpenedAt))}" +
+                                    " \u00b7 ${databaseManager.strokeCountForDocument(document.uri)} \u7b46\u8de1",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )

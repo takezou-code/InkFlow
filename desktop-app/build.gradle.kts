@@ -68,3 +68,10 @@ compose.desktop {
         }
     }
 }
+
+// Helper task: print runtime classpath (used by the E2E sync test script)
+tasks.register("printRuntimeClasspath") {
+    doLast {
+        println(configurations.getByName("runtimeClasspath").files.joinToString(File.pathSeparator))
+    }
+}
