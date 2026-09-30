@@ -129,7 +129,17 @@ fun Modifier.glassPanel(
     specular: Boolean = true,
     input: HazeInput = HazeInput.Backdrop(state)
 ): Modifier {
-    if (LocalQuietMode.current) return this.fauxGlassPanel(isDark, shape, specular)
+    val quiet = LocalQuietMode.current
+    // 每個 state 只印一次材質選擇（真折射 vs 靜模式降假）
+    remember(state, isDark, quiet, input) {
+        com.vic.inkflow.util.InkLog.mode(
+            "GLASS isDark=$isDark quiet=$quiet input=${input.javaClass.simpleName} " +
+                "→ ${if (quiet) "FAUX(靜模式降假)" else "REAL(折射+blur)"} " +
+                "veil=${if (isDark) "暗靛55%" else "白55%"} blur20dp refract1.0 chroma1.35"
+        )
+        true
+    }
+    if (quiet) return this.fauxGlassPanel(isDark, shape, specular)
     return this
         .clip(shape)
         .hazeGlass(input = input, style = glassStyle(isDark, shape))

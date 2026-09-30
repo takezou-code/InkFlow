@@ -25,8 +25,31 @@ class MainActivity : ComponentActivity() {
         if (com.vic.inkflow.BuildConfig.DEBUG &&
             android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N
         ) {
+            // 每 10 秒摘要一次（平均/p90/慢幀），流光 vs 靜 對照就看這行
+            val samples = ArrayList<Long>(512)
+            var tick = 0
+            val summary = object : Runnable {
+                override fun run() {
+                    tick++
+                    if (samples.isNotEmpty()) {
+                        val sorted = samples.sorted()
+                        val avg = samples.sum() / samples.size
+                        val p90 = sorted[(sorted.size * 9 / 10).coerceAtMost(sorted.size - 1)]
+                        val slow = samples.count { it > 12_000_000L }
+                        com.vic.inkflow.util.InkLog.perf(
+                            "FRAMES #%d n=%d avg=%.1fms p90=%.1fms slow(>12ms)=%d".format(
+                                tick, samples.size, avg / 1_000_000.0, p90 / 1_000_000.0, slow
+                            )
+                        )
+                        samples.clear()
+                    }
+                    android.os.Handler(mainLooper).postDelayed(this, 10_000L)
+                }
+            }
+            android.os.Handler(mainLooper).postDelayed(summary, 10_000L)
             window.addOnFrameMetricsAvailableListener({ _, metrics, _ ->
                 val totalNs = metrics.getMetric(android.view.FrameMetrics.TOTAL_DURATION)
+                if (samples.size < 512) samples.add(totalNs)
                 if (totalNs > 12_000_000L) {
                     android.util.Log.d(
                         "FRAMETIME",
@@ -41,10 +64,20 @@ class MainActivity : ComponentActivity() {
         }
         PDFBoxResourceLoader.init(applicationContext)
         val db = AppDatabase.getDatabase(this)
+        val settings = getSharedPreferences("inkflow_settings", 0)
         // 靜模式不回來排備份（開機時就已經在靜，排了等於白排）
-        val quiet = getSharedPreferences("inkflow_settings", 0)
-            .getBoolean("power_saver", false)
+        val quiet = settings.getBoolean("power_saver", false)
         AutoBackupScheduler.ensureScheduled(this, quiet)
+        com.vic.inkflow.util.InkLog.fingerprint(
+            quiet = quiet,
+            backdrop = "kind=${settings.getString("backdrop_kind", "ORB")}" +
+                " theme=${settings.getString("backdrop_theme", "SOFT")}" +
+                " scene=${settings.getString("backdrop_scene", "DUNE")}" +
+                " image=" + !settings.getString("backdrop_image", "").isNullOrEmpty()
+        )
+        com.vic.inkflow.util.InkLog.mode(
+            "BACKUP ensureScheduled quiet=$quiet autoEnabled=${AutoBackupScheduler.isEnabled(this)}"
+        )
         setContent {
             InkLayerApp(db = db)
         }

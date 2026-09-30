@@ -85,10 +85,21 @@ private fun SceneBackdrop(
     val sparks = remember { makeSparks() }
     LaunchedEffect(static) {
         if (!static) {
+            var last = 0L
             while (true) {
                 kotlinx.coroutines.delay(22)
                 tick.longValue += 1
+                // 心跳：確認背景真的在動（靜模式應該沒有這行）
+                val now = System.currentTimeMillis()
+                if (now - last >= 3000) {
+                    last = now
+                    com.vic.inkflow.util.InkLog.perf(
+                        "BACKDROP-TICK scene=$scene ticks=${tick.longValue} (流動中)"
+                    )
+                }
             }
+        } else {
+            com.vic.inkflow.util.InkLog.perf("BACKDROP-TICK scene=$scene static=凍結首幀")
         }
     }
     Canvas(modifier = modifier.fillMaxSize()) {
