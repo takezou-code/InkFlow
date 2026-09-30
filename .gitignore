@@ -23,3 +23,7 @@ local.properties
 *.p12
 *.jks
 *.keystore
+
+# Agent rules: local-only, never push (purged from all history; restore from local backup if needed)
+/AGENTS.md
+/docs/specs/
