@@ -323,11 +323,16 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         bitmapCache.evictAll()
         // Fix2c: 不再把 flow 置 null（那會讓可見頁同時變透明、露出黑紙底）。
         // 舊圖繼續頂著顯示（倍率略差但可見），新圖在底下重渲、好了自動換上（Crossfade 接住）。
+        // P1 漸進：只重渲有人在看的頁；無訂閱的置空（縮圖頂著，滑回來 remember 重跑自動補渲）。
         bitmapFlowCache.forEach { (index, flow) ->
-            if (flow.value != null) {
-                renderScope.launch {
-                    renderPage(index, highQuality = true, ticket = scrollGen)?.let { flow.value = it }
+            if (flow.subscriptionCount.value > 0) {
+                if (flow.value != null) {
+                    renderScope.launch {
+                        renderPage(index, highQuality = true, ticket = scrollGen)?.let { flow.value = it }
+                    }
                 }
+            } else {
+                flow.value = null
             }
         }
         _renderEpoch.value += 1
@@ -1310,12 +1315,43 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
             if (flow.value == null) launchBitmapRender(flow, index)
         }
     }
+
+    /** 臨時診斷用：目前持有高點陣的 flow 數（看 P1 有界化有沒有生效）。 */
+    fun debugBitmapFlowCount(): Int = bitmapFlowCache.size
+
+    /**
+     * P1 有界：只留可見±margin 內的高清 flow；窗外且無訂閱的（已拆掉的 item）
+     * 置空＋移出快取＋摘 map（重組時 remember 重跑 getPageBitmap 自動補渲）。
+     * 有訂閱的不動（LazyColumn 場外緩衝頁正在顯示，不能閃白）。
+     * 縮圖便宜（240px 封頂）不清，留著當掠過骨幹。
+     */
+    fun trimBitmapFlowsToWindow(visible: IntRange, margin: Int = 5) {
+        val lo = (visible.first - margin).coerceAtLeast(0)
+        val hi = visible.last + margin
+        val it = bitmapFlowCache.entries.iterator()
+        while (it.hasNext()) {
+            val (index, flow) = it.next()
+            if (index in lo..hi) continue
+            if (flow.subscriptionCount.value == 0) {
+                flow.value = null
+                bitmapCache.remove(index)
+                it.remove()
+            }
+        }
+    }
     
     fun setScrollingFast(isFast: Boolean) {
         if (_isScrollingFast.value == isFast) return
         _isScrollingFast.value = isFast
         // 每次升/落都換代：排隊中的中間頁高清憑舊票作廢，不欠渲染債。
         scrollGen++
+        // 臨時診斷（P0 長文件）：定案即刪。見 docs/specs/env.md 測試條款。
+        android.util.Log.d(
+            "InkFlowDbg",
+            "fastScroll=$isFast gen=$scrollGen pendingBmp=${pendingBitmaps.size} " +
+                "pendingThumb=${pendingThumbs.size} flows=${bitmapFlowCache.size} " +
+                "heap=${(Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory()) shr 20}MB"
+        )
     }
 
     private suspend fun renderPage(pageIndex: Int, highQuality: Boolean, ticket: Long? = null): Bitmap? {

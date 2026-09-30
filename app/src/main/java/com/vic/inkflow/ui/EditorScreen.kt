@@ -433,7 +433,17 @@ fun TabletEditorScreen(
                 // 只有停穩 150ms 才跟側欄 + 寫 DB。
                 kotlinx.coroutines.delay(150)
                 docViewModel.updateLastPage(uri.toString(), currentPageIndex)
-                sidebarListState.animateScrollToCenter(currentPageIndex)
+                // P2 快滑：高速捲動中別排 animateScrollToCenter（每幀取消重進，
+                // 動畫永遠排不到落地，側欄停在舊頁）。改成瞬時定位，不排隊。
+                if (pdfViewModel.isScrollingFast.value) {
+                    sidebarListState.scrollToItem(
+                        sidebarListState.layoutInfo.visibleItemsInfo
+                            .minByOrNull { kotlin.math.abs(it.index - currentPageIndex) }?.index
+                            ?: sidebarListState.firstVisibleItemIndex
+                    )
+                } else {
+                    sidebarListState.animateScrollToCenter(currentPageIndex)
+                }
             }
         } finally {
             sidebarFollowActive = false
@@ -566,24 +576,31 @@ fun TabletEditorScreen(
                         isExportingPdf = true
                         scope.launch {
                             try {
-                                val allStrokes = withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                    db.strokeDao().getAllStrokesForDocument(uri.toString())
-                                }
-                                val allTextAnnotations = withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                    db.textAnnotationDao().getAllForDocument(uri.toString())
-                                }
-                                val allImageAnnotations = withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                    db.imageAnnotationDao().getAllForDocument(uri.toString())
-                                }
+                                // 長文件匯出走逐頁取（三表全拉常駐記憶體會爆 heap）；
+                                // 圖片解碼另有界，見 PdfExporter.decodeBoundedForExport。
+                                val docUriStr = uri.toString()
                                 com.vic.inkflow.util.PdfExporter.export(
                                     originalPdfUri = uri,
-                                    strokes = allStrokes,
-                                    textAnnotations = allTextAnnotations,
-                                    imageAnnotations = allImageAnnotations,
+                                    strokes = emptyList(),
+                                    textAnnotations = emptyList(),
+                                    imageAnnotations = emptyList(),
                                     context = context,
                                     fileName = "InkFlow_${System.currentTimeMillis()}.pdf",
                                     modelW = viewModel.modelWidth,
-                                    modelH = viewModel.modelHeight
+                                    modelH = viewModel.modelHeight,
+                                    pageDataProvider = { pageIndex ->
+                                        Triple(
+                                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                                db.strokeDao().getStrokesForPageSync(docUriStr, pageIndex)
+                                            },
+                                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                                db.textAnnotationDao().getForPageSync(docUriStr, pageIndex)
+                                            },
+                                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                                db.imageAnnotationDao().getForPageSync(docUriStr, pageIndex)
+                                            }
+                                        )
+                                    }
                                 )
                             } finally {
                                 isExportingPdf = false

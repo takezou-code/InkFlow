@@ -42,7 +42,17 @@ object PdfExporter {
     private const val BITMAP_SCALE = 2f
 
     /**
+     * 分頁資料來源：長文件匯出時逐頁向 DB 取，取代「三表全拉進記憶體」。
+     * null 時走舊的整批 groupBy 路徑（相容既有呼叫端）。
+     */
+    fun interface PageDataProvider {
+        suspend fun load(pageIndex: Int): Triple<List<StrokeWithPoints>, List<TextAnnotationEntity>, List<ImageAnnotationEntity>>
+    }
+
+    /**
      * Exports a new PDF with vector strokes, shapes, text, and images drawn on top.
+     *
+     * [pageDataProvider] 非 null 時逐頁取資料（長文件不爆 heap）；為 null 時沿用整批 groupBy。
      */
     suspend fun export(
         originalPdfUri: Uri,
@@ -52,7 +62,8 @@ object PdfExporter {
         context: Context,
         fileName: String = "InkFlow_Export.pdf",
         modelW: Float = MODEL_W,
-        modelH: Float = MODEL_H
+        modelH: Float = MODEL_H,
+        pageDataProvider: PageDataProvider? = null
     ) {
         withContext(Dispatchers.IO) {
             var destinationUri: Uri? = null
@@ -76,14 +87,26 @@ object PdfExporter {
                 context.contentResolver.openInputStream(originalPdfUri).use { inputStream ->
                     val document = PDDocument.load(inputStream)
                     try {
-                        val strokesByPage = strokes.groupBy { it.stroke.pageIndex }
-                        val textByPage   = textAnnotations.groupBy { it.pageIndex }
-                        val imageByPage  = imageAnnotations.groupBy { it.pageIndex }
+                        // 分頁模式才建 groupBy（整批常駐）；逐頁模式每頁取完即棄。
+                        val strokesByPage = if (pageDataProvider == null) strokes.groupBy { it.stroke.pageIndex } else null
+                        val textByPage   = if (pageDataProvider == null) textAnnotations.groupBy { it.pageIndex } else null
+                        val imageByPage  = if (pageDataProvider == null) imageAnnotations.groupBy { it.pageIndex } else null
+                        val tStart = System.currentTimeMillis()
 
                         document.pages.forEachIndexed { pageIndex, page ->
-                            val pageStrokes = strokesByPage[pageIndex]
-                            val pageTexts   = textByPage[pageIndex]
-                            val pageImages  = imageByPage[pageIndex]
+                            val pageStrokes: List<StrokeWithPoints>?
+                            val pageTexts: List<TextAnnotationEntity>?
+                            val pageImages: List<ImageAnnotationEntity>?
+                            if (pageDataProvider != null) {
+                                val (s, t, i) = pageDataProvider.load(pageIndex)
+                                pageStrokes = s
+                                pageTexts = t
+                                pageImages = i
+                            } else {
+                                pageStrokes = strokesByPage?.get(pageIndex)
+                                pageTexts = textByPage?.get(pageIndex)
+                                pageImages = imageByPage?.get(pageIndex)
+                            }
 
                             if (!pageStrokes.isNullOrEmpty() || !pageTexts.isNullOrEmpty() || !pageImages.isNullOrEmpty()) {
                                 // Annotations live in the ROTATED view space (what PdfRenderer shows);
@@ -115,11 +138,24 @@ object PdfExporter {
                                     contentStream.close()
                                 }
                             }
+                            if (pageIndex % 20 == 0) {
+                                android.util.Log.d(
+                                    "PdfExporter perf",
+                                    "progress page=$pageIndex/${document.numberOfPages} " +
+                                        "elapsed=${System.currentTimeMillis() - tStart}ms " +
+                                        "heap=${(Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory()) shr 20}MB " +
+                                        "mode=${if (pageDataProvider != null) "paged" else "bulk"}"
+                                )
+                            }
                         }
 
                         val outputStream = resolver.openOutputStream(destinationUri)
                             ?: throw IllegalStateException("Failed to open output stream.")
                         outputStream.use { document.save(it) }
+                        android.util.Log.d(
+                            "PdfExporter perf",
+                            "done pages=${document.numberOfPages} total=${System.currentTimeMillis() - tStart}ms mode=${if (pageDataProvider != null) "paged" else "bulk"}"
+                        )
                     } finally {
                         document.close()
                     }
@@ -511,9 +547,7 @@ object PdfExporter {
         modelH: Float
     ) {
         try {
-            val bmp = context.contentResolver.openInputStream(Uri.parse(ann.uri))?.use { input ->
-                BitmapFactory.decodeStream(input)
-            } ?: return
+            val bmp = decodeBoundedForExport(context, ann, pageWidth, pageHeight, modelW, modelH) ?: return
 
             // Fix #1: scale model coords to PDF page dimensions.
             val ratioX = pageWidth  / modelW
@@ -548,6 +582,56 @@ object PdfExporter {
                 stream.drawImage(imgXObj, pdfX, pdfY, pdfW, pdfH)
             }
         } catch (_: Exception) { /* skip unreadable images */ }
+    }
+
+    /**
+     * 匯出用有界解碼：照片原圖可達數千 px，但寫進 PDF 只需 pdfW×pdfH 點（2x 足夠）。
+     * 先讀尺寸挑 inSampleSize 再解碼，避免一頁多圖就吃掉數百 MB（長文件匯出爆 heap 主因）。
+     */
+    private fun decodeBoundedForExport(
+        context: Context,
+        ann: ImageAnnotationEntity,
+        pageWidth: Float,
+        pageHeight: Float,
+        modelW: Float,
+        modelH: Float,
+        maxTargetPx: Int = 2048
+    ): android.graphics.Bitmap? {
+        val uri = Uri.parse(ann.uri)
+        // 目標像素＝實際要寫進 PDF 的點尺寸 × 2（144dpi，與 BITMAP_SCALE 同級）
+        val pdfW = (ann.modelWidth * (pageWidth / modelW)).coerceAtLeast(1f)
+        val pdfH = (ann.modelHeight * (pageHeight / modelH)).coerceAtLeast(1f)
+        val targetW = (pdfW * BITMAP_SCALE).toInt().coerceIn(1, maxTargetPx)
+        val targetH = (pdfH * BITMAP_SCALE).toInt().coerceIn(1, maxTargetPx)
+
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        context.contentResolver.openInputStream(uri)?.use {
+            BitmapFactory.decodeStream(it, null, bounds)
+        }
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+
+        var sample = 1
+        while (bounds.outWidth / (sample * 2) >= targetW && bounds.outHeight / (sample * 2) >= targetH) {
+            sample *= 2
+        }
+        val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+        val decoded = context.contentResolver.openInputStream(uri)?.use {
+            BitmapFactory.decodeStream(it, null, opts)
+        } ?: return null
+
+        // 邊界保險：解出來仍遠超目標就再縮一次（decodeStream 不支援縮放，只能 recycle 重解）
+        val stillTooBig = decoded.width > targetW * 4 || decoded.height > targetH * 4
+        if (stillTooBig) {
+            val w = decoded.width.toFloat()
+            val h = decoded.height.toFloat()
+            val shrink = minOf(targetW / w, targetH / h).coerceAtLeast(0.01f)
+            val scaled = android.graphics.Bitmap.createScaledBitmap(
+                decoded, (w * shrink).toInt().coerceAtLeast(1), (h * shrink).toInt().coerceAtLeast(1), true
+            )
+            if (scaled !== decoded) decoded.recycle()
+            return scaled
+        }
+        return decoded
     }
 
     private suspend fun showToast(context: Context, message: String) {
