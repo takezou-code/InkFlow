@@ -42,9 +42,12 @@ object AutoBackupScheduler {
         .setRequiresBatteryNotLow(true)
         .build()
 
-    /** App 啟動時呼叫；KEEP 政策保證不會重複排程。 */
-    fun ensureScheduled(context: Context) {
-        if (!isEnabled(context)) return
+    /**
+     * App 啟動時呼叫；KEEP 政策保證不會重複排程。
+     * [quiet]＝靜模式：暫停排程（回靜時已 cancel 的，這裡直接不排回來）。
+     */
+    fun ensureScheduled(context: Context, quiet: Boolean = false) {
+        if (!isEnabled(context) || quiet) return
         val wm = WorkManager.getInstance(context)
         val privateReq = PeriodicWorkRequestBuilder<AutoBackupWorker>(6, TimeUnit.HOURS)
             .setConstraints(constraints())
@@ -62,6 +65,20 @@ object AutoBackupScheduler {
         wm.enqueueUniquePeriodicWork(
             PUBLIC_WORK_NAME, ExistingPeriodicWorkPolicy.KEEP, publicReq
         )
+    }
+
+    /**
+     * 靜模式開關：進靜 cancel 兩條排程（背景工作停省電），回流光 ensureScheduled 補回。
+     * 與使用者自己的「自動備份」開關正交（那個由 [setEnabled] 管）。
+     */
+    fun setQuiet(context: Context, quiet: Boolean) {
+        val wm = WorkManager.getInstance(context)
+        if (quiet) {
+            wm.cancelUniqueWork(PRIVATE_WORK_NAME)
+            wm.cancelUniqueWork(PUBLIC_WORK_NAME)
+        } else {
+            ensureScheduled(context)
+        }
     }
 
     fun setEnabled(context: Context, enabled: Boolean) {

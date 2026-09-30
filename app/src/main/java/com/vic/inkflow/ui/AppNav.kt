@@ -144,6 +144,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -229,6 +230,15 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 // --- 1. App Navigation ---
+/** 靜模式（流光/靜總開關）prefs key，全 App 唯一名。 */
+const val KEY_POWER_SAVER = "power_saver"
+/** 使用者手動切過靜模式：記住就不再被低電量自動切覆蓋。 */
+private const val KEY_POWER_SAVER_MANUAL = "power_saver_manual"
+/** 目前這個靜模式是低電量自動切的（不是使用者按的）。 */
+private const val KEY_POWER_SAVER_AUTO = "power_saver_auto"
+/** 低於此電量自動進靜／高於或等於此電量（且已插電或回升）自動回流光，中間留遲滯不跳。 */
+private const val AUTO_QUIET_ENTER = 20
+private const val AUTO_QUIET_EXIT = 30
 @Composable
 fun InkLayerApp(db: AppDatabase) {
     val context = LocalContext.current
@@ -244,10 +254,67 @@ fun InkLayerApp(db: AppDatabase) {
     }
 
     // 流光／靜總開關：關＝流光（預設），開＝靜。往下透 isPowerSaver，各層內部分支。
-    var powerSaver by rememberSaveable(prefs) { mutableStateOf(prefs.getBoolean("power_saver", false)) }
-    fun setPowerSaver(v: Boolean) {
+    var powerSaver by rememberSaveable(prefs) { mutableStateOf(prefs.getBoolean(KEY_POWER_SAVER, false)) }
+    // byUser＝使用者自己按的（記住就不被低電量自動切覆蓋）；自動切不記。
+    fun setPowerSaver(v: Boolean, byUser: Boolean = true) {
         powerSaver = v
-        prefs.edit().putBoolean("power_saver", v).apply()
+        prefs.edit().putBoolean(KEY_POWER_SAVER, v).apply()
+        if (byUser) prefs.edit().putBoolean(KEY_POWER_SAVER_MANUAL, true).apply()
+        com.vic.inkflow.util.AutoBackupScheduler.setQuiet(context, v)
+    }
+
+    // 低電量自動切靜：非充電且 <20% 進靜、充電或 >30% 回流光（遲滯不來回跳）。
+    // 使用者手動切過就不再自動接管。
+    DisposableEffect(Unit) {
+        fun batteryPercent(): Int {
+            val i = context.registerReceiver(
+                null, android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED)
+            ) ?: return -1
+            val lv = i.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1)
+            val sc = i.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, -1)
+            return if (lv >= 0 && sc > 0) lv * 100 / sc else -1
+        }
+        fun isCharging(): Boolean =
+            context.registerReceiver(
+                null, android.content.IntentFilter(android.content.Intent.ACTION_POWER_CONNECTED)
+            ) != null
+        fun toast(msg: String) {
+            android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
+        }
+        val receiver = object : android.content.BroadcastReceiver() {
+            override fun onReceive(c: android.content.Context?, intent: android.content.Intent?) {
+                val pct = batteryPercent()
+                if (pct < 0) return
+                val chg = isCharging()
+                val auto = prefs.getBoolean(KEY_POWER_SAVER_AUTO, false)
+                val manual = prefs.getBoolean(KEY_POWER_SAVER_MANUAL, false)
+                if (!chg && pct <= AUTO_QUIET_ENTER) {
+                    if (!powerSaver && !manual && !auto) {
+                        prefs.edit().putBoolean(KEY_POWER_SAVER_AUTO, true).apply()
+                        setPowerSaver(true, byUser = false)
+                        toast("電量 $pct%，已切到靜模式")
+                    }
+                } else if (chg || pct >= AUTO_QUIET_EXIT) {
+                    if (powerSaver && auto) {
+                        prefs.edit().putBoolean(KEY_POWER_SAVER_AUTO, false).apply()
+                        setPowerSaver(false, byUser = false)
+                        toast("電量回來了，已切回流光")
+                    }
+                }
+            }
+        }
+        val filter = android.content.IntentFilter().apply {
+            addAction(android.content.Intent.ACTION_BATTERY_CHANGED)
+            addAction(android.content.Intent.ACTION_POWER_CONNECTED)
+            addAction(android.content.Intent.ACTION_POWER_DISCONNECTED)
+        }
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            context.registerReceiver(receiver, filter, android.content.Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            context.registerReceiver(receiver, filter)
+        }
+        onDispose { runCatching { context.unregisterReceiver(receiver) } }
     }
 
     // 背景主題：SOFT 柔光預設，往下透給 AuroraBackground

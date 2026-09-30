@@ -172,15 +172,19 @@ fun GlobalSettingsScreen(
                     onThemeModeChanged(mode)
                     prefs.edit().putString("theme_mode", mode.name).apply()
                 }
-                // 流光／靜總開關：靜＝動畫靜幀＋背景凍結，功能不變
-                var powerSaver by remember { mutableStateOf(prefs.getBoolean("power_saver", false)) }
+                // 流光／靜總開關：靜＝玻璃降假、動畫凍結、幀率 60、暫停自動備份，功能不變
+                var powerSaver by remember { mutableStateOf(prefs.getBoolean(KEY_POWER_SAVER, false)) }
                 SettingsSwitchRow(
                     title = "靜模式",
-                    subtitle = "動畫靜止、背景凍結，最省電；關閉回到流光",
+                    subtitle = "玻璃降假、動畫凍結、幀率降 60、暫停自動備份；電量低於 20% 會自動切進來（你手動改過就不再自動接管）",
                     checked = powerSaver,
                     onCheckedChange = {
                         powerSaver = it
-                        prefs.edit().putBoolean("power_saver", it).apply()
+                        prefs.edit()
+                            .putBoolean(KEY_POWER_SAVER, it)
+                            .putBoolean("power_saver_manual", true)
+                            .putBoolean("power_saver_auto", false)
+                            .apply()
                         onPowerSaverChanged(it)
                     }
                 )

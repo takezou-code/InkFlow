@@ -41,7 +41,10 @@ class MainActivity : ComponentActivity() {
         }
         PDFBoxResourceLoader.init(applicationContext)
         val db = AppDatabase.getDatabase(this)
-        AutoBackupScheduler.ensureScheduled(this)
+        // 靜模式不回來排備份（開機時就已經在靜，排了等於白排）
+        val quiet = getSharedPreferences("inkflow_settings", 0)
+            .getBoolean("power_saver", false)
+        AutoBackupScheduler.ensureScheduled(this, quiet)
         setContent {
             InkLayerApp(db = db)
         }
