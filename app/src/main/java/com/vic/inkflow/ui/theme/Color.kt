@@ -43,3 +43,12 @@ val GlassTintLight = Color(0x4DFFFFFF) // 30%
 val GlassTintDark = Color(0x800F172A) // 50%
 /** 壓在淺玻璃上的內容色（圖標/字）：iOS 亮欄配深內容。 */
 val PaperInkColor = Color(0xFF1E293B)
+
+/** 選中態藥丸（實體）。半透明在黑玻璃上＝等於沒有，看不出選到哪個，所以用實體。
+ *  配色走「珍珠白 → 柔薰衣草」：亮但壓得住，不���那種螢光紫的廉價感。 */
+val GlassSelectionTop = Color(0xFFF6F4FF)
+val GlassSelectionBottom = Color(0xFFDDD8F7)
+/** 選中態的墨色（實體亮底上必須用深色，兩種主題都一樣才讀得清楚）。 */
+val GlassSelectionInk = Color(0xFF1B1235)
+/** 選中藥丸的內高光（做出珍珠感，代替 shadow——shadow 在這台 GPU 會留白框）。 */
+val GlassSelectionSheen = Color(0x59FFFFFF)

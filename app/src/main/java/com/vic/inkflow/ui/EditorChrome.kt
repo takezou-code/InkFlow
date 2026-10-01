@@ -5,6 +5,7 @@ import dev.chrisbanes.haze.hazeSource
 import com.vic.inkflow.ui.theme.Motion
 import com.vic.inkflow.ui.theme.ShapeSm
 import com.vic.inkflow.ui.theme.ShapeMd
+import com.vic.inkflow.ui.theme.GlassSelectionInk
 import com.vic.inkflow.ui.theme.ShapeLg
 import com.vic.inkflow.ui.theme.ShapeXl
 import com.vic.inkflow.util.reorderable
@@ -375,23 +376,12 @@ fun TabletEditorTopBar(
                             .padding(horizontal = 3.dp, vertical = 3.dp)
                     ) {
                         if (drawingActiveIdx >= 0) {
-                            // 選中態必須是「半透明」：這塊畫在玻璃表面之上，
-                            // 用不透明色（原本的 primaryContainer 淡紫實心漸層）會把玻璃
-                            // 完全蓋住，結果就是黑玻璃、模糊、折射全部看不到。
-                            // 現在只做一层很淡的同色高光，玻璃透得出來，選中感仍在。
+                            // 選中態走共用藥丸（實體，顏色單一來源在 theme/Color.kt）
                             Box(
                                 modifier = Modifier
                                     .offset(x = drawingHighlightOffset)
                                     .size(toolButtonSize)
-                                    .background(
-                                        Brush.linearGradient(
-                                            listOf(
-                                                MaterialTheme.colorScheme.primary.copy(alpha = 0.22f),
-                                                MaterialTheme.colorScheme.secondary.copy(alpha = 0.14f)
-                                            )
-                                        ),
-                                        ShapeMd
-                                    )
+                                    .glassSelectionPill(ShapeMd)
                             )
                         }
                         Row {
@@ -455,22 +445,23 @@ fun TabletEditorTopBar(
                         ) {
                             LassoSubType.entries.forEach { subType ->
                                 val isSelected = selectedLassoSubType == subType
-                                TextButton(
-                                    onClick = { viewModel.onLassoSubTypeSelected(subType) },
-                                    modifier = Modifier.height(32.dp),
-                                    colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
-                                        containerColor = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.22f) else Color.Transparent,
-                                        contentColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                                    )
-                                ) {
-                                    Text(
-                                        text = when (subType) {
-                                            LassoSubType.FREEFORM -> "自由圈選"
-                                            LassoSubType.RECT -> "方框選取"
-                                        },
-                                        style = MaterialTheme.typography.labelMedium
-                                    )
-                                }
+                                // 選中態走共用藥丸＋共用墨色，與工具列一致
+                                Text(
+                                    text = when (subType) {
+                                        LassoSubType.FREEFORM -> "自由圈選"
+                                        LassoSubType.RECT -> "方框選取"
+                                    },
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = if (isSelected) GlassSelectionInk else MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier
+                                        .clip(ShapeMd)
+                                        .clickable { viewModel.onLassoSubTypeSelected(subType) }
+                                        .then(
+                                            if (isSelected) Modifier.glassSelectionPill(ShapeMd)
+                                            else Modifier
+                                        )
+                                        .padding(horizontal = 12.dp, vertical = 7.dp)
+                                )
                             }
                         }
                     }
@@ -487,16 +478,7 @@ fun TabletEditorTopBar(
                                 modifier = Modifier
                                     .offset(x = annotationHighlightOffset)
                                     .size(toolButtonSize)
-                                    .background(
-                                        Brush.linearGradient(
-                                            listOf(
-                                                // 同理：不可用不透明 primaryContainer，會蓋掉玻璃
-                                                MaterialTheme.colorScheme.primary.copy(alpha = 0.22f),
-                                                MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
-                                            )
-                                        ),
-                                        ShapeMd
-                                    )
+                                    .glassSelectionPill(ShapeMd)
                             )
                         }
                         Row {
@@ -545,24 +527,24 @@ fun TabletEditorTopBar(
                         ) {
                             ShapeSubType.entries.forEach { subType ->
                                 val isSelected = selectedShapeSubType == subType
-                                TextButton(
-                                    onClick = { viewModel.onShapeSubTypeSelected(subType) },
-                                    modifier = Modifier.height(32.dp),
-                                    colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
-                                        containerColor = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.22f) else Color.Transparent,
-                                        contentColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                                    )
-                                ) {
-                                    Text(
-                                        text = when (subType) {
-                                            ShapeSubType.RECT -> "方形"
-                                            ShapeSubType.CIRCLE -> "圓形"
-                                            ShapeSubType.LINE -> "直線"
-                                            ShapeSubType.ARROW -> "箭頭"
-                                        },
-                                        style = MaterialTheme.typography.labelMedium
-                                    )
-                                }
+                                Text(
+                                    text = when (subType) {
+                                        ShapeSubType.RECT -> "方形"
+                                        ShapeSubType.CIRCLE -> "圓形"
+                                        ShapeSubType.LINE -> "直線"
+                                        ShapeSubType.ARROW -> "箭頭"
+                                    },
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = if (isSelected) GlassSelectionInk else MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier
+                                        .clip(ShapeMd)
+                                        .clickable { viewModel.onShapeSubTypeSelected(subType) }
+                                        .then(
+                                            if (isSelected) Modifier.glassSelectionPill(ShapeMd)
+                                            else Modifier
+                                        )
+                                        .padding(horizontal = 12.dp, vertical = 7.dp)
+                                )
                             }
                         }
                     }

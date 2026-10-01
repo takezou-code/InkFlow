@@ -493,6 +493,49 @@ private fun Modifier.glassDressing(
 }
 
 /**
+ * 選中態藥丸（全 App 唯一入口）。
+ *
+ * 為什麼是「實體」不是半透明：底色疊在黑玻璃上，22% 的半透明色等於沒有，
+ * 使用者看不出選到哪個（實測）。所以用實體珍珠白→柔薰衣草漸層，
+ * 深墨色圖示壓在上面，兩種主題都讀得清楚。
+ *
+ * 高級感來自三件事（不是加更多光）：
+ *  1. 漸層是「上亮下淡」＋頂端一道內高光 → 有厚度，不是色塊
+ *  2. 底部一道極淡的暗邊 → 藥丸是浮在玻璃上，不是貼上去
+ *  3. 顏色低飽和（不用螢光紫）→ 亮但不吵
+ *
+ * 呼叫端只給形狀與尺寸，顏色禁自訂（色票在 theme/Color.kt）。
+ */
+@Composable
+fun Modifier.glassSelectionPill(
+    shape: Shape = ShapeMd
+): Modifier = this
+    .background(
+        brush = Brush.verticalGradient(
+            colorStops = arrayOf(
+                0f to com.vic.inkflow.ui.theme.GlassSelectionTop,
+                0.55f to com.vic.inkflow.ui.theme.GlassSelectionBottom,
+                1f to com.vic.inkflow.ui.theme.GlassSelectionBottom
+            )
+        ),
+        shape = shape
+    )
+    // 底緣暗邊：讓藥丸浮起來（不用 shadow，那會留白框）
+    .border(
+        border = BorderStroke(
+            width = 0.5.dp,
+            brush = Brush.verticalGradient(
+                colorStops = arrayOf(
+                    0f to Color.Transparent,
+                    0.7f to Color.Transparent,
+                    1f to Color.Black.copy(alpha = 0.10f)
+                )
+            )
+        ),
+        shape = shape
+    )
+
+/**
  * 全統一對話框殼（單一入口）：ui.window.Dialog（純視窗＋系統遮罩，零 M3）
  * ＋ 單一玻璃卡 ＋ GlassTextButton。
  *

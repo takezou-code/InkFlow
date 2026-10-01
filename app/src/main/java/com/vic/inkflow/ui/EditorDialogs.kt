@@ -504,11 +504,10 @@ internal fun EditorIconButton(
     size: androidx.compose.ui.unit.Dp = 32.dp
 ) {
     val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    // 選中色＝原本的深紫（onPrimaryContainer）。用 colorScheme.primary 在這套深色主題
-    // 裡是淡紫，選中反而比未選中更弱。
-    val activeTint = MaterialTheme.colorScheme.onPrimaryContainer
+    // 選中＝實體亮藥丸上的深墨色（與 glassSelectionPill 同一套色票）。
+    // 用 colorScheme.primary 在這套深色主題裡是淡紫，壓在亮底上會看不見。
     val animatedTintColor by animateColorAsState(
-        if (isActive) activeTint else glassContentColor(isDark),
+        if (isActive) com.vic.inkflow.ui.theme.GlassSelectionInk else glassContentColor(isDark),
         label = "EditorButtonTint"
     )
     val iconScale by animateFloatAsState(
@@ -521,11 +520,8 @@ internal fun EditorIconButton(
         animationSpec = tween(180),
         label = "EditorIconOffsetY"
     )
-    val indicatorAlpha by animateFloatAsState(
-        targetValue = if (isActive) 1f else 0f,
-        animationSpec = tween(180),
-        label = "EditorIconIndicatorAlpha"
-    )
+    // 選中態底色由外層的 glassSelectionPill 負責（EditorChrome 的滑動藥丸），
+    // 這裡不再畫任何選中底光，避免兩層疊成半透明糊。
     // 切換彈跳：被選中時圖標先歪 -12° 再彈回，比單純放大更活潑
     val iconWiggle = remember { Animatable(0f) }
     LaunchedEffect(isActive) {
@@ -541,16 +537,7 @@ internal fun EditorIconButton(
     Box(
         modifier = Modifier
             .size(size)
-            .glassClickable(onClick = onClick, shape = CircleShape)
-            // 選中底光：取代原本下方那條 14×3dp 的小槓（太醜）。
-            // 同色（onPrimaryContainer）但做成圖示背後的柔和光暈，選中感一樣清楚。
-            .background(
-                brush = Brush.radialGradient(
-                    colors = listOf(activeTint.copy(alpha = 0.22f * indicatorAlpha), Color.Transparent),
-                    radius = size.value * 0.75f
-                ),
-                shape = CircleShape
-            ),
+            .glassClickable(onClick = onClick, shape = CircleShape),
         contentAlignment = Alignment.Center
     ) {
         Icon(
