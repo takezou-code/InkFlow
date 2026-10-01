@@ -809,16 +809,20 @@ internal fun Sidebar(
                             Text("新增頁面", style = MaterialTheme.typography.labelMedium)
                         }
                     } else {
+                        // 收合模式：+ 也要有液態玻璃圓底，跟展開模式同一套語言
+                        // （先前是光突突一個 IconButton，跟旁邊有底的按鈕不一致）
                         androidx.compose.material3.IconButton(
                             onClick = { onAddPage(currentPageIndex) },
                             enabled = !isPageOperationInProgress,
-                            modifier = Modifier.padding(vertical = 5.dp)
+                            modifier = Modifier
+                                .padding(vertical = 5.dp)
+                                .glassPanel(hazeState, isDarkTheme, CircleShape)
                         ) {
                             Icon(
                                 Icons.Outlined.Add,
                                 contentDescription = "新增頁面",
                                 modifier = Modifier.size(24.dp),
-                                tint = MaterialTheme.colorScheme.primary
+                                tint = glassContentColor(isDarkTheme)
                             )
                         }
                     }

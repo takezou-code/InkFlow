@@ -161,7 +161,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -183,6 +185,7 @@ import androidx.compose.ui.draganddrop.DragAndDropEvent
 import androidx.compose.ui.draganddrop.DragAndDropTarget
 import androidx.compose.ui.draganddrop.DragAndDropTransferData
 import androidx.compose.ui.draganddrop.toAndroidDragEvent
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
@@ -281,6 +284,10 @@ fun TabletEditorScreen(
     var aiPrompt by remember { mutableStateOf<String?>(null) }
     var aiAutoSend by remember { mutableStateOf(true) }
     var isSendingPage by remember { mutableStateOf(false) }
+    // 抽屜：面板寬度依內容區實寬算（不再用螢幕寬）、滑動進度、WebView 是否活著
+    var contentW by remember { mutableIntStateOf(0) }
+    val aiDrawerProgress = remember { Animatable(0f) }
+    var aiPanelLive by remember { mutableStateOf(false) }
     // M2b-2：聰明圈選 — 引入鈕兩段式：①進圈選模式（段落打勾）②收集打勾段落
     var aiPickMode by remember { mutableStateOf(false) }
     var aiPickEnterId by remember { mutableStateOf(0) }
@@ -716,10 +723,22 @@ fun TabletEditorScreen(
             // 60–120Hz 就是每幀一個，堆積後動畫延遲落地 → 拖起來又卡又黏。
             // 解法：pointer 迴圈只做非 suspend 的 trySend（CONFLATED＝只留最新值），
             // 由這兩個 LaunchedEffect 各自套用。事件再密也不會堆積。
-            val widthRequests = remember { kotlinx.coroutines.channels.Channel<Float>(kotlinx.coroutines.channels.Channel.CONFLATED) }
+            val widthRequests = remember { kotlinx.coroutines.channels.Channel<androidx.compose.ui.unit.Dp>(kotlinx.coroutines.channels.Channel.CONFLATED) }
             val scrollRequests = remember { kotlinx.coroutines.channels.Channel<Float>(kotlinx.coroutines.channels.Channel.CONFLATED) }
+            // 拖曳期間用：跟手的視覺寬度 ＋ 內容固定量測寬度（避免整排縮圖重測）
+            var dragVisualWidth by remember { androidx.compose.runtime.mutableStateOf(normalWidth) }
+            var dragMeasureWidth by remember { androidx.compose.runtime.mutableStateOf(normalWidth) }
+            var isDraggingSidebar by remember { androidx.compose.runtime.mutableStateOf(false) }
             LaunchedEffect(widthRequests) {
-                for (w in widthRequests) animatableWidth.snapTo(w)
+                for (w in widthRequests) {
+                    if (isDraggingSidebar) {
+                        // 拖曳：只改外框，內容寬度鎖在拖曳起點
+                        dragVisualWidth = w
+                    } else {
+                        // 非拖曳（模式切換／放手收尾）：動畫接手
+                        animatableWidth.snapTo(w.value)
+                    }
+                }
             }
             LaunchedEffect(scrollRequests) {
                 for (dy in scrollRequests) mainListState.scrollBy(dy)
@@ -740,7 +759,32 @@ fun TabletEditorScreen(
             val toolbarH = 56.dp + if (sliderShown) 42.dp else 0.dp
 
             Row(Modifier.fillMaxSize()) {
-                Box(Modifier.width(currentWidthDp).fillMaxHeight().padding(top = toolbarH)) {
+                // 拖曳期最佳化：外層寬度跟著手指走，但**內容只量一次**。
+                // 用 Modifier.width(currentWidthDp) 會讓側欄裡整排縮圖每幀重新量測
+                // （側欄可見數十頁，每頁還有 PageThumbnail 的疊圖繪製），
+                // 60–120Hz 下拖起來又卡又黏——這才是真正的瓶頸，不是 coroutine。
+                // 做法：子層固定用「起始寬」量一次，外框只報跟手寬度（裁切）。
+                val fixedW = if (isDraggingSidebar) {
+                    with(density) { dragMeasureWidth.toPx() }.roundToInt()
+                } else {
+                    with(density) { currentWidthDp.toPx() }.roundToInt()
+                }
+                val visualW = if (isDraggingSidebar) {
+                    with(density) { dragVisualWidth.toPx() }.roundToInt().coerceIn(0, fixedW)
+                } else fixedW
+                Box(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .padding(top = toolbarH)
+                        .layout { measurable, constraints ->
+                            val placeable = measurable.measure(
+                                constraints.copy(minWidth = fixedW, maxWidth = fixedW)
+                            )
+                            layout(visualW, placeable.height) {
+                                placeable.place(0, 0)
+                            }
+                        }
+                ) {
                     Sidebar(
                 sidebarMode = sidebarMode,
                 onModeChange = { sidebarMode = it },
@@ -804,6 +848,12 @@ fun TabletEditorScreen(
                         val order = listOf(SidebarMode.COLLAPSED, SidebarMode.NORMAL, SidebarMode.FULLSCREEN)
                         awaitEachGesture {
                             val down = awaitFirstDown()
+                            // 拖曳起點：鎖住內容量測寬度，之後外框跟手但內容不重測
+                            if (sidebarMode != SidebarMode.COLLAPSED) {
+                                dragMeasureWidth = currentWidthDp
+                                dragVisualWidth = currentWidthDp
+                                isDraggingSidebar = true
+                            }
                             // null = 未定；true = 橫向調寬；false = 直向捲動（先過 slop 先鎖定）
                             var horizontalLock: Boolean? = null
                             var prevX = down.position.x
@@ -822,9 +872,11 @@ fun TabletEditorScreen(
                                         sidebarMode = order[(order.indexOf(sidebarMode) + 1) % order.size]
                                     } else if (horizontalLock == true) {
                                         val vx = velX
-                                        val currentW = animatableWidth.value
+                                        val currentW = if (isDraggingSidebar) {
+                                            with(density) { dragVisualWidth.toPx() }
+                                        } else animatableWidth.value
                                         val sorted = anchors.sortedBy { it.second }
-                                        sidebarMode = when {
+                                        val next = when {
                                             vx > 600f -> sorted.firstOrNull { it.second > currentW + 1f }?.first
                                                 ?: SidebarMode.FULLSCREEN
                                             vx < -600f -> sorted.lastOrNull { it.second < currentW - 1f }?.first
@@ -833,6 +885,16 @@ fun TabletEditorScreen(
                                                 kotlin.math.abs(currentW - w)
                                             }?.first ?: SidebarMode.COLLAPSED
                                         }
+                                        // 收尾：解除拖曳鎖，讓動畫接手寬度變化
+                                        isDraggingSidebar = false
+                                        sidebarMode = next
+                                        widthRequests.trySend(
+                                            when (next) {
+                                                SidebarMode.COLLAPSED -> collapsedWidth
+                                                SidebarMode.NORMAL -> normalWidth
+                                                SidebarMode.FULLSCREEN -> totalWidth
+                                            }
+                                        )
                                     }
                                     break
                                 }
@@ -856,9 +918,13 @@ fun TabletEditorScreen(
                                     velX = velX * 0.75f + (dx / dt * 1000f) * 0.25f
                                     change.consume()
                                     val deltaDp = dx / density.density
-                                    val newWidth = (animatableWidth.value + deltaDp).coerceIn(collapsedWidth.value, totalWidth.value)
+                                    val baseW = if (isDraggingSidebar) {
+                                                with(density) { dragVisualWidth.toPx() }
+                                            } else animatableWidth.value
+                                            val newWidthPx = (baseW + deltaDp)
+                                                .coerceIn(collapsedWidth.value, totalWidth.value)
                                     // 只丟請求，實際套用在上面的 LaunchedEffect（見 widthRequests 註解）
-                                    widthRequests.trySend(newWidth)
+                                    widthRequests.trySend(with(density) { newWidthPx.toDp() })
                                 } else if (horizontalLock == false) {
                                     // 直向：把主列表跟著手指捲（內容跟手）
                                     change.consume()
@@ -883,16 +949,81 @@ fun TabletEditorScreen(
             }
         }
 
-        Box(Modifier.weight(1f).fillMaxHeight()) {
-            Row(Modifier.fillMaxSize()) {
-                // Left Panel: AI Parser View — fade only. Size animation remeasures the whole
-                // Row every frame → glass capture reallocs every frame → sustained black glass.
-                // Instant layout (1 remeasure) + fade = single invisible frame; bitmaps persist via Fix2c.
-                androidx.compose.animation.AnimatedVisibility(
-                    visible = showAiPanel,
-                    modifier = Modifier.weight(aiPanelWeight).fillMaxHeight().padding(top = toolbarH),
-                    enter = fadeIn(tween(220)),
-                    exit = fadeOut(tween(180))
+Box(Modifier.weight(1f).fillMaxHeight().onSizeChanged { contentW = it.width }.clipToBounds()) {
+            // ── Workspace：恆定填滿 ────────────────────────────────────────────
+            // AI 面板改浮層抽屜後，這裡不再隨 showAiPanel 改權重。
+            // 舊做法 weight(1-aiPanelWeight)：開閉＝整列重新量測，紙被壓縮。
+            Workspace(
+                pageIndex = currentPageIndex,
+                pdfViewModel = pdfViewModel,
+                viewModel = viewModel,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .hazeSource(chromeHaze),
+                pageAspectRatio = pageAspectRatio,
+                documentUri = uri.toString(),
+                onAiFileReady = { fileUri, prompt ->
+                    aiFileUri = fileUri
+                    aiPrompt = prompt
+                    aiAutoSend = true
+                    showAiPanel = true
+                },
+                hazeState = editorHaze,
+                isDarkTheme = isEditorDark,
+                db = db,
+                mainListState = mainListState,
+                onRequestPage = onRequestPage,
+                onScrollPage = onScrollPage
+            )
+            // ── AI 抽屜：浮層玻璃卡（畫在紙上面）────────────────────────────
+            // 面板永不離開 composition → WebView 不死，對話與捲動位置留著。
+            // 滑動只動 graphicsLayer 的 translationX：純合成器層，不觸發 layout/measure。
+            val density = LocalDensity.current
+            val panelW = (contentW * aiPanelWeight).coerceAtLeast(260f)
+                .coerceAtMost((contentW - 48f).coerceAtLeast(160f))
+            val panelWdp = with(density) { panelW.toDp() }
+            LaunchedEffect(showAiPanel) {
+                if (showAiPanel) {
+                    aiPanelLive = true
+                    aiDrawerProgress.animateTo(
+                        1f,
+                        tween(durationMillis = 280, easing = androidx.compose.animation.core.FastOutSlowInEasing)
+                    )
+                } else {
+                    aiDrawerProgress.animateTo(
+                        0f,
+                        tween(durationMillis = 200, easing = androidx.compose.animation.core.FastOutSlowInEasing)
+                    )
+                    aiPanelLive = false // 滑出畫面後才熄燈（此刻已不可見，熄燈不跳動）
+                }
+            }
+            Row(
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .graphicsLayer {
+                        // 只在 layer 內讀動畫值：每幀不觸發任何重组
+                        val p = aiDrawerProgress.value
+                        translationX = -panelW * (1f - p)
+                        alpha = p
+                    }
+                    // 關閉態擋觸控：alpha 0 不會自動停用 hit test，否則紙張那區會留隐形觸控
+                    .then(
+                        if (showAiPanel) Modifier else Modifier.pointerInput(Unit) {
+                            awaitPointerEventScope {
+                                while (true) {
+                                    awaitPointerEvent(PointerEventPass.Initial).changes.forEach { it.consume() }
+                                }
+                            }
+                        }
+                    )
+            ) {
+                // 卡片本體：真玻璃＋圓角，內縮 5dp 留一圈玻璃邊
+                Box(
+                    modifier = Modifier
+                        .width(panelWdp)
+                        .fillMaxHeight()
+                        .padding(top = toolbarH + 8.dp, bottom = 8.dp, start = 8.dp)
+                        .glassPanel(chromeHaze, isEditorDark, RoundedCornerShape(26.dp))
                 ) {
                     AiWebPanel(
                         fileUri = aiFileUri,
@@ -913,6 +1044,8 @@ fun TabletEditorScreen(
                         },
                         onWebView = { aiWebView = it },
                         autoSend = aiAutoSend,
+                        active = aiPanelLive,
+                        modifier = Modifier.padding(5.dp),
                         onClose = {
                             showAiPanel = false
                             aiFileUri = null
@@ -922,131 +1055,93 @@ fun TabletEditorScreen(
                         }
                     )
                 }
-                if (showAiPanel) {
-                    // AI 拉桿一體式：上方關閉鈕 + 下方分隔線/握把，整條都可橫拖調寬
-                    Column(
-                        modifier = Modifier
-                            .fillMaxHeight()
-                            .width(24.dp)
-                            .background(Color.Transparent)
-                            .padding(top = toolbarH)
-                            .pointerInput(Unit) {
-                                detectHorizontalDragGestures { change, dragAmount ->
-                                    change.consume()
-                                    val screenWidthPx = context.resources.displayMetrics.widthPixels.toFloat()
-                                    val deltaWeight = dragAmount / screenWidthPx
-                                    aiPanelWeight = (aiPanelWeight + deltaWeight).coerceIn(0.2f, 0.8f)
-                                }
-                            },
-                        horizontalAlignment = Alignment.CenterHorizontally
+                // 拉桿一體式：關閉鈕＋引入鈕＋黑白切換＋分隔握把（整條可橫拖調寬）
+                Column(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .width(28.dp)
+                        .padding(top = toolbarH + 8.dp, bottom = 8.dp)
+                        .pointerInput(Unit) {
+                            detectHorizontalDragGestures { change, dragAmount ->
+                                change.consume()
+                                aiPanelWeight = (aiPanelWeight + dragAmount / contentW.coerceAtLeast(1))
+                                    .coerceIn(0.2f, 0.8f)
+                            }
+                        },
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    IconButton(
+                        onClick = {
+                            showAiPanel = false
+                            aiFileUri = null
+                            aiPrompt = null
+                            aiAutoSend = true
+                            aiPickMode = false
+                        },
+                        modifier = Modifier.size(24.dp)
                     ) {
-                        IconButton(
-                            onClick = {
-                                showAiPanel = false
-                                aiFileUri = null
-                                aiPrompt = null
-                                aiAutoSend = true
+                        Icon(
+                            imageVector = Icons.Filled.Close,
+                            contentDescription = "關閉 AI 面板",
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                        )
+                    }
+                    // 引入鈕兩段式：①進圈選模式（段落打勾）②收集打勾段落（沒勾則取最後回覆全文）
+                    IconButton(
+                        onClick = {
+                            if (!aiPickMode) {
+                                aiPickMode = true
+                                aiPickEnterId++
+                                android.widget.Toast.makeText(context, "點 Gemini 回覆的段落打勾，再按一次引入抓取", android.widget.Toast.LENGTH_SHORT).show()
+                            } else {
                                 aiPickMode = false
-                            },
-                            modifier = Modifier
-                                .padding(top = 8.dp)
-                                .size(24.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.Close,
-                                contentDescription = "關閉 AI 面板",
-                                modifier = Modifier.size(16.dp),
-                                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                            )
-                        }
-                        // 引入鈕兩段式：①進圈選模式（段落打勾）②收集打勾段落（沒勾則取最後回覆全文）
-                        IconButton(
-                            onClick = {
-                                if (!aiPickMode) {
-                                    aiPickMode = true
-                                    aiPickEnterId++
-                                    android.widget.Toast.makeText(context, "點 Gemini 回覆的段落打勾，再按一次引入抓取", android.widget.Toast.LENGTH_SHORT).show()
-                                } else {
-                                    aiPickMode = false
-                                    aiPickCollectId++
-                                }
-                            },
-                            modifier = Modifier.size(24.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.Download,
-                                contentDescription = if (aiPickMode) "抓取打勾段落" else "引入 Gemini 文字",
-                                modifier = Modifier.size(16.dp),
-                                tint = if (aiPickMode) MaterialTheme.colorScheme.primary
-                                else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                            )
-                        }
-                        // AI 面板黑白切換
-                        IconButton(
-                            onClick = { aiWebLight = !aiWebLight },
-                            modifier = Modifier.size(24.dp)
-                        ) {
-                            Icon(
-                                imageVector = if (aiWebLight) Icons.Outlined.DarkMode else Icons.Outlined.LightMode,
-                                contentDescription = if (aiWebLight) "切換深色" else "切換淺色",
-                                modifier = Modifier.size(16.dp),
-                                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                            )
-                        }
+                                aiPickCollectId++
+                            }
+                        },
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Download,
+                            contentDescription = if (aiPickMode) "抓取打勾段落" else "引入 Gemini 文字",
+                            modifier = Modifier.size(16.dp),
+                            tint = if (aiPickMode) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                        )
+                    }
+                    // AI 面板黑白切換
+                    IconButton(
+                        onClick = { aiWebLight = !aiWebLight },
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (aiWebLight) Icons.Outlined.DarkMode else Icons.Outlined.LightMode,
+                            contentDescription = if (aiWebLight) "切換深色" else "切換淺色",
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                        )
+                    }
+                    Box(
+                        modifier = Modifier.weight(1f).width(10.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        androidx.compose.material3.VerticalDivider(
+                            modifier = Modifier.fillMaxHeight(),
+                            thickness = 0.5.dp,
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                        )
                         Box(
                             modifier = Modifier
-                                .weight(1f)
-                                .width(10.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            androidx.compose.material3.VerticalDivider(
-                                modifier = Modifier.fillMaxHeight(),
-                                thickness = 0.5.dp,
-                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
-                            )
-                            Box(
-                                modifier = Modifier
-                                    .width(4.dp)
-                                    .height(32.dp)
-                                    .clip(RoundedCornerShape(2.dp))
-                                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f))
-                            )
-                        }
+                                .width(4.dp)
+                                .height(32.dp)
+                                .clip(RoundedCornerShape(2.dp))
+                                .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f))
+                        )
                     }
                 }
-
-                // Main Workspace
-                val workspaceWeight = if (showAiPanel) (1f - aiPanelWeight) else 1f
-                Box(Modifier.weight(workspaceWeight).fillMaxHeight()) {
-                    // 紙＝工具列玻璃要採樣的內容之一。
-                    // 關鍵：這裡是 toolbar overlay 的兄弟節點，不是它的祖先，
-                    // 所以工具列玻璃不會把自己包進 source（沒有 feedback 迴路）。
-                    Workspace(
-                        pageIndex = currentPageIndex,
-                        pdfViewModel = pdfViewModel,
-                        viewModel = viewModel,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .hazeSource(chromeHaze),
-                        pageAspectRatio = pageAspectRatio,
-                        documentUri = uri.toString(),
-                        onAiFileReady = { fileUri, prompt ->
-                            aiFileUri = fileUri
-                            aiPrompt = prompt
-                            aiAutoSend = true
-                            showAiPanel = true
-                        },
-                        hazeState = editorHaze,
-                        isDarkTheme = isEditorDark,
-                        db = db,
-                        mainListState = mainListState,
-                        onRequestPage = onRequestPage,
-                        onScrollPage = onScrollPage
-                    )
-                } // 5 Box(Workspace)
-            } // 6 inner Row
-        } // 7 Box(weight 1f)
-        } // 8 outer Row
+            }
+        } // Box(內容區：Workspace ＋ AI 抽屜)
+        } // outer Row（側欄＋內容區）
 
         // 浮空工具列：只蓋「工作區那一欄」，紙從它下面透上來；
         // 側欄＋拖曳條維持自己的上邊界（不被工具列壓到），全螢幕態才吃滿寬。
