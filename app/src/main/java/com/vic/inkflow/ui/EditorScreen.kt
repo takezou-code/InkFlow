@@ -1039,12 +1039,12 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                     .graphicsLayer {
                         // 只在 layer 內讀動畫值：每幀不觸發任何重组
                         val p = aiDrawerProgress.value
-                        // 必須滑過「側欄寬度 + 卡片寬度 + 握把寬度」才算完全離開畫面。
+                        // 必須滑過「側欄寬度 + 卡片寬度」才算完全離開畫面。
                         // 舊碼只滑 panelW，卡片收合後停在 x=-1064..154 —— 而側欄是 x=0..154，
                         // 兩者整塊重疊。那張卡片 alpha 0 看不見，但 consume() 照跑，
                         // 於是整條頁碼欄的觸控全被吃掉（實測 SIDEBAR_ITEM 0 次）。
-                        val handleW = with(density) { 28.dp.toPx() }
-                        translationX = -(sidebarWpx + panelW + handleW) * (1f - p)
+                        // 握把已搬進卡片內側（疊層），外部沒有握把寬度可滑。
+                        translationX = -(sidebarWpx + panelW) * (1f - p)
                         alpha = p
                     }
             ) {
@@ -1114,68 +1114,44 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                             aiPickMode = false
                         }
                     )
-                }
-                // 拉桿一體式：關閉鈕＋引入鈕＋黑白切換＋分隔握把（整條可橫拖調寬）
-                Column(
-                    modifier = Modifier
-                        .fillMaxHeight()
-                        .width(28.dp)
-                        .padding(top = toolbarH + 8.dp, bottom = 8.dp)
-                        .pointerInput(Unit) {
-                            detectHorizontalDragGestures { change, dragAmount ->
-                                change.consume()
-                                aiPanelWeight = (aiPanelWeight + dragAmount / contentW.coerceAtLeast(1))
-                                    .coerceIn(0.2f, 0.8f)
-                            }
-                        },
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    IconButton(
-                        onClick = {
-                            showAiPanel = false
-                            aiFileUri = null
-                            aiPrompt = null
-                            aiAutoSend = true
-                            aiPickMode = false
-                        },
-                        modifier = Modifier.size(24.dp)
+                    // 拉桿：從「卡片的 sibling」改成「卡片內側右緣的疊層」。
+                    // 舊做法 [卡片 panelWdp][拉桿 28dp] 並排在抽屜 Row 裡 → 抽屜總寬
+                    // 比卡片多 28dp，那 28dp 就是你看到的「多占的位置」。疊進卡片後
+                    // 總寬 == 卡片寬，握把直接貼齊圓角容器的右緣。
+                    // 按鈕全刪（關閉→工具列 ✦、匯入→工具列 ⬇、換主題→跟 App 深淺色自動），
+                    // 只留分隔線＋握把，拖曳調寬照舊。
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            .fillMaxHeight()
+                            .width(20.dp)
+                            .pointerInput(Unit) {
+                                detectHorizontalDragGestures { change, dragAmount ->
+                                    change.consume()
+                                    // 分母用 aiAvailW：panelW 的基準就是它，用 contentW 會拖不準
+                                    aiPanelWeight = (aiPanelWeight + dragAmount / aiAvailW.coerceAtLeast(1f))
+                                        .coerceIn(0.2f, 0.8f)
+                                }
+                            },
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Icon(
-                            imageVector = Icons.Filled.Close,
-                            contentDescription = "關閉 AI 面板",
-                            modifier = Modifier.size(16.dp),
-                            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                        )
-                    }
-                    // 引入鈕已搬到工具列 AI 區（常駐，抽屜收起也按得到）→ 這裡不再重複
-                    // AI 面板黑白切換
-                    IconButton(
-                        onClick = { aiWebLight = !aiWebLight },
-                        modifier = Modifier.size(24.dp)
-                    ) {
-                        Icon(
-                            imageVector = if (aiWebLight) Icons.Outlined.DarkMode else Icons.Outlined.LightMode,
-                            contentDescription = if (aiWebLight) "切換深色" else "切換淺色",
-                            modifier = Modifier.size(16.dp),
-                            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                        )
-                    }
-                    Box(
-                        modifier = Modifier.weight(1f).width(10.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        androidx.compose.material3.VerticalDivider(
-                            modifier = Modifier.fillMaxHeight(),
-                            thickness = 0.5.dp,
-                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
-                        )
                         Box(
-                            modifier = Modifier
-                                .width(4.dp)
-                                .height(32.dp)
-                                .clip(RoundedCornerShape(2.dp))
-                                .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f))
-                        )
+                            modifier = Modifier.fillMaxHeight().width(10.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            androidx.compose.material3.VerticalDivider(
+                                modifier = Modifier.fillMaxHeight(),
+                                thickness = 0.5.dp,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .width(4.dp)
+                                    .height(40.dp)
+                                    .clip(RoundedCornerShape(2.dp))
+                                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f))
+                            )
+                        }
                     }
                 }
             }
