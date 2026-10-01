@@ -1,5 +1,7 @@
 package com.vic.inkflow.ui
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -46,10 +48,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.unit.dp
 import com.vic.inkflow.data.repository.InkFlowRepositories
 import com.vic.inkflow.util.reorderable
 import com.vic.inkflow.util.reorderableItem
+import com.vic.inkflow.ui.theme.Motion
 import com.vic.inkflow.ui.theme.ShapeLg
 import kotlinx.coroutines.launch
 
@@ -123,6 +129,16 @@ internal fun SidebarPageGrid(
     // 同一列的 item 共用同一個 y offset，取最上面一列數幾個即為欄數。
     val columnCount by remember { derivedStateOf { gridState.measuredColumnCount() } }
     var didInitialScroll by remember { mutableStateOf(false) }
+    // DIAG-TEMP: 驗證欄數實測結果（算式推估 7 欄，需實機確認）
+    LaunchedEffect(columnCount) {
+        if (columnCount > 0) {
+            val first = gridState.layoutInfo.visibleItemsInfo.minByOrNull { it.offset.y }
+            android.util.Log.i(
+                "InkGridDiag",
+                "cols=$columnCount tileW=${first?.size} tileH=${first?.size?.let { first.offset.y }}"
+            )
+        }
+    }
     LaunchedEffect(columnCount) {
         if (!didInitialScroll && columnCount > 0) {
             didInitialScroll = true
@@ -171,41 +187,43 @@ internal fun SidebarPageGrid(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 if (isSelectionMode) {
-                    IconButton(onClick = {
-                        isSelectionMode = false
-                        selectedPages = emptySet()
-                    }) {
-                        Icon(Icons.Outlined.Close, contentDescription = "取消多選")
-                    }
+                    GridIconButton(
+                        onClick = {
+                            isSelectionMode = false
+                            selectedPages = emptySet()
+                        },
+                        icon = Icons.Outlined.Close,
+                        contentDescription = "取消多選"
+                    )
                     Text(
                         text = "已選取 ${selectedPages.size} 頁",
                         style = MaterialTheme.typography.titleSmall,
                         modifier = Modifier.weight(1f)
                     )
-                    TextButton(onClick = {
-                        if (selectedPages.size == pageCount) selectedPages = emptySet()
-                        else selectedPages = (0 until pageCount).toSet()
-                    }) {
-                        Text(if (selectedPages.size == pageCount) "取消全選" else "全選")
-                    }
-                    IconButton(
+                    GlassTextButton(
+                        text = if (selectedPages.size == pageCount) "取消全選" else "全選",
+                        onClick = {
+                            if (selectedPages.size == pageCount) selectedPages = emptySet()
+                            else selectedPages = (0 until pageCount).toSet()
+                        }
+                    )
+                    GridIconButton(
                         onClick = {
                             if (selectedPages.isNotEmpty() && !isPageOperationInProgress) {
                                 deleteConfirmIndices = selectedPages.toList()
                             }
                         },
-                        enabled = selectedPages.isNotEmpty() && !isPageOperationInProgress
-                    ) {
-                        Icon(
-                            Icons.Outlined.DeleteOutline,
-                            contentDescription = "刪除選擇",
-                            tint = MaterialTheme.colorScheme.error
-                        )
-                    }
+                        enabled = selectedPages.isNotEmpty() && !isPageOperationInProgress,
+                        icon = Icons.Outlined.DeleteOutline,
+                        contentDescription = "刪除選擇",
+                        tint = MaterialTheme.colorScheme.error
+                    )
                 } else {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.Outlined.ArrowBack, contentDescription = "回預覽條")
-                    }
+                    GridIconButton(
+                        onClick = onBack,
+                        icon = Icons.Outlined.ArrowBack,
+                        contentDescription = "回預覽條"
+                    )
                     Column(modifier = Modifier.weight(1f)) {
                         Text(text = "所有頁面", style = MaterialTheme.typography.titleSmall)
                         Text(
@@ -222,7 +240,10 @@ internal fun SidebarPageGrid(
                                 if (showOnlyBookmarked) Modifier.glassPanel(hazeState, isDarkTheme, CircleShape)
                                 else Modifier
                             )
-                            .clickable { showOnlyBookmarked = !showOnlyBookmarked }
+                            .glassClickable(
+                                onClick = { showOnlyBookmarked = !showOnlyBookmarked },
+                                shape = CircleShape
+                            )
                             .padding(8.dp),
                         contentAlignment = Alignment.Center
                     ) {
@@ -235,24 +256,41 @@ internal fun SidebarPageGrid(
                             modifier = Modifier.size(20.dp)
                         )
                     }
-                    IconButton(onClick = { isSelectionMode = true }) {
-                        Icon(Icons.Outlined.Checklist, contentDescription = "多選頁面")
-                    }
+                    GridIconButton(
+                        onClick = { isSelectionMode = true },
+                        icon = Icons.Outlined.Checklist,
+                        contentDescription = "多選頁面"
+                    )
                     // 收合鈕：第 3 階必須有一條直接回 RAIL 的路。
                     // 舊碼只有返回鈕（回第 2 階），而 drag strip 在 GRID 不畫 → 單向門。
-                    IconButton(onClick = onCollapse) {
-                        Icon(Icons.Outlined.ChevronLeft, contentDescription = "收合側欄")
-                    }
+                    GridIconButton(
+                        onClick = onCollapse,
+                        icon = Icons.Outlined.ChevronLeft,
+                        contentDescription = "收合側欄"
+                    )
                 }
             }
         }
 
-        LazyVerticalGrid(
-            columns = GridCells.Adaptive(240.dp),
+        // 欄數：144.dp ＋ 間距 12.dp 在本機橫向（440dpi，可用寬約 1131.6dp）算出
+        // ⌊(1131.6 + 12) / (144 + 12)⌋ = 7 欄，單張約 151.4dp。
+        // 用 Adaptive 而非 Fixed(7)：視窗變窄時自動退成 6、5，不會把紙壓扁。
+        // 錯落入場：每張卡錯開一點時間淡入＋收斂。
+    // 只在「這次進場的第一個 layout」跑一次，並用上限截斷，
+    // 否則頁數一多後面的卡片會等到使用者以為壞掉。
+    // 全程只動 graphicsLayer（合成器層），不觸發 measure／重排。
+    val staggerBudget = remember { androidx.compose.animation.core.Animatable(1f) }
+    LaunchedEffect(staggerBudget) {
+        staggerBudget.snapTo(0f)
+        staggerBudget.animateTo(1f, tween(Motion.DURATION_SLOW))
+    }
+
+    LazyVerticalGrid(
+            columns = GridCells.Adaptive(144.dp),
             state = gridState,
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 64.dp),
-            horizontalArrangement = Arrangement.spacedBy(14.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
             modifier = Modifier
                 .fillMaxSize()
                 .reorderable(reorderState, enabled = !showOnlyBookmarked && !isSelectionMode && !isPageOperationInProgress)
@@ -275,6 +313,15 @@ internal fun SidebarPageGrid(
                     modifier = Modifier
                         .let { mod -> if (reorderState.draggingItemIndex == currentListIndex) mod else mod.animateItem() }
                         .reorderableItem(reorderState, currentListIndex)
+                        // 錯落入場：前 24 張依 index 延遲，之後的同時淡入（不排隊）
+                        .graphicsLayer {
+                            val cap = 24f
+                            val delay = (currentListIndex.toFloat().coerceAtMost(cap)) / cap
+                            val t = ((staggerBudget.value - delay * 0.45f) / 0.55f).coerceIn(0f, 1f)
+                            alpha = t
+                            scaleX = 0.92f + 0.08f * t
+                            scaleY = 0.92f + 0.08f * t
+                        }
                         .then(
                             if (canDrag) {
                                 Modifier.clickable {
@@ -297,11 +344,18 @@ internal fun SidebarPageGrid(
                             }
                         )
                 ) {
-                    // 玻璃卡框 + 內嵌 8dp 白紙，跟文件庫卡片同語言
+                    // 玻璃卡框 + 內嵌 8dp 白紙，跟文件庫卡片同語言。
+                    //
+                    // 這裡用 fauxGlassPanel（假玻璃）而不是 glassPanel：
+                    // 7 欄之下可見卡片從約 8–12 張變成約 24 張，每張都開真
+                    // backdrop blur 就是 24 層同時採樣+模糊，幀率會垮。
+                    // ui.md 的決策表本來就寫了 fauxGlassPanel 是給「大量重複卡片」用的。
+                    // 視覺差異只在 rim/sheen 的真實折射，卡片框看不出來。
+                    // 真模糊留給上面那條頂欄。
                     Box(
                         modifier = Modifier
-                            .glassPanel(hazeState, isDarkTheme, ShapeLg)
-                            .padding(8.dp)
+                            .fauxGlassPanel(isDarkTheme, ShapeLg)
+                            .padding(6.dp)
                     ) {
                         Box {
                             PageThumbnail(
@@ -358,6 +412,36 @@ internal fun SidebarPageGrid(
                 }
             }
         }
+    }
+}
+
+/**
+ * 網格頂欄的圖示按鈕。
+ *
+ * 不用 M3 `IconButton`（ui.md 禁原味上屏）。`glassClickable` 已經包好
+ * 掃光＋縮放＋無漣漪，所以這裡只負責排版與圖示。
+ */
+@Composable
+private fun GridIconButton(
+    onClick: () -> Unit,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String,
+    enabled: Boolean = true,
+    tint: Color? = null
+) {
+    Box(
+        modifier = Modifier
+            .size(40.dp)
+            .glassClickable(onClick = onClick, shape = CircleShape, enabled = enabled),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            tint = tint ?: glassContentColor(
+                MaterialTheme.colorScheme.background.luminance() < 0.5f
+            )
+        )
     }
 }
 
