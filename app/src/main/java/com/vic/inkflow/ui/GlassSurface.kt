@@ -94,8 +94,11 @@ fun glassContentColor(isDark: Boolean): Color =
     if (isDark) Color.White else com.vic.inkflow.ui.theme.PaperInkColor
 
 /**
- * 靜模式旗標，全 App 唯一來源（AppNav 提供）。開＝靜：玻璃轉 faux（無真折射）、
- * 無限動畫凍結、幀率降 60。呼叫端禁自己再存一份。
+ * 靜模式旗標，全 App 唯一來源（AppNav 提供）。開＝靜時：
+ *  - 玻璃走 [hazeBlur]（保留 veil ＋ rim ＋ 模糊，只拿掉真折射與色散）
+ *  - 背景凍結在首幀
+ *  - 幀率降 60、自動備份暫停
+ * 呼叫端禁自己再存一份。
  */
 val LocalQuietMode = androidx.compose.runtime.staticCompositionLocalOf { false }
 
@@ -108,12 +111,11 @@ val LocalQuietMode = androidx.compose.runtime.staticCompositionLocalOf { false }
  * 等於把高光從「邊緣一條集中亮線」變成「整片均勻平塗」，那層亮光會把深色 veil 抵銷，
  * 於是黑玻璃與折射都看不見（症狀：黑玻璃消失、只剩一片糊）。
  *
- * 刻意覆寫只有四項：
- *  1. blurRadius 10dp（見下方註：模糊不可太大，否則折射被抹平）
+ * 刻意覆寫只有四項（其餘全部沿用 clear／clearDark 官方值）：
+ *  1. blurRadius 7dp ＋ 折射加強（見下方「模糊 vs 折射的取捨」）
  *  2. chromaticAberrationStrength 0.3f（clear 只有 0.04f，等於沒色散）
  *  3. tint 用 App 的 veil 色票（唯一色票來源）
  *  4. shape 跟呼叫端走
- * 其餘全部沿用 clear／clearDark 官方值。
  *
  * 【模糊 vs 折射的取捨】模糊是全片平均，折射是位移採樣。當 blurRadius > 位移量，
  * 位移差異被平均掉 → 折射看不見。所以要「折射明顯」就必須模糊夠淺，
@@ -355,10 +357,9 @@ fun Modifier.glassClickable(
 }
 
 /**
- * 無 blur 的仿玻璃：半透明底 + 同套高光亮邊，背景直接透過去。
- * 給大量重複的卡片用（每卡一個即時模糊是滾動卡頓主因），透光免費。
+ * 卡片類容器的玻璃底：有 hazeState 走真折射玻璃，無就 faux（省 blur，給大量重複卡片用）。
+ * 分支單一在這裡，呼叫端不要自己判斷。
  */
-/** 卡片類容器的理璃底：有 hazeState 走真理璃，無就 faux（省 blur）。分支單一雖在這裡。 */
 @Composable
 fun Modifier.glassCardSurface(
     isDark: Boolean,
@@ -427,19 +428,16 @@ fun Modifier.fauxGlassPanel(
 }
 
 /**
- * 共用打光：薄 Sheen＋頂光 rim＋亮邊，全 App 唯一玻璃妝。
- * haze/faux 路徑沒有 shader 高光，靠這層薄妝＋rim 維持玻璃讀感。
+ * 共用打光：薄 Sheen ＋ 頂光 rim，全 App 唯一玻璃妝。
+ * faux 路徑沒有 shader 高光，靠這層薄妝＋rim 維持玻璃讀感。
  *
  * 注意：這裡刻意不用 Modifier.shadow()——在小米平板 GPU 上，shadow 層會在文字後
  * 留下白色行框殘影（9 輪診斷版實證：有 shadow 全有框、拿掉全沒框，描邊/亮面/模糊皆無罪）。
  * 深度改由 rim＋底內陰影撐，不要加 shadow 回來。
- * 壓在底（blur 或半透明色）上、內容下。
- */
-/**
- * 共用打光：薄 Sheen＋頂光 rim＋亮邊，全 App 唯一玻璃妝。
- * haze/faux 路徑沒有 shader 高光，靠這層薄妝＋rim 維持玻璃讀感。
- * 流光模式額外疊一道「活 sheen」：光沿頂緣慢慢掃過（待機也在動，只多一層漸層重繪）。
- * 靜模式不播動畫（LocalQuietMode）。
+ *
+ * 待機不播 sheen：每個玻璃件各掛一個無限動畫會強制整窗每秒重繪 60 次，實測 fps 從 60
+ * 掉到 30–42。要動感用按壓那一下（[glassClickable] 的掃光），不要加回待機動畫。
+ * rim 要細（0.75dp 且低透明）：粗 rim 會有廉價感，邊緣的光影交給 haze 的 specular。
  */
 @Composable
 private fun Modifier.glassDressing(
@@ -490,11 +488,6 @@ private fun Modifier.glassDressing(
                 shape = shape
             )
         }
-        // 註：先前的「寶石內框」（rim 內側 2.5dp 再一道 0.9dp 斜向亮線）已移除。
-        // 兩條並行的亮線是廉價感主因，而且它是靜態的、不隨光變，會蓋掉 specular。
-        // 邊緣的光影變化交給 haze 的 specular。
-// 待機不播 sheen：每個玻璃件各掛一個無限動畫會強制整窗每秒重繪 60 次，
-        // 實測 fps 從 60 掉到 30–42（十幾個面板 × 真折射疊上去）。要動感用按壓那一下。
         }
     return m
 }

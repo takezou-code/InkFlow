@@ -382,12 +382,16 @@ fun TabletEditorScreen(
             }
         }
     }
-    // 編輯器共用玻璃狀態：根 Aurora 當 source，TopBar/側欄/氣泡當 effect。
-    // Fix1 REVERTED: 紙層當 haze source 會凍結（氣泡 effect 與紙 source 同樹→重採樣迴圈；
-    // 開 AI 面板改寬時巨型圖層重抓直接全黑）。氣泡暫回 Aurora 源（黑洞但穩定），另想辦法。
+    // 編輯器兩個玻璃 state，用途不同、不可合一：
+    //
+    // editorHaze —— source＝背景層 ＋ 整屏 root。給「跨視窗」的東西用（對話框、氣泡）。
+    //   對話框是另一個視窗，採主視窗已畫好的像素，本來就正常。
+    //
+    // chromeHaze —— source＝背景層 ＋ 紙，**不含工具列自己**。給工具列／粗細滑桿用。
+    //   為什麼要拆：若玻璃的來源包含自己（玻璃在 hazeSource 子樹內），上一幀的模糊結果
+    //   又被這幀拿去模糊 → self-feedback，黑玻璃與折射會整個失效（症狀：整片糊、沒有折射）。
+    //   這是實測踩過的坑，不是推測。
     val editorHaze = rememberHazeState()
-    // 工具列專屬 state：只把「背景＋紙」標成 source，工具列自己不在裡面 → 玻璃不會偷看自己。
-    // editorHaze（root）保留給對話框跨視窗採樣——對話框是另一個視窗，本來就正常，別動它。
     val chromeHaze = rememberHazeState()
     val isEditorDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
 
