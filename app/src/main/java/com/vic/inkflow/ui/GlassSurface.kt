@@ -32,11 +32,19 @@ import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.vic.inkflow.ui.theme.GlassVeilDark
+import com.vic.inkflow.ui.theme.GlassVeilLight
 import com.vic.inkflow.ui.theme.ShapeLg
 import com.vic.inkflow.ui.theme.ShapeMd
 import com.vic.inkflow.ui.theme.ShapeSm
@@ -45,6 +53,9 @@ import dev.chrisbanes.haze.ExperimentalHazeApi
 import dev.chrisbanes.haze.HazeInput
 import dev.chrisbanes.haze.HazeProgressive
 import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.blur.HazeBlurStyle
+import dev.chrisbanes.haze.blur.HazeColorEffect
+import dev.chrisbanes.haze.blur.hazeBlur
 import dev.chrisbanes.haze.glass.ChromaticAberrationMode
 import dev.chrisbanes.haze.glass.GlassStyle
 import dev.chrisbanes.haze.glass.SurfaceProfile
@@ -103,10 +114,10 @@ fun glassStyle(isDark: Boolean, shape: Shape = ShapeLg): GlassStyle =
         ambientResponse(0f)
         optics(
             // 背景再糊一點（20→26dp），黑玻璃本體別再壓暗
-            blurRadius = 26.dp,
+            blurRadius = 34.dp,
             refractionStrength = 1.0f,
-            refractionHeightFraction = 0.40f,
-            refractionDisplacement = 60.dp,
+            refractionHeightFraction = 0.50f,
+            refractionDisplacement = 84.dp,
             // fold 必須 0：它把 tint 從邊緣折走，黑玻璃會消失（像素實測 181/203/236）。
             // 乾淨的折射（Lip＋位移）跟黑玻璃可以共存。
             refractionFoldStrength = 0f,
@@ -127,7 +138,7 @@ fun glassStyle(isDark: Boolean, shape: Shape = ShapeLg): GlassStyle =
         contrast(0.08f)
         // 光譜色散：Full 每幀多一層、實測掉幀；退回 Simple 0.3，邊緣一樣有 RGB 分光（shiny）。
         chromaticAberrationMode(ChromaticAberrationMode.Simple)
-        chromaticAberrationStrength(0.34f)
+        chromaticAberrationStrength(0.45f)
         shape((shape as? RoundedCornerShape) ?: RoundedCornerShape(24.dp))
     }
 
@@ -135,7 +146,8 @@ fun glassStyle(isDark: Boolean, shape: Shape = ShapeLg): GlassStyle =
  * 全統一入口（真折射）。所有玻璃容器都走這一支：
  *  - 同窗面板與對話框/下拉（跨視窗）都用 [HazeInput.Sources]：可攜路徑，真的去 source 採樣。
  *  - 內容色由 [glassContentColor] 單一宣告，呼叫端禁自訂圖標色。
- *  - 靜模式（[LocalQuietMode]）自動降級 faux，呼叫端零分支。
+ *  - 靜模式（[LocalQuietMode]）只關掉「貴的」：真折射＋色散。模糊＋veil＋rim 留著，
+ *    黑玻璃在兩種模式都正常渲染（靜模式走 [hazeBlur]，不是沒模糊的 faux）。
  */
 @OptIn(ExperimentalHazeApi::class)
 @Composable
@@ -147,18 +159,29 @@ fun Modifier.glassPanel(
     input: HazeInput = HazeInput.Sources(state)
 ): Modifier {
     val quiet = LocalQuietMode.current
-    // 每個 state 只印一次材質選擇（真折射 vs 靜模式降假）
     remember(state, isDark, quiet, input) {
         com.vic.inkflow.util.InkLog.mode(
-            "GLASS isDark=$isDark quiet=$quiet input=${input.javaClass.simpleName} " +
-                "→ ${if (quiet) "FAUX(靜模式降假)" else "REAL(折射+blur)"} " +
-                "veil=${if (isDark) "暗靛55%" else "白55%"} blur20dp refract1.0 chroma1.35"
+            "GLASS isDark=$isDark input=${input.javaClass.simpleName} " +
+                "→ " + if (quiet) "BLUR-ONLY(靜模式：保留黑玻璃與模糊，只關折射)" else "REAL(折射+模糊+色散)"
         )
         true
     }
-    if (quiet) return this.fauxGlassPanel(isDark, shape, specular)
-    return this
-        .clip(shape)
+    val base = this.clip(shape)
+    // 靜模式：同樣的 veil 與 rim，只把折射/色散拿掉，模糊留著
+    if (quiet) {
+        return base
+            .hazeBlur(
+                input = input,
+                style = HazeBlurStyle {
+                    backgroundColor(Color.Transparent)
+                    colorEffects(listOf(HazeColorEffect.tint(if (isDark) GlassVeilDark else GlassVeilLight)))
+                    blurRadius(24.dp)
+                    noiseFactor(0.02f)
+                }
+            )
+            .glassDressing(isDark, shape, specular)
+    }
+    return base
         .hazeGlass(input = input, style = glassStyle(isDark, shape))
         .glassDressing(isDark, shape, specular)
 }
@@ -472,6 +495,29 @@ private fun Modifier.glassDressing(
                 ),
                 shape = shape
             )
+        }
+        // 寶石內框：外圈 rim 內側再一道極細斜向亮線，像切面反光。
+        // 這根線讓玻璃在白紙上也有「厚度／是塊實體」的形體感，不只是一層暗色。
+        val rcs = shape as? RoundedCornerShape
+        if (rcs != null) {
+            m = m.drawBehind {
+                val inset = 2.5.dp.toPx()
+                val outline = shape.createOutline(size, layoutDirection, this)
+                val radius = ((outline as? Outline.Rounded)?.roundRect?.topLeftCornerRadius?.x ?: 0f) - inset
+                drawRoundRect(
+                    brush = Brush.linearGradient(
+                        colorStops = arrayOf(
+                            0f to Color.White.copy(alpha = 0.38f),
+                            0.45f to Color.White.copy(alpha = 0.05f),
+                            1f to Color.White.copy(alpha = 0.22f)
+                        )
+                    ),
+                    topLeft = Offset(inset, inset),
+                    size = Size(size.width - inset * 2f, size.height - inset * 2f),
+                    cornerRadius = CornerRadius(radius, radius),
+                    style = Stroke(width = 0.9.dp.toPx())
+                )
+            }
         }
 // 待機不播 sheen：每個玻璃件各掛一個無限動畫會強制整窗每秒重繪 60 次，
         // 實測 fps 從 60 掉到 30–42（十幾個面板 × 真折射疊上去）。要動感用按壓那一下。
