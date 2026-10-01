@@ -32,12 +32,9 @@ import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
@@ -463,17 +460,19 @@ private fun Modifier.glassDressing(
             shape = shape
         )
     if (specular) {
-        // 大火 rim：頂緣高光拉滿（黑玻璃靠這根定邊，不然暗 veil 壓暗背景＝看不出形狀）
-        val rimTop = Color.White.copy(alpha = 0.95f)
+        // rim 只留「頂緣一道細光」：定邊靠它，但其餘三邊幾乎不畫。
+        // 粗 rim＋滿版白線＝廉價感（那是 2020 年的 filter UI，不是玻璃）。
+        // 真正的「跟光影反應」交給 haze 的 specular（依 lightPosition 算，會跟形狀與光源跑），
+        // 這裡只補一層幾乎看不見的底緣暗線把形狀收乾淨，不要跟它搶。
         m = m.border(
             border = BorderStroke(
-                width = 1.5.dp,
+                width = 0.75.dp,
                 brush = Brush.verticalGradient(
                     colorStops = arrayOf(
-                        0f to rimTop,
-                        0.25f to Color.White.copy(alpha = 0.08f),
-                        0.7f to Color.White.copy(alpha = 0.03f),
-                        1f to Color.White.copy(alpha = 0.10f)
+                        0f to Color.White.copy(alpha = 0.34f),
+                        0.18f to Color.White.copy(alpha = 0.06f),
+                        0.72f to Color.White.copy(alpha = 0.02f),
+                        1f to Color.White.copy(alpha = 0.05f)
                     )
                 )
             ),
@@ -488,29 +487,9 @@ private fun Modifier.glassDressing(
                 shape = shape
             )
         }
-        // 寶石內框：外圈 rim 內側再一道極細斜向亮線，像切面反光。
-        // 這根線讓玻璃在白紙上也有「厚度／是塊實體」的形體感，不只是一層暗色。
-        val rcs = shape as? RoundedCornerShape
-        if (rcs != null) {
-            m = m.drawBehind {
-                val inset = 2.5.dp.toPx()
-                val outline = shape.createOutline(size, layoutDirection, this)
-                val radius = ((outline as? Outline.Rounded)?.roundRect?.topLeftCornerRadius?.x ?: 0f) - inset
-                drawRoundRect(
-                    brush = Brush.linearGradient(
-                        colorStops = arrayOf(
-                            0f to Color.White.copy(alpha = 0.38f),
-                            0.45f to Color.White.copy(alpha = 0.05f),
-                            1f to Color.White.copy(alpha = 0.22f)
-                        )
-                    ),
-                    topLeft = Offset(inset, inset),
-                    size = Size(size.width - inset * 2f, size.height - inset * 2f),
-                    cornerRadius = CornerRadius(radius, radius),
-                    style = Stroke(width = 0.9.dp.toPx())
-                )
-            }
-        }
+        // 註：先前的「寶石內框」（rim 內側 2.5dp 再一道 0.9dp 斜向亮線）已移除。
+        // 兩條並行的亮線是廉價感主因，而且它是靜態的、不隨光變，會蓋掉 specular。
+        // 邊緣的光影變化交給 haze 的 specular。
 // 待機不播 sheen：每個玻璃件各掛一個無限動畫會強制整窗每秒重繪 60 次，
         // 實測 fps 從 60 掉到 30–42（十幾個面板 × 真折射疊上去）。要動感用按壓那一下。
         }
