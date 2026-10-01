@@ -381,7 +381,7 @@ fun TabletEditorTopBar(
                                 modifier = Modifier
                                     .offset(x = drawingHighlightOffset)
                                     .size(toolButtonSize)
-                                    .glassSelectionPill(ShapeMd)
+                                    .glassSelectionPill(CircleShape)
                             )
                         }
                         Row {
@@ -478,7 +478,7 @@ fun TabletEditorTopBar(
                                 modifier = Modifier
                                     .offset(x = annotationHighlightOffset)
                                     .size(toolButtonSize)
-                                    .glassSelectionPill(ShapeMd)
+                                    .glassSelectionPill(CircleShape)
                             )
                         }
                         Row {

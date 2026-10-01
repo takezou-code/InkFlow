@@ -499,36 +499,39 @@ private fun Modifier.glassDressing(
  * 使用者看不出選到哪個（實測）。所以用實體珍珠白→柔薰衣草漸層，
  * 深墨色圖示壓在上面，兩種主題都讀得清楚。
  *
- * 高級感來自三件事（不是加更多光）：
- *  1. 漸層是「上亮下淡」＋頂端一道內高光 → 有厚度，不是色塊
- *  2. 底部一道極淡的暗邊 → 藥丸是浮在玻璃上，不是貼上去
- *  3. 顏色低飽和（不用螢光紫）→ 亮但不吵
+ * 高級感來自四件事（不是加更多光）：
+ *  1. 形狀跟圖示鈕一致（CircleShape）——方角藥丸配圓形按鈕會顯得拼接
+ *  2. 漸層「上亮下淡」＋頂端一道內高光 → 有厚度，不是色塊
+ *  3. 底部一道極淡暗邊 → 藥丸是浮在玻璃上，不是貼上去（不用 shadow，那會留白框）
+ *  4. 疊一抹極淡的主色暈染 —— 珍珠上的那點色偏，讓它「不白到死」但不變紫
  *
  * 呼叫端只給形狀與尺寸，顏色禁自訂（色票在 theme/Color.kt）。
  */
 @Composable
 fun Modifier.glassSelectionPill(
-    shape: Shape = ShapeMd
+    shape: Shape = CircleShape
 ): Modifier = this
     .background(
+        // 上層＝珍珠白；中段混入極淡主色（飽和低到看不出是紫，只覺得「有色」）
         brush = Brush.verticalGradient(
             colorStops = arrayOf(
                 0f to com.vic.inkflow.ui.theme.GlassSelectionTop,
-                0.55f to com.vic.inkflow.ui.theme.GlassSelectionBottom,
+                0.42f to com.vic.inkflow.ui.theme.GlassSelectionTop,
                 1f to com.vic.inkflow.ui.theme.GlassSelectionBottom
             )
         ),
         shape = shape
     )
-    // 底緣暗邊：讓藥丸浮起來（不用 shadow，那會留白框）
+    // 頂端內高光：一道極細的亮線，做出「上表面反光」（珍珠感的來源）
     .border(
         border = BorderStroke(
-            width = 0.5.dp,
+            width = 0.75.dp,
             brush = Brush.verticalGradient(
                 colorStops = arrayOf(
-                    0f to Color.Transparent,
-                    0.7f to Color.Transparent,
-                    1f to Color.Black.copy(alpha = 0.10f)
+                    0f to com.vic.inkflow.ui.theme.GlassSelectionSheen,
+                    0.35f to Color.Transparent,
+                    0.82f to Color.Transparent,
+                    1f to Color.Black.copy(alpha = 0.12f)
                 )
             )
         ),
