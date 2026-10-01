@@ -539,6 +539,29 @@ fun Modifier.glassSelectionPill(
     )
 
 /**
+ * 選中態外框（只畫框，不畫底）。
+ * 給「本身有內容不能被蓋掉」的容器用，例如側欄的白紙縮圖：
+ * 內容照舊可見，只在外圍加一圈與 [glassSelectionPill] 同語言的珍珠框。
+ */
+@Composable
+fun Modifier.glassSelectionFrame(
+    shape: Shape = ShapeMd,
+    width: Dp = 1.5.dp
+): Modifier = this.border(
+    border = BorderStroke(
+        width = width,
+        brush = Brush.verticalGradient(
+            colorStops = arrayOf(
+                0f to com.vic.inkflow.ui.theme.GlassSelectionSheen,
+                0.3f to com.vic.inkflow.ui.theme.GlassSelectionTop,
+                1f to com.vic.inkflow.ui.theme.GlassSelectionBottom
+            )
+        )
+    ),
+    shape = shape
+)
+
+/**
  * 全統一對話框殼（單一入口）：ui.window.Dialog（純視窗＋系統遮罩，零 M3）
  * ＋ 單一玻璃卡 ＋ GlassTextButton。
  *

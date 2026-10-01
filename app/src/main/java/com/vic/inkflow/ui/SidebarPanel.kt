@@ -133,6 +133,7 @@ import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.rounded.Brush
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Gesture
@@ -757,6 +758,31 @@ internal fun Sidebar(
                     }
                 }
                 }
+                // 收合時的展開鈕：放在「+」上方，風格同 +（實體玻璃藥丸）。
+                // 以前那條 24dp 拉桿在收合時也佔著寬度卻什麼都看不到（只有 NORMAL 才畫丸子），
+                // 純浪費空間 → 收合時讓拉桿完全不佔位，改用這顆按鈕。
+                if (sidebarMode == SidebarMode.COLLAPSED) {
+                    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        val expandScale by animateFloatAsState(
+                            targetValue = 1f,
+                            label = "SidebarExpandScale"
+                        )
+                        androidx.compose.material3.TextButton(
+                            onClick = { onModeChange(SidebarMode.NORMAL) },
+                            modifier = Modifier
+                                .padding(horizontal = 6.dp, vertical = 4.dp)
+                                .graphicsLayer { scaleX = expandScale; scaleY = expandScale }
+                                .glassPanel(hazeState, isDarkTheme, CircleShape)
+                        ) {
+                            Icon(
+                                Icons.Outlined.ChevronRight,
+                                contentDescription = "展開側欄",
+                                modifier = Modifier.size(20.dp),
+                                tint = glassContentColor(isDarkTheme)
+                            )
+                        }
+                    }
+                }
                 // 固定在底部的新增頁面按鈕（去分隔線，玻璃藥丸）
                 // 頁面操作進行中時顯示細長進度條，給予使用者視覺回饋
                 if (isPageOperationInProgress) {
@@ -845,19 +871,16 @@ internal fun PageThumbnail(
             animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),
             label = "ThumbScale"
         )
-        // Animated gradient border for selected page
-        val outlineColor = MaterialTheme.colorScheme.outlineVariant
-        val primaryColor = MaterialTheme.colorScheme.primary
-        val secondaryColor = MaterialTheme.colorScheme.secondary
-        val borderBrush = remember(isSelected, outlineColor, primaryColor, secondaryColor) {
-            if (isSelected) Brush.linearGradient(listOf(primaryColor, secondaryColor))
-            else Brush.linearGradient(listOf(outlineColor, outlineColor))
-        }
+        // 選中框走共用外框（與工具列同一套珍珠色票）。縮圖本身是白紙，不能蓋實心底，
+        // 所以只用框。1.08f 放大保留當第二重訊號。
         Box(
             modifier = boxModifier
                 .graphicsLayer { scaleX = thumbScale; scaleY = thumbScale }
                 .clip(ShapeMd)
                 .background(paperColor, shape = ShapeMd)
+                .then(
+                    if (isSelected) Modifier.glassSelectionFrame(ShapeMd) else Modifier
+                )
         ) {
             if (bitmap != null) {
                 Image(

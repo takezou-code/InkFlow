@@ -711,6 +711,20 @@ fun TabletEditorScreen(
             }
             val coroutineScope = rememberCoroutineScope()
 
+            // 觸控迴圈（awaitEachGesture）是 restricted scope，不能直接呼叫 snapTo/scrollBy；
+            // 而用 coroutineScope.launch 包又會讓每個 pointer 事件各排一個 coroutine，
+            // 60–120Hz 就是每幀一個，堆積後動畫延遲落地 → 拖起來又卡又黏。
+            // 解法：pointer 迴圈只做非 suspend 的 trySend（CONFLATED＝只留最新值），
+            // 由這兩個 LaunchedEffect 各自套用。事件再密也不會堆積。
+            val widthRequests = remember { kotlinx.coroutines.channels.Channel<Float>(kotlinx.coroutines.channels.Channel.CONFLATED) }
+            val scrollRequests = remember { kotlinx.coroutines.channels.Channel<Float>(kotlinx.coroutines.channels.Channel.CONFLATED) }
+            LaunchedEffect(widthRequests) {
+                for (w in widthRequests) animatableWidth.snapTo(w)
+            }
+            LaunchedEffect(scrollRequests) {
+                for (dy in scrollRequests) mainListState.scrollBy(dy)
+            }
+
             LaunchedEffect(targetWidth, totalWidth) {
                 animatableWidth.animateTo(
                     targetValue = targetWidth.value,
@@ -773,7 +787,9 @@ fun TabletEditorScreen(
         // Drag Strip：獨立 24dp 細觸控條，NORMAL 顯示玻璃丸；
         // 點循環切換；橫拖調寬（1:1 跟手），直拖捲主列表；主軸先過 slop 先鎖定
         // 全屏態由網格內返回鈕退出，這裡不佔位
-        if (sidebarMode != SidebarMode.FULLSCREEN) {
+        // 拉桿只在「已展開」時存在：收合時它 24dp 的觸控條完全沒有視覺（只有 NORMAL 畫丸子），
+        // 純浪費水平空間 → 收合時讓位給側欄內「+」上方那顆展開鈕（SidebarPanel）。
+        if (sidebarMode != SidebarMode.FULLSCREEN && sidebarMode != SidebarMode.COLLAPSED) {
             Box(
                 modifier = Modifier
                     .width(24.dp)
@@ -841,13 +857,14 @@ fun TabletEditorScreen(
                                     change.consume()
                                     val deltaDp = dx / density.density
                                     val newWidth = (animatableWidth.value + deltaDp).coerceIn(collapsedWidth.value, totalWidth.value)
-                                    coroutineScope.launch { animatableWidth.snapTo(newWidth) }
+                                    // 只丟請求，實際套用在上面的 LaunchedEffect（見 widthRequests 註解）
+                                    widthRequests.trySend(newWidth)
                                 } else if (horizontalLock == false) {
                                     // 直向：把主列表跟著手指捲（內容跟手）
                                     change.consume()
                                     val dyPx = -dy
                                     if (dyPx != 0f) {
-                                        coroutineScope.launch { mainListState.scrollBy(dyPx) }
+                                        scrollRequests.trySend(dyPx)
                                     }
                                 }
                             }
