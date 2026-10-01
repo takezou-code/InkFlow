@@ -5,6 +5,17 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
 
+    <!-- LAN sync (protocol v3). 53530 UDP discovery + 53531 TCP transfer. -->
+    <!-- ACCESS_NETWORK_STATE: 挑對網路介面（WiFi vs cellular）來填 DiscoveryResponse.ip，
+         否則桌面端會拿著一個連不上的 IP 然後神祕逾時。 -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- 收發 UDP 廣播探索封包。部分 ROM 在嚴格模式下預設擋下 multicast/broadcast，
+         沒有這行平板會完全無法被桌面端發現。 -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <!-- dataSync 前台服務（Android 14+ 把類型與權限拆開，兩者都要宣告）。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+
     <application
         android:allowBackup="true"
         android:largeHeap="true"
@@ -26,6 +37,16 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+            區域網同步服務。刻意「不」宣告 BOOT_COMPLETED receiver：Android 15+ 禁止
+            dataSync 服務從開機廣播啟動，而且使用者無感的背景輪詢會白吃掉每 24 小時
+            6 小時的 dataSync 額度。同步必須由使用者在前景主動開始。
+        -->
+        <service
+            android:name=".sync.TabletSyncService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <provider
             android:name="androidx.core.content.FileProvider"
