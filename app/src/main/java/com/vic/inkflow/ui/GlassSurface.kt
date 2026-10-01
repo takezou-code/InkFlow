@@ -109,11 +109,15 @@ val LocalQuietMode = androidx.compose.runtime.staticCompositionLocalOf { false }
  * 於是黑玻璃與折射都看不見（症狀：黑玻璃消失、只剩一片糊）。
  *
  * 刻意覆寫只有四項：
- *  1. blurRadius 20dp（clear 只有 1.25dp 等於沒糊；34dp 又太糊，20dp 是套件預設量級）
+ *  1. blurRadius 10dp（見下方註：模糊不可太大，否則折射被抹平）
  *  2. chromaticAberrationStrength 0.3f（clear 只有 0.04f，等於沒色散）
  *  3. tint 用 App 的 veil 色票（唯一色票來源）
  *  4. shape 跟呼叫端走
  * 其餘全部沿用 clear／clearDark 官方值。
+ *
+ * 【模糊 vs 折射的取捨】模糊是全片平均，折射是位移採樣。當 blurRadius > 位移量，
+ * 位移差異被平均掉 → 折射看不見。所以要「折射明顯」就必須模糊夠淺，
+ * 通透感改由 refractionStrength／displacement／detailIntensity 拿。
  */
 @OptIn(ExperimentalHazeApi::class)
 fun glassStyle(isDark: Boolean, shape: Shape = ShapeLg): GlassStyle =
@@ -121,9 +125,15 @@ fun glassStyle(isDark: Boolean, shape: Shape = ShapeLg): GlassStyle =
         backgroundColor(Color.Transparent)
         tint(if (isDark) com.vic.inkflow.ui.theme.GlassVeilDark else com.vic.inkflow.ui.theme.GlassVeilLight)
         optics(
-            // 折射全部沿用 clearOptics（displacement 56dp／height 0.35／profile Edge(28.dp)／
-            // detail 0.76），只把模糊拉大——折射位移遠大於折射帶寬是套件本身的設計，不是錯誤。
-            blurRadius = 20.dp,
+            // 模糊保持「淺」（官方 clear 是 1.25dp）。原因：模糊半徑一旦大於折射位移量，
+            // 位移產生的細節差異會被平均掉，折射就看不見了（模糊會把折射「吃掉」）。
+            // 所以模糊收淺，改用「折射本身加強」來拿通透感。
+            blurRadius = 10.dp,
+            // 折射加強補償模糊減少：位移與細節拉高，邊緣彎曲更明顯。
+            refractionStrength = 1f,
+            refractionDisplacement = 56.dp,
+            refractionHeightFraction = 0.35f,
+            refractionDetailIntensity = 1f,
         )
         // 光譜色散：clear 只有 0.04f（≈關閉）。Simple 模式每幀一層，Full 太貴。
         chromaticAberrationMode(ChromaticAberrationMode.Simple)
