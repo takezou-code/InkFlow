@@ -55,6 +55,25 @@ compose.desktop {
         nativeDistributions {
             packageName = "InkFlow"
             packageVersion = "1.0.0"
+
+            // Compose's default runtime image is trimmed to what it infers we use,
+            // and it infers wrong here. Verified by inspecting `runtime/lib/modules`
+            // in the packaged output: both modules were absent, and both kill the
+            // packaged app at startup while `gradlew run` (full JDK) is perfectly
+            // happy — which is why this only ever showed up in the EXE.
+            //
+            //  - `java.sql`: without it, `NoClassDefFoundError: java/sql/SQLException`
+            //    the moment the SQLite driver is touched, before any window appears.
+            //  - `java.naming`: logback reads `logback.xml` through
+            //    `JoranConfigurator`, which instantiates JNDI-backed model handlers.
+            //    Without the module it is not degraded logging, it is
+            //    `ClassNotFoundException: javax.naming.NamingException` ->
+            //    "Failed to launch JVM", during class init, before main() runs.
+            //
+            // `java.logging` because PDFBox and the JRE's own logging bridge expect
+            // it; cheap insurance.
+            modules("java.sql", "java.naming", "java.logging")
+
             windows {
                 menuGroup = "InkFlow"
                 upgradeUuid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
@@ -73,5 +92,44 @@ compose.desktop {
 tasks.register("printRuntimeClasspath") {
     doLast {
         println(configurations.getByName("runtimeClasspath").files.joinToString(File.pathSeparator))
+    }
+}
+
+/**
+ * jpackage writes `InkFlow.cfg` into `app/` but the launcher looks for it next to
+ * `InkFlow.exe`, one level up, so the packaged app dies immediately with
+ *
+ *   Error opening "...\InkFlow\app\InkFlow.cfg" file: No such file or directory
+ *
+ * Copying the file up is not enough on its own: its classpath entries are
+ * `$APPDIR\<jar>`, and $APPDIR now means the image root while the jars actually
+ * live in `app/`, so every entry has to be re-rooted or the launcher finds a
+ * config and then loads none of the code.
+ *
+ * Cheap and deterministic to fix here rather than hunting for a jpackage flag the
+ * Compose plugin does not expose.
+ */
+afterEvaluate {
+    // Appended to the packaging task itself rather than run as a separate task:
+    // writing into the app-image directory from a *separate* task makes Gradle
+    // treat that file as an unexpected output and fail the build with
+    // "Failed to clean up output files for task ':createDistributable'".
+    tasks.findByName("createDistributable")?.doLast {
+        val appDir = layout.buildDirectory.dir("compose/binaries/main/app/InkFlow").get().asFile
+        val source = File(appDir, "app/InkFlow.cfg")
+        val target = File(appDir, "InkFlow.cfg")
+        if (!source.exists()) {
+            throw GradleException(
+                "expected jpackage to produce ${source.absolutePath}; " +
+                    "the app-image layout changed and this fixup needs updating"
+            )
+        }
+        // Rewrite $APPDIR -> $APPDIR\app so the classpath points at the jars,
+        // which live one level down from the launcher.
+        target.writeText(
+            source.readText().replace("\$APPDIR", "\$APPDIR\\app"),
+            Charsets.US_ASCII
+        )
+        logger.lifecycle("placed ${target.name} next to the launcher")
     }
 }
