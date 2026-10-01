@@ -1,4 +1,4 @@
-package com.vic.inkflow.ui
+﻿package com.vic.inkflow.ui
 
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeSource
@@ -237,7 +237,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 // --- 3. Editor Screen ---
-enum class SidebarMode { COLLAPSED, NORMAL, FULLSCREEN }
+// 側欄階段定義在 SidebarStage.kt（含狀態機與單元測試），這裡不再重複定義。
 
 @Composable
 fun TabletEditorScreen(
@@ -272,7 +272,10 @@ fun TabletEditorScreen(
     val docViewModel: DocumentViewModel = viewModel(
         factory = DocumentViewModelFactory(repos)
     )
-    var sidebarMode by rememberSaveable { mutableStateOf(SidebarMode.COLLAPSED) }
+    // enum 不是 Bundle 可存的類型，所以存 ordinal 才有 rememberSaveable 的效果。
+    var sidebarStageOrdinal by rememberSaveable { mutableIntStateOf(SidebarStage.RAIL.ordinal) }
+    val sidebarStage: SidebarStage =
+        SidebarStage.ordered[sidebarStageOrdinal.coerceIn(0, SidebarStage.ordered.lastIndex)]
     val activeTool by viewModel.selectedTool.collectAsState()
     var currentPageIndex by rememberSaveable { mutableIntStateOf(0) }
     var showStrokeWidthSlider by rememberSaveable { mutableStateOf(false) }
@@ -450,7 +453,7 @@ fun TabletEditorScreen(
     var sidebarFollowActive by remember { mutableStateOf(false) }
     // 側欄帶頭時間戳：側欄點選/轉頁蓋章，1 秒內跟隨不回拉，讓 fling 飛完。
     var lastSidebarDriveMs by remember { mutableStateOf(0L) }
-    androidx.compose.runtime.LaunchedEffect(currentPageIndex, sidebarMode) {
+    androidx.compose.runtime.LaunchedEffect(currentPageIndex, sidebarStage) {
         // 旗子從 effect 一進來就舉（涵蓋防抖等待期），結束/取消才放下——
         // 之前只包著 animate，等待期有洞，迴圈從洞裡鑽。
         sidebarFollowActive = true
@@ -717,19 +720,21 @@ fun TabletEditorScreen(
             
             val collapsedWidth = 56.dp
             val normalWidth = 128.dp
-            
-            val targetWidth = when (sidebarMode) {
-                SidebarMode.COLLAPSED -> collapsedWidth
-                SidebarMode.NORMAL -> normalWidth
-                SidebarMode.FULLSCREEN -> totalWidth
+
+            // 寬度軸只負責 56dp ↔ 128dp。
+            // 舊碼把 GRID 塞成 totalWidth（整屏約 800dp），那是 6.7 倍距離的 spring，
+            // 而且動畫期間 fixedW 跟著 currentWidthDp 走 → 側欄整排縮圖每幀重排。
+            // GRID 現在是獨立疊層，寬度完全不參與（見下方 gridOverlayProgress）。
+            val targetWidth = when (sidebarStage) {
+                SidebarStage.RAIL -> collapsedWidth
+                SidebarStage.PANEL, SidebarStage.GRID -> normalWidth
             }
 
             val animatableWidth = remember {
                 androidx.compose.animation.core.Animatable(
-                    when (sidebarMode) {
-                        SidebarMode.COLLAPSED -> 56f
-                        SidebarMode.NORMAL -> 128f
-                        SidebarMode.FULLSCREEN -> 128f
+                    when (sidebarStage) {
+                        SidebarStage.RAIL -> 56f
+                        SidebarStage.PANEL, SidebarStage.GRID -> 128f
                     }
                 )
             }
@@ -761,10 +766,26 @@ fun TabletEditorScreen(
                 for (dy in scrollRequests) mainListState.scrollBy(dy)
             }
 
-            LaunchedEffect(targetWidth, totalWidth) {
+            LaunchedEffect(targetWidth) {
                 animatableWidth.animateTo(
                     targetValue = targetWidth.value,
                     animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMediumLow)
+                )
+            }
+
+            // ── 疊層軸（第 3 階）────────────────────────────────────────────
+            // GRID 是覆蓋在紙之上的浮層，不再是「一種寬度」。
+            // 動畫只動 graphicsLayer（合成器層），浮層本身恆為 fillMaxSize，
+            // 進場時量一次即可，動畫期間零重排。
+            val gridOverlayProgress = remember { androidx.compose.animation.core.Animatable(0f) }
+            LaunchedEffect(sidebarStage) {
+                val target = if (sidebarStage == SidebarStage.GRID) 1f else 0f
+                gridOverlayProgress.animateTo(
+                    targetValue = target,
+                    animationSpec = tween(
+                        durationMillis = if (target > 0f) Motion.DURATION_NORMAL else Motion.DURATION_FAST,
+                        easing = androidx.compose.animation.core.FastOutSlowInEasing
+                    )
                 )
             }
 
@@ -837,8 +858,8 @@ fun TabletEditorScreen(
                         }
                 ) {
                     Sidebar(
-                sidebarMode = sidebarMode,
-                onModeChange = { sidebarMode = it },
+                sidebarStage = sidebarStage,
+                onModeChange = { sidebarStageOrdinal = it.ordinal },
                 pdfViewModel = pdfViewModel,
                 pageCount = pageCount,
                 currentPageIndex = currentPageIndex,
@@ -879,32 +900,62 @@ fun TabletEditorScreen(
 
         }
 
-        // Drag Strip：獨立 24dp 細觸控條，NORMAL 顯示玻璃丸；
-        // 點循環切換；橫拖調寬（1:1 跟手），直拖捲主列表；主軸先過 slop 先鎖定
-        // 全屏態由網格內返回鈕退出，這裡不佔位
-        // 拉桿只在「已展開」時存在：收合時它 24dp 的觸控條完全沒有視覺（只有 NORMAL 畫丸子），
-        // 純浪費水平空間 → 收合時讓位給側欄內「+」上方那顆展開鈕（SidebarPanel）。
-        if (sidebarMode != SidebarMode.FULLSCREEN && sidebarMode != SidebarMode.COLLAPSED) {
+        // ── 第 3 階：頁面網格疊層 ────────────────────────────────────────
+        // 蓋在紙／側欄／AI 抽屜之上、工具列之下（與 AI 卡片同一套讓位邏輯）。
+        // 恆為 fillMaxSize：動畫只動 graphicsLayer，不觸發 measure，
+        // 所以「幾百張縮圖的網格」不會在進場時被重排。
+        if (gridOverlayProgress.value > 0f) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        val p = gridOverlayProgress.value
+                        alpha = p
+                        // 微量上滑 + 收斂：純視覺，不影響量測
+                        translationY = (1f - p) * 48.dp.toPx()
+                        scaleX = 0.98f + 0.02f * p
+                        scaleY = 0.98f + 0.02f * p
+                    }
+            ) {
+                SidebarPageGrid(
+                    pageCount = pageCount,
+                    currentPageIndex = currentPageIndex,
+                    pdfViewModel = pdfViewModel,
+                    repos = repos,
+                    documentUri = uri.toString(),
+                    modelWidth = viewModel.modelWidth,
+                    modelHeight = viewModel.modelHeight,
+                    hazeState = chromeHaze,
+                    isDarkTheme = isEditorDark,
+                    onBack = { sidebarStageOrdinal = SidebarStage.PANEL.ordinal },
+                    onCollapse = { sidebarStageOrdinal = SidebarStage.RAIL.ordinal },
+                    onPageSelected = { index ->
+                        lastSidebarDriveMs = SystemClock.uptimeMillis()
+                        onRequestPage(index)
+                    },
+                    onDeletePages = { indices ->
+                        // R2：同上，清棧。
+                        viewModel.clearUndoStacks()
+                        pdfViewModel.deletePages(uri.toString(), indices)
+                    },
+                    onStructureChanged = { viewModel.clearUndoStacks() }
+                )
+            }
+        }
+        // 拉桿只在 PANEL 存在：RAIL 讓位給側欄內的展開鈕，GRID 是浮層有自己的邊緣把手。
+        if (sidebarStage == SidebarStage.PANEL) {
             Box(
                 modifier = Modifier
                     .width(24.dp)
                     .fillMaxHeight()
                     .padding(top = toolbarH)
-                    .pointerInput(totalWidth) {
-                        val anchors = listOf(
-                            SidebarMode.COLLAPSED to collapsedWidth.value,
-                            SidebarMode.NORMAL to normalWidth.value,
-                            SidebarMode.FULLSCREEN to totalWidth.value
-                        )
-                        val order = listOf(SidebarMode.COLLAPSED, SidebarMode.NORMAL, SidebarMode.FULLSCREEN)
+                    .pointerInput(Unit) {
                         awaitEachGesture {
                             val down = awaitFirstDown()
                             // 拖曳起點：鎖住內容量測寬度，之後外框跟手但內容不重測
-                            if (sidebarMode != SidebarMode.COLLAPSED) {
-                                dragMeasureWidth = currentWidthDp
-                                dragVisualWidth = currentWidthDp
-                                isDraggingSidebar = true
-                            }
+                            dragMeasureWidth = currentWidthDp
+                            dragVisualWidth = currentWidthDp
+                            isDraggingSidebar = true
                             // null = 未定；true = 橫向調寬；false = 直向捲動（先過 slop 先鎖定）
                             var horizontalLock: Boolean? = null
                             var prevX = down.position.x
@@ -919,31 +970,28 @@ fun TabletEditorScreen(
                                 val change = event.changes.firstOrNull { it.id == down.id } ?: break
                                 if (!change.pressed) {
                                     if (horizontalLock == null) {
-                                        // 純點：循環切換，怎麼點都有反應
-                                        sidebarMode = order[(order.indexOf(sidebarMode) + 1) % order.size]
-                                    } else if (horizontalLock == true) {
-                                        val vx = velX
-                                        val currentW = if (isDraggingSidebar) {
-                                            with(density) { dragVisualWidth.toPx() }
-                                        } else animatableWidth.value
-                                        val sorted = anchors.sortedBy { it.second }
-                                        val next = when {
-                                            vx > 600f -> sorted.firstOrNull { it.second > currentW + 1f }?.first
-                                                ?: SidebarMode.FULLSCREEN
-                                            vx < -600f -> sorted.lastOrNull { it.second < currentW - 1f }?.first
-                                                ?: SidebarMode.COLLAPSED
-                                            else -> anchors.minByOrNull { (_, w) ->
-                                                kotlin.math.abs(currentW - w)
-                                            }?.first ?: SidebarMode.COLLAPSED
+                                        // 純點：單向推進到下一階（舊碼是循環，
+                                        // 導致 PANEL 點一下進 GRID、GRID 沒 strip 就回不來）
+                                        SidebarStageMachine.expandTarget(sidebarStage)?.let {
+                                            sidebarStageOrdinal = it.ordinal
                                         }
+                                    } else if (horizontalLock == true) {
+                                        // 寬度軸只剩兩階（RAIL↔PANEL），GRID 不在寬度軸上。
+                                        // 這裡仍然可以往右甩進 GRID：由 snap 決定。
+                                        val currentW = with(density) { dragVisualWidth.toPx() }
+                                        val releaseProgress = if (currentW <= collapsedWidth.value) {
+                                            SidebarStage.RAIL.progress
+                                        } else {
+                                            SidebarStage.PANEL.progress
+                                        }
+                                        val next = SidebarStageMachine.snap(releaseProgress, velX)
                                         // 收尾：解除拖曳鎖，讓動畫接手寬度變化
                                         isDraggingSidebar = false
-                                        sidebarMode = next
+                                        sidebarStageOrdinal = next.ordinal
                                         widthRequests.trySend(
                                             when (next) {
-                                                SidebarMode.COLLAPSED -> collapsedWidth
-                                                SidebarMode.NORMAL -> normalWidth
-                                                SidebarMode.FULLSCREEN -> totalWidth
+                                                SidebarStage.RAIL -> collapsedWidth
+                                                else -> normalWidth
                                             }
                                         )
                                     }
@@ -989,7 +1037,7 @@ fun TabletEditorScreen(
                     },
                 contentAlignment = Alignment.Center
             ) {
-                if (sidebarMode == SidebarMode.NORMAL) {
+                if (sidebarStage == SidebarStage.PANEL) {
                     Box(
                         Modifier
                             .width(6.dp)

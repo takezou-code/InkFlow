@@ -1,4 +1,4 @@
-package com.vic.inkflow.ui
+﻿package com.vic.inkflow.ui
 
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeSource
@@ -242,8 +242,8 @@ import kotlinx.coroutines.withContext
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun Sidebar(
-    sidebarMode: SidebarMode,
-    onModeChange: (SidebarMode) -> Unit,
+    sidebarStage: SidebarStage,
+    onModeChange: (SidebarStage) -> Unit,
     pdfViewModel: PdfViewModel,
     pageCount: Int,
     currentPageIndex: Int,
@@ -264,17 +264,7 @@ internal fun Sidebar(
     isFollowingSidebar: Boolean = false
 ) {
     var deleteConfirmIndices by remember { mutableStateOf<List<Int>>(emptyList()) }
-    var isSelectionMode by remember { mutableStateOf(false) }
-    var selectedPages by remember { mutableStateOf<Set<Int>>(emptySet()) }
-    var showOnlyBookmarked by remember { mutableStateOf(false) }
     val bookmarkedPages by pdfViewModel.getBookmarkedPages(documentUri).collectAsState(initial = emptyList())
-    val visibleIndices = remember(pageCount, showOnlyBookmarked, bookmarkedPages, sidebarMode) {
-        if (showOnlyBookmarked && sidebarMode == SidebarMode.FULLSCREEN) {
-            (0 until pageCount).filter { it in bookmarkedPages }
-        } else {
-            (0 until pageCount).toList()
-        }
-    }
     val thumbnailVersion by pdfViewModel.thumbnailVersion.collectAsState()
     val isPageOperationInProgress by pdfViewModel.isPageOperationInProgress.collectAsState()
     if (deleteConfirmIndices.isNotEmpty()) {
@@ -288,8 +278,6 @@ internal fun Sidebar(
             onConfirm = {
                 deleteConfirmIndices = emptyList()
                 onDeletePages(indices)
-                isSelectionMode = false
-                selectedPages = emptySet()
             },
             confirmEnabled = !isPageOperationInProgress,
             confirmColor = MaterialTheme.colorScheme.error
@@ -302,235 +290,6 @@ internal fun Sidebar(
         color = Color.Transparent,
         contentColor = MaterialTheme.colorScheme.onSurface,
     ) {
-        if (sidebarMode == SidebarMode.FULLSCREEN) {
-            // Fullscreen: 4-column page grid with back button
-            val gridState = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
-            val coroutineScope = rememberCoroutineScope()
-            var dragOrder by remember(visibleIndices, thumbnailVersion) { mutableStateOf(visibleIndices) }
-            val reorderState = com.vic.inkflow.util.rememberReorderableLazyGridState(
-                gridState = gridState,
-                onMove = { from, to ->
-                    val newOrder = dragOrder.toMutableList()
-                    val item = newOrder.removeAt(from)
-                    newOrder.add(to, item)
-                    dragOrder = newOrder
-                },
-                onDragEnd = { from, to ->
-                    if (!showOnlyBookmarked && !isSelectionMode) {
-                        // R2：移頁是結構操作，清棧。
-                        onStructureChanged()
-                        pdfViewModel.movePage(documentUri, visibleIndices[from], visibleIndices[to])
-                    }
-                }
-            )
-            LaunchedEffect(Unit) {
-                // Scroll so the current page is visible when the grid opens
-                val row = currentPageIndex / 4
-                gridState.scrollToItem(index = (row * 4).coerceAtLeast(0))
-            }
-            Column(Modifier.fillMaxSize()) {
-                // 玻璃頂欄：跟工具列藥丸同一語言
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 10.dp)
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(52.dp)
-                            .glassPanel(hazeState, isDarkTheme, ShapeLg)
-                            .padding(horizontal = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        if (isSelectionMode) {
-                            IconButton(onClick = {
-                                isSelectionMode = false
-                                selectedPages = emptySet()
-                            }) {
-                                Icon(Icons.Outlined.Close, contentDescription = "取消多選")
-                            }
-                            Text(
-                                text = "已選取 ${selectedPages.size} 頁",
-                                style = MaterialTheme.typography.titleSmall,
-                                modifier = Modifier.weight(1f)
-                            )
-                            androidx.compose.material3.TextButton(onClick = {
-                                if (selectedPages.size == pageCount) selectedPages = emptySet() else selectedPages = (0 until pageCount).toSet()
-                            }) {
-                                Text(if (selectedPages.size == pageCount) "取消全選" else "全選")
-                            }
-                            IconButton(
-                                onClick = {
-                                    if (selectedPages.isNotEmpty() && !isPageOperationInProgress) {
-                                        deleteConfirmIndices = selectedPages.toList()
-                                    }
-                                },
-                                enabled = selectedPages.isNotEmpty() && !isPageOperationInProgress
-                            ) {
-                                Icon(Icons.Outlined.DeleteOutline, contentDescription = "刪除選擇", tint = MaterialTheme.colorScheme.error)
-                            }
-                        } else {
-                            IconButton(onClick = { onModeChange(SidebarMode.NORMAL) }) {
-                                Icon(Icons.Outlined.ArrowBack, contentDescription = "回預覽條")
-                            }
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(text = "所有頁面", style = MaterialTheme.typography.titleSmall)
-                                Text(
-                                    text = "${visibleIndices.size} 頁",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            // 書籤開關：玻璃小丸（取代 M3 FilterChip）
-                            Box(
-                                modifier = Modifier
-                                    .clip(CircleShape)
-                                    .then(
-                                        if (showOnlyBookmarked) Modifier.glassPanel(hazeState, isDarkTheme, CircleShape)
-                                        else Modifier
-                                    )
-                                    .clickable { showOnlyBookmarked = !showOnlyBookmarked }
-                                    .padding(8.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = if (showOnlyBookmarked) Icons.Outlined.Star else Icons.Outlined.BookmarkBorder,
-                                    contentDescription = "只看書籤",
-                                    tint = if (showOnlyBookmarked) MaterialTheme.colorScheme.primary
-                                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                            IconButton(onClick = { isSelectionMode = true }) {
-                                Icon(Icons.Outlined.Check, contentDescription = "多選頁面")
-                            }
-                        }
-                    }
-                }
-                LazyVerticalGrid(
-                    columns = GridCells.Adaptive(240.dp),
-                    state = gridState,
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 64.dp),
-                    horizontalArrangement = Arrangement.spacedBy(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp),
-                    modifier = Modifier.fillMaxSize().reorderable(reorderState, enabled = !showOnlyBookmarked && !isSelectionMode && !isPageOperationInProgress)
-                ) {
-                    items(count = dragOrder.size, key = { dragOrder[it] }) { it ->
-                        val index = dragOrder[it]
-                        val thumbFlow = androidx.compose.runtime.remember(index, thumbnailVersion) {
-                            pdfViewModel.getPageThumbnail(index)
-                        }
-                        val thumb by thumbFlow.collectAsState()
-                        val strokesFlow = androidx.compose.runtime.remember(index) {
-                            repos.strokes.getStrokesForPage(documentUri, index)
-                        }
-                        val strokes by strokesFlow.collectAsState(initial = emptyList())
-                        val imagesFlow = androidx.compose.runtime.remember(index) {
-                            repos.images.getForPage(documentUri, index)
-                        }
-                        val images by imagesFlow.collectAsState(initial = emptyList())
-                        val textsFlow = androidx.compose.runtime.remember(index) {
-                            repos.texts.getForPage(documentUri, index)
-                        }
-                        val texts by textsFlow.collectAsState(initial = emptyList())
-                        val canDrag = !showOnlyBookmarked && !isSelectionMode && !isPageOperationInProgress
-                        val currentListIndex = it
-                        Box(modifier = Modifier
-                            .let { mod -> if (reorderState.draggingItemIndex == currentListIndex) mod else mod.animateItem() }
-                            .reorderableItem(reorderState, currentListIndex)
-                            .then(
-                            if (canDrag) {
-                                Modifier.clickable {
-                                    coroutineScope.launch {
-                                        // Keep list center in sync before leaving fullscreen,
-                                        // otherwise stale center index may snap back.
-                                        listState.scrollToCenter(index)
-                                        onPageSelected(index)
-                                        onModeChange(SidebarMode.NORMAL)
-                                    }
-                                }
-                            } else {
-                                Modifier.combinedClickable(
-                                    onClick = {
-                                        if (isSelectionMode) {
-                                            if (index in selectedPages) selectedPages -= index else selectedPages += index
-                                        } else {
-                                            coroutineScope.launch {
-                                                // Keep list center in sync before leaving fullscreen,
-                                                // otherwise stale center index may snap back.
-                                                listState.scrollToCenter(index)
-                                                onPageSelected(index)
-                                                onModeChange(SidebarMode.NORMAL)
-                                            }
-                                        }
-                                    },
-                                    onLongClick = { 
-                                        if (!isSelectionMode && pageCount > 1 && !isPageOperationInProgress) {
-                                            isSelectionMode = true
-                                            selectedPages += index
-                                        }
-                                    }
-                                )
-                            }
-                        )) {
-                            // 玻璃卡框 + 內嵌 8dp 白紙，跟文件庫卡片同語言
-                            Box(
-                                modifier = Modifier
-                                    .glassPanel(hazeState, isDarkTheme, ShapeLg)
-                                    .padding(8.dp)
-                            ) {
-                            Box {
-                                PageThumbnail(
-                                    pageIndex = index,
-                                    bitmap = thumb,
-                                    strokes = strokes,
-                                    imageAnnotations = images,
-                                    textAnnotations = texts,
-                                    isSelected = isSelectionMode && index in selectedPages || (!isSelectionMode && index == currentPageIndex),
-                                    isBookmarked = index in bookmarkedPages,
-                                    onBookmarkToggle = { newState -> pdfViewModel.toggleBookmark(documentUri, index, newState) },
-                                    boxModifier = Modifier.fillMaxWidth().aspectRatio(pdfViewModel.getPageAspectRatio(index))
-                                        .let { if (isSelectionMode) it.padding(8.dp) else it },
-                                    modelWidth = modelWidth,
-                                    modelHeight = modelHeight
-                                )
-                                if (isSelectionMode) {
-                                    // 自繪勾選圓（取代 M3 Checkbox）
-                                    val checked = index in selectedPages
-                                    Box(
-                                        modifier = Modifier
-                                            .align(Alignment.TopStart)
-                                            .padding(12.dp)
-                                            .size(28.dp)
-                                            .clip(CircleShape)
-                                            .background(
-                                                if (checked) MaterialTheme.colorScheme.primary
-                                                else MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
-                                                CircleShape
-                                            )
-                                            .clickable {
-                                                if (checked) selectedPages -= index else selectedPages += index
-                                            },
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        if (checked) {
-                                            Icon(
-                                                Icons.Outlined.Check,
-                                                contentDescription = null,
-                                                tint = MaterialTheme.colorScheme.onPrimary,
-                                                modifier = Modifier.size(16.dp)
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                            }
-                        }
-                    }
-                }
-            }
-        } else {
             // Normal / Collapsed — thumbnail list + pinned add-page footer
             Column(Modifier.fillMaxSize()) {
                 val coroutineScope = rememberCoroutineScope()
@@ -547,14 +306,14 @@ internal fun Sidebar(
                     // 這個 padding 現在只負責讓首末頁「有空間」捲到中央。
                     val pageAspect = pdfViewModel.getPageAspectRatio(0).coerceAtLeast(0.1f)
                     val thumbHalf = (88.dp / pageAspect + 16.dp) / 2f
-                    val itemHalfHeight = if (sidebarMode == SidebarMode.NORMAL) thumbHalf else 32.dp
+                    val itemHalfHeight = if (sidebarStage == SidebarStage.PANEL) thumbHalf else 32.dp
                     val verticalPadding = (halfHeight - itemHalfHeight).coerceAtLeast(0.dp)
 
                     // 定錨玻璃丸：畫在列表下層，數字浮在玻璃上才看得清。
                     // 丸子釘死 viewport 中央不跟頁碼跑（snap 置中保證當前頁永遠停在這）；
                     // 頁碼撞進來的那一下：壓扁再彈簧回彈（帶過衝 wobble）+ 漣漪擴散，像東西砸進泡泡。
                     // 丸子常駐不藏：捲動時頁碼從它後面滑過去正是要看的效果，藏了反而像泡泡在閃。
-                    if (sidebarMode != SidebarMode.NORMAL) {
+                    if (sidebarStage != SidebarStage.PANEL) {
                         val density = LocalDensity.current
                         // 定值中央：跟 snap 置中同一點，不追蹤不脫鉤
                         val fixedY = with(density) { maxHeight.toPx() / 2f - 24.dp.toPx() }
@@ -684,8 +443,8 @@ internal fun Sidebar(
                             }
                         }
                     }
-                    androidx.compose.runtime.LaunchedEffect(centerItemIndex, sidebarMode, isFollowingSidebar) {
-                        if (sidebarMode != SidebarMode.COLLAPSED) return@LaunchedEffect
+                    androidx.compose.runtime.LaunchedEffect(centerItemIndex, sidebarStage, isFollowingSidebar) {
+                        if (sidebarStage != SidebarStage.RAIL) return@LaunchedEffect
                         if (isFollowingSidebar) return@LaunchedEffect
                         // 手指放開後 800ms 內的慣性也算數（不然甩過去不停頁）
                         val recentDrag = android.os.SystemClock.uptimeMillis() - lastSidebarDragEndMs < 800
@@ -734,7 +493,7 @@ internal fun Sidebar(
                                 ),
                             contentAlignment = Alignment.Center
                         ) {
-                            if (sidebarMode == SidebarMode.NORMAL) {
+                            if (sidebarStage == SidebarStage.PANEL) {
                                 PageThumbnail(
                                     pageIndex = index,
                                     bitmap = thumb,
@@ -763,14 +522,14 @@ internal fun Sidebar(
                 // 收合時的展開鈕：放在「+」上方，風格同 +（實體玻璃藥丸）。
                 // 以前那條 24dp 拉桿在收合時也佔著寬度卻什麼都看不到（只有 NORMAL 才畫丸子），
                 // 純浪費空間 → 收合時讓拉桿完全不佔位，改用這顆按鈕。
-                if (sidebarMode == SidebarMode.COLLAPSED) {
+                if (sidebarStage == SidebarStage.RAIL) {
                     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                         val expandScale by animateFloatAsState(
                             targetValue = 1f,
                             label = "SidebarExpandScale"
                         )
                         androidx.compose.material3.TextButton(
-                            onClick = { onModeChange(SidebarMode.NORMAL) },
+                            onClick = { onModeChange(SidebarStage.PANEL) },
                             modifier = Modifier
                                 .padding(horizontal = 6.dp, vertical = 4.dp)
                                 .graphicsLayer { scaleX = expandScale; scaleY = expandScale }
@@ -793,7 +552,7 @@ internal fun Sidebar(
                     )
                 }
                 Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    if (sidebarMode == SidebarMode.NORMAL) {
+                    if (sidebarStage == SidebarStage.PANEL) {
                         androidx.compose.material3.TextButton(
                             onClick = { onAddPage(currentPageIndex) },
                             enabled = !isPageOperationInProgress,
@@ -830,7 +589,6 @@ internal fun Sidebar(
                     }
                 }
             }
-        }
     }
 }
 
