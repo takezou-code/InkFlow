@@ -128,7 +128,7 @@ fun glassStyle(isDark: Boolean, shape: Shape = ShapeLg): GlassStyle =
             // 模糊保持「淺」（官方 clear 是 1.25dp）。原因：模糊半徑一旦大於折射位移量，
             // 位移產生的細節差異會被平均掉，折射就看不見了（模糊會把折射「吃掉」）。
             // 所以模糊收淺，改用「折射本身加強」來拿通透感。
-            blurRadius = 10.dp,
+            blurRadius = 7.dp,
             // 折射加強補償模糊減少：位移與細節拉高，邊緣彎曲更明顯。
             refractionStrength = 1f,
             refractionDisplacement = 56.dp,
