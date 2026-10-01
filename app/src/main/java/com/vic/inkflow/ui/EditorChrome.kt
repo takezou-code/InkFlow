@@ -375,6 +375,10 @@ fun TabletEditorTopBar(
                             .padding(horizontal = 3.dp, vertical = 3.dp)
                     ) {
                         if (drawingActiveIdx >= 0) {
+                            // 選中態必須是「半透明」：這塊畫在玻璃表面之上，
+                            // 用不透明色（原本的 primaryContainer 淡紫實心漸層）會把玻璃
+                            // 完全蓋住，結果就是黑玻璃、模糊、折射全部看不到。
+                            // 現在只做一层很淡的同色高光，玻璃透得出來，選中感仍在。
                             Box(
                                 modifier = Modifier
                                     .offset(x = drawingHighlightOffset)
@@ -382,8 +386,8 @@ fun TabletEditorTopBar(
                                     .background(
                                         Brush.linearGradient(
                                             listOf(
-                                                MaterialTheme.colorScheme.primaryContainer,
-                                                MaterialTheme.colorScheme.secondary.copy(alpha = 0.82f)
+                                                MaterialTheme.colorScheme.primary.copy(alpha = 0.22f),
+                                                MaterialTheme.colorScheme.secondary.copy(alpha = 0.14f)
                                             )
                                         ),
                                         ShapeMd
@@ -486,8 +490,9 @@ fun TabletEditorTopBar(
                                     .background(
                                         Brush.linearGradient(
                                             listOf(
-                                                MaterialTheme.colorScheme.primaryContainer,
-                                                MaterialTheme.colorScheme.primary.copy(alpha = 0.78f)
+                                                // 同理：不可用不透明 primaryContainer，會蓋掉玻璃
+                                                MaterialTheme.colorScheme.primary.copy(alpha = 0.22f),
+                                                MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
                                             )
                                         ),
                                         ShapeMd

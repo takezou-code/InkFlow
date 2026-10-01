@@ -269,6 +269,9 @@ fun DocumentLibraryScreen(
     var showMergeOrderDialog by remember { mutableStateOf(false) }
     // 每屏一個 HazeState（對話框穿窗共用同一個，放前面讓 dialogs 也吃得到）
     val libraryHazeState = rememberHazeState()
+    // 畫面內玻璃專屬 state：只餵背景層，玻璃自己不在來源裡 → 沒有 self-feedback。
+    // libraryHazeState（root）保留給對話框跨視窗採樣，那條路本來就正常，別動。
+    val libraryChromeHaze = rememberHazeState()
 
     // Chromium 預熱：編輯器 AI 面板首建 WebView 會卡主執行緒數百毫秒，
     // 那幾百毫秒正好把玻璃採樣空窗的那幀凍在螢幕上 = 黑閃。書庫閒置 2s 後先建一個即丟，
@@ -584,7 +587,8 @@ fun DocumentLibraryScreen(
             isDarkTheme = isDarkTheme,
             modifier = Modifier
                 .fillMaxSize()
-                .hazeSource(libraryHazeState),
+                .hazeSource(libraryHazeState)      // 對話框跨視窗（整屏）
+                .hazeSource(libraryChromeHaze),   // 畫面內玻璃（只有背景層）
             orbCount = 12
         )
 
@@ -600,7 +604,7 @@ fun DocumentLibraryScreen(
                 .fillMaxHeight()
                 .padding(start = 12.dp, top = 12.dp, bottom = 12.dp)
                 .width(76.dp)
-                .glassPanel(libraryHazeState, isDarkTheme, ShapeMd)
+                .glassPanel(libraryChromeHaze, isDarkTheme, ShapeMd)
                 .padding(vertical = 8.dp)
         ) {
             Spacer(Modifier.height(8.dp))
@@ -623,7 +627,7 @@ fun DocumentLibraryScreen(
                 onClick = { selectedNavIndex = 0 },
                 icon = Icons.Outlined.Home,
                 label = "首頁",
-                hazeState = libraryHazeState,
+                hazeState = libraryChromeHaze,
                 isDarkTheme = isDarkTheme
             )
             GlassRailItem(
@@ -631,7 +635,7 @@ fun DocumentLibraryScreen(
                 onClick = { selectedNavIndex = 1 },
                 icon = Icons.Outlined.Folder,
                 label = "資料夾",
-                hazeState = libraryHazeState,
+                hazeState = libraryChromeHaze,
                 isDarkTheme = isDarkTheme
             )
             GlassRailItem(
@@ -639,7 +643,7 @@ fun DocumentLibraryScreen(
                 onClick = { selectedNavIndex = 2 },
                 icon = Icons.Outlined.Star,
                 label = "收藏",
-                hazeState = libraryHazeState,
+                hazeState = libraryChromeHaze,
                 isDarkTheme = isDarkTheme
             )
             Spacer(Modifier.weight(1f))
@@ -684,7 +688,7 @@ fun DocumentLibraryScreen(
                     onToggleGridView = { isGridView = !isGridView },
                     selectedNavIndex = selectedNavIndex,
                     onCreateFolder = { showCreateFolderDialog = true },
-                    hazeState = libraryHazeState
+                    hazeState = libraryChromeHaze
                 )
             },
             floatingActionButton = {
@@ -694,7 +698,7 @@ fun DocumentLibraryScreen(
                     onToggleMenu = { showFabMenu = !showFabMenu },
                     onDismissMenu = { showFabMenu = false },
                     isDarkTheme = isDarkTheme,
-                    hazeState = libraryHazeState,
+                    hazeState = libraryChromeHaze,
                     onOpenPdf = {
                         showFabMenu = false
                         pdfLauncher.launch(arrayOf("application/pdf"))
@@ -726,7 +730,7 @@ fun DocumentLibraryScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(top = 4.dp, bottom = 12.dp)
-                            .glassPanel(libraryHazeState, isDarkTheme, ShapeMd),
+                            .glassPanel(libraryChromeHaze, isDarkTheme, ShapeMd),
                         color = Color.Transparent,
                         contentColor = MaterialTheme.colorScheme.onSurface,
                         shape = ShapeMd,
@@ -769,7 +773,7 @@ fun DocumentLibraryScreen(
                             onClearSearch = { searchQuery = "" },
                             onOpenPdf = { pdfLauncher.launch(arrayOf("application/pdf")) },
                             onCreateBlank = { showNewDocSizeDialog = true },
-                            hazeState = libraryHazeState,
+                            hazeState = libraryChromeHaze,
                             isDarkTheme = isDarkTheme
                         )
                     } else {
@@ -794,7 +798,7 @@ fun DocumentLibraryScreen(
                             onMoveFolderToParent = { folderId, targetParentId ->
                                 docViewModel.moveFolderToParent(folderId, targetParentId)
                             },
-                            hazeState = libraryHazeState,
+                            hazeState = libraryChromeHaze,
                             isDarkTheme = isDarkTheme
                         )
                     }
@@ -807,7 +811,7 @@ fun DocumentLibraryScreen(
                         onClearSearch = { searchQuery = "" },
                         onOpenPdf = { pdfLauncher.launch(arrayOf("application/pdf")) },
                             onCreateBlank = { showNewDocSizeDialog = true },
-                            hazeState = libraryHazeState,
+                            hazeState = libraryChromeHaze,
                             isDarkTheme = isDarkTheme
                         )
                 } else {

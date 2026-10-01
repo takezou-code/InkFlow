@@ -386,6 +386,9 @@ fun TabletEditorScreen(
     // Fix1 REVERTED: 紙層當 haze source 會凍結（氣泡 effect 與紙 source 同樹→重採樣迴圈；
     // 開 AI 面板改寬時巨型圖層重抓直接全黑）。氣泡暫回 Aurora 源（黑洞但穩定），另想辦法。
     val editorHaze = rememberHazeState()
+    // 工具列專屬 state：只把「背景＋紙」標成 source，工具列自己不在裡面 → 玻璃不會偷看自己。
+    // editorHaze（root）保留給對話框跨視窗採樣——對話框是另一個視窗，本來就正常，別動它。
+    val chromeHaze = rememberHazeState()
     val isEditorDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
 
     // 離開編輯器時刷新書庫封面（否則畫完墨水回主頁封面永遠是舊的）+ 補寫當前頁
@@ -634,7 +637,8 @@ fun TabletEditorScreen(
             isDarkTheme = isEditorDark,
             modifier = Modifier
                 .fillMaxSize()
-                .hazeSource(editorHaze),
+                .hazeSource(editorHaze)      // 對話框跨視窗用（整屏）
+                .hazeSource(chromeHaze),    // 工具列玻璃用（背景層）
             orbCount = 5
         )
         // 整屏沉浸：工作區 Row 鋪滿全屏墊底，工具列疊在上面（後畫＝在上）。
@@ -992,11 +996,16 @@ fun TabletEditorScreen(
                 // Main Workspace
                 val workspaceWeight = if (showAiPanel) (1f - aiPanelWeight) else 1f
                 Box(Modifier.weight(workspaceWeight).fillMaxHeight()) {
+                    // 紙＝工具列玻璃要採樣的內容之一。
+                    // 關鍵：這裡是 toolbar overlay 的兄弟節點，不是它的祖先，
+                    // 所以工具列玻璃不會把自己包進 source（沒有 feedback 迴路）。
                     Workspace(
                         pageIndex = currentPageIndex,
                         pdfViewModel = pdfViewModel,
                         viewModel = viewModel,
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .hazeSource(chromeHaze),
                         pageAspectRatio = pageAspectRatio,
                         documentUri = uri.toString(),
                         onAiFileReady = { fileUri, prompt ->
@@ -1037,7 +1046,7 @@ fun TabletEditorScreen(
                 isSendingPage = isSendingPage,
                 isPowerSaver = isPowerSaver,
                 onTogglePowerSaver = onTogglePowerSaver,
-                hazeState = editorHaze,
+                hazeState = chromeHaze,   // 工具列用專屬 state：採背景＋紙，不採自己
                 isDarkTheme = isEditorDark
             )
 
@@ -1048,7 +1057,7 @@ fun TabletEditorScreen(
             ) {
                 StrokeWidthSlider(
                     viewModel = viewModel,
-                    hazeState = editorHaze,
+                    hazeState = chromeHaze,
                     isDarkTheme = isEditorDark,
                 )
             }
