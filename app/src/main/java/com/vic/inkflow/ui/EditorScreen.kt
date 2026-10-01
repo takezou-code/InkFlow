@@ -855,7 +855,7 @@ fun TabletEditorScreen(
                 onStructureChanged = { viewModel.clearUndoStacks() },
                 listState = sidebarListState,
                 modifier = Modifier.fillMaxSize(),
-                hazeState = editorHaze,
+                hazeState = chromeHaze,   // 側欄玻璃：採背景＋紙。別用 editorHaze（其 source 是屏根，含側欄自己 → self-feedback → 玻璃失效）
                 isDarkTheme = isEditorDark,
                 isFollowingSidebar = sidebarFollowActive
             )
@@ -977,7 +977,7 @@ fun TabletEditorScreen(
                         Modifier
                             .width(6.dp)
                             .height(56.dp)
-                            .glassPanel(editorHaze, isEditorDark, CircleShape)
+                            .glassPanel(chromeHaze, isEditorDark, CircleShape)
                     )
                 }
             }
