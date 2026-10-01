@@ -775,7 +775,8 @@ fun TabletEditorScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxHeight()
-                        .padding(top = toolbarH)
+                        // 不要 padding(top = toolbarH)：側欄不該為了讓開工具列而被往下推。
+                        // 頁碼／+／展開鈕都要浮在最上層（工具列玻璃壓在上面），跟工作區的紙同一套邏輯。
                         .layout { measurable, constraints ->
                             val placeable = measurable.measure(
                                 constraints.copy(minWidth = fixedW, maxWidth = fixedW)
