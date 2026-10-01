@@ -112,7 +112,7 @@ val LocalQuietMode = androidx.compose.runtime.staticCompositionLocalOf { false }
  * 於是黑玻璃與折射都看不見（症狀：黑玻璃消失、只剩一片糊）。
  *
  * 刻意覆寫只有四項：
- *  1. blurRadius 34dp（clear 只有 1.25dp，等於沒糊；使用者要求看得出模糊）
+ *  1. blurRadius 20dp（clear 只有 1.25dp 等於沒糊；34dp 又太糊，20dp 是套件預設量級）
  *  2. chromaticAberrationStrength 0.3f（clear 只有 0.04f，等於沒色散）
  *  3. tint 用 App 的 veil 色票（唯一色票來源）
  *  4. shape 跟呼叫端走
@@ -126,7 +126,7 @@ fun glassStyle(isDark: Boolean, shape: Shape = ShapeLg): GlassStyle =
         optics(
             // 折射全部沿用 clearOptics（displacement 56dp／height 0.35／profile Edge(28.dp)／
             // detail 0.76），只把模糊拉大——折射位移遠大於折射帶寬是套件本身的設計，不是錯誤。
-            blurRadius = 34.dp,
+            blurRadius = 20.dp,
         )
         // 光譜色散：clear 只有 0.04f（≈關閉）。Simple 模式每幀一層，Full 太貴。
         chromaticAberrationMode(ChromaticAberrationMode.Simple)
