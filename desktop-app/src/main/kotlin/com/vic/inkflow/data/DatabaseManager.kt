@@ -71,6 +71,12 @@ class DatabaseManager(private val dbPath: String) {
             stmt.execute("PRAGMA journal_mode=WAL")
             stmt.execute("PRAGMA busy_timeout=5000")
 
+            // Schema versioning. `CREATE TABLE IF NOT EXISTS` silently does nothing when the
+            // table already exists, so adding a column to an existing table looks like it
+            // worked and then blows up at the first query with "no such column". Every
+            // shipped database has to be walked forward explicitly.
+            migrateSchema(stmt)
+
             // documents: the mirror of what the tablet has. `uri` is the tablet's
             // file:// path and is only meaningful together with the tablet's
             // instanceId (see sync_state) — it is NOT a global identity.
@@ -161,6 +167,62 @@ class DatabaseManager(private val dbPath: String) {
 
             logger.info { "Database initialized (desktop-owned schema, protocol v3)" }
         }
+    }
+
+    /**
+     * Walk an existing desktop database forward to the current shape.
+     *
+     * v1 = documents / folders / strokes / points, `strokes` WITHOUT `docY`, and no
+     * sync bookkeeping.
+     * v2 = adds `strokes.docY` and the `sync_meta` / `sync_docs` tables.
+     *
+     * Additive only — the desktop is a read-only mirror, so there is nothing to
+     * rewrite, and a column that the tablet sends as NULL stays NULL rather than
+     * being invented here.
+     */
+    private fun migrateSchema(stmt: java.sql.Statement) {
+        val version = stmt.executeQuery("PRAGMA user_version").use { rs ->
+            if (rs.next()) rs.getInt(1) else 0
+        }
+        if (version >= SCHEMA_VERSION) return
+
+        if (version < 2) {
+            // `docY` is the tablet's S1 single-canvas document-space anchor. Only add it
+            // when the table exists and lacks it, so this is safe to re-run.
+            if (tableExists(stmt, "strokes") && !columnExists(stmt, "strokes", "docY")) {
+                stmt.execute("ALTER TABLE strokes ADD COLUMN docY REAL")
+                logger.info { "Schema v1 -> v2: added strokes.docY" }
+            }
+        }
+
+        // sync_meta / sync_docs are created by initializeDatabase()'s CREATE TABLE IF NOT
+        // EXISTS statements, so nothing to do here for them.
+
+        stmt.execute("PRAGMA user_version = $SCHEMA_VERSION")
+        logger.info { "Desktop schema at version $SCHEMA_VERSION" }
+    }
+
+    private fun tableExists(stmt: java.sql.Statement, table: String): Boolean =
+        stmt.executeQuery(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='$table'"
+        ).use { it.next() }
+
+    private fun columnExists(stmt: java.sql.Statement, table: String, column: String): Boolean {
+        var found = false
+        stmt.executeQuery("PRAGMA table_info($table)").use { rs ->
+            while (rs.next()) {
+                // PRAGMA table_info columns: cid, name, type, notnull, dflt_value, pk
+                if (rs.getString("name").equals(column, ignoreCase = true)) {
+                    found = true
+                    break
+                }
+            }
+        }
+        return found
+    }
+
+    private companion object {
+        const val SCHEMA_VERSION = 2
     }
 
     // ─── Sync bookkeeping (v3) ──────────────────────────────────────────────

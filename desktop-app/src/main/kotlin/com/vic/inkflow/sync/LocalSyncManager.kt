@@ -501,7 +501,7 @@ class LocalSyncManager(
                         "this build speaks v${SyncConstants.PROTOCOL_VERSION}. Update the desktop app."
                 )
             }
-            if (psk != null && !constantTimeEquals(psk, peer.pskProof)) {
+            if (psk != null && !constantTimeEquals(pskProof(psk), peer.pskProof)) {
                 throw IOException("Authentication failed: wrong pairing code")
             }
         }
@@ -518,6 +518,17 @@ class LocalSyncManager(
     )
 
     private fun pskOrNull(): String? = psk
+
+    /**
+     * The value the tablet returns in `pskProof`. The desktop must compare against
+     * THIS, not against the raw PSK — the tablet never sends the secret back, only
+     * this derivative. Comparing `psk` to `peer.pskProof` (an earlier mistake here)
+     * can never succeed, so pairing was unconditionally rejected.
+     *
+     * Must stay byte-identical to `SyncIdentity.pskProof` on the Android side.
+     */
+    private fun pskProof(psk: String): String =
+        SyncWire.sha256Hex((psk + "inkflow-sync-v3").toByteArray(Charsets.UTF_8))
 
     private fun constantTimeEquals(a: String, b: String?): Boolean {
         if (b == null) return false
