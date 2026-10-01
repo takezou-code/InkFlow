@@ -293,7 +293,7 @@ fun TabletEditorScreen(
     var aiPickMode by remember { mutableStateOf(false) }
     var aiPickEnterId by remember { mutableStateOf(0) }
     // AI 面板黑白切換（預設亮底；只影響 Gemini 網頁，不動 App 主題）
-    var aiWebLight by rememberSaveable { mutableStateOf(true) }
+    // Gemini 網頁自己的淺/深色不再手動：直接跟 App 深淺色走（見 isEditorDark，:420）。
     var aiPickCollectId by remember { mutableStateOf(0) }
     var aiWebView by remember { mutableStateOf<android.webkit.WebView?>(null) }
     val sidebarListState = rememberLazyListState()
@@ -352,6 +352,21 @@ fun TabletEditorScreen(
     fun importPickedJson(json: String) {
         scope.importPickedJson(json, context, viewModel, pdfViewModel, repos, uri.toString(), currentPageIndex, onRequestPage, context as? android.app.Activity, aiWebView)
     }
+    // AI 區「匯入回覆」兩段式：①進圈選模式（段落打勾）②收集打勾段落（沒勾則取最後回覆全文）
+    // 按鈕常駐工具列，所以抽屜收起時也要能用：武裝時順手把抽屜滑開，
+    // 否則使用者看不到打勾框，等於按了沒反應。
+    fun toggleAiImport() {
+        if (!aiPickMode) {
+            aiPickMode = true
+            aiPickEnterId++
+            if (!showAiPanel) showAiPanel = true
+            android.widget.Toast.makeText(context, "點 Gemini 回覆的段落打勾，再按一次匯入抓取", android.widget.Toast.LENGTH_SHORT).show()
+        } else {
+            aiPickMode = false
+            aiPickCollectId++
+        }
+    }
+
     // AI 區「整頁送 AI」：整頁圖貼上＋填「解釋」即停，不自動送出
     // （與套索快捷列同一提示詞常數，差別只在這裡 autoSend=false）
     fun sendPageToAi() {
@@ -458,7 +473,9 @@ fun TabletEditorScreen(
                 // viewport「起點」，不置中。收合模式 contentPadding 幾乎半個視窗高，
                 // 用 scrollToItem 會把當前頁留在很靠上＝中央丸子那裡是空的（置中跑掉）。
                 if (pdfViewModel.isScrollingFast.value) {
-                    runCatching { sidebarListState.scrollToCenter(currentPageIndex) }
+                    // scrollToCenter 本身已對陳舊 index 做邊界檢查，這裡直接呼叫
+                    // （runCatching 的 block 不是 suspend lambda，會編譯不過）
+                    sidebarListState.scrollToCenter(currentPageIndex)
                 } else {
                     sidebarListState.animateScrollToCenter(currentPageIndex)
                 }
@@ -1022,7 +1039,12 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                     .graphicsLayer {
                         // 只在 layer 內讀動畫值：每幀不觸發任何重组
                         val p = aiDrawerProgress.value
-                        translationX = -panelW * (1f - p)
+                        // 必須滑過「側欄寬度 + 卡片寬度 + 握把寬度」才算完全離開畫面。
+                        // 舊碼只滑 panelW，卡片收合後停在 x=-1064..154 —— 而側欄是 x=0..154，
+                        // 兩者整塊重疊。那張卡片 alpha 0 看不見，但 consume() 照跑，
+                        // 於是整條頁碼欄的觸控全被吃掉（實測 SIDEBAR_ITEM 0 次）。
+                        val handleW = with(density) { 28.dp.toPx() }
+                        translationX = -(sidebarWpx + panelW + handleW) * (1f - p)
                         alpha = p
                     }
             ) {
@@ -1042,17 +1064,22 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                         // 內層裁成同心圓角（26 - 6 = 20），讓網頁完整貼滿圓角容器。
                         // 不裁的話 WebView 是直角，四角會戳出圓角外緣＝那個縫隙。
                         .clip(RoundedCornerShape(20.dp))
-                        // 關閉態擋觸控：alpha 0 不會自動停用 hit test，卡片滑出去後
-                        // 那條透明區域仍會吃掉紙的觸控。掛在「卡片自己」而不是外層 Row：
-                        // 外層 Row 在 Box(weight 1f) 裡被拉滿寬度，擋板會蓋住整個右半屏
-                        // （含側欄右緣，實測 AI_BLOCKER x=389..1251、SIDEBAR_ITEM 0）。
-                        // 卡片有明確 width(panelWdp)，擋板寬度才會跟著內容走。
+// 關閉態擋觸控：alpha 0 不會自動停用 hit test，滑出去的卡片仍會吃掉紙的觸控。
+                        // 但擋板只能在「卡片真的還壓在畫面上」時才開——收合到 p=0 之後
+                        // 再 consume 就會連側欄頁碼一起吃掉（整條欄位死掉）。
                         .then(
-                            if (showAiPanel) Modifier else Modifier.pointerInput(Unit) {
+                            if (showAiPanel) Modifier
+                            else Modifier.graphicsLayer { }.pointerInput(Unit) {
                                 awaitPointerEventScope {
-while (true) {
-                                    awaitPointerEvent(PointerEventPass.Initial).changes.forEach { it.consume() }
-                                }
+                                    while (true) {
+                                        // 完全收起就放行，不再攔截任何事件
+                                        if (aiDrawerProgress.value <= 0.001f) {
+                                            awaitPointerEvent(PointerEventPass.Initial)
+                                            continue
+                                        }
+                                        val e = awaitPointerEvent(PointerEventPass.Initial)
+                                        e.changes.forEach { it.consume() }
+                                    }
                                 }
                             }
                         )
@@ -1064,7 +1091,7 @@ while (true) {
                         onPromptConsumed = { aiPrompt = null },
                         pickEnterId = aiPickEnterId,
                         pickCollectId = aiPickCollectId,
-                        webLight = aiWebLight,
+                        webLight = !isEditorDark,
                         onPickedJson = { json ->
                             scope.launch {
                                 if (json.isBlank()) {
@@ -1120,28 +1147,7 @@ while (true) {
                             tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                         )
                     }
-                    // 引入鈕兩段式：①進圈選模式（段落打勾）②收集打勾段落（沒勾則取最後回覆全文）
-                    IconButton(
-                        onClick = {
-                            if (!aiPickMode) {
-                                aiPickMode = true
-                                aiPickEnterId++
-                                android.widget.Toast.makeText(context, "點 Gemini 回覆的段落打勾，再按一次引入抓取", android.widget.Toast.LENGTH_SHORT).show()
-                            } else {
-                                aiPickMode = false
-                                aiPickCollectId++
-                            }
-                        },
-                        modifier = Modifier.size(24.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.Download,
-                            contentDescription = if (aiPickMode) "抓取打勾段落" else "引入 Gemini 文字",
-                            modifier = Modifier.size(16.dp),
-                            tint = if (aiPickMode) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                        )
-                    }
+                    // 引入鈕已搬到工具列 AI 區（常駐，抽屜收起也按得到）→ 這裡不再重複
                     // AI 面板黑白切換
                     IconButton(
                         onClick = { aiWebLight = !aiWebLight },
@@ -1193,6 +1199,8 @@ while (true) {
                 onDocumentSettings = { showDocumentSettingsDialog = true },
                 onToggleAiPanel = { showAiPanel = !showAiPanel },
                 onSendPageToAi = { sendPageToAi() },
+                onToggleAiImport = { toggleAiImport() },
+                isAiImportArmed = aiPickMode,
                 isAiPanelOpen = showAiPanel,
                 isSendingPage = isSendingPage,
                 isPowerSaver = isPowerSaver,
