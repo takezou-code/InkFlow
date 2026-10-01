@@ -361,7 +361,7 @@ fun TabletEditorScreen(
                         context, "${context.packageName}.fileprovider", file
                     )
                     aiPrompt = "解釋"
-                    aiAutoSend = true
+                    aiAutoSend = false // 整頁鈕：圖貼上＋填詞即停，不自動送出（套索快捷列才自動送）
                     showAiPanel = true
                 } else {
                     android.widget.Toast.makeText(context, "整頁截圖失敗，請稍後再試", android.widget.Toast.LENGTH_SHORT).show()
