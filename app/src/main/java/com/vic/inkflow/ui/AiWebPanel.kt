@@ -241,6 +241,9 @@ fun AiWebPanel(
     onClose: () -> Unit,
     // 整頁送 AI 用 false：圖貼上＋提示詞填入即停，不自動送出（lasso 路徑預設 true 不變）
     autoSend: Boolean = true,
+    // 抽屜收起來＝false：WebView 熄燈（onPause）省電，但**物件與網頁狀態全留著**，
+    // 下次打開立刻見到原畫面，不重載。true 時 onResume。
+    active: Boolean = true,
     modifier: androidx.compose.ui.Modifier = androidx.compose.ui.Modifier
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -621,6 +624,18 @@ fun AiWebPanel(
             },
             modifier = androidx.compose.ui.Modifier.fillMaxSize()
         )
+    }
+
+    // 抽屜收起時熄燈：WebView 停止渲染與計時器（省電），但**不銷毀**，
+    // 網頁 DOM／捲動位置／對話全部留著，重開即見原畫面。
+    // 用 DisposableEffect 而非 update 塊：避免每次重組都重複呼叫 onResume/onPause。
+    androidx.compose.runtime.DisposableEffect(webView, active) {
+        val wv = webView
+        if (wv != null) {
+            if (active) wv.onResume() else wv.onPause()
+            android.util.Log.d("InkFlowDbg", "AI panel webview active=$active (kept alive)")
+        }
+        onDispose { }
     }
 }
 
