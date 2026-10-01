@@ -25,6 +25,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.vic.inkflow.data.DatabaseManager
 import com.vic.inkflow.data.DocumentEntity
+import com.vic.inkflow.ui.ShapeMd
+import com.vic.inkflow.ui.pressableGlass
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -191,11 +193,19 @@ private fun DocumentCard(
     folderName: String?,
     onClick: () -> Unit
 ) {
-    ElevatedCard(
-        onClick = onClick,
-        shape = MaterialTheme.shapes.medium, // 12dp per spec
-        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 3.dp),
-        modifier = Modifier.height(210.dp)
+    // Was `ElevatedCard(elevation = 3.dp)`: a solid M3 surface floating by cast
+    // shadow. Replaced with the shared glass material, which is what the tablet
+    // uses for the same card — translucency plus a top rim instead of a drop
+    // shadow, so the thumbnail behind the glass actually shows through.
+    Box(
+        modifier = Modifier
+            .height(210.dp)
+            .pressableGlass(
+                isDark = InkThemeState.darkMode,
+                shape = ShapeMd,
+                onClick = onClick
+            )
+            .clip(ShapeMd)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
             // Thumbnail area: local PDF first page rendered lazily; fallback gradient.

@@ -54,7 +54,36 @@ private object InkColors {
     val PaperEdge = Color(0xFFE3E7F0)
     val Ink = Color(0xFF121826)
     val InkSoft = Color(0xFF5A6579)
+
+    // Corner radii, from the tablet's `theme/ShapeTokens.kt`. Glass panels are
+    // shaped by these, so both apps round their surfaces identically.
+    val ShapeSm = RoundedCornerShape(12.dp)
+    val ShapeMd = RoundedCornerShape(16.dp)
+    val ShapeLg = RoundedCornerShape(24.dp)
+    val ShapeXl = RoundedCornerShape(32.dp)
 }
+
+// The glass material references these, so they have to be top-level rather than
+// private to InkColors.
+val ShapeSm = InkColors.ShapeSm
+val ShapeMd = InkColors.ShapeMd
+val ShapeLg = InkColors.ShapeLg
+val ShapeXl = InkColors.ShapeXl
+
+// Glass colour tokens, copied verbatim from the tablet's `theme/Color.kt`.
+//
+// These four values are the glass material. The alphas were tuned by eye against
+// the tablet's real (blur-based) glass, so reusing them exactly is what makes the
+// desktop read as the same product instead of merely something glassy.
+//
+// Veil = what hazed glass is tinted toward. Tint = the faux path's stand-in fill.
+val GlassVeilLight = Color(0x8CFFFFFF) // 55% white
+val GlassVeilDark = Color(0x730F172A)  // 45% deep navy
+val GlassTintLight = Color(0x4DFFFFFF) // 30% white
+val GlassTintDark = Color(0x800F172A)  // 50% deep navy
+
+/** Ink used for text/icons on top of glass in light mode. */
+val PaperInkColor = Color(0xFF121826)
 
 private val LightInkScheme: ColorScheme = lightColorScheme(
     primary = InkColors.Indigo700,
@@ -130,37 +159,12 @@ val AccentGradient: Brush
     )
 
 /**
- * Translucent "glass" container — the desktop counterpart to the tablet's
- * `glassPanel`.
+ * Filled pill used for chips, the sync button and the page navigator.
  *
- * Compose Desktop has no backdrop blur, so this approximates the material with
- * three stacked cues rather than one: a low-alpha surface fill, a vertical
- * luminance gradient so it reads as a lit pane, and a hairline top highlight
- * like the tablet's rim. That is enough to look deliberate without pretending to
- * be a real refraction.
+ * A selected pill deliberately breaks from the glass material: it needs to read
+ * as "armed", so it takes a tinted fill and a brighter rim instead of the neutral
+ * translucent veil.
  */
-@Composable
-fun Modifier.glassPanel(
-    shape: RoundedCornerShape = RoundedCornerShape(16.dp),
-    alpha: Float = 0.72f,
-    borderAlpha: Float = 0.16f
-): Modifier {
-    val border = MaterialTheme.colorScheme.outline.copy(alpha = borderAlpha)
-    val base = MaterialTheme.colorScheme.surface
-    return this
-        .clip(shape)
-        .background(base.copy(alpha = alpha))
-        .background(
-            Brush.verticalGradient(
-                0f to androidx.compose.ui.graphics.Color.White.copy(alpha = 0.06f),
-                0.5f to androidx.compose.ui.graphics.Color.Transparent,
-                1f to androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.10f)
-            )
-        )
-        .border(1.dp, border, shape)
-}
-
-/** Filled pill used for chips, the sync button and the page navigator. */
 @Composable
 fun Modifier.glassPill(
     selected: Boolean = false,

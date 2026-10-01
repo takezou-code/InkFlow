@@ -24,6 +24,13 @@ import com.vic.inkflow.ui.PdfViewer
 import com.vic.inkflow.ui.InkFlowTheme
 import com.vic.inkflow.ui.InkThemeState
 import com.vic.inkflow.ui.LibraryView
+import com.vic.inkflow.ui.ShapeSm
+import com.vic.inkflow.ui.bubbleGlass
+import com.vic.inkflow.ui.fauxGlassPanel
+import androidx.compose.foundation.background
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
 
 import mu.KotlinLogging
 import java.io.File
@@ -170,16 +177,35 @@ fun InkFlowApp() {
                     )
                 }
             },
+            // Glass, not a solid M3 surfaceVariant fill. The bar floats over the
+            // reading surface, so it has to be translucent or the page stops
+            // running under it and the layout reads as two stacked documents.
             colors = TopAppBarDefaults.topAppBarColors(
-                containerColor = MaterialTheme.colorScheme.surfaceVariant
+                containerColor = Color.Transparent
+            ),
+            modifier = Modifier.fauxGlassPanel(
+                isDark = InkThemeState.darkMode,
+                shape = RectangleShape,
+                // Full-height bar: a rim down both long edges is noise, so only the
+                // bottom hairline matters and the sheen carries the rest.
+                specular = false
             ),
             actions = {
-                // Sync status chip
-                Surface(
-                    shape = MaterialTheme.shapes.small,
-                    color = if (peerCount > 0) MaterialTheme.colorScheme.primaryContainer
-                            else MaterialTheme.colorScheme.surface,
-                    modifier = Modifier.padding(end = 8.dp)
+                // Sync status chip. Connected state reads as "armed" so it breaks
+                // from the neutral glass; disconnected stays glass.
+                Box(
+                    modifier = Modifier
+                        .padding(end = 8.dp)
+                        .then(
+                            if (peerCount > 0) {
+                                Modifier.clip(ShapeSm).background(
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
+                                )
+                            } else {
+                                Modifier.bubbleGlass(InkThemeState.darkMode)
+                                    .padding(0.dp)
+                            }
+                        )
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
