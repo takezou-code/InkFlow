@@ -410,6 +410,15 @@ fun AiWebPanel(
                             super.onPageFinished(view, url)
                             if (url?.contains("gemini.google.com") == true) {
                                 uploadState.isPageLoaded = true
+                                // 主題跟 App 深淺色：載入完成就套一次。
+                                // 不能只靠 LaunchedEffect(webLight)——那條在首次組合時 webView
+                                // 還沒建立（null），webLight 若改成常數推導值就永遠套不到，
+                                // 深色模式下 Gemini 網頁會一直是白的。
+                                try {
+                                    view?.evaluateJavascript(buildThemeJs(currentWebLight.value), null)
+                                } catch (e: Exception) {
+                                    android.util.Log.e("AiWebPanel", "theme apply on load failed", e)
+                                }
                                 val uri = currentFileUri.value
                                 // 第一次載入完成時觸發，如果從未被處理過。
                                 if (uri != null && uri != uploadState.lastProcessedUri) {
