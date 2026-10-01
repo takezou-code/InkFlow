@@ -519,72 +519,105 @@ internal fun Sidebar(
                     }
                 }
                 }
-                // 收合時的展開鈕：放在「+」上方，風格同 +（實體玻璃藥丸）。
-                // 以前那條 24dp 拉桿在收合時也佔著寬度卻什麼都看不到（只有 NORMAL 才畫丸子），
-                // 純浪費空間 → 收合時讓拉桿完全不佔位，改用這顆按鈕。
+                // 收合態的玻璃脊：一條貫通的玻璃把展開鈕／頁碼丸／新增頁面收成同一件東西。
+                //
+                // 舊碼是三顆互不相連的玻璃藥丸浮在紙上，看起來像三個各自為政的按鈕。
+                // 現在上下各留一段「脊」，中間的頁碼列表壓在脊上，
+                // 空白處也能點＝不用精準命中小小的展開 chevron 就能展開。
                 if (sidebarStage == SidebarStage.RAIL) {
-                    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                        val expandScale by animateFloatAsState(
-                            targetValue = 1f,
-                            label = "SidebarExpandScale"
-                        )
-                        androidx.compose.material3.TextButton(
-                            onClick = { onModeChange(SidebarStage.PANEL) },
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        // 上段：展開鈕
+                        Box(
                             modifier = Modifier
-                                .padding(horizontal = 6.dp, vertical = 4.dp)
-                                .graphicsLayer { scaleX = expandScale; scaleY = expandScale }
-                                .glassPanel(hazeState, isDarkTheme, CircleShape)
+                                .fillMaxWidth()
+                                .height(52.dp)
+                                .glassPanel(hazeState, isDarkTheme, ShapeMd),
+                            contentAlignment = Alignment.Center
                         ) {
-                            Icon(
-                                Icons.Outlined.ChevronRight,
-                                contentDescription = "展開側欄",
-                                modifier = Modifier.size(20.dp),
-                                tint = glassContentColor(isDarkTheme)
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .glassClickable(
+                                        onClick = { onModeChange(SidebarStage.PANEL) },
+                                        shape = CircleShape
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    Icons.Outlined.ChevronRight,
+                                    contentDescription = "展開側欄",
+                                    modifier = Modifier.size(20.dp),
+                                    tint = glassContentColor(isDarkTheme)
+                                )
+                            }
+                        }
+                        // 頁面操作進行中時顯示細長進度條，給予使用者視覺回饋
+                        if (isPageOperationInProgress) {
+                            androidx.compose.material3.LinearProgressIndicator(
+                                modifier = Modifier.fillMaxWidth().height(2.dp)
                             )
                         }
+                        // 下段：新增頁面
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(52.dp)
+                                .glassPanel(hazeState, isDarkTheme, ShapeMd),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .glassClickable(
+                                        onClick = { onAddPage(currentPageIndex) },
+                                        shape = CircleShape,
+                                        enabled = !isPageOperationInProgress
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    Icons.Outlined.Add,
+                                    contentDescription = "新增頁面",
+                                    modifier = Modifier.size(22.dp),
+                                    tint = glassContentColor(isDarkTheme)
+                                )
+                            }
+                        }
                     }
-                }
-                // 固定在底部的新增頁面按鈕（去分隔線，玻璃藥丸）
-                // 頁面操作進行中時顯示細長進度條，給予使用者視覺回饋
-                if (isPageOperationInProgress) {
-                    androidx.compose.material3.LinearProgressIndicator(
-                        modifier = Modifier.fillMaxWidth().height(2.dp)
-                    )
-                }
-                Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    if (sidebarStage == SidebarStage.PANEL) {
-                        androidx.compose.material3.TextButton(
-                            onClick = { onAddPage(currentPageIndex) },
-                            enabled = !isPageOperationInProgress,
+                } else {
+                    if (isPageOperationInProgress) {
+                        androidx.compose.material3.LinearProgressIndicator(
+                            modifier = Modifier.fillMaxWidth().height(2.dp)
+                        )
+                    }
+                    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        // 方角版新增頁面：玻璃底 + glassClickable。
+                        // GlassTextButton 是固定圓角的，PANEL 這裡要 ShapeMd 方角才整齊。
+                        Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = 6.dp, vertical = 5.dp)
                                 .glassPanel(hazeState, isDarkTheme, ShapeMd)
+                                .glassClickable(
+                                    onClick = { onAddPage(currentPageIndex) },
+                                    shape = ShapeMd,
+                                    enabled = !isPageOperationInProgress
+                                )
+                                .padding(vertical = 8.dp),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
                             Icon(
                                 Icons.Outlined.Add,
                                 contentDescription = null,
-                                modifier = Modifier.size(16.dp)
+                                modifier = Modifier.size(16.dp),
+                                tint = glassContentColor(isDarkTheme)
                             )
                             Spacer(Modifier.width(4.dp))
                             Text("新增頁面", style = MaterialTheme.typography.labelMedium)
-                        }
-                    } else {
-                        // 收合模式：+ 也要有液態玻璃圓底，跟展開模式同一套語言
-                        // （先前是光突突一個 IconButton，跟旁邊有底的按鈕不一致）
-                        androidx.compose.material3.IconButton(
-                            onClick = { onAddPage(currentPageIndex) },
-                            enabled = !isPageOperationInProgress,
-                            modifier = Modifier
-                                .padding(vertical = 5.dp)
-                                .glassPanel(hazeState, isDarkTheme, CircleShape)
-                        ) {
-                            Icon(
-                                Icons.Outlined.Add,
-                                contentDescription = "新增頁面",
-                                modifier = Modifier.size(24.dp),
-                                tint = glassContentColor(isDarkTheme)
-                            )
                         }
                     }
                 }
