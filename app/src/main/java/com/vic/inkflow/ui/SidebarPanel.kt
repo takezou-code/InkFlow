@@ -82,6 +82,8 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -532,11 +534,18 @@ internal fun Sidebar(
 
                 androidx.compose.foundation.layout.BoxWithConstraints(modifier = Modifier.weight(1f).fillMaxWidth()) {
                     val halfHeight = maxHeight / 2
-                    // 當在收合模式 (30dp) 與展開模式 (70dp) 時，我們一律讓原點對齊到 item 高度的「中心」，以維持視覺的絕對置中。
-                    // 收合行高是死值：PageIcon 48dp + 上下 padding 各 8dp = 64dp，半高 32dp；
-                    // 之前猜 40dp，首末頁會各偏 8dp（中間頁靠 snap 置中不受影響）。
-                    val approximateItemHalfHeight = if (sidebarMode == SidebarMode.NORMAL) 70.dp else 32.dp
-                    val verticalPadding = (halfHeight - approximateItemHalfHeight).coerceAtLeast(0.dp)
+                    // contentPadding ＝ 讓「第一頁」也能捲到 viewport 中央所需的空間。
+                    // 必須用「實際 item 高度」算，不能猜：
+                    //   展開＝PageThumbnail 寬 88dp ÷ 頁面比例 ＋ 上下 padding 16dp
+                    //   收合＝PageIcon 48dp ＋ 上下 padding 16dp
+                    // 舊碼在展開模式硬寫 70dp，但實際只有約 39dp（A4）→ 差 31dp，
+                    // 首頁／末頁因此無法置中（看起來就是「頁碼跑到最下面」）。
+                    // 置中本身已改由 [scrollToCenter]/[animateScrollToCenter] 用實際 layout 量，
+                    // 這個 padding 現在只負責讓首末頁「有空間」捲到中央。
+                    val pageAspect = pdfViewModel.getPageAspectRatio(0).coerceAtLeast(0.1f)
+                    val thumbHalf = (88.dp / pageAspect + 16.dp) / 2f
+                    val itemHalfHeight = if (sidebarMode == SidebarMode.NORMAL) thumbHalf else 32.dp
+                    val verticalPadding = (halfHeight - itemHalfHeight).coerceAtLeast(0.dp)
 
                     // 定錨玻璃丸：畫在列表下層，數字浮在玻璃上才看得清。
                     // 丸子釘死 viewport 中央不跟頁碼跑（snap 置中保證當前頁永遠停在這）；
@@ -1051,4 +1060,33 @@ internal fun PageIcon(
                 else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
         )
     }
+}
+
+/**
+ * 側欄置中捲動（唯一實作，瞬時）。
+ *
+ * 不要用 animateScrollToItem + contentPadding 假設：那是靠猜 item 高度，
+ * 猜錯就置中失敗（首末頁會偏）。這裡直接由實際 layout 量出差異再位移，一定準。
+ */
+internal suspend fun LazyListState.scrollToCenter(index: Int) {
+    // 陳舊頁碼（刪頁/空文件）直接捲會閃退，先擋
+    if (index < 0 || index >= layoutInfo.totalItemsCount) return
+    runCatching { scrollToItem(index) }.getOrNull() ?: return
+    val itemInfo = layoutInfo.visibleItemsInfo.firstOrNull { it.index == index } ?: return
+    val viewportHeight = layoutInfo.viewportEndOffset - layoutInfo.viewportStartOffset
+    val delta = (itemInfo.offset + itemInfo.size / 2 - viewportHeight / 2).toFloat()
+    scroll { scrollBy(delta) }
+}
+
+/** 側欄置中捲動（動畫版）。與 [scrollToCenter] 同一套演算法，只是換成動畫。 */
+internal suspend fun LazyListState.animateScrollToCenter(index: Int) {
+    // 使用者正在滑動時不要強制中斷
+    if (isScrollInProgress) return
+    if (index < 0 || index >= layoutInfo.totalItemsCount) return
+    runCatching { scrollToItem(index) }.getOrNull() ?: return
+    val itemInfo = layoutInfo.visibleItemsInfo.firstOrNull { it.index == index } ?: return
+    val viewportHeight = layoutInfo.viewportEndOffset - layoutInfo.viewportStartOffset
+    val delta = (itemInfo.offset + itemInfo.size / 2 - viewportHeight / 2).toFloat()
+    if (kotlin.math.abs(delta) < 0.5f) return
+    runCatching { animateScrollBy(delta) }
 }

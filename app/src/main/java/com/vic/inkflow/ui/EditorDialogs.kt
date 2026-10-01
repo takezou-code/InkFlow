@@ -567,24 +567,4 @@ internal fun EditorIconButton(
     }
 }
 
-/** Instantly scroll so [index] is vertically centered in the sidebar. */
-internal suspend fun LazyListState.scrollToCenter(index: Int) {
-    // 陳舊頁碼（刪頁/空文件）直接捲會閃退，先擋
-    if (index < 0 || index >= layoutInfo.totalItemsCount) return
-    runCatching { scrollToItem(index) }.getOrNull() ?: return
-    val itemInfo = layoutInfo.visibleItemsInfo.firstOrNull { it.index == index } ?: return
-    val viewportHeight = layoutInfo.viewportEndOffset - layoutInfo.viewportStartOffset
-    val delta = (itemInfo.offset + itemInfo.size / 2 - viewportHeight / 2).toFloat()
-    scroll { scrollBy(delta) }
-}
 
-/** Animated scroll so [index] is vertically centered in the sidebar. */
-
-internal suspend fun androidx.compose.foundation.lazy.LazyListState.animateScrollToCenter(index: Int) {
-    if (isScrollInProgress) return // 如果使用者正在滑動，不要強制中斷它
-    if (index < 0 || index >= layoutInfo.totalItemsCount) return
-    // 因為我們已經為側邊欄設定了精確的 verticalPadding (約為螢幕一半)
-    // 所以原生 animateScrollToItem(index) 將項目對齊到 content padding 邊緣時，
-    // 就剛好會落在螢幕的正中央！不需再做二次位移。
-    runCatching { animateScrollToItem(index) }
-}
