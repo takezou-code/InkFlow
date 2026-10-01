@@ -304,9 +304,14 @@ fun TabletEditorTopBar(
         animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
         label = "RedoScale"
     )
-    // 外層全透明：玻璃改到每顆群組藥丸上，整條才不會糊成一塊灰板
+    // 工具列＝單一玻璃表面（官方建議：共用一個表面，別用多個獨立表面）。
+    // 以前是 4 個群組各自 glassPanel，等於同一條工具列跑 4 次 blur+折射，
+    // 成本爆炸而且每顆只蓋到自己的小面積，所以折射與模糊看不清楚。
+    // 現在整條一次做完：白紙上會是一整片連續的黑玻璃。
     Surface(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .glassPanel(hazeState, isDarkTheme, ShapeLg),
         color = Color.Transparent,
         contentColor = MaterialTheme.colorScheme.onSurface,
         shadowElevation = 0.dp,
@@ -322,8 +327,7 @@ fun TabletEditorTopBar(
         ) {
             Surface(
                 modifier = Modifier
-                    .fillMaxHeight()
-                    .glassPanel(hazeState, isDarkTheme, ShapeLg), // 紙上亮玻璃：iOS 式亮 blur＋深內容
+                    .fillMaxHeight(),
                 shape = ShapeLg,
                 color = Color.Transparent
             ) {
@@ -354,8 +358,7 @@ fun TabletEditorTopBar(
             Surface(
                 modifier = Modifier
                     .weight(1f)
-                    .fillMaxHeight()
-                    .glassPanel(hazeState, isDarkTheme, ShapeLg), // 紙上亮玻璃：iOS 式亮 blur＋深內容
+                    .fillMaxHeight(),
                 shape = ShapeLg,
                 color = Color.Transparent
             ) {
@@ -601,8 +604,7 @@ fun TabletEditorTopBar(
             // AI 區（固定藥丸，不跟中區捲動，永遠可見）：Gemini 開關＋整頁送 AI
             Surface(
                 modifier = Modifier
-                    .fillMaxHeight()
-                    .glassPanel(hazeState, isDarkTheme, ShapeLg), // 紙上亮玻璃：iOS 式亮 blur＋深內容
+                    .fillMaxHeight(),
                 shape = ShapeLg,
                 color = Color.Transparent
             ) {
@@ -630,8 +632,7 @@ fun TabletEditorTopBar(
 
             Surface(
                 modifier = Modifier
-                    .fillMaxHeight()
-                    .glassPanel(hazeState, isDarkTheme, ShapeLg), // 紙上亮玻璃：iOS 式亮 blur＋深內容
+                    .fillMaxHeight(),
                 shape = ShapeLg,
                 color = Color.Transparent
             ) {
