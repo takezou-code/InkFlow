@@ -27,6 +27,7 @@ import com.vic.inkflow.ui.LibraryView
 
 import mu.KotlinLogging
 import java.io.File
+import java.util.Properties
 
 private val logger = KotlinLogging.logger {}
 
@@ -34,6 +35,57 @@ private val logger = KotlinLogging.logger {}
 object AppPaths {
     val dir: String = System.getProperty("user.home") + File.separator + ".inkflow"
     val dbPath: String = dir + File.separator + "inkflow.db"
+    val settingsPath: String = dir + File.separator + "desktop.properties"
+}
+
+/**
+ * The tablet's pairing code, persisted between launches.
+ *
+ * Stored in a plain properties file rather than the database on purpose: this is
+ * a *local client credential*, not mirrored content. If it went through the sync
+ * mirror it would be a credential the desktop wrote into its own DB, which is a
+ * much harder thing to reason about than one text file the user can delete.
+ *
+ * `lastKnownInstanceId` is the same idea — the desktop needs it to tell "the user
+ * deleted a document on the tablet" apart from "the tablet was reinstalled", and
+ * losing it across restarts would make every missing document look like a deletion.
+ */
+object DesktopSettings {
+    private val KEY_PAIRING_CODE = "tablet.pairingCode"
+    private val KEY_INSTANCE_ID = "tablet.lastKnownInstanceId"
+
+    fun load(): Properties {
+        val props = Properties()
+        val f = File(AppPaths.settingsPath)
+        if (f.exists()) {
+            runCatching { f.inputStream().use { props.load(it) } }
+        }
+        return props
+    }
+
+    fun save(props: Properties) {
+        runCatching {
+            val f = File(AppPaths.settingsPath)
+            f.parentFile?.mkdirs()
+            f.outputStream().use { props.store(it, "InkFlow desktop local settings") }
+        }
+    }
+
+    var pairingCode: String?
+        get() = load().getProperty(KEY_PAIRING_CODE)?.trim()?.takeIf { it.isNotEmpty() }
+        set(value) {
+            val props = load()
+            if (value.isNullOrBlank()) props.remove(KEY_PAIRING_CODE) else props.setProperty(KEY_PAIRING_CODE, value.trim())
+            save(props)
+        }
+
+    var lastKnownInstanceId: String?
+        get() = load().getProperty(KEY_INSTANCE_ID)?.trim()?.takeIf { it.isNotEmpty() }
+        set(value) {
+            val props = load()
+            if (value.isNullOrBlank()) props.remove(KEY_INSTANCE_ID) else props.setProperty(KEY_INSTANCE_ID, value.trim())
+            save(props)
+        }
 }
 
 @Composable
@@ -52,7 +104,9 @@ fun App() {
 @Composable
 fun InkFlowApp() {
     val databaseManager = remember { DatabaseManager(AppPaths.dbPath).also { it.connect() } }
-    val syncManager = remember { LocalSyncManager(databaseManager, AppPaths.dir) }
+    val syncManager = remember {
+        LocalSyncManager(databaseManager, AppPaths.dir, psk = DesktopSettings.pairingCode)
+    }
 
     LaunchedEffect(Unit) {
         File(AppPaths.dir).mkdirs()
@@ -79,6 +133,7 @@ fun InkFlowApp() {
     var lastSyncSummary by remember { mutableStateOf<String?>(null) }
     var peerCount by remember { mutableStateOf(0) }
     var peerNames by remember { mutableStateOf("") }
+    var pairingCode by remember { mutableStateOf(DesktopSettings.pairingCode ?: "") }
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -234,7 +289,16 @@ fun InkFlowApp() {
                 when {
                     showSettings -> SettingsView(
                         peerNames = peerNames,
-                        lastSyncSummary = lastSyncSummary
+                        lastSyncSummary = lastSyncSummary,
+                        pairingCode = pairingCode,
+                        onPairingCodeChange = { code ->
+                            pairingCode = code
+                            syncManager.setPairingCode(code)
+                            // Persist on every keystroke rather than on blur: the user
+                            // has no "save" affordance here, and losing the code on a
+                            // crash would mean re-reading it off the tablet screen.
+                            DesktopSettings.pairingCode = code
+                        }
                     )
                     selectedDocument == null -> LibraryView(
                         databaseManager = databaseManager,
@@ -271,7 +335,12 @@ fun InkFlowApp() {
 }
 
 @Composable
-private fun SettingsView(peerNames: String, lastSyncSummary: String?) {
+private fun SettingsView(
+    peerNames: String,
+    lastSyncSummary: String?,
+    pairingCode: String,
+    onPairingCodeChange: (String) -> Unit
+) {
     Column(
         Modifier.fillMaxSize().padding(32.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -283,6 +352,43 @@ private fun SettingsView(peerNames: String, lastSyncSummary: String?) {
         SettingRow("資料庫", AppPaths.dbPath)
         SettingRow("已連線設備", if (peerNames.isNotBlank()) peerNames else "無（請確認平板與電腦同一 Wi-Fi，且兩端均開啟 InkFlow）")
         SettingRow("上次同步", lastSyncSummary ?: "尚無記錄")
+
+        Text(
+            "平板配對碼",
+            style = MaterialTheme.typography.titleSmall,
+            modifier = Modifier.padding(top = 12.dp)
+        )
+        Text(
+            "在平板「設定 → 電腦同步」開啟同步伺服器後，把畫面上的 8 位數配對碼填在這裡。" +
+                "留空則不驗證——同一個 Wi-Fi 上任何人都能讀走你的全部文件，所以建議填。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(
+                value = pairingCode,
+                onValueChange = onPairingCodeChange,
+                singleLine = true,
+                label = { Text("配對碼") },
+                modifier = Modifier.widthIn(min = 200.dp)
+            )
+            // Live validation: the tablet's code is exactly 8 digits, so a
+            // non-conforming value can only be a typo. Saying so here beats a
+            // handshake rejection on the next sync with no explanation.
+            val normalised = pairingCode.trim()
+            val looksRight = normalised.isEmpty() || (normalised.length == 8 && normalised.all { it.isDigit() })
+            Text(
+                when {
+                    normalised.isEmpty() -> "未設定"
+                    looksRight -> "已設定"
+                    else -> "應該是 8 位數字"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = if (looksRight) MaterialTheme.colorScheme.onSurfaceVariant
+                else MaterialTheme.colorScheme.error
+            )
+        }
+
         Text(
             "本機不同步雲端：所有數據僅在局域網內傳輸。",
             style = MaterialTheme.typography.bodySmall,
@@ -306,12 +412,17 @@ private fun SettingRow(label: String, value: String) {
     }
 }
 
-fun main() = application {
-    Window(
-        onCloseRequest = ::exitApplication,
-        title = "InkFlow",
-        state = rememberWindowState(width = 1280.dp, height = 800.dp)
-    ) {
-        App()
+fun main() {
+    // The data dir has to exist before anything logs into it (logback.xml writes to
+    // %USERPROFILE%/.inkflow) and before the database opens.
+    File(AppPaths.dir).mkdirs()
+    application {
+        Window(
+            onCloseRequest = ::exitApplication,
+            title = "InkFlow",
+            state = rememberWindowState(width = 1280.dp, height = 800.dp)
+        ) {
+            App()
+        }
     }
 }

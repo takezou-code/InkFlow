@@ -88,9 +88,30 @@ class LocalSyncManager(
      * point — by any app on the tablet itself, since Android's sandbox does not
      * gate inbound sockets to a port. Null disables the check (single-user
      * setup); see SYNC_PROTOCOL.md §7.
+     *
+     * Mutable because the user types the tablet's code in Settings after the app
+     * has already started listening — recreating the whole manager (and its two
+     * sockets) just to change one secret would drop any connection in flight.
      */
-    private val psk: String? = null
+    psk: String? = null
 ) {
+
+    @Volatile
+    private var pairingCode: String? = psk?.trim()?.takeIf { it.isNotEmpty() }
+
+    /**
+     * Set (or clear, with null/blank) the pairing code at runtime. Takes effect on
+     * the next handshake; an already-open session keeps using the code it
+     * authenticated with, which is correct — re-authenticating mid-transfer would
+     * only risk aborting a sync for no security gain.
+     */
+    fun setPairingCode(code: String?) {
+        pairingCode = code?.trim()?.takeIf { it.isNotEmpty() }
+        logger.info {
+            if (pairingCode == null) "pairing code cleared; handshakes will be sent unauthenticated"
+            else "pairing code updated; it takes effect on the next handshake"
+        }
+    }
 
     private val gson = Gson()
     private var udpSocket: DatagramSocket? = null
@@ -501,7 +522,8 @@ class LocalSyncManager(
                         "this build speaks v${SyncConstants.PROTOCOL_VERSION}. Update the desktop app."
                 )
             }
-            if (psk != null && !constantTimeEquals(pskProof(psk), peer.pskProof)) {
+            val configured = pairingCode
+            if (configured != null && !constantTimeEquals(pskProof(configured), peer.pskProof)) {
                 throw IOException("Authentication failed: wrong pairing code")
             }
         }
@@ -517,7 +539,7 @@ class LocalSyncManager(
         val pskProof: String? = null
     )
 
-    private fun pskOrNull(): String? = psk
+    private fun pskOrNull(): String? = pairingCode
 
     /**
      * The value the tablet returns in `pskProof`. The desktop must compare against
