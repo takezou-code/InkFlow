@@ -31,6 +31,9 @@ import androidx.compose.foundation.background
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.toComposeImageBitmap
+import androidx.compose.ui.graphics.painter.BitmapPainter
+import androidx.compose.ui.graphics.painter.Painter
 
 import mu.KotlinLogging
 import java.io.File
@@ -442,13 +445,48 @@ fun main() {
     // The data dir has to exist before anything logs into it (logback.xml writes to
     // %USERPROFILE%/.inkflow) and before the database opens.
     File(AppPaths.dir).mkdirs()
+
+    // Same artwork the EXE carries, but loaded from a PNG rather than the .ico:
+    // ImageIO ships no ICO reader, so `ImageIO.read` on the packaged icon would
+    // return null and the taskbar would silently fall back to Compose's default.
+    val icon: Painter? = loadWindowIcon()
+
     application {
         Window(
             onCloseRequest = ::exitApplication,
             title = "InkFlow",
-            state = rememberWindowState(width = 1280.dp, height = 800.dp)
+            state = rememberWindowState(width = 1280.dp, height = 800.dp),
+            icon = icon
         ) {
             App()
         }
+    }
+}
+
+/**
+ * Loads the window icon from the classpath.
+ *
+ * Two things this has to work around:
+ *
+ *  - The `.ico` in the same folder is what jpackage embeds in the EXE, but
+ *    ImageIO ships no ICO reader, so `ImageIO.read` on it returns null and the
+ *    taskbar silently falls back to Compose's default. Hence the PNG twin.
+ *  - `Window(icon = ...)` wants a `Painter`, not an `ImageBitmap`.
+ *
+ * Not `@Composable`: `main()` is not a composable function, so `remember` is not
+ * available there, and an icon that never changes has nothing to recompose.
+ */
+private fun loadWindowIcon(): Painter? {
+    val bytes = object {}.javaClass.getResourceAsStream("/inkflow.png")?.use { it.readBytes() }
+        ?: run {
+            logger.warn { "inkflow.png is not on the classpath; the taskbar will show a default icon" }
+            return null
+        }
+    return try {
+        val awt = javax.imageio.ImageIO.read(java.io.ByteArrayInputStream(bytes))
+        BitmapPainter(awt.toComposeImageBitmap())
+    } catch (e: Exception) {
+        logger.warn(e) { "window icon could not be decoded; the taskbar will show a default" }
+        null
     }
 }

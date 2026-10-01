@@ -77,6 +77,11 @@ compose.desktop {
             windows {
                 menuGroup = "InkFlow"
                 upgradeUuid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+
+                // Without this the EXE, taskbar entry and Alt-Tab all show
+                // Compose's default icon, which makes the app look uninstalled
+                // next to every other pinned program.
+                iconFile.set(layout.projectDirectory.file("src/main/resources/inkflow.ico"))
             }
         }
         
