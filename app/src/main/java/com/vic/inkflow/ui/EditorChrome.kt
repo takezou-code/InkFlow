@@ -107,6 +107,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.CropSquare
 import androidx.compose.material.icons.filled.Delete
@@ -255,6 +256,9 @@ fun TabletEditorTopBar(
     onDocumentSettings: () -> Unit = {},
     onToggleAiPanel: () -> Unit = {},
     onSendPageToAi: () -> Unit = {},
+    // 匯入 Gemini 回覆進筆記（兩段式：①段落打勾 ②抓取）；武裝態走 isActive 高亮
+    onToggleAiImport: () -> Unit = {},
+    isAiImportArmed: Boolean = false,
     isAiPanelOpen: Boolean = false,
     isSendingPage: Boolean = false,
     isPowerSaver: Boolean = false,
@@ -613,6 +617,13 @@ fun TabletEditorTopBar(
                         isActive = false,
                         icon = Icons.Outlined.DocumentScanner,
                         contentDescription = "整頁送 AI"
+                    )
+                    // 匯入回覆（原本掛在抽屜拉桿上，抽屜收起就按不到 → 搬上工具列常駐）
+                    EditorIconButton(
+                        onClick = onToggleAiImport,
+                        isActive = isAiImportArmed,
+                        icon = Icons.Filled.Download,
+                        contentDescription = if (isAiImportArmed) "抓取打勾段落" else "引入 Gemini 文字"
                     )
                 }
             }
