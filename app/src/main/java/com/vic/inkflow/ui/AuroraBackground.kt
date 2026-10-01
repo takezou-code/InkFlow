@@ -146,22 +146,12 @@ fun AuroraBackground(
     val t0 = remember { System.nanoTime() }
     LaunchedEffect(static) {
         if (!static) {
-            var last = 0L
             while (true) {
                 kotlinx.coroutines.delay(22)
                 tick.longValue += 1
-                // 心跳：確認背景真的在動（靜模式應該沒有這行）
-                val now = System.currentTimeMillis()
-                if (now - last >= 3000) {
-                    last = now
-                    com.vic.inkflow.util.InkLog.perf(
-                        "BACKDROP-TICK orbs=$effectiveCount theme=$theme ticks=${tick.longValue} (流動中)"
-                    )
-                }
             }
-        } else {
-            com.vic.inkflow.util.InkLog.perf("BACKDROP-TICK orbs=$effectiveCount theme=$theme static=凍結首幀")
         }
+        // static＝true 時不啟動迴圈，tick 永遠 0 → 背景凍結在首幀。
     }
 
     BoxWithConstraints(modifier) {

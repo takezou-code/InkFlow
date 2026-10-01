@@ -522,7 +522,7 @@ fun InkCanvas(
     var lastNativeToolType by remember { mutableIntStateOf(0) }
     var lastPointerCount by remember { mutableIntStateOf(1) }
     var stylusButtonPressed by remember { mutableStateOf(false) }
-    // P0-0 PROBE: raw stylus axes captured at DOWN (tilt/orientation/pressure)
+    // 原始筆軸（tilt/orientation/pressure），餵 TouchEventLogger 的手掌辨識診斷。
     var lastTiltDeg by remember { mutableFloatStateOf(-1f) }
     var lastOrientationDeg by remember { mutableFloatStateOf(-1f) }
     var lastAxisPressure by remember { mutableFloatStateOf(-1f) }
@@ -531,34 +531,6 @@ fun InkCanvas(
     val pointerTouchMajors = remember { mutableStateMapOf<Int, Float>() }
 
     // ---- Modifier chain ----
-
-    // P0-0 PROBE-ONLY hover logger: remove after probe. Observes, never consumes.
-    androidx.compose.runtime.DisposableEffect(view) {
-        var hoverMoves = 0
-        val listener = android.view.View.OnHoverListener { _, event ->
-            val isHover = event.actionMasked == MotionEvent.ACTION_HOVER_ENTER ||
-                event.actionMasked == MotionEvent.ACTION_HOVER_MOVE ||
-                event.actionMasked == MotionEvent.ACTION_HOVER_EXIT
-            if (isHover && event.getToolType(0) == MotionEvent.TOOL_TYPE_STYLUS) {
-                hoverMoves++
-                if (event.actionMasked != MotionEvent.ACTION_HOVER_MOVE || hoverMoves % 30 == 0) {
-                    val actionName = when (event.actionMasked) {
-                        MotionEvent.ACTION_HOVER_ENTER -> "ENTER"
-                        MotionEvent.ACTION_HOVER_MOVE -> "MOVE"
-                        else -> "EXIT"
-                    }
-                    com.vic.inkflow.util.TouchEventLogger.logProbe(
-                        "HOVER $actionName pos=(${event.x.toInt()},${event.y.toInt()})" +
-                            " pressure=${"%.3f".format(event.pressure)}" +
-                            " tilt=${"%.1f".format(event.getAxisValue(MotionEvent.AXIS_TILT))}"
-                    )
-                }
-            }
-            false
-        }
-        view.setOnHoverListener(listener)
-        onDispose { view.setOnHoverListener(null) }
-    }
 
     // 手勢凍結槽：draw 階段讀寫普通物件（非 State），不觸發重組
     val pinchReuse = remember { object { var bmp: ImageBitmap? = null } }

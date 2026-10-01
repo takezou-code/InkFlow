@@ -158,13 +158,6 @@ fun Modifier.glassPanel(
     input: HazeInput = HazeInput.Sources(state)
 ): Modifier {
     val quiet = LocalQuietMode.current
-    remember(state, isDark, quiet, input) {
-        com.vic.inkflow.util.InkLog.mode(
-            "GLASS isDark=$isDark input=${input.javaClass.simpleName} " +
-                "→ " + if (quiet) "BLUR-ONLY(靜模式：保留黑玻璃與模糊，只關折射)" else "REAL(折射+模糊+色散)"
-        )
-        true
-    }
     val base = this.clip(shape)
     // 靜模式：同樣的 veil 與 rim，只把折射/色散拿掉，模糊留著
     if (quiet) {

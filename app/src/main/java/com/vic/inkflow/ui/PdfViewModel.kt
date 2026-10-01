@@ -1244,9 +1244,6 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** 臨時診斷用：目前持有高點陣的 flow 數（看 P1 有界化有沒有生效）。 */
-    fun debugBitmapFlowCount(): Int = bitmapFlowCache.size
-
     /**
      * P1 有界：只留可見±margin 內的高清 flow；窗外且無訂閱的（已拆掉的 item）
      * 置空＋移出快取＋摘 map（重組時 remember 重跑 getPageBitmap 自動補渲）。
@@ -1273,13 +1270,6 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         _isScrollingFast.value = isFast
         // 每次升/落都換代：排隊中的中間頁高清憑舊票作廢，不欠渲染債。
         scrollGen++
-        // 臨時診斷（P0 長文件）：定案即刪。見 docs/specs/env.md 測試條款。
-        android.util.Log.d(
-            "InkFlowDbg",
-            "fastScroll=$isFast gen=$scrollGen pendingBmp=${pendingBitmaps.size} " +
-                "pendingThumb=${pendingThumbs.size} flows=${bitmapFlowCache.size} " +
-                "heap=${(Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory()) shr 20}MB"
-        )
     }
 
     private suspend fun renderPage(pageIndex: Int, highQuality: Boolean, ticket: Long? = null): Bitmap? {
@@ -1357,8 +1347,6 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun obtainBitmap(width: Int, height: Int): Bitmap =
-        Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
 
     override fun onCleared() {
         super.onCleared()

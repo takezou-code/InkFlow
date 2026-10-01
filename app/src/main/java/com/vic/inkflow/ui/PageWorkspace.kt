@@ -558,8 +558,6 @@ internal fun Workspace(
                         first != Int.MAX_VALUE && lastFastFirst != Int.MAX_VALUE &&
                         (v > 6000f || kotlin.math.abs(first - lastFastFirst) >= 3)
                     ) {
-                        // 臨時診斷（P0）：看快旗觸發點與速度，定案即刪。
-                        android.util.Log.d("InkFlowDbg", "fastTrigger v=${v.toInt()}px/s jump=${first - lastFastFirst} pages dt=${dt}ms")
                         pdfViewModel.setScrollingFast(true)
                     }
                 }
@@ -597,12 +595,6 @@ internal fun Workspace(
                     // P1 有界：窗外無訂閱的高清 flow 釋放（滑回來自動補渲）。
                     pdfViewModel.trimBitmapFlowsToWindow(f..l)
                 }
-                // 臨時診斷（P0/P1 長文件）：定案即刪。看你需要的旗標/世代/記憶體曲線。
-                android.util.Log.d(
-                    "InkFlowDbg",
-                    "settle range=${f}..$l flows=${pdfViewModel.debugBitmapFlowCount()} " +
-                        "heap=${(Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory()) shr 20}MB"
-                )
             }
         }
     }
@@ -614,9 +606,7 @@ internal fun Workspace(
     LaunchedEffect(viewportWpx, firstSize) {
         val w = firstSize?.first ?: 595f
         if (viewportWpx > 0 && w > 0f) {
-            android.util.Log.d("InkFlowDbg", "viewport settled? wpx=$viewportWpx firstW=$w (debouncing)")
             delay(300)
-            android.util.Log.d("InkFlowDbg", "viewport applied wpx=$viewportWpx")
             pdfViewModel.setDisplayRenderScale(viewportWpx.toFloat() / w)
         }
     }

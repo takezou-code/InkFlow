@@ -236,10 +236,6 @@ object PdfManager {
             }
         }
 
-    /** @deprecated Use insertBlankPage instead. */
-    @Deprecated("Use insertBlankPage(fileUri, afterIndex) instead", ReplaceWith("insertBlankPage(fileUri, Int.MAX_VALUE)"))
-    suspend fun appendBlankPage(fileUri: Uri): Boolean = insertBlankPage(fileUri, Int.MAX_VALUE)
-
     /** 讀取 content:// URI 的顯示名稱，失敗回傳 null。 */
     private suspend fun displayNameOf(context: Context, uri: Uri): String? =
         withContext(Dispatchers.IO) {
@@ -450,21 +446,6 @@ object PdfManager {
     }
 
     // ─── 向後相容（舊有 content:// URI 仍可用）───────────────────────────────
-
-    /** @deprecated 新文件改用 copyPdfToAppDir()。舊有 content:// 記錄靠此繼續讀取。 */
-    @Deprecated("Use copyPdfToAppDir() for new imports. This is kept for backward compatibility with existing content:// URIs in the database.")
-    fun takePersistableUriPermission(context: Context, uri: Uri): Boolean {
-        return try {
-            val takeFlags = android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                context.contentResolver.takePersistableUriPermission(uri, takeFlags)
-            }
-            true
-        } catch (e: SecurityException) {
-            Log.e(TAG, "takePersistableUriPermission failed for $uri", e)
-            false
-        }
-    }
 
     fun closePdfRenderer(renderer: PdfRenderer?) {
         try {

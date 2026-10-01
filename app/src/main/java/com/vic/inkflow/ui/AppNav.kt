@@ -257,16 +257,10 @@ fun InkLayerApp(db: AppDatabase) {
     var powerSaver by rememberSaveable(prefs) { mutableStateOf(prefs.getBoolean(KEY_POWER_SAVER, false)) }
     // byUser＝使用者自己按的（記住就不被低電量自動切覆蓋）；自動切不記。
     fun setPowerSaver(v: Boolean, byUser: Boolean = true, from: String = "unknown") {
-        val was = powerSaver
         powerSaver = v
         prefs.edit().putBoolean(KEY_POWER_SAVER, v).apply()
         if (byUser) prefs.edit().putBoolean(KEY_POWER_SAVER_MANUAL, true).apply()
         com.vic.inkflow.util.AutoBackupScheduler.setQuiet(context, v)
-        com.vic.inkflow.util.InkLog.mode(
-            "MODE set quiet=$v (was=$was) byUser=$byUser from=$from " +
-                "→ 背景凍結=${v} 玻璃降假=${v} 幀率=${if (v) 60 else 144} " +
-                "備份排程=${if (v) "CANCEL" else "RESUME"}"
-        )
     }
 
     // 低電量自動切靜：非充電且 <20% 進靜、充電或 >30% 回流光（遲滯不來回跳）。
@@ -294,30 +288,19 @@ fun InkLayerApp(db: AppDatabase) {
                 val chg = isCharging()
                 val auto = prefs.getBoolean(KEY_POWER_SAVER_AUTO, false)
                 val manual = prefs.getBoolean(KEY_POWER_SAVER_MANUAL, false)
+                // 20% 以下進靜、30% 以上或充電回流（20–30% 是遲滯區間，不動作）
                 if (!chg && pct <= AUTO_QUIET_ENTER) {
                     if (!powerSaver && !manual && !auto) {
                         prefs.edit().putBoolean(KEY_POWER_SAVER_AUTO, true).apply()
                         setPowerSaver(true, byUser = false, from = "battery-low")
                         toast("電量 $pct%，已切到靜模式")
-                        com.vic.inkflow.util.InkLog.mode("BATTERY pct=$pct chg=$chg → 進靜")
-                    } else {
-                        com.vic.inkflow.util.InkLog.mode(
-                            "BATTERY pct=$pct chg=$chg → 不動（manual=$manual auto=$auto quiet=$powerSaver）"
-                        )
                     }
                 } else if (chg || pct >= AUTO_QUIET_EXIT) {
                     if (powerSaver && auto) {
                         prefs.edit().putBoolean(KEY_POWER_SAVER_AUTO, false).apply()
                         setPowerSaver(false, byUser = false, from = if (chg) "charging" else "battery-recovered")
                         toast("電量回來了，已切回流光")
-                        com.vic.inkflow.util.InkLog.mode("BATTERY pct=$pct chg=$chg → 回流光")
-                    } else {
-                        com.vic.inkflow.util.InkLog.mode(
-                            "BATTERY pct=$pct chg=$chg → 不動（manual=$manual auto=$auto quiet=$powerSaver）"
-                        )
                     }
-                } else {
-                    com.vic.inkflow.util.InkLog.mode("BATTERY pct=$pct chg=$chg → 遲滯區間，維持現狀")
                 }
             }
         }
