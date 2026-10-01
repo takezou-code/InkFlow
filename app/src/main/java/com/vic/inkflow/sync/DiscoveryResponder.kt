@@ -57,17 +57,37 @@ class DiscoveryResponder(
 
     fun start(): Boolean {
         if (!running.compareAndSet(false, true)) return true
+        // 為什麼要先把 port 取出來：`DatagramSocket.apply { ... }` 裡的隱含 receiver 是
+        // DatagramSocket，而它有 public 的 `getPort()`。在 apply 內部寫 `port` 會綁到那個
+        // getter（未綁定的 socket 回 -1），**不是**本類別的屬性，於是變成
+        // `InetSocketAddress(-1)` → "port out of range: -1"，而 catch 區塊在 apply 之外，
+        // 印出來卻又是 53530，看起來自相矛盾。這是實機跑起來才抓得到的隱含 receiver 陷阱。
+        val listenPort = port
+        if (listenPort !in 1..65535) {
+            running.set(false)
+            Log.e(TAG, "discovery port $listenPort is not a valid UDP port")
+            return false
+        }
+        // 建立 socket 與綁定分開：原本寫在同一個 apply 裡，選項設定失敗會被誤報成
+        // 「綁定失敗」，除錯時會指向錯誤的位置。
         val sock = try {
             DatagramSocket(null as SocketAddress?).apply {
                 reuseAddress = true
                 // 部分 ROM 需要這個才收得到 255.255.255.255；對單播回應無害。
                 broadcast = true
                 soTimeout = RECEIVE_TIMEOUT_MS
-                bind(InetSocketAddress(port))
             }
         } catch (e: Exception) {
             running.set(false)
-            Log.e(TAG, "cannot bind UDP $port", e)
+            Log.e(TAG, "cannot create discovery socket", e)
+            return false
+        }
+        try {
+            sock.bind(InetSocketAddress(listenPort))
+        } catch (e: Exception) {
+            running.set(false)
+            sock.close()
+            Log.e(TAG, "cannot bind UDP $listenPort", e)
             return false
         }
         socket = sock
@@ -75,7 +95,7 @@ class DiscoveryResponder(
             isDaemon = true
             start()
         }
-        Log.i(TAG, "UDP discovery responder listening on $port")
+        Log.i(TAG, "UDP discovery responder listening on $listenPort")
         return true
     }
 

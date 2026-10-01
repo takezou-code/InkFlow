@@ -82,6 +82,7 @@ class TabletSyncService : Service() {
                     return@launch
                 }
                 server = srv
+                isRunning = true
                 // 探索掛掉不致命：TCP 才是重點，UDP 只是讓桌面端自動找到我們。
                 // 只少了自動探索，使用者仍可手動指定 IP。
                 discovery = DiscoveryResponder(this@TabletSyncService)
@@ -127,6 +128,7 @@ class TabletSyncService : Service() {
         }
         s?.stop()
         d?.stop()
+        isRunning = false
         ioScope.cancel()
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
     }
@@ -184,6 +186,20 @@ class TabletSyncService : Service() {
         private const val CHANNEL_NAME = "同步伺服器"
         private const val CHANNEL_DESCRIPTION = "區域網同步（連線到電腦）進行中"
         private const val NOTIFICATION_ID = 4711
+
+        /**
+         * 服務是否真的在監聽（socket 已綁好才 true）。
+         *
+         * 設定頁要顯示這個值，而**不能**另外記一份「使用者以為服務開著」的旗標：6 小時
+         * 額度用完時 [onTimeout] 會把服務收掉，那種情況下旗標會停在 true，使用者看見
+         * 「已開啟」卻沒有任何電腦連得上，而且沒有辦法從 UI 關掉它（已經沒東西可關）。
+         *
+         * 服務與 UI 在同一個行程，所以這個欄位就是唯一真相；跨行程才需要另外查
+         * ActivityManager。
+         */
+        @Volatile
+        var isRunning: Boolean = false
+            private set
 
         /**
          * 開始一段同步工作階段。**只從使用者主動操作呼叫**（AGENTS：長命令丟背景、

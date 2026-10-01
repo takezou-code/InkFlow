@@ -79,6 +79,8 @@ import androidx.compose.ui.unit.dp
 import kotlin.math.roundToInt
 import com.vic.inkflow.util.AutoBackupScheduler
 import com.vic.inkflow.util.BackupManager
+import com.vic.inkflow.sync.SyncIdentity
+import com.vic.inkflow.sync.TabletSyncService
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -501,6 +503,88 @@ fun GlobalSettingsScreen(
                 )
             }
 
+            SettingsSection("電腦同步 (Desktop Sync)") {
+                Text(
+                    "在同一個 Wi‑Fi 下，讓電腦把文件、PDF 與筆跡拉過去。同步方向只有一個：平板是唯一真相，電腦那邊只存鏡像。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                )
+
+                // 只在使用者開著這個畫面時才輪詢，離開畫面 composition 就停：
+                // 這不是背景輪詢，而是讓「6 小時額度用完、服務自己收掉」這件事
+                // 在畫面上如實可見（否則開關會卡在「開」而使用者無從關閉）。
+                var syncRunning by remember { mutableStateOf(TabletSyncService.isRunning) }
+                var syncError by remember { mutableStateOf<String?>(null) }
+                LaunchedEffect(Unit) {
+                    while (true) {
+                        syncRunning = TabletSyncService.isRunning
+                        kotlinx.coroutines.delay(1000)
+                    }
+                }
+
+                SettingsSwitchRow(
+                    title = "同步伺服器",
+                    subtitle = if (syncRunning) {
+                        "正在監聽，等待電腦連線"
+                    } else {
+                        "關閉時電腦會顯示「找不到平板」。開啟後會出現一個不發聲的常駐通知。"
+                    },
+                    checked = syncRunning,
+                    onCheckedChange = { want ->
+                        if (want) {
+                            syncError = TabletSyncService.start(appContext)
+                            // start() 只是「已送出」，socket 是異步綁的；下一次輪詢
+                            // 才會變成 true，所以這裡先不樂觀地把開關打開。
+                            syncError?.let { syncRunning = false }
+                        } else {
+                            TabletSyncService.stop(appContext)
+                            syncRunning = false
+                            syncError = null
+                        }
+                    }
+                )
+
+                if (syncError != null) {
+                    Text(
+                        "無法啟動：$syncError",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                    )
+                }
+
+                if (syncRunning) {
+                    val psk = remember { SyncIdentity.psk(appContext) }
+                    val lanIp = remember { localLanIpv4() }
+                    Column(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            "配對碼",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            psk,
+                            style = MaterialTheme.typography.displaySmall,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 6.sp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            buildString {
+                                if (lanIp != null) append("這台平板在區域網的位址：$lanIp\n")
+                                append("在電腦端輸入這組配對碼後按同步。配對碼固定不變，除非清除 App 資料。")
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
             // Section 2: 預設操作 (Interactions)
             SettingsSection("預設操作 (Interactions)") {
                 InputModeSelector(InputMode.valueOf(defaultInputMode)) { mode ->
@@ -745,10 +829,36 @@ fun GlobalSettingsScreen(
     }
 }
 
-// Ensure ColorPickerDialog accepts initialColor - we might need to modify ColorPickerDialog.kt 
-// if it doesn't currently support it, but for our MVP, it's fine.
-
 // ---- Helper Composables ----
+
+/**
+ * 顯示用的區域網 IPv4。只為讓使用者知道該在電腦端填哪個位址，**不**參與協定——
+ * 協定用 UDP 探索自動發現，IP 只是手動輸入與排查問題時的資訊。
+ *
+ * 刻意挑 `wlan`／`eth`：手機在同時有行動網路與熱點時會列出多個介面，讓使用者從
+ * 一堆位址裡猜哪個才是電腦看得見的那個，是沒有價值的摩擦。
+ */
+private fun localLanIpv4(): String? = runCatching {
+    java.net.NetworkInterface.getNetworkInterfaces()
+        ?.toList()
+        ?.asSequence()
+        ?.filter { runCatching { it.isUp && !it.isLoopback }.getOrDefault(false) }
+        ?.sortedBy { iface ->
+            when {
+                iface.name.startsWith("wlan") -> 0
+                iface.name.startsWith("eth") -> 1
+                else -> 2
+            }
+        }
+        ?.firstNotNullOfOrNull { iface ->
+            iface.inetAddresses.toList().asSequence()
+                .mapNotNull { addr ->
+                    addr as? java.net.Inet4Address
+                }
+                .firstOrNull { runCatching { it.isSiteLocalAddress }.getOrDefault(false) }
+                ?.hostAddress
+        }
+}.getOrNull()
 
 @Composable
 private fun SettingsSection(title: String, content: @Composable () -> Unit) {
