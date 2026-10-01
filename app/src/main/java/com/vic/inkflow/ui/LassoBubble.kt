@@ -57,9 +57,9 @@ import kotlin.math.roundToInt
 import com.vic.inkflow.util.DocTransform
 
 internal object AiQuickPrompt {
-    const val EXPLAIN = "請用繁體中文詳細解釋這張圖片中的內容，包含重點與關鍵概念。"
-    const val SUMMARIZE = "請用繁體中文總結這張圖片內容的重點，條列不超過5點。"
-    const val TRANSLATE = "請將這張圖片中的文字翻譯成繁體中文，只輸出譯文。"
+    const val EXPLAIN = "解釋"
+    const val SUMMARIZE = "總結"
+    const val TRANSLATE = "翻譯"
 }
 
 /** 套索氣泡的圖示動作鈕：全自繪（Box + clickable），不用 TextButton。

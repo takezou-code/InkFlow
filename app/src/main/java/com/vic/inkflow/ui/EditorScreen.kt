@@ -344,7 +344,8 @@ fun TabletEditorScreen(
     fun importPickedJson(json: String) {
         scope.importPickedJson(json, context, viewModel, pdfViewModel, repos, uri.toString(), currentPageIndex, onRequestPage, context as? android.app.Activity, aiWebView)
     }
-    // AI 區「整頁送 AI」：整頁版 AI 解析（整頁圖＋EXPLAIN＋自動送出，與套索「解釋」同參）
+    // AI 區「整頁送 AI」：整頁圖貼上＋填「解釋」即停，不自動送出
+    // （與套索快捷列同一提示詞常數，差別只在這裡 autoSend=false）
     fun sendPageToAi() {
         if (isSendingPage) return
         isSendingPage = true
@@ -360,7 +361,7 @@ fun TabletEditorScreen(
                     aiFileUri = androidx.core.content.FileProvider.getUriForFile(
                         context, "${context.packageName}.fileprovider", file
                     )
-                    aiPrompt = "解釋"
+                    aiPrompt = AiQuickPrompt.EXPLAIN
                     aiAutoSend = false // 整頁鈕：圖貼上＋填詞即停，不自動送出（套索快捷列才自動送）
                     showAiPanel = true
                 } else {
