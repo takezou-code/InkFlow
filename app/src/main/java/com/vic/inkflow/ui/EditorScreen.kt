@@ -18,6 +18,7 @@ import android.graphics.BitmapFactory
 import android.os.SystemClock
 import android.net.Uri
 import android.provider.OpenableColumns
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -721,6 +722,14 @@ fun TabletEditorScreen(
             val collapsedWidth = 56.dp
             val normalWidth = 128.dp
 
+            // 系統返回：逐階退回收合態，收合態再按才交還上層（離開編輯器）。
+            // 只在 stage != RAIL 時啟用，否則會搶走全域返回行為。
+            BackHandler(enabled = sidebarStage != SidebarStage.RAIL) {
+                SidebarStageMachine.onSystemBack(sidebarStage)?.let {
+                    sidebarStageOrdinal = it.ordinal
+                }
+            }
+
             // 寬度軸只負責 56dp ↔ 128dp。
             // 舊碼把 GRID 塞成 totalWidth（整屏約 800dp），那是 6.7 倍距離的 spring，
             // 而且動畫期間 fixedW 跟著 currentWidthDp 走 → 側欄整排縮圖每幀重排。
@@ -778,6 +787,12 @@ fun TabletEditorScreen(
             // 動畫只動 graphicsLayer（合成器層），浮層本身恆為 fillMaxSize，
             // 進場時量一次即可，動畫期間零重排。
             val gridOverlayProgress = remember { androidx.compose.animation.core.Animatable(0f) }
+            val gridProgressRequests = remember {
+                kotlinx.coroutines.channels.Channel<Float>(kotlinx.coroutines.channels.Channel.CONFLATED)
+            }
+            LaunchedEffect(gridProgressRequests) {
+                for (p in gridProgressRequests) gridOverlayProgress.snapTo(p)
+            }
             LaunchedEffect(sidebarStage) {
                 val target = if (sidebarStage == SidebarStage.GRID) 1f else 0f
                 gridOverlayProgress.animateTo(
@@ -940,6 +955,78 @@ fun TabletEditorScreen(
                     },
                     onStructureChanged = { viewModel.clearUndoStacks() }
                 )
+
+                // ── GRID 邊緣把手：把第 3 階拉回收合態 ──────────────────────
+                // 浮在網格右緣，不佔版面。往左橫拖＝疊層進度連續下降，
+                // 放手時由狀態機決定停 PANEL 還是 RAIL。
+                // 舊碼的第 3 階完全沒有這條路，只剩一個回第 2 階的返回鈕。
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .width(28.dp)
+                        .fillMaxHeight()
+                        .padding(top = toolbarH)
+                        .pointerInput(Unit) {
+                            awaitEachGesture {
+                                val down = awaitFirstDown()
+                                val startProgress = gridOverlayProgress.value
+                                var prevX = down.position.x
+                                var velX = 0f
+                                var lastT = down.uptimeMillis
+                                var moved = false
+                                val slop = viewConfiguration.touchSlop
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                    if (!change.pressed) {
+                                        if (moved) {
+                                            val target = SidebarStageMachine.snap(startProgress, -velX)
+                                            // 中途可能已經被拖到 0（放手時疊層已收），尊重它
+                                            val settled = if (gridOverlayProgress.value <= SidebarStageMachine.HIT_TEST_EPSILON) {
+                                                SidebarStage.RAIL
+                                            } else {
+                                                target
+                                            }
+                                            sidebarStageOrdinal = settled.ordinal
+                                        } else {
+                                            // 純點＝收合，與返回鈕同義但更快（直接到 RAIL）
+                                            SidebarStageMachine.collapseTarget(SidebarStage.GRID)?.let {
+                                                sidebarStageOrdinal = it.ordinal
+                                            }
+                                        }
+                                        break
+                                    }
+                                    val dx = change.position.x - prevX
+                                    prevX = change.position.x
+                                    if (!moved && kotlin.math.abs(dx) > slop) {
+                                        moved = true
+                                    }
+                                    if (!moved) continue
+                                    val now = change.uptimeMillis
+                                    val dt = (now - lastT).coerceAtLeast(1L)
+                                    lastT = now
+                                    velX = velX * 0.75f + (dx / dt * 1000f) * 0.25f
+                                    change.consume()
+                                    // restricted scope 不能呼叫 snapTo，只能丟請求。
+                                    // CONFLATED＝事件再密也只留最新值，不會堆積成動畫延遲。
+                                    gridProgressRequests.trySend(
+                                        SidebarStageMachine.dragProgress(
+                                            startProgress, -dx,
+                                            with(density) { (normalWidth - collapsedWidth).toPx() }
+                                        )
+                                    )
+                                }
+                            }
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Box(
+                        Modifier
+                            .width(6.dp)
+                            .height(72.dp)
+                            .glassPanel(chromeHaze, isEditorDark, CircleShape)
+                    )
+                }
             }
         }
         // 拉桿只在 PANEL 存在：RAIL 讓位給側欄內的展開鈕，GRID 是浮層有自己的邊緣把手。
