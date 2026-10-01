@@ -758,7 +758,40 @@ fun TabletEditorScreen(
                 (activeTool == Tool.PEN || activeTool == Tool.HIGHLIGHTER)
             val toolbarH = 56.dp + if (sliderShown) 42.dp else 0.dp
 
-            Row(Modifier.fillMaxSize()) {
+            Box(Modifier.fillMaxSize()) {
+                // ── 紙：整屏最底層 ────────────────────────────────────────────
+                // 紙必須是「整個螢幕」大小，不能只佔側欄右邊那一塊。
+                // 這樣它才會延伸到左邊頁碼底下，頁碼／+／展開鈕才能浮在紙上（iOS 全出血）。
+                // 側欄與 AI 抽屜是後面畫的薄層，疊在紙上面。
+                Box(
+                    Modifier.fillMaxSize()
+                        .onSizeChanged { contentW = it.width }
+                        .clipToBounds()
+                ) {
+                    Workspace(
+                        pageIndex = currentPageIndex,
+                        pdfViewModel = pdfViewModel,
+                        viewModel = viewModel,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .hazeSource(chromeHaze),
+                        pageAspectRatio = pageAspectRatio,
+                        documentUri = uri.toString(),
+                        onAiFileReady = { fileUri, prompt ->
+                            aiFileUri = fileUri
+                            aiPrompt = prompt
+                            aiAutoSend = true
+                            showAiPanel = true
+                        },
+                        hazeState = editorHaze,
+                        isDarkTheme = isEditorDark,
+                        db = db,
+                        mainListState = mainListState,
+                        onRequestPage = onRequestPage,
+                        onScrollPage = onScrollPage
+                    )
+                }
+                Row(Modifier.fillMaxSize()) {
                 // 拖曳期最佳化：外層寬度跟著手指走，但**內容只量一次**。
                 // 用 Modifier.width(currentWidthDp) 會讓側欄裡整排縮圖每幀重新量測
                 // （側欄可見數十頁，每頁還有 PageThumbnail 的疊圖繪製），
@@ -950,33 +983,9 @@ fun TabletEditorScreen(
             }
         }
 
-Box(Modifier.weight(1f).fillMaxHeight().onSizeChanged { contentW = it.width }.clipToBounds()) {
-            // ── Workspace：恆定填滿 ────────────────────────────────────────────
-            // AI 面板改浮層抽屜後，這裡不再隨 showAiPanel 改權重。
-            // 舊做法 weight(1-aiPanelWeight)：開閉＝整列重新量測，紙被壓縮。
-            Workspace(
-                pageIndex = currentPageIndex,
-                pdfViewModel = pdfViewModel,
-                viewModel = viewModel,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .hazeSource(chromeHaze),
-                pageAspectRatio = pageAspectRatio,
-                documentUri = uri.toString(),
-                onAiFileReady = { fileUri, prompt ->
-                    aiFileUri = fileUri
-                    aiPrompt = prompt
-                    aiAutoSend = true
-                    showAiPanel = true
-                },
-                hazeState = editorHaze,
-                isDarkTheme = isEditorDark,
-                db = db,
-                mainListState = mainListState,
-                onRequestPage = onRequestPage,
-                onScrollPage = onScrollPage
-            )
-            // ── AI 抽屜：浮層玻璃卡（畫在紙上面）────────────────────────────
+Box(Modifier.weight(1f).fillMaxHeight()) {
+            // ── Workspace 已移到整屏底層（見上方）──────────────────────────
+            // 這裡只留 AI 抽屜：浮層玻璃卡，畫在紙上面。
             // 面板永不離開 composition → WebView 不死，對話與捲動位置留著。
             // 滑動只動 graphicsLayer 的 translationX：純合成器層，不觸發 layout/measure。
             val density = LocalDensity.current
@@ -1142,7 +1151,8 @@ Box(Modifier.weight(1f).fillMaxHeight().onSizeChanged { contentW = it.width }.cl
                 }
             }
         } // Box(內容區：Workspace ＋ AI 抽屜)
-        } // outer Row（側欄＋內容區）
+        } // Row（側欄＋AI 抽屜，疊在紙上）
+        } // Box（紙底層＋chrome 疊層）
 
         // 浮空工具列：只蓋「工作區那一欄」，紙從它下面透上來；
         // 側欄＋拖曳條維持自己的上邊界（不被工具列壓到），全螢幕態才吃滿寬。
