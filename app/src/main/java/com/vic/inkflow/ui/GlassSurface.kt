@@ -103,42 +103,34 @@ fun glassContentColor(isDark: Boolean): Color =
 val LocalQuietMode = androidx.compose.runtime.staticCompositionLocalOf { false }
 
 /**
- * 真折射玻璃配方（唯一）：頂光＋凸緣＋滿折射細節＋色散。
- * 深色＝靛 veil，淺色＝白 veil（iOS 亮欄配深內容）。tint 濃度只在這裡調。
+ * 真折射玻璃配方（唯一）。
+ *
+ * 原則：**以 [GlassStyle.clear] 為基準，只做刻意的覆寫**，不要逐項自創數值。
+ * 官方 clearDark 的實測值是 specularExponent=16f、whitePoint=-0.18f、ambientResponse=0.22f。
+ * 過去我們把 specularExponent 寫成 1.6f（官方 10 倍低）＋ specularIntensity 0.9，
+ * 等於把高光從「邊緣一條集中亮線」變成「整片均勻平塗」，那層亮光會把深色 veil 抵銷，
+ * 於是黑玻璃與折射都看不見（症狀：黑玻璃消失、只剩一片糊）。
+ *
+ * 刻意覆寫只有四項：
+ *  1. blurRadius 34dp（clear 只有 1.25dp，等於沒糊；使用者要求看得出模糊）
+ *  2. chromaticAberrationStrength 0.3f（clear 只有 0.04f，等於沒色散）
+ *  3. tint 用 App 的 veil 色票（唯一色票來源）
+ *  4. shape 跟呼叫端走
+ * 其餘全部沿用 clear／clearDark 官方值。
  */
 @OptIn(ExperimentalHazeApi::class)
 fun glassStyle(isDark: Boolean, shape: Shape = ShapeLg): GlassStyle =
     GlassStyle.clear.then {
         backgroundColor(Color.Transparent)
         tint(if (isDark) com.vic.inkflow.ui.theme.GlassVeilDark else com.vic.inkflow.ui.theme.GlassVeilLight)
-        ambientResponse(0f)
         optics(
-            // 背景再糊一點（20→26dp），黑玻璃本體別再壓暗
+            // 折射全部沿用 clearOptics（displacement 56dp／height 0.35／profile Edge(28.dp)／
+            // detail 0.76），只把模糊拉大——折射位移遠大於折射帶寬是套件本身的設計，不是錯誤。
             blurRadius = 34.dp,
-            refractionStrength = 1.0f,
-            refractionHeightFraction = 0.50f,
-            refractionDisplacement = 84.dp,
-            // fold 必須 0：它把 tint 從邊緣折走，黑玻璃會消失（像素實測 181/203/236）。
-            // 乾淨的折射（Lip＋位移）跟黑玻璃可以共存。
-            refractionFoldStrength = 0f,
-            depth = 0.15f,
-            refractionDetailIntensity = 1f
         )
-        lightPosition(Alignment.TopCenter)
-        // Lip（非 Squircle）：Squircle 弧面同樣會把 tint 折淡
-        surfaceProfile(SurfaceProfile.Lip)
-        specularIntensity(0.9f)
-        specularExponent(1.6f)
-        fresnelExponent(2.4f)
-        edgeSoftness(2.dp)
-        // whitePoint 負值＝把 clear 底自帶的提亮壓回去（少了這行白紙上會發奶白＝沒黑化）
-        whitePoint(-0.45f)
-        // 飽和提升（vibrancy）：blur 會吃掉彩度，這裡補回來，玻璃才不發灰
-        chromaMultiplier(1.35f)
-        contrast(0.08f)
-        // 光譜色散：Full 每幀多一層、實測掉幀；退回 Simple 0.3，邊緣一樣有 RGB 分光（shiny）。
+        // 光譜色散：clear 只有 0.04f（≈關閉）。Simple 模式每幀一層，Full 太貴。
         chromaticAberrationMode(ChromaticAberrationMode.Simple)
-        chromaticAberrationStrength(0.45f)
+        chromaticAberrationStrength(0.3f)
         shape((shape as? RoundedCornerShape) ?: RoundedCornerShape(24.dp))
     }
 

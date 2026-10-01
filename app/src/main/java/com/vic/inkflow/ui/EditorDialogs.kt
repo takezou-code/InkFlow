@@ -504,8 +504,11 @@ internal fun EditorIconButton(
     size: androidx.compose.ui.unit.Dp = 32.dp
 ) {
     val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    // 選中色＝原本的深紫（onPrimaryContainer）。用 colorScheme.primary 在這套深色主題
+    // 裡是淡紫，選中反而比未選中更弱。
+    val activeTint = MaterialTheme.colorScheme.onPrimaryContainer
     val animatedTintColor by animateColorAsState(
-        if (isActive) MaterialTheme.colorScheme.primary else glassContentColor(isDark),
+        if (isActive) activeTint else glassContentColor(isDark),
         label = "EditorButtonTint"
     )
     val iconScale by animateFloatAsState(
@@ -538,7 +541,16 @@ internal fun EditorIconButton(
     Box(
         modifier = Modifier
             .size(size)
-            .glassClickable(onClick = onClick, shape = CircleShape),
+            .glassClickable(onClick = onClick, shape = CircleShape)
+            // 選中底光：取代原本下方那條 14×3dp 的小槓（太醜）。
+            // 同色（onPrimaryContainer）但做成圖示背後的柔和光暈，選中感一樣清楚。
+            .background(
+                brush = Brush.radialGradient(
+                    colors = listOf(activeTint.copy(alpha = 0.22f * indicatorAlpha), Color.Transparent),
+                    radius = size.value * 0.75f
+                ),
+                shape = CircleShape
+            ),
         contentAlignment = Alignment.Center
     ) {
         Icon(
@@ -551,15 +563,6 @@ internal fun EditorIconButton(
                     scaleX = iconScale; scaleY = iconScale
                     rotationZ = iconWiggle.value
                 }
-        )
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 3.dp)
-                .width(14.dp)
-                .height(3.dp)
-                .graphicsLayer { alpha = indicatorAlpha }
-                .background(MaterialTheme.colorScheme.onPrimaryContainer, CircleShape)
         )
     }
 }
