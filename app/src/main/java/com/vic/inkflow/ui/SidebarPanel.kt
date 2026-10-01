@@ -1094,14 +1094,22 @@ internal fun PageIcon(
  *
  * 不要用 animateScrollToItem + contentPadding 假設：那是靠猜 item 高度，
  * 猜錯就置中失敗（首末頁會偏）。這裡直接由實際 layout 量出差異再位移，一定準。
+ *
+ * 中心點要用 (viewportStart + viewportEnd) / 2，不是 (end - start) / 2。
+ * LazyListLayoutInfo 的 viewportStartOffset = -beforeContentPadding，
+ * 而我們為了讓首／末頁能捲到中央，contentPadding 給了幾乎半個視窗高。
+ * 用「視窗高度 / 2」當目標會整體偏移一整個 contentPadding（實測可達半個視窗），
+ * 結果就是整條頁碼看起來沒置中、正好對不到中央玻璃丸。
+ * (start + end) / 2 才是可見區中心，也跟 Compose 自己的 [SnapPosition.Center] 一致。
  */
 internal suspend fun LazyListState.scrollToCenter(index: Int) {
     // 陳舊頁碼（刪頁/空文件）直接捲會閃退，先擋
     if (index < 0 || index >= layoutInfo.totalItemsCount) return
     runCatching { scrollToItem(index) }.getOrNull() ?: return
     val itemInfo = layoutInfo.visibleItemsInfo.firstOrNull { it.index == index } ?: return
-    val viewportHeight = layoutInfo.viewportEndOffset - layoutInfo.viewportStartOffset
-    val delta = (itemInfo.offset + itemInfo.size / 2 - viewportHeight / 2).toFloat()
+    val delta = (itemInfo.offset + itemInfo.size / 2f -
+        (layoutInfo.viewportStartOffset + layoutInfo.viewportEndOffset) / 2f)
+    if (kotlin.math.abs(delta) < 0.5f) return
     scroll { scrollBy(delta) }
 }
 
@@ -1112,8 +1120,8 @@ internal suspend fun LazyListState.animateScrollToCenter(index: Int) {
     if (index < 0 || index >= layoutInfo.totalItemsCount) return
     runCatching { scrollToItem(index) }.getOrNull() ?: return
     val itemInfo = layoutInfo.visibleItemsInfo.firstOrNull { it.index == index } ?: return
-    val viewportHeight = layoutInfo.viewportEndOffset - layoutInfo.viewportStartOffset
-    val delta = (itemInfo.offset + itemInfo.size / 2 - viewportHeight / 2).toFloat()
+    val delta = (itemInfo.offset + itemInfo.size / 2f -
+        (layoutInfo.viewportStartOffset + layoutInfo.viewportEndOffset) / 2f)
     if (kotlin.math.abs(delta) < 0.5f) return
     runCatching { animateScrollBy(delta) }
 }

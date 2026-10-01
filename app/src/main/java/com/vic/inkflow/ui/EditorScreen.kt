@@ -453,12 +453,11 @@ fun TabletEditorScreen(
                 docViewModel.updateLastPage(uri.toString(), currentPageIndex)
                 // P2 快滑：高速捲動中別排 animateScrollToCenter（每幀取消重進，
                 // 動畫永遠排不到落地，側欄停在舊頁）。改成瞬時定位，不排隊。
+                // 注意：用 scrollToCenter 不是 scrollToItem —— scrollToItem 只把頁碼對齊
+                // viewport「起點」，不置中。收合模式 contentPadding 幾乎半個視窗高，
+                // 用 scrollToItem 會把當前頁留在很靠上＝中央丸子那裡是空的（置中跑掉）。
                 if (pdfViewModel.isScrollingFast.value) {
-                    sidebarListState.scrollToItem(
-                        sidebarListState.layoutInfo.visibleItemsInfo
-                            .minByOrNull { kotlin.math.abs(it.index - currentPageIndex) }?.index
-                            ?: sidebarListState.firstVisibleItemIndex
-                    )
+                    runCatching { sidebarListState.scrollToCenter(currentPageIndex) }
                 } else {
                     sidebarListState.animateScrollToCenter(currentPageIndex)
                 }
