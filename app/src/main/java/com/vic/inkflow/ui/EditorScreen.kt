@@ -186,6 +186,7 @@ import androidx.compose.ui.draganddrop.DragAndDropTarget
 import androidx.compose.ui.draganddrop.DragAndDropTransferData
 import androidx.compose.ui.draganddrop.toAndroidDragEvent
 import androidx.compose.ui.input.pointer.PointerEventPass
+import android.util.Log
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
@@ -987,9 +988,18 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
             // 這裡只留 AI 抽屜：浮層玻璃卡，畫在紙上面。
             // 面板永不離開 composition → WebView 不死，對話與捲動位置留著。
             // 滑動只動 graphicsLayer 的 translationX：純合成器層，不觸發 layout/measure。
+            // AI 抽屜可用寬度：側欄右緣 → 螢幕右緣。
+            // 不拿 contentW（現在是整屏寬）當基準，否則閉合擋板會蓋到側欄。
+            val density0 = LocalDensity.current
+            val sidebarWpx = with(density0) { currentWidthDp.toPx() }
+            val aiAvailW = (contentW - sidebarWpx).coerceAtLeast(320f)
+            val panelW = (aiAvailW * aiPanelWeight).coerceAtLeast(260f)
+                .coerceAtMost(aiAvailW)
             val density = LocalDensity.current
-            val panelW = (contentW * aiPanelWeight).coerceAtLeast(260f)
-                .coerceAtMost((contentW - 48f).coerceAtLeast(160f))
+            // AI 抽屜寬度基準＝側欄右緣到螢幕右緣（不是整屏 contentW）。
+            // 整屏底層重構後 contentW 變成整屏 3200px，panelW 撐到 1280px，
+            // 閉合時那塊「透明擋板」就蓋住 x=389..1251，把側欄觸控全吃掉
+            // （實測 AI_BLOCKER 73 次、SIDEBAR_ITEM 0 次）。舊基準是內容區寬度所以沒事。
             val panelWdp = with(density) { panelW.toDp() }
             LaunchedEffect(showAiPanel) {
                 if (showAiPanel) {
@@ -1015,23 +1025,37 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                         translationX = -panelW * (1f - p)
                         alpha = p
                     }
-                    // 關閉態擋觸控：alpha 0 不會自動停用 hit test，否則紙張那區會留隐形觸控
-                    .then(
-                        if (showAiPanel) Modifier else Modifier.pointerInput(Unit) {
-                            awaitPointerEventScope {
-                                while (true) {
-                                    awaitPointerEvent(PointerEventPass.Initial).changes.forEach { it.consume() }
-                                }
-                            }
-                        }
-                    )
             ) {
                 // 卡片本體：真玻璃＋圓角，內縮 5dp 留一圈玻璃邊
                 Box(
                     modifier = Modifier
                         .width(panelWdp)
                         .fillMaxHeight()
-                        .padding(top = toolbarH + 8.dp, bottom = 8.dp, start = 8.dp)
+                        // 四邊等距內縮：舊碼只有 start=8 沒有 end，右邊完全不內縮，
+                        // 網頁因此沒填滿、跟 26dp 圓角容器對不齊（四角切出缺口＝你看到的縫隙）。
+                        .padding(
+                            top = toolbarH + 6.dp,
+                            bottom = 6.dp,
+                            start = 6.dp,
+                            end = 6.dp
+                        )
+                        // 內層裁成同心圓角（26 - 6 = 20），讓網頁完整貼滿圓角容器。
+                        // 不裁的話 WebView 是直角，四角會戳出圓角外緣＝那個縫隙。
+                        .clip(RoundedCornerShape(20.dp))
+                        // 關閉態擋觸控：alpha 0 不會自動停用 hit test，卡片滑出去後
+                        // 那條透明區域仍會吃掉紙的觸控。掛在「卡片自己」而不是外層 Row：
+                        // 外層 Row 在 Box(weight 1f) 裡被拉滿寬度，擋板會蓋住整個右半屏
+                        // （含側欄右緣，實測 AI_BLOCKER x=389..1251、SIDEBAR_ITEM 0）。
+                        // 卡片有明確 width(panelWdp)，擋板寬度才會跟著內容走。
+                        .then(
+                            if (showAiPanel) Modifier else Modifier.pointerInput(Unit) {
+                                awaitPointerEventScope {
+while (true) {
+                                    awaitPointerEvent(PointerEventPass.Initial).changes.forEach { it.consume() }
+                                }
+                                }
+                            }
+                        )
                         .glassPanel(chromeHaze, isEditorDark, RoundedCornerShape(26.dp))
                 ) {
                     AiWebPanel(

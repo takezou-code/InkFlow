@@ -302,12 +302,14 @@ fun AiWebPanel(
         }
     }
 
-    // Fix2d: WebView 原生底預設透明→首幀前是黑洞；先鋪主題 surface 色頂著
-    val webViewBgArgb = androidx.compose.material3.MaterialTheme.colorScheme.surface.toArgb()
+    // Fix2d: WebView 原生底預設透明→首幀前是黑洞；鋪一層極淡的底頂著，
+    // 但不能是不透明 surface 色：容器本身是玻璃，不透明底會把玻璃整片蓋死。
+    // 半透明黑只在「還沒載入」時當底，載入後由網頁自己的內容接手。
+    val webViewBgArgb = android.graphics.Color.TRANSPARENT
     androidx.compose.foundation.layout.Box(
         modifier = modifier
             .fillMaxSize()
-            .background(androidx.compose.material3.MaterialTheme.colorScheme.surface)
+            .clip(RoundedCornerShape(20.dp))
     ) {
         androidx.compose.ui.viewinterop.AndroidView(
             factory = { ctx ->
@@ -319,6 +321,9 @@ fun AiWebPanel(
                         android.view.ViewGroup.LayoutParams.MATCH_PARENT
                     )
                     setBackgroundColor(webViewBgArgb)
+                    // WebView 本身不畫底，容器玻璃才有機會透出來。
+                    // 但仍需不透明 fallback 避免載入前全黑 → 用很淡的深色當 placeholder。
+                    setBackgroundColor(android.graphics.Color.argb(40, 20, 20, 24))
                     
                     webView = this
                     webViewCallback.value(this)
