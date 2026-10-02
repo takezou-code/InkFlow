@@ -25,9 +25,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.AnimationSpec
 import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
@@ -168,7 +166,6 @@ import androidx.compose.ui.layout.layout
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithCache
-import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
@@ -180,7 +177,6 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
@@ -752,16 +748,34 @@ fun TabletEditorScreen(
                 )
             }
 
+            // 拖曳鎖：整個手勢期間只有拖曳在寫寬度。
+            //
+            // 前面幾版壞掉的根因就是「動畫和手指同時寫同一個數值」——
+            // 這裡用這把鎖強制單寫入者：拖曳中階段動畫不動，放手後才交給動畫。
+            var isDraggingSidebar by remember { mutableStateOf(false) }
+
+            // 直向捲主列表的請求通道。拉桿的 pointerInput 是 restricted scope，
+            // 不能直接呼叫 scrollBy（suspend），用 CONFLATED Channel 丟請求再套用。
+            val scrollRequests = remember { kotlinx.coroutines.channels.Channel<Float>(kotlinx.coroutines.channels.Channel.CONFLATED) }
+            LaunchedEffect(scrollRequests) {
+                for (dy in scrollRequests) mainListState.scrollBy(dy)
+            }
+
             // 收合／展開的過渡動畫。56↔128dp 只差 198px，這段距離重量測側欄內容
             // 的成本可以接受 —— 也正是重構前你回報「手感可以」的那版行為。
             LaunchedEffect(targetWidth) {
-                animatableWidth.animateTo(
-                    targetValue = targetWidth.value,
-                    animationSpec = Motion.snapSpring()
-                )
+                if (!isDraggingSidebar) {
+                    animatableWidth.animateTo(
+                        targetValue = targetWidth.value,
+                        animationSpec = Motion.snapSpring()
+                    )
+                }
             }
 
-            val currentWidthDp = with(density) { animatableWidth.value.toDp() }
+            // animatableWidth.value 是 Float，單位是 **dp**（56 / 128）。
+            // 必須用 `.dp` 封裝，**不能**用 Float.toDp() —— 後者會再乘一次 density
+            // （56 × 2.75 = 154dp），是雙重換算，側欄寬度整個錯掉。
+            val currentWidthDp = animatableWidth.value.dp
 
             // 第 3 階疊層的淡入淡出。0→1 與 1→0 都走這裡，不碰寬度軸。
             val gridOverlayProgress by animateFloatAsState(
@@ -1131,33 +1145,78 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                     .width(24.dp)
                     .fillMaxHeight()
                     .padding(top = toolbarH)
-                    .pointerInput(Unit) {
+                    .pointerInput(sidebarStage) {
                         awaitEachGesture {
                             val down = awaitFirstDown()
-                            // 只認純點：按下到放開位移小於 slop 才算輕點，
-                            // 否則使用者只是想捲動，不該觸發階段切換。
-                            var moved = false
-                            val startX = down.position.x
-                            val startY = down.position.y
+                            // null = 未定；true = 橫向拖寬；false = 直向捲主列表
+                            var horizontalLock: Boolean? = null
+                            var prevX = down.position.x
+                            var prevY = down.position.y
+                            var accX = 0f
+                            var accY = 0f
+                            var velX = 0f
+                            var lastT = down.uptimeMillis
+                            var dragged = false
                             val slop = viewConfiguration.touchSlop
+                            // 第 3 階整屏都是網格，寬度軸不在那裡 → 不拖寬。
+                            val canDragWidth = sidebarStage != SidebarStage.GRID
+                            val railPx = with(density) { collapsedWidth.toPx() }
+                            val panelPx = with(density) { normalWidth.toPx() }
                             while (true) {
                                 val event = awaitPointerEvent()
                                 val change = event.changes.firstOrNull { it.id == down.id } ?: break
                                 if (!change.pressed) {
-                                    val dx = change.position.x - startX
-                                    val dy = change.position.y - startY
-                                    if (!moved &&
-                                        kotlin.math.abs(dx) < slop &&
-                                        kotlin.math.abs(dy) < slop
-                                    ) {
-                                        goToStage(next)
+                                    isDraggingSidebar = false
+                                    when {
+                                        dragged -> {
+                                            // 放手＝交給狀態機決定停哪一階，再彈過去。
+                                            val from = animatableWidth.value
+                                            val t = if (panelPx - railPx <= 1f) 0.5f
+                                            else ((from - railPx) / (panelPx - railPx)).coerceIn(0f, 1f)
+                                            val settled = SidebarStageMachine.snap(t, velX)
+                                            goToStage(settled)
+                                        }
+                                        horizontalLock == null -> goToStage(next)
                                     }
                                     break
                                 }
-                                if (kotlin.math.abs(change.position.x - startX) > slop ||
-                                    kotlin.math.abs(change.position.y - startY) > slop
-                                ) {
-                                    moved = true
+                                val dx = change.position.x - prevX
+                                val dy = change.position.y - prevY
+                                prevX = change.position.x
+                                prevY = change.position.y
+                                if (horizontalLock == null) {
+                                    accX += dx
+                                    accY += dy
+                                    horizontalLock = when {
+                                        !canDragWidth -> null
+                                        kotlin.math.abs(accX) > slop &&
+                                            kotlin.math.abs(accX) >= kotlin.math.abs(accY) -> true
+                                        kotlin.math.abs(accY) > slop -> false
+                                        else -> null
+                                    }
+                                }
+                                if (horizontalLock == true) {
+                                    val now = change.uptimeMillis
+                                    val dt = (now - lastT).coerceAtLeast(1L)
+                                    lastT = now
+                                    velX = velX * 0.75f + (dx / dt * 1000f) * 0.25f
+                                    change.consume()
+                                    if (!dragged) {
+                                        // 確定要拖寬了才鎖：鎖住期間階段動畫不參與。
+                                        isDraggingSidebar = true
+                                        dragged = true
+                                    }
+                                    val railDp = collapsedWidth
+                                    val panelDp = normalWidth
+                                    scope.launch {
+                                        animatableWidth.snapTo(
+                                            (animatableWidth.value + dx / density.density)
+                                                .coerceIn(railDp.value, panelDp.value)
+                                        )
+                                    }
+                                } else if (horizontalLock == false) {
+                                    change.consume()
+                                    scrollRequests.trySend(-dy)
                                 }
                             }
                         }
