@@ -273,12 +273,16 @@ fun AiWebPanel(
         }
     }
     
-    // AI 面板黑白切換：亮色清 filter＋宣告 light，暗色用 invert 濾鏡（重載不丟對話，Gemini 是 SPA）。
+// AI 面板主題跟 App 深淺色（自適應 invert，見 buildThemeJs）。
+    // 追蹤 app=<light|dark> page=<light|dark> invert=<bool>：實機對帳用，
+    // 主題寫反時先看這行（page 是頁面自認的深淺，不是猜的）
     androidx.compose.runtime.LaunchedEffect(webLight) {
         try {
-            webView?.evaluateJavascript(buildThemeJs(currentWebLight.value), null)
+            webView?.evaluateJavascript(buildThemeJs(currentWebLight.value)) { v ->
+                android.util.Log.d("InkFlowDbg", "AI theme(change): $v")
+            }
         } catch (e: Exception) {
-            e.printStackTrace()
+            android.util.Log.e("AiWebPanel", "theme apply on change failed", e)
         }
     }
 
@@ -415,7 +419,9 @@ fun AiWebPanel(
                                 // 還沒建立（null），webLight 若改成常數推導值就永遠套不到，
                                 // 深色模式下 Gemini 網頁會一直是白的。
                                 try {
-                                    view?.evaluateJavascript(buildThemeJs(currentWebLight.value), null)
+                                    view?.evaluateJavascript(buildThemeJs(currentWebLight.value)) { v ->
+                                        android.util.Log.d("InkFlowDbg", "AI theme(load): $v")
+                                    }
                                 } catch (e: Exception) {
                                     android.util.Log.e("AiWebPanel", "theme apply on load failed", e)
                                 }
@@ -1063,23 +1069,34 @@ private fun buildCollectJs(): String {
 }
 
 /**
- * AI 面板黑白切換腳本：亮色清 filter＋宣告 light；暗色用 invert 濾鏡。
- * 不 reload（Gemini 是 SPA，重載不丟對話但會閃；先不清快取試）。
+ * AI 面板主題（跟 App 深淺色）：**自適應**，不是無腦疊 invert。
+ *
+ * 為什麼不能只看 App 主題：WebView 會把系統的 `prefers-color-scheme` 傳給網頁，
+ * Gemini 會**自己**渲染深色。舊碼在 App 深色時疊 `invert(1)`，剛好把頁面自渲染的
+ * 深色又翻回淺色 → 深色模式看到亮色、亮色模式看到深色（整個寫反）。
+ *
+ * 現在：先問頁面「你自認是深色嗎」（matchMedia），只在跟 App 想要的**不一致**時
+ * 才疊 invert。刻意**不再**設 `color-scheme`——它會改變 matchMedia 的結果，
+ * 跟 invert 互相觸發、來回翻。invert 不影響 matchMedia，所以這版不會震盪。
+ *
+ * 不 reload（Gemini 是 SPA，重載不丟對話但會閃）。
+ * 回傳診斷字串（pageDark／needInvert），由呼叫端 Log 印出來，方便實機對帳。
  */
 private fun buildThemeJs(light: Boolean): String {
     return """
         (function() {
             var LIGHT = $light;
+            var WANT_DARK = !LIGHT;
+            var pageDark = false;
             try {
-                var h = document.documentElement;
-                if (LIGHT) {
-                    h.style.filter = '';
-                    h.style.setProperty('color-scheme', 'light', 'important');
-                } else {
-                    h.style.setProperty('color-scheme', 'dark', 'important');
-                    h.style.filter = 'invert(1) hue-rotate(180deg)';
-                }
+                pageDark = !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
             } catch(e){}
+            // 頁面自認的深淺 == App 想要的 → 不動；不一致 → 用 invert 拉過來
+            var needInvert = (pageDark !== WANT_DARK);
+            try {
+                document.documentElement.style.filter = needInvert ? 'invert(1) hue-rotate(180deg)' : '';
+            } catch(e){}
+            return 'THEME app=' + (LIGHT ? 'light' : 'dark') + ' page=' + (pageDark ? 'dark' : 'light') + ' invert=' + needInvert;
         })();
     """.trimIndent()
 }
