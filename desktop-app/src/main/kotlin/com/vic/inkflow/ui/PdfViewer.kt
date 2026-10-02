@@ -207,6 +207,13 @@ fun PdfViewer(
     // write happens once, on release.
     var liveStroke by remember { mutableStateOf<List<Offset>?>(null) }
 
+    // Per-point width of the stroke in progress, in **pixels**. A mouse reports no
+    // pressure at all, so the width is derived from speed instead: a pen held
+    // still is a slow pen and lays down more ink. Without this, everything drawn
+    // with a mouse is a flat hairline and cannot tell it apart from the tablet's
+    // pressure-varying ink.
+    var liveStrokeWidths by remember { mutableStateOf<List<Float>>(emptyList()) }
+
     // A pointerInput coroutine captures the values in scope when it *starts*, and
     // it only restarts when its keys change. `box` and `scale` are null/zero on
     // the first composition and only become valid once the page finishes
@@ -444,7 +451,7 @@ fun PdfViewer(
      * [strokes] so it appears without waiting for a reload, and on failure it is
      * dropped rather than left on screen as ink that is not saved anywhere.
      */
-    fun commitStroke(pts: List<Offset>) {
+    fun commitStroke(pts: List<Offset>, modelWidths: List<Float>) {
         val b = box ?: return
         val stroke = StrokeEntity(
             documentUri = documentUri,
@@ -464,7 +471,10 @@ fun PdfViewer(
                 strokeId = stroke.id,
                 x = p.x,
                 y = p.y,
-                width = INK_WIDTH_PT
+                // Per-sample drawn width, exactly like the tablet. Storing the base
+                // width here instead would make the stroke render as a flat
+                // hairline on both devices.
+                width = modelWidths.getOrNull(i) ?: INK_WIDTH_PT
             )
         }
         runCatching { databaseManager.saveStroke(stroke, points) }
@@ -478,7 +488,9 @@ fun PdfViewer(
     }
 
     // Declared after commitStroke so it captures that local function directly.
-    val commitStrokeNow by rememberUpdatedState<(List<Offset>) -> Unit> { pts -> commitStroke(pts) }
+    val commitStrokeNow by rememberUpdatedState<(List<Offset>, List<Float>) -> Unit> { pts, px ->
+        commitStroke(pts, px)
+    }
 
     val focusRequester = remember { FocusRequester() }
 
@@ -571,7 +583,10 @@ fun PdfViewer(
                             ?: return@awaitEachGesture // press landed in the margin
                         down.consume()
                         val pts = mutableListOf(Offset(start.x, start.y))
+                        val modelWidths = mutableListOf(INK_WIDTH_PT)
+                        var lastTime = System.currentTimeMillis()
                         liveStroke = pts
+                        liveStrokeWidths = modelWidths
                         while (true) {
                             val event = awaitPointerEvent()
                             val change = event.changes.firstOrNull { it.pressed } ?: break
@@ -582,13 +597,30 @@ fun PdfViewer(
                                 // row in `points` that then syncs to the tablet.
                                 val last = pts.last()
                                 if (abs(m.x - last.x) + abs(m.y - last.y) > 0.35f) {
+                                    val now = System.currentTimeMillis()
+                                    // Same width model the tablet applies, so a mouse
+                                    // stroke is byte-for-byte the shape a
+                                    // pressureless stylus would produce there.
+                                    val w = com.vic.inkflow.util.InkWidthModel.widthFor(
+                                        previous = com.vic.inkflow.util.StrokePoint(
+                                            last.x, last.y, modelWidths.last()
+                                        ),
+                                        posX = m.x,
+                                        posY = m.y,
+                                        dtMs = now - lastTime,
+                                        baseWidth = INK_WIDTH_PT,
+                                        isHighlighter = tool == InkTool.Highlighter
+                                    )
+                                    lastTime = now
                                     pts.add(Offset(m.x, m.y))
+                                    modelWidths.add(w)
                                     change.consume()
                                 }
                             }
                         }
                         liveStroke = null
-                        if (pts.size >= 2) commitStrokeNow(pts)
+                        liveStrokeWidths = emptyList()
+                        if (pts.size >= 2) commitStrokeNow(pts, modelWidths)
                     }
                 }
         ) {
@@ -607,49 +639,29 @@ fun PdfViewer(
                     // the same page box, so pinch and drag move the two together by
                     // construction rather than by two sets of arithmetic agreeing.
                     for (swp in strokes) {
-                        val pts = swp.points
-                        if (pts.isEmpty()) continue
-                        val first = pts.first().toPagePixel(scale, b)
-                        val path = Path()
-                        path.moveTo(first.x, first.y)
-                        for (i in 1 until pts.size) {
-                            val q = pts[i].toPagePixel(scale, b)
-                            path.lineTo(q.x, q.y)
-                        }
-                        val s = swp.stroke
-                        val color = Color(s.color)
-                        drawPath(
-                            path = path,
-                            color = if (s.isHighlighter) color.copy(alpha = 0.35f) else color,
-                            style = Stroke(
-                                // Stroke width is in model units too, so it scales with the ink.
-                                width = (s.strokeWidth * scale).coerceAtLeast(0.5f),
-                                cap = StrokeCap.Round,
-                                join = StrokeJoin.Round
-                            )
-                        )
+                        drawStroke(swp, scale, b)
                     }
                 // The stroke currently under the pointer. Drawn through the same
                     // transform as everything else so it cannot drift from the
                     // committed path it is about to become.
-                    liveStroke?.takeIf { it.size >= 2 }?.let { pts ->
-                        val path = Path()
-                        path.moveTo(pts.first().x * scale + (originX - b.originX * scale), pts.first().y * scale + (originY - b.originY * scale))
-                        for (i in 1 until pts.size) {
-                            path.lineTo(
-                                pts[i].x * scale + (originX - b.originX * scale),
-                                pts[i].y * scale + (originY - b.originY * scale)
+                    liveStroke?.takeIf { it.isNotEmpty() }?.let { pts ->
+                        val screenPts = pts.map {
+                            Offset(
+                                it.x * scale + (originX - b.originX * scale),
+                                it.y * scale + (originY - b.originY * scale)
                             )
                         }
                         drawPath(
-                            path = path,
-                            color = Color(inkColour).copy(
-                                alpha = if (tool == InkTool.Highlighter) 0.35f else 1f
+                            path = com.vic.inkflow.util.EnvelopeUtils.generateEnvelopePath(
+                                screenPts.mapIndexed { i, o ->
+                                    com.vic.inkflow.util.StrokePoint(
+                                        o.x, o.y,
+                                        liveStrokeWidths.getOrNull(i) ?: (INK_WIDTH_PT * scale)
+                                    )
+                                }
                             ),
-                            style = Stroke(
-                                width = (INK_WIDTH_PT * scale).coerceAtLeast(0.5f),
-                                cap = StrokeCap.Round,
-                                join = StrokeJoin.Round
+                            color = Color(inkColour).copy(
+                                alpha = if (tool == InkTool.Highlighter) HIGHLIGHTER_ALPHA else 1f
                             )
                         )
                     }
@@ -855,6 +867,52 @@ internal fun screenToModel(
     val y = (screen.y - originY) / scale + box.originY
     return if (x in 0f..box.widthPt && y in 0f..box.heightPt) Offset(x, y) else null
 }
+
+/**
+ * One stroke, drawn through the tablet's own envelope routine.
+ *
+ * `points.width` is the real drawn width (velocity-derived on the tablet), while
+ * `stroke.strokeWidth` is only the base width the user picked. Using the latter
+ * would flatten every brush stroke to a hairline, so the per-sample widths are
+ * what get rendered.
+ *
+ * A stroke whose samples all carry the same width still goes through the
+ * envelope — it costs one path fill and keeps a single code path, which matters
+ * more here than the micro-optimisation would.
+ */
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawStroke(
+    swp: StrokeWithPoints,
+    scale: Float,
+    box: PageBox
+) {
+    val pts = swp.points
+    if (pts.isEmpty()) return
+
+    val strokePoints = pts.map {
+        com.vic.inkflow.util.StrokePoint(
+            x = (it.x - box.originX) * scale,
+            y = (it.y - box.originY) * scale,
+            width = (it.width.takeIf { w -> w > 0f } ?: swp.stroke.strokeWidth)
+                .coerceAtLeast(MIN_INK_PT)
+                    .times(scale)
+                    .coerceAtLeast(MIN_INK_PX)
+        )
+    }
+    val ink = Color(swp.stroke.color)
+    drawPath(
+        path = com.vic.inkflow.util.EnvelopeUtils.generateEnvelopePath(strokePoints),
+        color = if (swp.stroke.isHighlighter) ink.copy(alpha = HIGHLIGHTER_ALPHA) else ink
+    )
+}
+
+/** Matches the tablet's highlighter opacity. */
+private const val HIGHLIGHTER_ALPHA = 0.35f
+
+/** Never let ink vanish entirely when zoomed far out. */
+private const val MIN_INK_PX = 0.6f
+
+/** Smallest sensible drawn width in model units, mirroring the tablet's floor. */
+private const val MIN_INK_PT = 0.05f
 
 /**
  * One model-space point -> pixels inside the page's own rectangle, i.e. the coordinate
