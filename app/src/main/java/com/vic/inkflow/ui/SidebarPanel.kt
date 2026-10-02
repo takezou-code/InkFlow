@@ -634,7 +634,15 @@ internal fun PageThumbnail(
     onBookmarkToggle: ((Boolean) -> Unit)? = null,
     boxModifier: Modifier = Modifier.width(88.dp).aspectRatio(1f / 1.414f),
     modelWidth: Float = 595f,
-    modelHeight: Float = 842f
+    modelHeight: Float = 842f,
+    /**
+     * 是否由本元件自己做選中放大。
+     *
+     * 第 3 階網格必須傳 false：那裡的縮圖外面還有一層玻璃卡框，
+     * 放大要連卡框一起放（否則白紙會溢出框外）。
+     * 放大由呼叫端套在整張卡上，這裡就不能再乘一次，否則變成 1.08²。
+     */
+    applySelectionScale: Boolean = true
 ) {
     val context = LocalContext.current
     val isDarkSurface = MaterialTheme.colorScheme.background.luminance() < 0.5f
@@ -661,7 +669,7 @@ internal fun PageThumbnail(
 
     Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(vertical = 4.dp)) {
         val thumbScale by animateFloatAsState(
-            targetValue = if (isSelected) 1.08f else 1f,
+            targetValue = if (isSelected && applySelectionScale) 1.08f else 1f,
             animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),
             label = "ThumbScale"
         )

@@ -1,6 +1,9 @@
 package com.vic.inkflow.ui
 
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -275,7 +278,12 @@ internal fun SidebarPageGrid(
         // 欄數：144.dp ＋ 間距 12.dp 在本機橫向（440dpi，可用寬約 1131.6dp）算出
         // ⌊(1131.6 + 12) / (144 + 12)⌋ = 7 欄，單張約 151.4dp。
         // 用 Adaptive 而非 Fixed(7)：視窗變窄時自動退成 6、5，不會把紙壓扁。
-        // 錯落入場：每張卡錯開一點時間淡入＋收斂。
+        // 全網格統一的頁面比例（A4 寬/高），並夾在合理範圍防止異常值把卡片壓扁。
+    val gridAspectRatio = remember(pageCount) {
+        pdfViewModel.getPageAspectRatio(0).coerceIn(0.6f, 0.85f)
+    }
+
+    // 錯落入場：每張卡錯開一點時間淡入＋收斂。
     // 只在「這次進場的第一個 layout」跑一次，並用上限截斷，
     // 否則頁數一多後面的卡片會等到使用者以為壞掉。
     // 全程只動 graphicsLayer（合成器層），不觸發 measure／重排。
@@ -309,18 +317,39 @@ internal fun SidebarPageGrid(
                 val texts by textsFlow.collectAsState(initial = emptyList())
                 val canDrag = !showOnlyBookmarked && !isSelectionMode && !isPageOperationInProgress
                 val currentListIndex = it
+                val isCurrent = !isSelectionMode && index == currentPageIndex
+                // 選中放大必須套在「整張卡」（玻璃框＋白紙）上。
+                // 舊碼只放大內層白紙 → 白紙溢出框外，看起來像破版。
+                // 彈簧參數沿用 PageThumbnail 原本那組，手感才一致。
+                val cardScale by animateFloatAsState(
+                    targetValue = if (isCurrent) 1.06f else 1f,
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioMediumBouncy,
+                        stiffness = Spring.StiffnessMedium
+                    ),
+                    label = "GridCardScale"
+                )
                 Box(
                     modifier = Modifier
                         .let { mod -> if (reorderState.draggingItemIndex == currentListIndex) mod else mod.animateItem() }
                         .reorderableItem(reorderState, currentListIndex)
-                        // 錯落入場：前 24 張依 index 延遲，之後的同時淡入（不排隊）
+                        // 錯落入場：前 24 張依 index 延遲，之後的同時淡入（不排隊）。
+                        // 入場結束後才把選中放大乘上去，否則放大會被入場的 0.92 一起縮掉。
                         .graphicsLayer {
                             val cap = 24f
                             val delay = (currentListIndex.toFloat().coerceAtMost(cap)) / cap
                             val t = ((staggerBudget.value - delay * 0.45f) / 0.55f).coerceIn(0f, 1f)
+                            val enter = 0.92f + 0.08f * t
+                            // 拖曳中不疊加選中放大（reorderableItem 已經自己放大 1.05），
+                            // 兩個 scale 疊起來會變 1.11，看起來像卡跳出來。
+                            val s = if (reorderState.draggingItemIndex == currentListIndex) {
+                                enter
+                            } else {
+                                enter * cardScale
+                            }
                             alpha = t
-                            scaleX = 0.92f + 0.08f * t
-                            scaleY = 0.92f + 0.08f * t
+                            scaleX = s
+                            scaleY = s
                         }
                         .then(
                             if (canDrag) {
@@ -372,10 +401,21 @@ internal fun SidebarPageGrid(
                                 },
                                 boxModifier = Modifier
                                     .fillMaxWidth()
-                                    .aspectRatio(pdfViewModel.getPageAspectRatio(index))
+                                    // 全網格統一用同一個頁面比例。
+                                    //
+                                    // 舊碼用 pdfViewModel.getPageAspectRatio(index) 各頁自己的比例，
+                                    // 兩個後果（實測畫面確認）：
+                                    //  1. 某頁拿到壞比例（例如寬得離譜）→ 卡片高度塌成一條。
+                                    //  2. 比例不一致 → 灰邊厚薄不均、整個網格排列參差，很難看。
+                                    // 頁面管理要的是「每頁一樣大、排整齊」，所以用統一的 A4 比例，
+                                    // 實際頁面差異由白紙內部的 bitmap 自己留白處理。
+                                    .aspectRatio(gridAspectRatio)
                                     .let { if (isSelectionMode) it.padding(8.dp) else it },
                                 modelWidth = modelWidth,
-                                modelHeight = modelHeight
+                                modelHeight = modelHeight,
+                                // 放大由整張玻璃卡負責（見上方 graphicsLayer），
+                                // 這裡不能再乘一次，否則變 1.08²。
+                                applySelectionScale = false
                             )
                             if (isSelectionMode) {
                                 // 自繪勾選圓（取代 M3 Checkbox）
