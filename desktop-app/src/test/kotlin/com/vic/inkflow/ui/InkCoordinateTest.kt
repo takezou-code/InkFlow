@@ -5,6 +5,7 @@ import androidx.compose.ui.geometry.Size
 import com.vic.inkflow.data.DatabaseManager
 import com.vic.inkflow.data.StrokeEntity
 import com.vic.inkflow.data.PointEntity
+import com.vic.inkflow.util.PageBox
 import java.io.File
 import kotlin.math.abs
 import kotlin.test.Test
@@ -51,12 +52,13 @@ class InkCoordinateTest {
         (viewport.height - pageH * scale) / 2f + panY
 
     @Test
-    fun `a point round-trips through screen and back`() {
+    fun `a point round-trips through the documented transform`() {
+        // The arithmetic the viewer uses for drawing, kept as a readable reference
+        // for the tests below; the behavioural tests call [screenToModel] itself.
         val pageW = 595f; val pageH = 842f
         val viewport = Size(900f, 1200f)
         val scale = fitScale(pageW, pageH, viewport)
 
-        // Centre of the page in model space, mapped forward then inverted.
         val model = Offset(pageW / 2f, pageH / 2f)
         val screen = Offset(
             originX(pageW, viewport, 0f, scale) + model.x * scale,
@@ -113,24 +115,101 @@ class InkCoordinateTest {
     }
 
     @Test
-    fun `points outside the page rectangle are rejected`() {
+    fun `the real converter round-trips a point through screen and back`() {
+        // Calls the production function rather than a copy of its arithmetic: the
+        // original test duplicated the formula, so it would have passed even if the
+        // shipped converter were wrong — which is exactly what happened.
+        val pageW = 595f; val pageH = 842f
+        val viewport = Size(900f, 1200f)
+        val scale = fitScale(pageW, pageH, viewport)
+        val box = PageBox(pageW, pageH, 0f, 0f)
+
+        listOf(Offset(10f, 20f), Offset(pageW / 2f, pageH / 2f), Offset(pageW - 1f, pageH - 1f))
+            .forEach { model ->
+                val screen = Offset(
+                    originX(pageW, viewport, 0f, scale) + model.x * scale,
+                    originY(pageH, viewport, 0f, scale) + model.y * scale
+                )
+                val back = screenToModel(
+                    screen = screen,
+                    box = box,
+                    scale = scale,
+                    originX = originX(pageW, viewport, 0f, scale),
+                    originY = originY(pageH, viewport, 0f, scale)
+                )
+                assertTrue(back != null, "point $model must convert back")
+                assertClose(model.x, back.x, "x round trip at $model")
+                assertClose(model.y, back.y, "y round trip at $model")
+            }
+    }
+
+    @Test
+    fun `the real converter is unaffected by pan and zoom`() {
+        val pageW = 595f; val pageH = 842f
+        val viewport = Size(700f, 900f)
+        val box = PageBox(pageW, pageH, 0f, 0f)
+        val model = Offset(120f, 640f)
+
+        listOf(0f, 90f, -140f).forEach { panX ->
+            listOf(0.25f, 1f, 4f).forEach { zoom ->
+                val scale = fitScale(pageW, pageH, viewport) * zoom
+                val ox = originX(pageW, viewport, panX, scale)
+                val oy = originY(pageH, viewport, 0f, scale)
+                val screen = Offset(ox + model.x * scale, oy + model.y * scale)
+                val back = screenToModel(screen, box, scale, ox, oy)
+                assertTrue(back != null, "must convert at panX=$panX zoom=$zoom")
+                assertClose(model.x, back.x, "x at panX=$panX zoom=$zoom")
+                assertClose(model.y, back.y, "y at panX=$panX zoom=$zoom")
+            }
+        }
+    }
+
+    @Test
+    fun `the real converter honours a CropBox that does not start at the origin`() {
+        // Scanned PDFs routinely have a non-zero MediaBox. If the box origin were
+        // ignored, every stroke on such a page would be offset by it.
+        val pageW = 400f; val pageH = 500f
+        val boxOriginX = 30f; val boxOriginY = 45f
+        val viewport = Size(800f, 1000f)
+        val scale = fitScale(pageW, pageH, viewport)
+        val box = PageBox(pageW, pageH, boxOriginX, boxOriginY)
+
+        val screen = Offset(originX(pageW, viewport, 0f, scale), originY(pageH, viewport, 0f, scale))
+        val back = screenToModel(screen, box, scale, originX(pageW, viewport, 0f, scale), originY(pageH, viewport, 0f, scale))
+        assertTrue(back != null)
+        // The top-left corner of the CropBox is model (originX, originY), not (0,0).
+        assertClose(boxOriginX, back.x, "x at the crop-box corner")
+        assertClose(boxOriginY, back.y, "y at the crop-box corner")
+    }
+
+    @Test
+    fun `the real converter rejects presses outside the page`() {
         val pageW = 595f; val pageH = 842f
         val viewport = Size(1400f, 1400f)
         val scale = fitScale(pageW, pageH, viewport)
+        val box = PageBox(pageW, pageH, 0f, 0f)
         val ox = originX(pageW, viewport, 0f, scale)
         val oy = originY(pageH, viewport, 0f, scale)
 
-        fun inside(screen: Offset): Boolean {
-            val x = (screen.x - ox) / scale
-            val y = (screen.y - oy) / scale
-            return x in 0f..pageW && y in 0f..pageH
-        }
+        fun convert(x: Float, y: Float) =
+            screenToModel(Offset(x, y), box, scale, ox, oy)
 
-        // The margin is where the page is smaller than the viewport on that axis.
-        assertTrue(!inside(Offset(ox - 40f, oy + 10f)), "left of the page must be rejected")
-        assertTrue(!inside(Offset(ox + 10f, oy - 40f)), "above the page must be rejected")
-        assertTrue(!inside(Offset(ox + pageW * scale + 1f, oy + 10f)), "right of the page must be rejected")
-        assertTrue(inside(Offset(ox + 1f, oy + 1f)), "just inside the corner must be accepted")
+        assertTrue(convert(ox - 40f, oy + 10f) == null, "left of the page must be rejected")
+        assertTrue(convert(ox + 10f, oy - 40f) == null, "above the page must be rejected")
+        assertTrue(convert(ox + pageW * scale + 1f, oy + 10f) == null, "right of the page")
+        assertTrue(convert(ox + 10f, oy + pageH * scale + 1f) == null, "below the page")
+        assertTrue(convert(ox + 1f, oy + 1f) != null, "just inside the corner must be accepted")
+        assertTrue(convert(ox + pageW * scale - 1f, oy + pageH * scale - 1f) != null, "far corner")
+    }
+
+    @Test
+    fun `the real converter refuses to divide by a zero scale`() {
+        // Before the page raster arrives, scale is 0. Without the guard this
+        // yields Infinity/NaN instead of null, and NaN comparisons silently
+        // pass every bounds check, so a stroke gets stored at a bogus position.
+        val box = PageBox(595f, 842f, 0f, 0f)
+        val result = screenToModel(Offset(100f, 100f), box, 0f, 0f, 0f)
+        assertTrue(result == null, "a zero scale must yield null, not NaN")
     }
 
     @Test
