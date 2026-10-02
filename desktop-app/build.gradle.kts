@@ -25,7 +25,18 @@ dependencies {
     implementation(compose.materialIconsExtended)
     
     // PDFBox for PDF reading/writing
-    implementation("org.apache.pdfbox:pdfbox:3.0.4")
+    implementation("org.apache.pdfbox:pdfbox:3.0.8")
+
+    // JPEG 2000 decoder. PDFBox treats JPX as an optional plug-in and, without
+    // this, silently renders those images as blank:
+    //
+    //   ERROR o.a.p.c.PDFStreamEngine - Cannot read JPEG2000 image:
+    //   Java Advanced Imaging (JAI) Image I/O Tools are not installed
+    //
+    // Scanner PDFs (anything produced by a print-to-PDF or a scan workflow) use
+    // JPX heavily, so without this a large share of real documents loses its
+    // page content while the PDF "opens fine".
+    implementation("com.github.jai-imageio:jai-imageio-jpeg2000:1.4.0")
     
     // JSON serialization
     implementation("com.google.code.gson:gson:2.14.0")
@@ -51,6 +62,18 @@ kotlin {
 compose.desktop {
     application {
         mainClass = "com.vic.inkflow.MainKt"
+
+        // PDFBox tries to release the direct ByteBuffer it rasterises pages into
+        // by reaching `jdk.internal.ref.Cleaner` through MethodHandles. On JDK 17
+        // that lookup is denied and PDFBox logs "Unmapping is not supported." once
+        // per JVM, then continues — rendering is unaffected and the GC still
+        // reclaims the buffer, only the eager unmap is lost.
+        //
+        // Kept even though it does NOT fix that message (the lookup is on
+        // jdk.internal.ref, not java.nio): it is the access PDFBox needs for the
+        // other direct-buffer paths, and it costs one JVM flag. The noisy log is
+        // silenced in logback.xml instead, where the reason is recorded.
+        jvmArgs += "--add-opens=java.base/java.nio=ALL-UNNAMED"
         
         nativeDistributions {
             packageName = "InkFlow"
