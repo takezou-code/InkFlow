@@ -25,7 +25,10 @@ import com.vic.inkflow.ui.InkFlowTheme
 import com.vic.inkflow.ui.InkThemeState
 import com.vic.inkflow.ui.LibraryView
 import com.vic.inkflow.ui.ShapeSm
+import com.vic.inkflow.ui.ShapeXl
 import com.vic.inkflow.ui.bubbleGlass
+import com.vic.inkflow.ui.auroraBackdrop
+import com.vic.inkflow.ui.glassSidePanel
 import com.vic.inkflow.ui.fauxGlassPanel
 import androidx.compose.foundation.background
 import androidx.compose.ui.draw.clip
@@ -101,9 +104,14 @@ object DesktopSettings {
 @Composable
 fun App() {
     InkFlowTheme {
-        Surface(
-            modifier = Modifier.fillMaxSize(),
-            color = MaterialTheme.colorScheme.background
+        // The backdrop has to sit *behind* everything, including the reading
+        // surface, so it is applied at the root rather than per-panel. A
+        // translucent panel with a flat colour behind it has nothing to reveal
+        // and the whole glass material reads as a flat tint.
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .auroraBackdrop(isDark = InkThemeState.darkMode)
         ) {
             InkFlowApp()
         }
@@ -270,8 +278,14 @@ fun InkFlowApp() {
         // ── Body: Navigation rail + content (+ AI panel in reader) ──────────
         Row(modifier = Modifier.fillMaxSize()) {
             NavigationRail(
-                modifier = Modifier.width(84.dp),
-                containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                modifier = Modifier
+                    .width(88.dp)
+                    // Chrome, not content: the rail floats over whatever is to its
+                    // right, so a solid M3 fill here makes the layout read as two
+                    // separate apps bolted together. Leading rim, because on a
+                    // full-height strip that is the only edge you ever see.
+                    .glassSidePanel(InkThemeState.darkMode),
+                containerColor = Color.Transparent,
                 header = { Spacer(Modifier.height(8.dp)) }
             ) {
                 NavigationRailItem(
@@ -370,59 +384,80 @@ private fun SettingsView(
     pairingCode: String,
     onPairingCodeChange: (String) -> Unit
 ) {
+    // Settings is chrome, so it gets the glass panel — but the text inside stays
+    // on an opaque run. A translucent panel behind small type is the fastest way
+    // to make a setting screen unreadable.
     Column(
-        Modifier.fillMaxSize().padding(32.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        Modifier
+            .fillMaxSize()
+            .padding(28.dp)
     ) {
         Text("設定", style = MaterialTheme.typography.headlineMedium)
-        HorizontalDivider()
-        SettingRow("主題模式", if (InkThemeState.darkMode) "深色（閱讀預設）" else "淺色")
-        SettingRow("資料目錄", AppPaths.dir)
-        SettingRow("資料庫", AppPaths.dbPath)
-        SettingRow("已連線設備", if (peerNames.isNotBlank()) peerNames else "無（請確認平板與電腦同一 Wi-Fi，且兩端均開啟 InkFlow）")
-        SettingRow("上次同步", lastSyncSummary ?: "尚無記錄")
+        Spacer(Modifier.height(16.dp))
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(ShapeXl)
+                .fauxGlassPanel(isDark = InkThemeState.darkMode, shape = ShapeXl)
+                .padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            SettingRow("主題模式", if (InkThemeState.darkMode) "深色（閱讀預設）" else "淺色")
+            SettingRow("資料目錄", AppPaths.dir)
+            SettingRow("資料庫", AppPaths.dbPath)
+            SettingRow("已連線設備", if (peerNames.isNotBlank()) peerNames else "無（請確認平板與電腦同一 Wi-Fi，且兩端均開啟 InkFlow）")
+            SettingRow("上次同步", lastSyncSummary ?: "尚無記錄")
 
-        Text(
-            "平板配對碼",
-            style = MaterialTheme.typography.titleSmall,
-            modifier = Modifier.padding(top = 12.dp)
-        )
-        Text(
-            "在平板「設定 → 電腦同步」開啟同步伺服器後，把畫面上的 8 位數配對碼填在這裡。" +
-                "留空則不驗證——同一個 Wi-Fi 上任何人都能讀走你的全部文件，所以建議填。",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(
-                value = pairingCode,
-                onValueChange = onPairingCodeChange,
-                singleLine = true,
-                label = { Text("配對碼") },
-                modifier = Modifier.widthIn(min = 200.dp)
-            )
-            // Live validation: the tablet's code is exactly 8 digits, so a
-            // non-conforming value can only be a typo. Saying so here beats a
-            // handshake rejection on the next sync with no explanation.
-            val normalised = pairingCode.trim()
-            val looksRight = normalised.isEmpty() || (normalised.length == 8 && normalised.all { it.isDigit() })
+            HorizontalDivider(Modifier.padding(vertical = 6.dp))
+
             Text(
-                when {
-                    normalised.isEmpty() -> "未設定"
-                    looksRight -> "已設定"
-                    else -> "應該是 8 位數字"
-                },
+                "平板配對碼",
+                style = MaterialTheme.typography.titleSmall
+            )
+            Text(
+                "在平板「設定 → 電腦同步」開啟同步伺服器後，把畫面上的 8 位數配對碼填在這裡。" +
+                    "留空則不驗證——同一個 Wi-Fi 上任何人都能讀走你的全部文件，所以建議填。",
                 style = MaterialTheme.typography.bodySmall,
-                color = if (looksRight) MaterialTheme.colorScheme.onSurfaceVariant
-                else MaterialTheme.colorScheme.error
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                OutlinedTextField(
+                    value = pairingCode,
+                    onValueChange = onPairingCodeChange,
+                    singleLine = true,
+                    label = { Text("配對碼") },
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.widthIn(min = 200.dp)
+                )
+                // Live validation: the tablet's code is exactly 8 digits, so a
+                // non-conforming value can only be a typo. Saying so here beats a
+                // handshake rejection on the next sync with no explanation.
+                val normalised = pairingCode.trim()
+                val looksRight = normalised.isEmpty() ||
+                    (normalised.length == 8 && normalised.all { it.isDigit() })
+                Text(
+                    when {
+                        normalised.isEmpty() -> "未設定"
+                        looksRight -> "已設定"
+                        else -> "應該是 8 位數字"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (looksRight) MaterialTheme.colorScheme.onSurfaceVariant
+                            else MaterialTheme.colorScheme.error
+                )
+            }
+
+            HorizontalDivider(Modifier.padding(vertical = 6.dp))
+
+            Text(
+                "本機不同步雲端：所有數據僅在局域網內傳輸。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-
-        Text(
-            "本機不同步雲端：所有數據僅在局域網內傳輸。",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
     }
 }
 

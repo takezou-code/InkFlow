@@ -15,6 +15,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.unit.dp
 // Tokens live in `com.vic.inkflow.ui` (Theme.kt) — the desktop has no separate
 // `ui.theme` package the way Android does.
@@ -72,17 +74,26 @@ object GlassTokens {
 }
 
 /**
- * The shared dressing: thin sheen + top rim.
+ * The shared dressing: thin sheen + rim.
  *
  * Split out from [fauxGlassPanel] because the tablet uses the same treatment on
  * its dialogs and pressable chips, and having one definition is the entire point
  * of moving this material into a shared file.
+ *
+ * @param rim which edge carries the highlight. A glass pane is lit from above, so
+ *   a horizontal surface (top bar, dialog, card) reads brightest along its top
+ *   edge — but for a full-height strip (nav rail, side panel) that top edge is
+ *   off-screen and the edge that actually matters is the vertical one facing the
+ *   content. Using the vertical gradient on a rail puts a bright line across the
+ *   very top and nothing along the edge you actually see, which is why this is a
+ *   parameter and not a constant.
  */
 @Composable
 fun Modifier.glassDressing(
     isDark: Boolean,
     shape: Shape,
-    specular: Boolean = true
+    specular: Boolean = true,
+    rim: RimEdge = RimEdge.Top
 ): Modifier {
     var m = this
         // Sheen: bright at the top edge, clear through the middle, slightly dark
@@ -100,19 +111,19 @@ fun Modifier.glassDressing(
             shape = shape
         )
     if (specular) {
-        // Rim: bright hairline at the top, fading fast. This is the single cue
-        // that most makes a flat rectangle read as a curved surface.
+        val stops = arrayOf(
+            0f to Color.White.copy(alpha = 0.34f),
+            0.18f to Color.White.copy(alpha = 0.06f),
+            0.72f to Color.White.copy(alpha = 0.02f),
+            1f to Color.White.copy(alpha = 0.05f)
+        )
         m = m.border(
             border = BorderStroke(
                 width = 0.75.dp,
-                brush = Brush.verticalGradient(
-                    colorStops = arrayOf(
-                        0f to Color.White.copy(alpha = 0.34f),
-                        0.18f to Color.White.copy(alpha = 0.06f),
-                        0.72f to Color.White.copy(alpha = 0.02f),
-                        1f to Color.White.copy(alpha = 0.05f)
-                    )
-                )
+brush = when (rim) {
+                    RimEdge.Top -> Brush.verticalGradient(*stops)
+                    RimEdge.Leading -> Brush.horizontalGradient(*stops)
+                }
             ),
             shape = shape
         )
@@ -128,6 +139,66 @@ fun Modifier.glassDressing(
         }
     }
     return m
+}
+
+/**
+ * Which edge of a glass surface carries the specular highlight.
+ *
+ * `Top` for anything horizontal (the light source is above). `Leading` for a
+ * full-height strip, where the visible boundary is the one facing the content —
+ * a top-edge highlight on a rail is stranded off-screen where nobody looks.
+ */
+enum class RimEdge { Top, Leading }
+
+/**
+ * The background glass needs in order to read as glass: something to be
+ * translucent *against*.
+ *
+ * Without a varied backdrop a translucent panel has nothing to reveal, and the
+ * material collapses into a flat tinted rectangle — which is exactly what happens
+ * when glass ships over a solid fill. Two very soft, very large radial glows on
+ * the brand hues give the panels an actual gradient to distort, so they pick up
+ * a visible colour shift across the window the way the tablet's does.
+ *
+ * Deliberately not animated. The tablet team measured multiple glass surfaces
+ * driving a full-window repaint every frame and lost more than half the frame
+ * rate; the motion budget goes to the press response instead.
+ */
+@Composable
+fun Modifier.auroraBackdrop(isDark: Boolean): Modifier {
+    val glow = if (isDark) 0.16f else 0.10f
+    val primary = MaterialTheme.colorScheme.primary
+    val secondary = MaterialTheme.colorScheme.secondary
+    val width = 1600f
+    val height = 1000f
+    // Corners, expressed as fractions so the glows stay anchored to the window
+    // rather than to a fixed pixel offset that would drift with the window size.
+    fun corner(fx: Float, fy: Float) = androidx.compose.ui.geometry.Offset(width * fx, height * fy)
+
+    return this
+        .background(
+            Brush.linearGradient(
+                // Slightly lifted toward the bottom so the top bar's glass has a
+                // brighter field above it than the reading surface below.
+                0f to MaterialTheme.colorScheme.background,
+                0.55f to MaterialTheme.colorScheme.background,
+                1f to MaterialTheme.colorScheme.surface
+            )
+        )
+        .background(
+            Brush.radialGradient(
+                colors = listOf(primary.copy(alpha = glow), Color.Transparent),
+                center = corner(0.14f, 0.04f),
+                radius = 1400f
+            )
+        )
+        .background(
+            Brush.radialGradient(
+                colors = listOf(secondary.copy(alpha = glow * 0.8f), Color.Transparent),
+                center = corner(0.94f, 0.96f),
+                radius = 1200f
+            )
+        )
 }
 
 /**
@@ -148,6 +219,23 @@ fun Modifier.fauxGlassPanel(
         shape = shape
     )
     .glassDressing(isDark, shape, specular)
+
+/**
+ * A full-height strip of chrome: the nav rail, the AI side panel.
+ *
+ * Differs from [fauxGlassPanel] only in where the rim goes (see [RimEdge]) and in
+ * being square-cornered, so it butts cleanly against the window edge and against
+ * the content column without a rounded notch at the bottom.
+ */
+@Composable
+fun Modifier.glassSidePanel(isDark: Boolean): Modifier =
+    this
+        .clip(RectangleShape)
+        .background(
+            color = if (isDark) GlassTintDark else GlassTintLight,
+            shape = RectangleShape
+        )
+        .glassDressing(isDark, RectangleShape, specular = true, rim = RimEdge.Leading)
 
 /** Circular glass — avatar wells, round icon buttons, FABs. */
 @Composable
