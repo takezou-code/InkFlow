@@ -219,8 +219,6 @@ import com.vic.inkflow.ui.theme.InkFlowTheme
 import com.vic.inkflow.ui.theme.Slate50
 import com.vic.inkflow.ui.theme.Slate100
 import com.vic.inkflow.ui.theme.Slate900
-import com.vic.inkflow.ui.theme.WorkspaceDeskDark
-import com.vic.inkflow.ui.theme.WorkspaceDeskLight
 import com.vic.inkflow.util.PdfManager
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
@@ -820,6 +818,16 @@ fun TabletEditorScreen(
                     Modifier.fillMaxSize()
                         .onSizeChanged { contentW = it.width }
                         .clipToBounds()
+                        // 第 3 階展開時紙張淡出，露出底層的 InkBackdrop（真正的編輯器背景）。
+                        //
+                        // 舊碼在第 3 階疊層鋪了一個 WorkspaceDeskDark/Light 平板色來擋住紙張，
+                        // 但那不是編輯器真正的背景（真正的背景是 InkBackdrop，有漸層與 orb），
+                        // 於是第 3 階變成一片死黑。
+                        //
+                        // 正確做法是讓紙張自己淡出，而不是蓋一塊假背景：
+                        // 疊層淡入的同時紙張淡出，中間自然透出 InkBackdrop。
+                        // 全程只動 alpha，不觸發量測。
+                        .graphicsLayer { alpha = 1f - gridOverlayProgress }
                 ) {
                     Workspace(
                         pageIndex = currentPageIndex,
@@ -1073,9 +1081,9 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    // 不透明桌面底。沒有它的話疊層本身是透明的，底下的紙張與側欄頁碼
-                    // 會直接透過網格卡片之間的間隙透出來（實測畫面確認）。
-                    .background(if (isEditorDark) WorkspaceDeskDark else WorkspaceDeskLight)
+                    // 這裡刻意「不」鋪任何底色：底要透出真正的 InkBackdrop。
+                    // 紙張在下面自己淡出（見紙張那層的 alpha），所以網格之間的間隙
+                    // 看到的是編輯器原本的背景，而不是一片假色。
                     .graphicsLayer {
                         val p = gridOverlayProgress
                         alpha = p
@@ -1083,6 +1091,18 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                         translationY = (1f - p) * 24.dp.toPx()
                         scaleX = 0.96f + 0.04f * p
                         scaleY = 0.96f + 0.04f * p
+                    }
+                    // 疊層現在是透明的，網格卡片之間的間隙會把觸控漏給下面的紙 →
+                    // 在第 3 階空白處畫線會畫到看不見的紙上。
+                    // 掛在「疊層自己」而不是卡片上：卡片是子節點，先拿到事件；
+                    // 這裡只擋卡片沒吃掉的空白處。
+                    .pointerInput(Unit) {
+                        awaitPointerEventScope {
+                            while (true) {
+                                awaitPointerEvent(PointerEventPass.Initial)
+                                    .changes.forEach { it.consume() }
+                            }
+                        }
                     }
             ) {
                 SidebarPageGrid(
