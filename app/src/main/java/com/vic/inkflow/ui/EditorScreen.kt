@@ -166,6 +166,7 @@ import androidx.compose.ui.layout.layout
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
@@ -177,6 +178,7 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
@@ -299,6 +301,9 @@ fun TabletEditorScreen(
     // AI 面板黑白切換（預設亮底；只影響 Gemini 網頁，不動 App 主題）
     // Gemini 網頁自己的淺/深色不再手動：直接跟 App 深淺色走（見 isEditorDark，:420）。
     var aiPickCollectId by remember { mutableStateOf(0) }
+    // 插圖請求令牌：工具列按圖片鈕 → +1 → 傳到 Workspace → 作用頁的 InkCanvas 開圖庫。
+    // 用遞增 Int 而非 Boolean：同一頁可能重複請求，布爾翻回去就不會再觸發。
+    var imagePickRequest by remember { mutableStateOf(0) }
     var aiWebView by remember { mutableStateOf<android.webkit.WebView?>(null) }
     val sidebarListState = rememberLazyListState()
     val mainListState = rememberLazyListState()
@@ -730,21 +735,26 @@ fun TabletEditorScreen(
                 }
             }
 
-            // 寬度軸只負責 56dp ↔ 128dp。
-            // 舊碼把 GRID 塞成 totalWidth（整屏約 800dp），那是 6.7 倍距離的 spring，
-            // 而且動畫期間 fixedW 跟著 currentWidthDp 走 → 側欄整排縮圖每幀重排。
-            // GRID 現在是獨立疊層，寬度完全不參與（見下方 gridOverlayProgress）。
-            val targetWidth = when (sidebarStage) {
-                SidebarStage.RAIL -> collapsedWidth
-                SidebarStage.PANEL, SidebarStage.GRID -> normalWidth
-            }
+            // ── 寬度系統：離散 layout ＋ 連續視覺 ──────────────────────────
+            //
+            // 舊設計把「連續寬度」直接長在 layout 上：
+            //     val fixedW = if (isDraggingSidebar) dragMeasureWidth.toPx() else currentWidthDp.toPx()
+            // currentWidthDp 來自 Animatable.value，是每幀都在動的 state。
+            // 讀在 composition 裡 → 每幀重組一次側欄子樹，而且同一個 layout{} lambda
+            // 裡還有 measurable.measure() → 每幀重量測整排 PageThumbnail。
+            // 量測實測 maxGapMs=39~200（60Hz 一幀 16.7ms）就是這樣來的。
+            //
+            // 現在分成兩個量：
+            //   layoutWidthPx（離散）：只在 stage 改變時換 → 一個手勢只重組兩次
+            //   visualWidthPx（連續）：只在 graphicsLayer 裡讀 → 純繪製，零量測零重組
+            val collapsedPx = with(density) { collapsedWidth.toPx() }
+            val normalPx = with(density) { normalWidth.toPx() }
 
-            val animatableWidth = remember {
+            val layoutWidthPx = if (sidebarStage == SidebarStage.RAIL) collapsedPx else normalPx
+
+            val animatableWidthPx = remember {
                 androidx.compose.animation.core.Animatable(
-                    when (sidebarStage) {
-                        SidebarStage.RAIL -> 56f
-                        SidebarStage.PANEL, SidebarStage.GRID -> 128f
-                    }
+                    if (sidebarStage == SidebarStage.RAIL) collapsedPx else normalPx
                 )
             }
             val coroutineScope = rememberCoroutineScope()
@@ -756,11 +766,8 @@ fun TabletEditorScreen(
             // 由這兩個 LaunchedEffect 各自套用。事件再密也不會堆積。
             val widthRequests = remember { kotlinx.coroutines.channels.Channel<Float>(kotlinx.coroutines.channels.Channel.CONFLATED) }
             val scrollRequests = remember { kotlinx.coroutines.channels.Channel<Float>(kotlinx.coroutines.channels.Channel.CONFLATED) }
-            // 拖曳期間用：跟手的視覺寬度 ＋ 內容固定量測寬度（避免整排縮圖重測）
-            // 拖曳視覺寬度是每幀都會變的量，必須用 FloatState（primitive），
-            // String/Dp 之類的 boxed state 在高頻更新下會持續配置新物件。
-            var dragVisualWidthPx by remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
-            var dragMeasureWidth by remember { androidx.compose.runtime.mutableStateOf(normalWidth) }
+            // 拖曳視覺寬度（px）。每幀都會變，必須用 primitive state。
+            var dragVisualWidthPx by remember { androidx.compose.runtime.mutableFloatStateOf(normalPx) }
             var isDraggingSidebar by remember { androidx.compose.runtime.mutableStateOf(false) }
             // GRID 右緣把手是否正在拖曳。拖曳中即使疊層進度歸零也必須留在
             // composition，否則把手會在放手前被移除、事件迴圈直接中斷。
@@ -770,7 +777,7 @@ fun TabletEditorScreen(
                     if (isDraggingSidebar) {
                         dragVisualWidthPx = wPx
                     } else {
-                        animatableWidth.snapTo(with(density) { wPx.toDp() }.value)
+                        animatableWidthPx.snapTo(wPx)
                     }
                 }
             }
@@ -778,11 +785,18 @@ fun TabletEditorScreen(
                 for (dy in scrollRequests) mainListState.scrollBy(dy)
             }
 
-            LaunchedEffect(targetWidth) {
-                animatableWidth.animateTo(
-                    targetValue = targetWidth.value,
+            LaunchedEffect(layoutWidthPx) {
+                animatableWidthPx.animateTo(
+                    targetValue = layoutWidthPx,
                     animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMediumLow)
                 )
+            }
+
+            // AI 抽屜的可用寬度基準：側欄視覺寬度往右到螢幕右緣。
+            val sidebarVisualWpx by remember {
+                derivedStateOf {
+                    if (isDraggingSidebar) dragVisualWidthPx else animatableWidthPx.value
+                }
             }
 
             // ── 疊層軸（第 3 階）────────────────────────────────────────────
@@ -807,7 +821,6 @@ fun TabletEditorScreen(
                 )
             }
 
-            val currentWidthDp = animatableWidth.value.dp
             // 工具列高度＝側欄／AI 欄要讓出的上邊界。只有紙（工作區）不讓，
             // 讓它往上穿過工具列從玻璃底下透出來。
             val sliderShown = showStrokeWidthSlider &&
@@ -844,43 +857,48 @@ fun TabletEditorScreen(
                         db = db,
                         mainListState = mainListState,
                         onRequestPage = onRequestPage,
-                        onScrollPage = onScrollPage
+                        onScrollPage = onScrollPage,
+                        imagePickRequest = imagePickRequest
                     )
                 }
                 Row(Modifier.fillMaxSize()) {
-                // 拖曳期的關鍵在於「寬度從哪裡被讀」，不是數值怎麼算。
+                // 側欄寬度 = 離散 layout 寬度 ＋ 連續視覺寬度（clip）。
                 //
-                // 舊碼把 dragVisualWidth 讀在 composition 裡：
-                //     val visualW = if (isDraggingSidebar) dragVisualWidth.toPx() ... else fixedW
-                // 那會讓每個 pointer 事件都重組一次整個側欄子樹（Row → 側欄 Box → Sidebar(...)
-                // → 整排 PageThumbnail）。60–120Hz 就是每幀一次完整重組 —— 這才是
-                // 「不跟手」的真正根因。之前幾次都在調夾位／累積方式／鎖定時機，
-                // 調的都不是瓶頸，所以怎麼修都不對。
+                // layout 寬度只在 stage 改變時換（56dp／128dp），所以 measurable.measure()
+                // 一個手勢只會跑兩次：開始拖曳時一次、放手收尾時一次。
                 //
-                // 現在把讀取移進 layout{} 的量測 lambda：state 變動只會讓這個節點
-                // 重新量測（子層沿用已量好的 placeable），Sidebar(...) 完全不重組。
-                val fixedW = if (isDraggingSidebar) {
-                    with(density) { dragMeasureWidth.toPx() }.roundToInt()
-                } else {
-                    with(density) { currentWidthDp.toPx() }.roundToInt()
-                }
-                val maxVisualPx = with(density) { normalWidth.toPx() }.roundToInt()
+                // 連續寬度（拖曳跟手、開合動畫）全部只在下面 graphicsLayer 的 clipRect 裡讀。
+                // clip 是純繪製階段，零量測、零重組 —— 這才是 1:1 跟手的關鍵。
+                // 舊碼把連續寬度長在 layout 上，導致每幀重量測整排 PageThumbnail，
+                // 量測實測 maxGapMs=39~200（60Hz 一幀 16.7ms）。
                 Box(
                     modifier = Modifier
                         .fillMaxHeight()
                         // 不要 padding(top = toolbarH)：側欄不該為了讓開工具列而被往下推。
                         // 頁碼／+／展開鈕都要浮在最上層（工具列玻璃壓在上面），跟工作區的紙同一套邏輯。
                         .layout { measurable, constraints ->
+                            val w = layoutWidthPx.roundToInt()
                             val placeable = measurable.measure(
-                                constraints.copy(minWidth = fixedW, maxWidth = fixedW)
+                                constraints.copy(minWidth = w, maxWidth = w)
                             )
-                            // 讀在這裡（量測階段），不在 composition。
-                            val visualW = if (isDraggingSidebar) {
-                                dragVisualWidthPx.roundToInt()
-                                    .coerceIn(0, maxVisualPx)
-                            } else fixedW
-                            layout(visualW, placeable.height) {
+                            layout(w, placeable.height) {
                                 placeable.place(0, 0)
+                            }
+                        }
+                        .drawWithContent {
+                            // 只在這裡讀連續寬度。state 變動只會重畫，
+                            // 不會往上冒泡成重組或重新量測。
+                            //
+                            // 用 drawWithContent 而不是 GraphicsLayerScope.clipRect：
+                            // 後者的 receiver 沒有 clipRect。drawWithContent 的
+                            // ContentDrawScope 繼承 DrawScope，有 clipRect，
+                            // 且同樣是純繪製階段 → 零量測零重組。
+                            //
+                            // 注意 DrawScope 版 clipRect 有尾隨 block 參數，
+                            // 內容必須寫在 block 裡面。
+                            val visualW = sidebarVisualWpx.coerceIn(0f, size.width)
+                            clipRect(left = 0f, top = 0f, right = visualW, bottom = size.height) {
+                                this@drawWithContent.drawContent()
                             }
                         }
                 ) {
@@ -926,13 +944,13 @@ fun TabletEditorScreen(
             )
 
         }
-        // 拉桿在 RAIL 與 PANEL 都存在：往內撥收合、往外撥展開（1:1 跟手）。
+        // 拉桿只在第 2 階存在（重構前的原始行為）。
         //
-        // 舊碼只在 PANEL 畫拉桿，所以第 3 階整條消失＝「展開後手把不理人」。
-        // 現在 RAIL 也保留它，讓「往內撥」在任何階段都是同一支手把、
-        // 同一套行為——這才是可學習的互動。
-        // GRID 階段改由疊層自己的右緣把手負責（見下），因為那時整屏都是網格。
-        if (sidebarStage != SidebarStage.GRID) {
+        // 我曾經把它加到 RAIL，讓收合態也能直接撥開。那是我自己加的，不是需求，
+        // 而且收合態只有 56dp、放一支 24dp 拉桿會把側欄切掉近一半，
+        // 收合態因此只剩「展開鈕」與「＋」兩個控制項 —— 反而更乾淨。
+        // GRID 是全螢幕浮層，用它自己的右緣把手（見下）。
+        if (sidebarStage == SidebarStage.PANEL) {
             Box(
                 modifier = Modifier
                     .width(24.dp)
@@ -942,11 +960,10 @@ fun TabletEditorScreen(
                         awaitEachGesture {
                             try {
                             val down = awaitFirstDown()
-                            // 鎖定內容量測寬度，之後外框跟手但內容不重測。
-                            // 從 RAIL 往上拉時內容量 128dp（PANEL），外框從 56dp 長到 128dp，
-                            // 內容由左往右逐步露出 —— 否則 RAIL 量到 56dp 再往上拉就沒內容可露。
-                            dragMeasureWidth = if (currentWidthDp < normalWidth) normalWidth else currentWidthDp
-                            dragVisualWidthPx = with(density) { currentWidthDp.toPx() }
+                            // 視覺寬度從當下寬度接手，之後每幀跟手指。
+                            // layout 寬度不動（已在上面固定成 normalPx），所以這裡不需要
+                            // 再鎖一份「內容量測寬度」——內容本來就量好了。
+                            dragVisualWidthPx = animatableWidthPx.value
                             isDraggingSidebar = true
                             // null = 未定；true = 橫向調寬；false = 直向捲動（先過 slop 先鎖定）
                             var horizontalLock: Boolean? = null
@@ -962,6 +979,7 @@ fun TabletEditorScreen(
                             var diagEvents = 0
                             var diagMaxGapMs = 0L
                             var diagPrevT = down.uptimeMillis
+                            val diagStartPx = animatableWidthPx.value
                             while (true) {
                                 val event = awaitPointerEvent()
                                 val change = event.changes.firstOrNull { it.id == down.id } ?: break
@@ -972,11 +990,10 @@ fun TabletEditorScreen(
                                     isDraggingSidebar = false
                                     // DIAG-TEMP
                                     if (diagEvents > 0) {
-                                        val dur = change.uptimeMillis - diagPrevT
                                         android.util.Log.i(
                                             "InkSidebarDrag",
                                             "events=$diagEvents maxGapMs=$diagMaxGapMs " +
-                                                "startPx=${with(density) { currentWidthDp.toPx() }.toInt()} " +
+                                                "startPx=${diagStartPx.toInt()} " +
                                                 "endPx=${dragVisualWidthPx.toInt()} " +
                                                 "lock=$horizontalLock stage=$sidebarStage"
                                         )
@@ -989,18 +1006,17 @@ fun TabletEditorScreen(
                                             sidebarStageOrdinal = it.ordinal
                                         }
                                     } else if (horizontalLock == true) {
-                                        // 寬度軸只有 RAIL↔PANEL 兩階，所以把實際寬度
-                                        // 換算成 0..1 的連續進度，交給狀態機吸附。
-                                        // 用本地 newWidthPx 算，不讀 dragVisualWidth——
-                                        // 那個值要走 Channel → LaunchedEffect → state 才回來。
+                                        // 把視覺寬度換算成 0..1 的連續進度，交給狀態機吸附。
+                                        // 全部用 px：collapsedPx／normalPx 都是 px，
+                                        // 舊碼在這裡用的是 collapsedWidth.value（dp），
+                                        // 跟 dragVisualWidthPx（px）混著比，量測抓到
+                                        // startPx=352 卻 endPx=56（56dp 應是 154px）。
                                         val currentW = dragVisualWidthPx
-                                        val railPx = collapsedWidth.value
-                                        val panelPx = normalWidth.value
-                                        val releaseProgress = if (panelPx - railPx <= 1f) {
+                                        val span = normalPx - collapsedPx
+                                        val releaseProgress = if (span <= 1f) {
                                             SidebarStage.PANEL.progress
                                         } else {
-                                            ((currentW - railPx) / (panelPx - railPx))
-                                                .coerceIn(0f, 1f)
+                                            ((currentW - collapsedPx) / span).coerceIn(0f, 1f)
                                         }
                                         // 往右甩過門檻 → 進第 3 階；往左甩 → 收合。
                                         // 這裡讓 GRID 只能靠「明確的快速右甩」進入，
@@ -1014,12 +1030,7 @@ fun TabletEditorScreen(
                                         }
                                         sidebarStageOrdinal = next.ordinal
                                         widthRequests.trySend(
-                                            with(density) {
-                                                when (next) {
-                                                    SidebarStage.RAIL -> collapsedWidth
-                                                    else -> normalWidth
-                                                }.toPx()
-                                            }
+                                            if (next == SidebarStage.RAIL) collapsedPx else normalPx
                                         )
                                     }
                                     break
@@ -1048,11 +1059,13 @@ fun TabletEditorScreen(
                                     lastT = now
                                     velX = velX * 0.75f + (dx / dt * 1000f) * 0.25f
                                     change.consume()
-                                    // 全部用 px：dragVisualWidthPx 是 px，dx 也是 px。
-                                    // 先前把累加值當 dp 再轉回 px，單位換算散在兩處，
-                                    // 容易在密度非整數時累積誤差。
+                                    // 全部用 px。舊碼這裡是
+                                    //     .coerceIn(collapsedWidth.value, normalWidth.value)
+                                    // 那是 dp（56／128），拿來夾 px（352）→ 第一個事件就把
+                                    // 352 壓到 ≤128，手指一碰側欄就跳掉（量測 endPx=56，
+                                    // 而 56dp 應是 154px）。
                                     val newWidthPx = (dragVisualWidthPx + dx)
-                                        .coerceIn(collapsedWidth.value, normalWidth.value)
+                                        .coerceIn(collapsedPx, normalPx)
                                     widthRequests.trySend(newWidthPx)
                                 } else if (horizontalLock == false) {
                                     // 直向：把主列表跟著手指捲（內容跟手）
@@ -1091,7 +1104,7 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
             // AI 抽屜可用寬度：側欄右緣 → 螢幕右緣。
             // 不拿 contentW（現在是整屏寬）當基準，否則閉合擋板會蓋到側欄。
             val density0 = LocalDensity.current
-            val sidebarWpx = with(density0) { currentWidthDp.toPx() }
+            val sidebarWpx = sidebarVisualWpx
             val aiAvailW = (contentW - sidebarWpx).coerceAtLeast(320f)
             val panelW = (aiAvailW * aiPanelWeight).coerceAtLeast(260f)
                 .coerceAtMost(aiAvailW)
@@ -1391,6 +1404,12 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                 isSendingPage = isSendingPage,
                 isPowerSaver = isPowerSaver,
                 onTogglePowerSaver = onTogglePowerSaver,
+                onPickImage = {
+                    // 插圖改由工具列觸發：舊版是「圖片工具下點紙面空白就開圖庫」，
+                    // 而「空白」只是四個命中測試都沒抓到的 fall-through、沒有 tap/drag
+                    // 區分 → 手滑想捲頁就彈出系統圖片庫。見 InkCanvas imagePickRequest。
+                    imagePickRequest++
+                },
                 hazeState = chromeHaze,   // 工具列用專屬 state：採背景＋紙，不採自己
                 isDarkTheme = isEditorDark
             )

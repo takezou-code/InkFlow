@@ -522,67 +522,28 @@ internal fun Sidebar(
                 // 現在上下各留一段「脊」，中間的頁碼列表壓在脊上，
                 // 空白處也能點＝不用精準命中小小的展開 chevron 就能展開。
                 if (sidebarStage == SidebarStage.RAIL) {
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        // 上段：展開鈕
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(52.dp)
-                                .glassPanel(hazeState, isDarkTheme, ShapeMd),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(40.dp)
-                                    .glassClickable(
-                                        onClick = { onModeChange(SidebarStage.PANEL) },
-                                        shape = CircleShape
-                                    ),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    Icons.Outlined.ChevronRight,
-                                    contentDescription = "展開側欄",
-                                    modifier = Modifier.size(20.dp),
-                                    tint = glassContentColor(isDarkTheme)
-                                )
-                            }
-                        }
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        railSpineButton(
+                            hazeState = hazeState,
+                            isDarkTheme = isDarkTheme,
+                            icon = Icons.Outlined.ChevronRight,
+                            contentDescription = "展開側欄",
+                            onClick = { onModeChange(SidebarStage.PANEL) }
+                        )
                         // 頁面操作進行中時顯示細長進度條，給予使用者視覺回饋
                         if (isPageOperationInProgress) {
                             androidx.compose.material3.LinearProgressIndicator(
                                 modifier = Modifier.fillMaxWidth().height(2.dp)
                             )
                         }
-                        // 下段：新增頁面
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(52.dp)
-                                .glassPanel(hazeState, isDarkTheme, ShapeMd),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(40.dp)
-                                    .glassClickable(
-                                        onClick = { onAddPage(currentPageIndex) },
-                                        shape = CircleShape,
-                                        enabled = !isPageOperationInProgress
-                                    ),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    Icons.Outlined.Add,
-                                    contentDescription = "新增頁面",
-                                    modifier = Modifier.size(22.dp),
-                                    tint = glassContentColor(isDarkTheme)
-                                )
-                            }
-                        }
+                        railSpineButton(
+                            hazeState = hazeState,
+                            isDarkTheme = isDarkTheme,
+                            icon = Icons.Outlined.Add,
+                            contentDescription = "新增頁面",
+                            enabled = !isPageOperationInProgress,
+                            onClick = { onAddPage(currentPageIndex) }
+                        )
                     }
                 } else {
                     if (isPageOperationInProgress) {
@@ -619,6 +580,45 @@ internal fun Sidebar(
                     }
                 }
             }
+    }
+}
+
+/**
+ * 收合態玻璃脊上的一顆按鈕。
+ *
+ * 重點在於**玻璃框與按壓回饋必須在同一個節點、用同一個形狀**：
+ * `glassPanel(ShapeMd)` 後面接 `glassClickable(shape = ShapeMd)`，整塊玻璃被按下去。
+ *
+ * 舊碼是外層 `glassPanel(ShapeMd)` 的 Box 包住內層 `glassClickable(CircleShape)` 的
+ * 40dp Box —— 玻璃是方的、按壓是圓的，形狀對不上；而且按下去只有中間那圈在動、
+ * 外框完全不動，看起來不像同一塊玻璃。展開鈕與 ＋ 當時又各自複製了一份，
+ * 連圖示大小都差 2dp（20 vs 22），所以兩顆的觸感不一致。
+ *
+ * 現在兩顆共用這個函式，觸感由同一段程式碼決定。
+ */
+@Composable
+private fun railSpineButton(
+    hazeState: dev.chrisbanes.haze.HazeState,
+    isDarkTheme: Boolean,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String,
+    enabled: Boolean = true,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(52.dp)
+            .glassPanel(hazeState, isDarkTheme, ShapeMd)
+            .glassClickable(onClick = onClick, shape = ShapeMd, enabled = enabled),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            modifier = Modifier.size(20.dp),
+            tint = glassContentColor(isDarkTheme)
+        )
     }
 }
 
