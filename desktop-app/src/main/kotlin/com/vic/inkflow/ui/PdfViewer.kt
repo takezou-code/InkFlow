@@ -31,7 +31,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
@@ -46,21 +45,30 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.isCtrlPressed
 import androidx.compose.ui.input.pointer.isMetaPressed
 import androidx.compose.ui.input.pointer.isShiftPressed
 import androidx.compose.ui.input.pointer.onPointerEvent
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import com.vic.inkflow.data.StrokeEntity
+import com.vic.inkflow.data.PointEntity
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.text.font.FontWeight
+import kotlin.math.abs
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.vic.inkflow.data.DatabaseManager
-import com.vic.inkflow.data.PointEntity
 import com.vic.inkflow.data.StrokeWithPoints
 import com.vic.inkflow.util.PageBox
 import com.vic.inkflow.util.PdfManager
@@ -77,6 +85,9 @@ import kotlinx.coroutines.withContext
 import mu.KotlinLogging
 import kotlin.math.max
 import kotlin.math.roundToInt
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
 
 private val logger = KotlinLogging.logger {}
 
@@ -149,7 +160,19 @@ fun PdfViewer(
     databaseManager: DatabaseManager,
     modifier: Modifier = Modifier,
     onPageCountChange: (Int) -> Unit = {},
-    onPageChange: (Int) -> Unit = {}
+    onPageChange: (Int) -> Unit = {},
+    /**
+     * Turns on the ink toolbar and lets the user draw on the page.
+     *
+     * Off by default because the sync protocol is **pull-only**: the tablet is the
+     * only writer (see SYNC_PROTOCOL.md §1), so a stroke made here lands in the
+     * desktop database and shows up immediately, but is never pushed back to the
+     * tablet and the next pull can discard it. Drawing is therefore opt-in per
+     * call site rather than something the reader discovers by accident.
+     */
+    editable: Boolean = false,
+    /** Fired after a stroke is committed, so the caller can refresh counts. */
+    onInkChanged: () -> Unit = {}
 ) {
     // ── Which page ───────────────────────────────────────────────────────────
     // Seeded from the incoming pageIndex, and reset whenever the document changes.
@@ -171,6 +194,17 @@ fun PdfViewer(
     var strokes by remember(documentUri, requestedPage) {
         mutableStateOf<List<StrokeWithPoints>>(emptyList())
     }
+
+    // ── Drawing ─────────────────────────────────────────────────────────────
+    // Kept as plain state next to `strokes` rather than in a ViewModel: the ink
+    // tool has no lifetime beyond this composable, and the durable copy always
+    // goes through the database.
+    var tool by remember { mutableStateOf(InkTool.Pen) }
+    var inkColour by remember { mutableIntStateOf(0xFF121826.toInt()) }
+    // The stroke being drawn right now. Held separately from `strokes` so the
+    // canvas can show an uncommitted stroke at pointer speed while the database
+    // write happens once, on release.
+    var liveStroke by remember { mutableStateOf<List<Offset>?>(null) }
 
     // ── View transform ──────────────────────────────────────────────────────
     // Explicit states, not `by` delegates: the render pipeline reads these from a
@@ -320,6 +354,29 @@ fun PdfViewer(
      * collapses to zero — a fit-to-window view should not pan at all, and letting it
      * drift is how a reader ends up showing an empty grey rectangle with no way back.
      */
+    /**
+     * Screen (viewport) coordinates -> model coordinates (PDF points).
+     *
+     * The exact inverse of `screen = (viewport - page) / 2 + pan + model * scale`,
+     * i.e. `model = (screen - origin) / scale`. Deriving it from the same
+     * `origin`/`scale` the ink is *drawn* with is what guarantees a point lands
+     * back where the pointer was, at any zoom and any pan.
+     *
+     * Returns null outside the page rectangle. Without that guard a stroke begun
+     * in the grey margin would be clamped or extrapolated into the page, and the
+     * tablet would later draw ink where nobody ever pointed.
+     */
+    fun screenToModel(screen: Offset): Offset? {
+        val b = box ?: return null
+        if (scale <= 0f) return null
+        val x = (screen.x - originX) / scale + b.originX
+        val y = (screen.y - originY) / scale + b.originY
+        // Reject anything outside the page rectangle: a stroke begun in the grey
+        // margin must not be extrapolated into the page, or the tablet later draws
+        // ink where nobody ever pointed.
+        return if (x in 0f..b.widthPt && y in 0f..b.heightPt) Offset(x, y) else null
+    }
+
     fun clampPan(next: Offset, pageW: Float = pageWidthPx, pageH: Float = pageHeightPx): Offset {
         val halfW = ((pageW - viewportW) / 2f).coerceAtLeast(0f)
         val halfH = ((pageH - viewportH) / 2f).coerceAtLeast(0f)
@@ -366,6 +423,53 @@ fun PdfViewer(
         onPageChange(page)
     }
 
+    /**
+     * Persists a finished stroke and puts it on screen.
+     *
+     * `docY` is deliberately left null. It is the tablet's continuous-canvas
+     * coordinate (`pageIndex * stride + boundsTop`), and the tablet backfills it
+     * lazily using the live model height when the document is opened. Computing a
+     * guess here would need a stride this side does not have, and a wrong stride
+     * puts the stroke somewhere else entirely on the tablet — a wrong answer that
+     * is worse than no answer.
+     *
+     * The database write is the commit point: on success the stroke goes into
+     * [strokes] so it appears without waiting for a reload, and on failure it is
+     * dropped rather than left on screen as ink that is not saved anywhere.
+     */
+    fun commitStroke(pts: List<Offset>) {
+        val b = box ?: return
+        val stroke = StrokeEntity(
+            documentUri = documentUri,
+            pageIndex = requestedPage,
+            docY = null,
+            color = inkColour,
+            strokeWidth = INK_WIDTH_PT,
+            boundsLeft = pts.minOf { it.x },
+            boundsTop = pts.minOf { it.y },
+            boundsRight = pts.maxOf { it.x },
+            boundsBottom = pts.maxOf { it.y },
+            isHighlighter = tool == InkTool.Highlighter
+        )
+        val points = pts.mapIndexed { i, p ->
+            PointEntity(
+                id = (i + 1).toLong(),
+                strokeId = stroke.id,
+                x = p.x,
+                y = p.y,
+                width = INK_WIDTH_PT
+            )
+        }
+        runCatching { databaseManager.saveStroke(stroke, points) }
+            .onSuccess {
+                strokes = strokes + StrokeWithPoints(stroke, points)
+                onInkChanged()
+            }
+            .onFailure {
+                logger.error(it) { "Failed to save stroke on page ${requestedPage + 1}" }
+            }
+    }
+
     val focusRequester = remember { FocusRequester() }
 
     Box(modifier = modifier.fillMaxSize().then(ReaderBackdrop(InkThemeState.darkMode))) {
@@ -375,6 +479,40 @@ fun PdfViewer(
             modifier = Modifier
                 .fillMaxSize()
                 .onSizeChanged { viewport.value = Size(it.width.toFloat(), it.height.toFloat()) }
+                .pointerInput(documentUri, requestedPage, editable) {
+                    // Drawing comes first and consumes the pointer stream, so a
+                    // stroke never also pans the page. The transform handler below
+                    // then only sees gestures this one did not claim.
+                    //
+                    // Keyed on the page so a half-drawn stroke cannot survive a page
+                    // turn and be committed against the wrong page.
+                    if (!editable) return@pointerInput
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        val start = screenToModel(down.position)
+                        if (start == null) return@awaitEachGesture // started in the margin
+                        down.consume()
+                        val pts = mutableListOf(Offset(start.x, start.y))
+                        liveStroke = pts
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.pressed } ?: break
+                            val m = screenToModel(change.position)
+                            if (m != null) {
+                                // Drop sub-pixel jitter: a mouse emits a point per
+                                // pixel of travel, and every one of them becomes a
+                                // row in `points` that then syncs to the tablet.
+                                val last = pts.last()
+                                if (abs(m.x - last.x) + abs(m.y - last.y) > 0.35f) {
+                                    pts.add(Offset(m.x, m.y))
+                                    change.consume()
+                                }
+                            }
+                        }
+                        liveStroke = null
+                        if (pts.size >= 2) commitStroke(pts)
+                    }
+                }
                 .pointerInput(documentUri) {
                     // One handler for pinch + drag, so the two can never fight over the
                     // same pointer stream. detectTransformGestures reports the gesture
@@ -479,6 +617,30 @@ fun PdfViewer(
                             )
                         )
                     }
+                // The stroke currently under the pointer. Drawn through the same
+                    // transform as everything else so it cannot drift from the
+                    // committed path it is about to become.
+                    liveStroke?.takeIf { it.size >= 2 }?.let { pts ->
+                        val path = Path()
+                        path.moveTo(pts.first().x * scale + (originX - b.originX * scale), pts.first().y * scale + (originY - b.originY * scale))
+                        for (i in 1 until pts.size) {
+                            path.lineTo(
+                                pts[i].x * scale + (originX - b.originX * scale),
+                                pts[i].y * scale + (originY - b.originY * scale)
+                            )
+                        }
+                        drawPath(
+                            path = path,
+                            color = Color(inkColour).copy(
+                                alpha = if (tool == InkTool.Highlighter) 0.35f else 1f
+                            ),
+                            style = Stroke(
+                                width = (INK_WIDTH_PT * scale).coerceAtLeast(0.5f),
+                                cap = StrokeCap.Round,
+                                join = StrokeJoin.Round
+                            )
+                        )
+                    }
                 }
             }
         }
@@ -512,6 +674,29 @@ fun PdfViewer(
                 modifier = Modifier.align(Alignment.BottomCenter)
             )
         }
+
+        // ── Ink toolbar ────────────────────────────────────────────────────
+        // Only shown when [editable]. Top-start so it does not collide with the
+        // page navigator at the bottom.
+        if (editable && rendered != null && loadError == null) {
+            InkToolbar(
+                tool = tool,
+                colour = inkColour,
+                onToolChange = { tool = it },
+                onColourChange = { inkColour = it },
+                onClear = {
+                    runCatching { databaseManager.deleteStrokesForDocument(documentUri) }
+                        .onSuccess {
+                            strokes = emptyList()
+                            onInkChanged()
+                        }
+                        .onFailure {
+                            logger.error(it) { "Failed to clear ink on ${documentUri.substringAfterLast('/')}" }
+                        }
+                },
+                modifier = Modifier.align(Alignment.TopStart)
+            )
+        }
     }
 
     // Keyboard navigation needs focus. Requested once per document, so a later click
@@ -520,6 +705,94 @@ fun PdfViewer(
         runCatching { focusRequester.requestFocus() }
     }
 }
+
+/** Which ink tool the toolbar has armed. */
+enum class InkTool { Pen, Highlighter }
+
+/**
+ * Stroke width in **model units** (PDF points), not pixels, so it scales with the
+ * page exactly the way the tablet's does — a 2pt pen is 2pt at any zoom.
+ */
+private const val INK_WIDTH_PT = 1.6f
+
+/**
+ * Floating ink toolbar: tool, colour, and a destructive clear.
+ *
+ * Clear is the only destructive control and it is labelled, not an icon-only
+ * button, because it throws away every stroke on the document with no undo.
+ */
+@Composable
+private fun InkToolbar(
+    tool: InkTool,
+    colour: Int,
+    onToolChange: (InkTool) -> Unit,
+    onColourChange: (Int) -> Unit,
+    onClear: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .padding(16.dp)
+            .glassDressing(isDark = InkThemeState.darkMode, shape = RoundedCornerShape(24.dp))
+            .clip(RoundedCornerShape(24.dp))
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        InkToolButton(
+            label = "筆",
+            selected = tool == InkTool.Pen,
+            onClick = { onToolChange(InkTool.Pen) }
+        )
+        InkToolButton(
+            label = "螢光筆",
+            selected = tool == InkTool.Highlighter,
+            onClick = { onToolChange(InkTool.Highlighter) }
+        )
+        Spacer(Modifier.width(6.dp))
+        INK_PALETTE.forEach { swatch ->
+            val chosen = colour == swatch
+            Box(
+                modifier = Modifier
+                    .size(24.dp)
+                    .clip(CircleShape)
+                    .background(Color(swatch))
+                    .then(
+                        if (chosen) Modifier.glassDressing(
+                            isDark = InkThemeState.darkMode,
+                            shape = CircleShape
+                        ) else Modifier
+                    )
+                    .clip(CircleShape)
+                    .clickable { onColourChange(swatch) }
+            )
+        }
+        Spacer(Modifier.width(6.dp))
+        TextButton(onClick = onClear) {
+            Text("清除", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium)
+        }
+    }
+}
+
+@Composable
+private fun InkToolButton(label: String, selected: Boolean, onClick: () -> Unit) {
+    TextButton(onClick = onClick) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+            color = if (selected) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+private val INK_PALETTE = listOf(
+    0xFF121826.toInt(), // ink black
+    0xFFDC2626.toInt(), // red
+    0xFF2563EB.toInt(), // blue
+    0xFF059669.toInt()  // green
+)
 
 /**
  * The reading surface.

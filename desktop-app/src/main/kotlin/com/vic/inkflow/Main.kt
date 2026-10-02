@@ -363,6 +363,11 @@ fun InkFlowApp() {
                             pageIndex = currentPageIndex,
                             databaseManager = databaseManager,
                             onPageChange = { currentPageIndex = it },
+                            // Ink is opt-in (see the parameter's doc): the sync
+                            // protocol is pull-only, so strokes drawn here live in
+                            // the desktop database only.
+                            editable = true,
+                            onInkChanged = { libraryRefresh++ },
                             modifier = Modifier.weight(1f).fillMaxHeight()
                         )
                         AiAssistantPanel(
