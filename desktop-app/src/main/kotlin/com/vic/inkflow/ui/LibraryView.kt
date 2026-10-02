@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.dp
 import com.vic.inkflow.data.DatabaseManager
 import com.vic.inkflow.data.DocumentEntity
 import com.vic.inkflow.ui.ShapeMd
+import com.vic.inkflow.ui.fauxGlassPanel
 import com.vic.inkflow.ui.pressableGlass
 import java.io.File
 import java.text.SimpleDateFormat
@@ -73,71 +74,102 @@ fun LibraryView(
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.SemiBold
             )
-            Surface(
-                shape = RoundedCornerShape(50),
-                color = MaterialTheme.colorScheme.secondaryContainer,
-                tonalElevation = 2.dp
+            // "Has this ever synced" is the signal that matters here: the pill is the only
+            // place the user gets feedback that the library is populated at all.
+            val tabletOnline = remember(syncStatusText) {
+                !syncStatusText.startsWith("未偵測到") && !syncStatusText.startsWith("等待")
+            }
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .glassPill(
+                        // Connected reads as armed, so it takes the tinted fill
+                        // rather than neutral glass that would look decorative.
+                        selected = tabletOnline,
+                        alpha = 0.45f
+                    )
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
             ) {
                 Text(
                     syncStatusText,
                     style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    color = if (tabletOnline) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                    overflow = TextOverflow.Ellipsis
                 )
             }
         }
 
-        // ── Search bar ────────────────────────────────────────────────────────
-        OutlinedTextField(
-            value = query,
-            onValueChange = { query = it },
-            modifier = Modifier.fillMaxWidth(),
-            placeholder = { Text("搜尋文件名或分類…") },
-            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-            trailingIcon = {
-                if (query.isNotEmpty()) {
-                    IconButton(onClick = { query = "" }) {
-                        Icon(Icons.Default.Close, contentDescription = "Clear")
-                    }
+// ── Search bar ────────────────────────────────────────────────────────
+// Wrapped rather than restyled: OutlinedTextField draws its own 1dp outline, and
+// the glass would sit behind that border instead of replacing it, so the field
+// reads as a boxed input with a panel behind it. `specular = false` keeps a
+// hairline off a 48dp-tall control where it would only look like a border.
+Box(
+    modifier = Modifier
+        .fillMaxWidth()
+        .clip(RoundedCornerShape(14.dp))
+        .fauxGlassPanel(InkThemeState.darkMode, RoundedCornerShape(14.dp), specular = false)
+        .padding(horizontal = 12.dp, vertical = 2.dp)
+) {
+    OutlinedTextField(
+        value = query,
+        onValueChange = { query = it },
+        modifier = Modifier.fillMaxWidth(),
+        placeholder = { Text("搜尋文件名或分類…") },
+        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+        trailingIcon = {
+            if (query.isNotEmpty()) {
+                IconButton(onClick = { query = "" }) {
+                    Icon(Icons.Default.Close, contentDescription = "Clear")
                 }
-            },
-            singleLine = true,
-            shape = RoundedCornerShape(12.dp),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = MaterialTheme.colorScheme.primary,
-                unfocusedBorderColor = MaterialTheme.colorScheme.outline
-            )
+            }
+        },
+        singleLine = true,
+        shape = RoundedCornerShape(12.dp),
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedContainerColor = Color.Transparent,
+            unfocusedContainerColor = Color.Transparent,
+            focusedBorderColor = MaterialTheme.colorScheme.primary,
+            unfocusedBorderColor = Color.Transparent
         )
+    )
+}
 
         Spacer(Modifier.height(10.dp))
 
         // ── Folder filter chips ──────────────────────────────────────────────
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            FilterChip(
-                selected = selectedFolderId == null,
-                onClick = { onFolderSelected(null) },
-                label = { Text("全部") }
-            )
-            folders.forEach { f ->
+        // Folder chips take the glass pill so the filter row belongs to the same
+            // material as everything else. They stay inline (not a FlowRow) because
+            // the folder list comes from the tablet and has no bounded length yet.
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
                 FilterChip(
-                    selected = selectedFolderId == f.id,
-                    onClick = { onFolderSelected(f.id) },
-                    label = { Text(f.name) },
-                    leadingIcon = { Icon(Icons.Default.Folder, null, modifier = Modifier.size(16.dp)) }
+                    selected = selectedFolderId == null,
+                    onClick = { onFolderSelected(null) },
+                    label = { Text("全部") },
+                    colors = glassChipColors()
+                )
+                folders.forEach { f ->
+                    FilterChip(
+                        selected = selectedFolderId == f.id,
+                        onClick = { onFolderSelected(f.id) },
+                        label = { Text(f.name) },
+                        leadingIcon = { Icon(Icons.Default.Folder, null, modifier = Modifier.size(16.dp)) },
+                        colors = glassChipColors()
+                    )
+                }
+                FilterChip(
+                    selected = selectedFolderId == "__none__",
+                    onClick = { onFolderSelected("__none__") },
+                    label = { Text("未分類") },
+                    colors = glassChipColors()
                 )
             }
-            FilterChip(
-                selected = selectedFolderId == "__none__",
-                onClick = { onFolderSelected("__none__") },
-                label = { Text("未分類") }
-            )
-        }
 
         Spacer(Modifier.height(12.dp))
 
@@ -163,6 +195,35 @@ fun LibraryView(
             }
         }
     }
+}
+
+/**
+ * Filter-chip colours that match the glass material.
+ *
+ * The unselected fill has to be translucent or the chip reads as an opaque M3
+ * surface sitting on glass, which is the mismatch that made the first pass look
+ * like two apps in one window.
+ */
+@Composable
+private fun glassChipColors(): SelectableChipColors {
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    return SelectableChipColors(
+        containerColor = if (InkThemeState.darkMode) GlassTintDark else GlassTintLight,
+        labelColor = muted,
+        leadingIconColor = muted,
+        trailingIconColor = muted,
+        disabledContainerColor = Color.Transparent,
+        disabledLabelColor = muted,
+        disabledLeadingIconColor = muted,
+        disabledTrailingIconColor = muted,
+        selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.22f),
+        selectedLabelColor = MaterialTheme.colorScheme.primary,
+        selectedLeadingIconColor = MaterialTheme.colorScheme.primary,
+        selectedTrailingIconColor = MaterialTheme.colorScheme.primary,
+        // SelectableChipColors has no default for this one either; the chips are
+        // never disabled on this screen.
+        disabledSelectedContainerColor = Color.Transparent
+    )
 }
 
 @Composable

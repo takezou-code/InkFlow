@@ -32,6 +32,9 @@ import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.geometry.isSpecified
@@ -365,7 +368,7 @@ fun PdfViewer(
 
     val focusRequester = remember { FocusRequester() }
 
-    Box(modifier = modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceVariant)) {
+    Box(modifier = modifier.fillMaxSize().then(ReaderBackdrop(InkThemeState.darkMode))) {
 
         // ── Page + ink, one transformable surface ───────────────────────────
         Canvas(
@@ -519,6 +522,26 @@ fun PdfViewer(
 }
 
 /**
+ * The reading surface.
+ *
+ * Deliberately **opaque**, and the one surface in this reader that is not glass.
+ * Every other panel floats *above* the document, which is what makes the material
+ * read as a layer; putting translucency on the page itself costs the contrast the
+ * ink needs to stay legible and looks like a bug rather than a style.
+ *
+ * A flat `surfaceVariant` fill is replaced with a very soft vertical gradient, so
+ * the area behind the paper reads as a lit surface instead of a grey slab — while
+ * still being unambiguously a backdrop.
+ */
+@Composable
+private fun ReaderBackdrop(isDark: Boolean): Modifier = Modifier.background(
+    Brush.verticalGradient(
+        0f to (if (isDark) Color(0xFF0B1120) else Color(0xFFEDEFF6)),
+        1f to (if (isDark) Color(0xFF060911) else Color(0xFFE2E6F0))
+    )
+)
+
+/**
  * One model-space point -> pixels inside the page's own rectangle, i.e. the coordinate
  * space the bitmap is drawn in. Subtracting the box origin keeps the ink aligned on a
  * page whose CropBox does not start at (0, 0).
@@ -528,6 +551,10 @@ private fun PointEntity.toPagePixel(scale: Float, box: PageBox): Offset =
 
 /**
  * Bottom bar with previous/next and the page counter.
+ *
+ * Floats over the page, so it takes the shared glass treatment: a translucent pill
+ * the document stays readable through. It was `surface` at 92% alpha, which is
+ * nearly opaque and therefore just covered the page.
  *
  * Both buttons are disabled at the ends of the document instead of silently doing
  * nothing, and the counter shows the total so the position inside a 900 page document is
@@ -541,11 +568,14 @@ private fun PageNavBar(
     onNext: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val shape = RoundedCornerShape(28.dp)
     Row(
         modifier = modifier
-            .padding(12.dp)
-            .widthIn(min = 220.dp)
-            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f), MaterialTheme.shapes.small),
+            .padding(16.dp)
+            .widthIn(min = 240.dp)
+            .glassDressing(isDark = InkThemeState.darkMode, shape = shape)
+            .clip(shape)
+            .padding(horizontal = 6.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceEvenly
     ) {

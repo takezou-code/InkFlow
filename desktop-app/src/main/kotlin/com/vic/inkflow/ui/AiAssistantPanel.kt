@@ -6,6 +6,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import com.vic.inkflow.ui.glassDressing
+import com.vic.inkflow.ui.glassSidePanel
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AutoAwesome
@@ -76,13 +79,17 @@ fun AiAssistantPanel(
     var busy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
-    Surface(
-        modifier = modifier.fillMaxHeight().width(340.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant,
-        tonalElevation = 3.dp,
-        shape = RoundedCornerShape(topStart = 12.dp, bottomStart = 12.dp)
+    // Was a solid `surfaceVariant` with tonalElevation = 3.dp. It floats over the
+    // page, so it gets the shared glass treatment — leading rim, because on a
+    // full-height strip that is the only edge that is ever visible.
+    Box(
+        modifier = modifier
+            .fillMaxHeight()
+            .width(348.dp)
+            .clip(RoundedCornerShape(topStart = 20.dp, bottomStart = 20.dp))
+            .glassSidePanel(InkThemeState.darkMode)
     ) {
-        Column(Modifier.padding(12.dp)) {
+        Column(Modifier.padding(14.dp)) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -201,40 +208,68 @@ fun AiAssistantPanel(
     }
 }
 
+/**
+ * A conversation bubble.
+ *
+ * Asymmetric on purpose: the user's own words get a filled, saturated pill so the
+ * transcript is scannable at a glance, while the assistant's reply is glass —
+ * translucent, so it sits *behind* the page it is talking about rather than
+ * competing with it for attention.
+ */
 @Composable
 private fun AiBubble(msg: AiMessage) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = if (msg.fromUser) Arrangement.End else Arrangement.Start
     ) {
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = if (msg.fromUser) MaterialTheme.colorScheme.primaryContainer
-                    else MaterialTheme.colorScheme.surface,
-            tonalElevation = 1.dp,
-            modifier = Modifier.widthIn(max = 280.dp)
-        ) {
-            when (msg.state) {
-                AiState.Processing -> Row(
-                    Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically
-                ) {
-                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                    Spacer(Modifier.width(8.dp))
-                    Text("AI 分析中…", style = MaterialTheme.typography.bodySmall)
-                }
-                AiState.Error -> Text(
-                    msg.text.ifBlank { "發生錯誤，請重試" },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(12.dp)
-                )
-                else -> Text(
-                    msg.text,
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.padding(12.dp)
-                )
+        if (msg.fromUser) {
+            Surface(
+                shape = RoundedCornerShape(topStart = 14.dp, topEnd = 4.dp, bottomEnd = 14.dp, bottomStart = 14.dp),
+                color = MaterialTheme.colorScheme.primaryContainer,
+                modifier = Modifier.widthIn(max = 300.dp)
+            ) {
+                BubbleContent(msg)
+            }
+        } else {
+            Box(
+                modifier = Modifier
+                    .widthIn(max = 300.dp)
+                    .clip(RoundedCornerShape(topStart = 4.dp, topEnd = 14.dp, bottomEnd = 14.dp, bottomStart = 14.dp))
+                    .glassDressing(
+                        isDark = InkThemeState.darkMode,
+                        shape = RoundedCornerShape(topStart = 4.dp, topEnd = 14.dp, bottomEnd = 14.dp, bottomStart = 14.dp),
+                        // No rim: at this size a hairline reads as a rendering
+                        // artefact rather than a lit edge.
+                        specular = false
+                    )
+            ) {
+                BubbleContent(msg)
             }
         }
+    }
+}
+
+@Composable
+private fun BubbleContent(msg: AiMessage) {
+    when (msg.state) {
+        AiState.Processing -> Row(
+            Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically
+        ) {
+            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+            Spacer(Modifier.width(8.dp))
+            Text("AI 分析中…", style = MaterialTheme.typography.bodySmall)
+        }
+        AiState.Error -> Text(
+            msg.text.ifBlank { "發生錯誤，請重試" },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+            modifier = Modifier.padding(12.dp)
+        )
+        else -> Text(
+            msg.text,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.padding(12.dp)
+        )
     }
 }
 
