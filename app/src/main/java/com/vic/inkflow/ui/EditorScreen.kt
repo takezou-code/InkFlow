@@ -754,27 +754,23 @@ fun TabletEditorScreen(
             // 60–120Hz 就是每幀一個，堆積後動畫延遲落地 → 拖起來又卡又黏。
             // 解法：pointer 迴圈只做非 suspend 的 trySend（CONFLATED＝只留最新值），
             // 由這兩個 LaunchedEffect 各自套用。事件再密也不會堆積。
-            val widthRequests = remember { kotlinx.coroutines.channels.Channel<WidthRequest>(kotlinx.coroutines.channels.Channel.CONFLATED) }
+            val widthRequests = remember { kotlinx.coroutines.channels.Channel<Float>(kotlinx.coroutines.channels.Channel.CONFLATED) }
             val scrollRequests = remember { kotlinx.coroutines.channels.Channel<Float>(kotlinx.coroutines.channels.Channel.CONFLATED) }
             // 拖曳期間用：跟手的視覺寬度 ＋ 內容固定量測寬度（避免整排縮圖重測）
-            var dragVisualWidth by remember { androidx.compose.runtime.mutableStateOf(normalWidth) }
+            // 拖曳視覺寬度是每幀都會變的量，必須用 FloatState（primitive），
+            // String/Dp 之類的 boxed state 在高頻更新下會持續配置新物件。
+            var dragVisualWidthPx by remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
             var dragMeasureWidth by remember { androidx.compose.runtime.mutableStateOf(normalWidth) }
             var isDraggingSidebar by remember { androidx.compose.runtime.mutableStateOf(false) }
             // GRID 右緣把手是否正在拖曳。拖曳中即使疊層進度歸零也必須留在
             // composition，否則把手會在放手前被移除、事件迴圈直接中斷。
             var isDraggingGridHandle by remember { androidx.compose.runtime.mutableStateOf(false) }
             LaunchedEffect(widthRequests) {
-                for (req in widthRequests) {
-                    when (req.kind) {
-                        WidthRequestKind.DRAG -> {
-                            // 拖曳中：只改外框，內容寬度仍鎖在拖曳起點
-                            dragVisualWidth = req.width
-                        }
-                        WidthRequestKind.SETTLE -> {
-                            // 放手收尾：解除拖曳鎖後把外框交給動畫接手
-                            isDraggingSidebar = false
-                            animatableWidth.snapTo(req.width.value)
-                        }
+                for (wPx in widthRequests) {
+                    if (isDraggingSidebar) {
+                        dragVisualWidthPx = wPx
+                    } else {
+                        animatableWidth.snapTo(with(density) { wPx.toDp() }.value)
                     }
                 }
             }
@@ -852,24 +848,23 @@ fun TabletEditorScreen(
                     )
                 }
                 Row(Modifier.fillMaxSize()) {
-                // 拖曳期最佳化：外層寬度跟著手指走，但**內容只量一次**。
-                // 用 Modifier.width(currentWidthDp) 會讓側欄裡整排縮圖每幀重新量測
-                // （側欄可見數十頁，每頁還有 PageThumbnail 的疊圖繪製），
-                // 60–120Hz 下拖起來又卡又黏——這才是真正的瓶頸，不是 coroutine。
-                // 做法：子層固定用「起始寬」量一次，外框只報跟手寬度（裁切）。
+                // 拖曳期的關鍵在於「寬度從哪裡被讀」，不是數值怎麼算。
+                //
+                // 舊碼把 dragVisualWidth 讀在 composition 裡：
+                //     val visualW = if (isDraggingSidebar) dragVisualWidth.toPx() ... else fixedW
+                // 那會讓每個 pointer 事件都重組一次整個側欄子樹（Row → 側欄 Box → Sidebar(...)
+                // → 整排 PageThumbnail）。60–120Hz 就是每幀一次完整重組 —— 這才是
+                // 「不跟手」的真正根因。之前幾次都在調夾位／累積方式／鎖定時機，
+                // 調的都不是瓶頸，所以怎麼修都不對。
+                //
+                // 現在把讀取移進 layout{} 的量測 lambda：state 變動只會讓這個節點
+                // 重新量測（子層沿用已量好的 placeable），Sidebar(...) 完全不重組。
                 val fixedW = if (isDraggingSidebar) {
                     with(density) { dragMeasureWidth.toPx() }.roundToInt()
                 } else {
                     with(density) { currentWidthDp.toPx() }.roundToInt()
                 }
-                val visualW = if (isDraggingSidebar) {
-                    // 不能夾在 fixedW 之內。fixedW 是「拖曳起點的內容量測寬度」，
-                    // 拿它當上限的話，從 PANEL(128dp) 往外拉時視覺寬度永遠不會超過 128dp
-                    // ——拉桿看起來就是「不跟手／不理人」。
-                    // 上限改用真實的目標寬度（PANEL 錨點），內容仍鎖在 fixedW 不重測。
-                    val maxVisualPx = with(density) { normalWidth.toPx() }.roundToInt()
-                    with(density) { dragVisualWidth.toPx() }.roundToInt().coerceIn(0, maxVisualPx)
-                } else fixedW
+                val maxVisualPx = with(density) { normalWidth.toPx() }.roundToInt()
                 Box(
                     modifier = Modifier
                         .fillMaxHeight()
@@ -879,6 +874,11 @@ fun TabletEditorScreen(
                             val placeable = measurable.measure(
                                 constraints.copy(minWidth = fixedW, maxWidth = fixedW)
                             )
+                            // 讀在這裡（量測階段），不在 composition。
+                            val visualW = if (isDraggingSidebar) {
+                                dragVisualWidthPx.roundToInt()
+                                    .coerceIn(0, maxVisualPx)
+                            } else fixedW
                             layout(visualW, placeable.height) {
                                 placeable.place(0, 0)
                             }
@@ -942,20 +942,12 @@ fun TabletEditorScreen(
                         awaitEachGesture {
                             try {
                             val down = awaitFirstDown()
-                            // 跟手基準：起點寬度（px）＋ 累積位移。
-                            // 這裡只讀不寫任何狀態——touch-down 不代表使用者要拖。
-                            //
-                            // 舊碼在 awaitFirstDown() 之後立刻寫 dragVisualWidth /
-                            // dragMeasureWidth / isDraggingSidebar，症狀是「一觸碰把手就彈走」：
-                            //   1. awaitFirstDown() 不等 slop，touch-down 當下就回傳，
-                            //      於是純點也會先把寬度量測來源從 Animatable 切成 state，
-                            //      中間有一幀落差，看起來就是彈一下。
-                            //   2. isDraggingSidebar 一翻 true，下面 LaunchedEffect(widthRequests)
-                            //      的 if 分支就再也收不到動畫路徑送來的寬度，
-                            //      動畫被誤判成拖曳而 snapTo，寬度就釘死／跳動。
-                            // 現在改成「過 slop 且判定橫向」才鎖定。
-                            val dragStartWidthPx = with(density) { currentWidthDp.toPx() }
-                            var accumulatedDxPx = 0f
+                            // 鎖定內容量測寬度，之後外框跟手但內容不重測。
+                            // 從 RAIL 往上拉時內容量 128dp（PANEL），外框從 56dp 長到 128dp，
+                            // 內容由左往右逐步露出 —— 否則 RAIL 量到 56dp 再往上拉就沒內容可露。
+                            dragMeasureWidth = if (currentWidthDp < normalWidth) normalWidth else currentWidthDp
+                            dragVisualWidthPx = with(density) { currentWidthDp.toPx() }
+                            isDraggingSidebar = true
                             // null = 未定；true = 橫向調寬；false = 直向捲動（先過 slop 先鎖定）
                             var horizontalLock: Boolean? = null
                             var prevX = down.position.x
@@ -985,8 +977,7 @@ fun TabletEditorScreen(
                                         // 換算成 0..1 的連續進度，交給狀態機吸附。
                                         // 用本地 newWidthPx 算，不讀 dragVisualWidth——
                                         // 那個值要走 Channel → LaunchedEffect → state 才回來。
-                                        val currentW = (dragStartWidthPx + accumulatedDxPx)
-                                            .coerceIn(collapsedWidth.value, normalWidth.value)
+                                        val currentW = dragVisualWidthPx
                                         val railPx = collapsedWidth.value
                                         val panelPx = normalWidth.value
                                         val releaseProgress = if (panelPx - railPx <= 1f) {
@@ -1007,13 +998,12 @@ fun TabletEditorScreen(
                                         }
                                         sidebarStageOrdinal = next.ordinal
                                         widthRequests.trySend(
-                                            WidthRequest(
+                                            with(density) {
                                                 when (next) {
                                                     SidebarStage.RAIL -> collapsedWidth
                                                     else -> normalWidth
-                                                },
-                                                WidthRequestKind.SETTLE
-                                            )
+                                                }.toPx()
+                                            }
                                         )
                                     }
                                     break
@@ -1030,14 +1020,6 @@ fun TabletEditorScreen(
                                         kotlin.math.abs(accY) > slop -> false
                                         else -> null
                                     }
-                                    // 這裡才鎖定拖曳狀態：確定是橫向調寬、且已過 slop，
-                                    // 使用者確實要拉寬了。此刻才把內容量測寬度釘在起點，
-                                    // 之後外框跟手但內容不重測。
-                                    if (horizontalLock == true) {
-                                        dragMeasureWidth = currentWidthDp
-                                        dragVisualWidth = currentWidthDp
-                                        isDraggingSidebar = true
-                                    }
                                 }
                                 if (horizontalLock == true) {
                                     val now = change.uptimeMillis
@@ -1045,22 +1027,12 @@ fun TabletEditorScreen(
                                     lastT = now
                                     velX = velX * 0.75f + (dx / dt * 1000f) * 0.25f
                                     change.consume()
-                                    // 用「拖曳起點寬度 ＋ 累積位移」，不是「每幀重讀 dragVisualWidth」。
-                                    // dragVisualWidth 要走 Channel → LaunchedEffect → state 才回來，
-                                    // 這條路比一幀慢，累加落後值就是橡皮筋感的來源。
-                                    val newWidthPx = (dragStartWidthPx + accumulatedDxPx)
-                                                // 只夾在兩個真實錨點之間。
-                                                // 舊碼夾到 totalWidth，但 GRID 已經不在寬度軸上，
-                                                // 夾到那裡會讓拖曳「拖到底也沒反應」。
-                                                .coerceIn(collapsedWidth.value, normalWidth.value)
-                                    accumulatedDxPx = newWidthPx - dragStartWidthPx
-                                    // 只丟請求，實際套用在上面的 LaunchedEffect（見 widthRequests 註解）
-                                    widthRequests.trySend(
-                                        WidthRequest(
-                                            with(density) { newWidthPx.toDp() },
-                                            WidthRequestKind.DRAG
-                                        )
-                                    )
+                                    // 全部用 px：dragVisualWidthPx 是 px，dx 也是 px。
+                                    // 先前把累加值當 dp 再轉回 px，單位換算散在兩處，
+                                    // 容易在密度非整數時累積誤差。
+                                    val newWidthPx = (dragVisualWidthPx + dx)
+                                        .coerceIn(collapsedWidth.value, normalWidth.value)
+                                    widthRequests.trySend(newWidthPx)
                                 } else if (horizontalLock == false) {
                                     // 直向：把主列表跟著手指捲（內容跟手）
                                     change.consume()

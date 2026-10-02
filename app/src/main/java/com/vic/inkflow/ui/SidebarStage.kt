@@ -58,28 +58,6 @@ enum class SidebarInput {
 }
 
 /**
- * 寬度請求的種類。
- *
- * 為什麼需要明確型別：舊碼在 Channel 的消費端讀 `isDraggingSidebar` 這個旗標來
- * 決定「這是拖曳寬度還是動畫寬度」。那是跨幀的隱性耦合——touch-down 當下就把
- * 旗標翻 true，之後任何寬度請求（含動畫路徑送來的）都會被誤判成拖曳，
- * 症狀是「一觸碰把手就彈走」。
- */
-enum class WidthRequestKind {
-    /** 拖曳中：只改外框，內容寬度仍鎖在拖曳起點（避免整排縮圖每幀重測）。 */
-    DRAG,
-
-    /** 放手收尾：解除拖曳鎖，把外框交給動畫接手。 */
-    SETTLE
-}
-
-/** 一次寬度請求。[kind] 決定是「拖曳中只改外框」還是「放手交給動畫」。 */
-internal data class WidthRequest(
-    val width: androidx.compose.ui.unit.Dp,
-    val kind: WidthRequestKind
-)
-
-/**
  * 側欄階段的單一真相源。
  *
  * 這裡只放「規則」，不放 Compose。目的是讓「底層怎麼運作」可以用單元測試釘死，
