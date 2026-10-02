@@ -56,6 +56,7 @@ import androidx.compose.ui.input.pointer.isShiftPressed
 import androidx.compose.ui.input.pointer.onPointerEvent
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.foundation.gestures.awaitFirstDown
 import com.vic.inkflow.data.StrokeEntity
 import com.vic.inkflow.data.PointEntity
@@ -206,6 +207,17 @@ fun PdfViewer(
     // write happens once, on release.
     var liveStroke by remember { mutableStateOf<List<Offset>?>(null) }
 
+    // A pointerInput coroutine captures the values in scope when it *starts*, and
+    // it only restarts when its keys change. `box` and `scale` are null/zero on
+    // the first composition and only become valid once the page finishes
+    // rendering — with keys of (document, page, editable) the handler therefore
+    // kept calling a converter closed over a null box, so every press was
+    // rejected as "outside the page" and the tool looked completely dead.
+    //
+    // These forward to the real functions below, which are declared further down
+    // and read `box`/`scale` at call time; rememberUpdatedState re-points them at
+    // the current composition so a gesture always uses the transform of the
+    // frame it is actually in.
     // ── View transform ──────────────────────────────────────────────────────
     // Explicit states, not `by` delegates: the render pipeline reads these from a
     // coroutine, where only a stable reference to the state can be observed.
@@ -353,28 +365,23 @@ fun PdfViewer(
      * four viewport edges is exactly `|page - viewport| / 2`. When the page fits, that
      * collapses to zero — a fit-to-window view should not pan at all, and letting it
      * drift is how a reader ends up showing an empty grey rectangle with no way back.
-     */
-    /**
-     * Screen (viewport) coordinates -> model coordinates (PDF points).
-     *
-     * The exact inverse of `screen = (viewport - page) / 2 + pan + model * scale`,
-     * i.e. `model = (screen - origin) / scale`. Deriving it from the same
-     * `origin`/`scale` the ink is *drawn* with is what guarantees a point lands
-     * back where the pointer was, at any zoom and any pan.
-     *
-     * Returns null outside the page rectangle. Without that guard a stroke begun
-     * in the grey margin would be clamped or extrapolated into the page, and the
-     * tablet would later draw ink where nobody ever pointed.
-     */
-    fun screenToModel(screen: Offset): Offset? {
-        val b = box ?: return null
-        if (scale <= 0f) return null
-        val x = (screen.x - originX) / scale + b.originX
-        val y = (screen.y - originY) / scale + b.originY
-        // Reject anything outside the page rectangle: a stroke begun in the grey
-        // margin must not be extrapolated into the page, or the tablet later draws
-        // ink where nobody ever pointed.
-        return if (x in 0f..b.widthPt && y in 0f..b.heightPt) Offset(x, y) else null
+*/
+    // A pointerInput coroutine captures the values in scope when it *starts*, and
+    // it only restarts when its keys change. ox and scale are null/zero on
+    // the first composition and only become valid once the page finishes
+    // rendering — with keys of (document, page, editable) the handler therefore
+    // kept calling a converter closed over a null box, so every press was
+    // rejected as "outside the page" and the tool looked completely dead.
+    //
+    // These forward to the real functions below, which are declared further down
+    // and read ox/scale at call time; rememberUpdatedState re-points them at
+    // the current composition so a gesture always uses the transform of the
+    // frame it is actually in.
+    val toModel by rememberUpdatedState<(Offset) -> Offset?> { p ->
+        // ox is null until the page raster arrives; until then there is no page
+        // to draw on and every press is correctly ignored.
+        val b = box
+        if (b == null) null else screenToModel(p, b, scale, originX, originY)
     }
 
     fun clampPan(next: Offset, pageW: Float = pageWidthPx, pageH: Float = pageHeightPx): Offset {
@@ -470,6 +477,9 @@ fun PdfViewer(
             }
     }
 
+    // Declared after commitStroke so it captures that local function directly.
+    val commitStrokeNow by rememberUpdatedState<(List<Offset>) -> Unit> { pts -> commitStroke(pts) }
+
     val focusRequester = remember { FocusRequester() }
 
     Box(modifier = modifier.fillMaxSize().then(ReaderBackdrop(InkThemeState.darkMode))) {
@@ -479,40 +489,6 @@ fun PdfViewer(
             modifier = Modifier
                 .fillMaxSize()
                 .onSizeChanged { viewport.value = Size(it.width.toFloat(), it.height.toFloat()) }
-                .pointerInput(documentUri, requestedPage, editable) {
-                    // Drawing comes first and consumes the pointer stream, so a
-                    // stroke never also pans the page. The transform handler below
-                    // then only sees gestures this one did not claim.
-                    //
-                    // Keyed on the page so a half-drawn stroke cannot survive a page
-                    // turn and be committed against the wrong page.
-                    if (!editable) return@pointerInput
-                    awaitEachGesture {
-                        val down = awaitFirstDown(requireUnconsumed = false)
-                        val start = screenToModel(down.position)
-                        if (start == null) return@awaitEachGesture // started in the margin
-                        down.consume()
-                        val pts = mutableListOf(Offset(start.x, start.y))
-                        liveStroke = pts
-                        while (true) {
-                            val event = awaitPointerEvent()
-                            val change = event.changes.firstOrNull { it.pressed } ?: break
-                            val m = screenToModel(change.position)
-                            if (m != null) {
-                                // Drop sub-pixel jitter: a mouse emits a point per
-                                // pixel of travel, and every one of them becomes a
-                                // row in `points` that then syncs to the tablet.
-                                val last = pts.last()
-                                if (abs(m.x - last.x) + abs(m.y - last.y) > 0.35f) {
-                                    pts.add(Offset(m.x, m.y))
-                                    change.consume()
-                                }
-                            }
-                        }
-                        liveStroke = null
-                        if (pts.size >= 2) commitStroke(pts)
-                    }
-                }
                 .pointerInput(documentUri) {
                     // One handler for pinch + drag, so the two can never fight over the
                     // same pointer stream. detectTransformGestures reports the gesture
@@ -577,6 +553,42 @@ fun PdfViewer(
                         }
 
                         else -> false
+                    }
+                }
+                .pointerInput(documentUri, requestedPage, editable) {
+                    // LAST in the chain on purpose: a pointerInput modifier that is
+                    // further from the content receives events first, so this one
+                    // sees the press before the pan/zoom handler above and can
+                    // consume it. With it first it was last to be called, the
+                    // transform gesture had already started panning the page, and
+                    // drawing appeared to do nothing at all.
+                    if (!editable) return@pointerInput
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        // `toModel` is the current-frame converter, not the one
+                        // captured when this coroutine started — see above.
+                        val start = toModel(down.position)
+                            ?: return@awaitEachGesture // press landed in the margin
+                        down.consume()
+                        val pts = mutableListOf(Offset(start.x, start.y))
+                        liveStroke = pts
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.pressed } ?: break
+                            val m = toModel(change.position)
+                            if (m != null) {
+                                // Drop sub-pixel jitter: a mouse emits a point per
+                                // pixel of travel, and every one of them becomes a
+                                // row in `points` that then syncs to the tablet.
+                                val last = pts.last()
+                                if (abs(m.x - last.x) + abs(m.y - last.y) > 0.35f) {
+                                    pts.add(Offset(m.x, m.y))
+                                    change.consume()
+                                }
+                            }
+                        }
+                        liveStroke = null
+                        if (pts.size >= 2) commitStrokeNow(pts)
                     }
                 }
         ) {
@@ -813,6 +825,36 @@ private fun ReaderBackdrop(isDark: Boolean): Modifier = Modifier.background(
         1f to (if (isDark) Color(0xFF060911) else Color(0xFFE2E6F0))
     )
 )
+
+/**
+ * Screen (viewport) coordinates -> model coordinates (PDF points).
+ *
+ * The exact inverse of `screen = (viewport - page) / 2 + pan + model * scale`,
+ * i.e. `model = (screen - origin) / scale`, plus the page box origin because points
+ * are stored relative to the CropBox.
+ *
+ * Top-level and pure rather than a closure inside the composable, for two reasons:
+ * the drawing gesture has to read the transform of the frame it is in (a captured
+ * `box` is null on the first composition, which is exactly what made the tool look
+ * dead), and a stroke that is *drawn* in the right place but *stored* somewhere
+ * else is a silent bug that no screenshot can reveal.
+ *
+ * Returns null outside the page rectangle. Without that guard a stroke begun in
+ * the grey margin would be extrapolated into the page, and the tablet would later
+ * draw ink where nobody ever pointed.
+ */
+internal fun screenToModel(
+    screen: Offset,
+    box: PageBox,
+    scale: Float,
+    originX: Float,
+    originY: Float
+): Offset? {
+    if (scale <= 0f) return null
+    val x = (screen.x - originX) / scale + box.originX
+    val y = (screen.y - originY) / scale + box.originY
+    return if (x in 0f..box.widthPt && y in 0f..box.heightPt) Offset(x, y) else null
+}
 
 /**
  * One model-space point -> pixels inside the page's own rectangle, i.e. the coordinate
