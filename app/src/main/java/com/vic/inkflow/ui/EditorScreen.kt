@@ -25,6 +25,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.AnimationSpec
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.RepeatMode
@@ -728,77 +729,66 @@ fun TabletEditorScreen(
             val collapsedWidth = 56.dp
             val normalWidth = 128.dp
 
+            // ── 寬度：一個變數、一條動畫路徑 ────────────────────────────────
+            //
+            // 這裡刻意回到最簡單的形式（等同重構前的 2b928a9）。
+            // 前一版把寬度做成「dragPosPx 連續位置 + 加速映射 + 可取消 Job」，
+            // 結果是三套機制同時寫同一個值、互相打架 → 彈跳、閃爍、收合變黑屏。
+            //
+            // 現在只有：
+            //   sidebarStage ─→ targetWidth ─→ animateDpAsState ─→ 側欄寬度
+            // 第 3 階是獨立疊層，不在寬度軸上。
+            val targetWidth = when (sidebarStage) {
+                SidebarStage.RAIL -> collapsedWidth
+                SidebarStage.PANEL, SidebarStage.GRID -> normalWidth
+            }
+
+            val animatableWidth = remember {
+                androidx.compose.animation.core.Animatable(
+                    when (sidebarStage) {
+                        SidebarStage.RAIL -> collapsedWidth.value
+                        SidebarStage.PANEL, SidebarStage.GRID -> normalWidth.value
+                    }
+                )
+            }
+
+            // 收合／展開的過渡動畫。56↔128dp 只差 198px，這段距離重量測側欄內容
+            // 的成本可以接受 —— 也正是重構前你回報「手感可以」的那版行為。
+            LaunchedEffect(targetWidth) {
+                animatableWidth.animateTo(
+                    targetValue = targetWidth.value,
+                    animationSpec = Motion.snapSpring()
+                )
+            }
+
+            val currentWidthDp = with(density) { animatableWidth.value.toDp() }
+
+            // 第 3 階疊層的淡入淡出。0→1 與 1→0 都走這裡，不碰寬度軸。
+            val gridOverlayProgress by animateFloatAsState(
+                targetValue = if (sidebarStage == SidebarStage.GRID) 1f else 0f,
+                animationSpec = tween(
+                    durationMillis = if (sidebarStage == SidebarStage.GRID) {
+                        Motion.DURATION_NORMAL
+                    } else {
+                        Motion.DURATION_FAST
+                    },
+                    easing = androidx.compose.animation.core.FastOutSlowInEasing
+                ),
+                label = "GridOverlay"
+            )
+
+            fun goToStage(stage: SidebarStage) {
+                sidebarStageOrdinal = stage.ordinal
+            }
+
             // 系統返回：逐階退回收合態，收合態再按才交還上層（離開編輯器）。
             // 只在 stage != RAIL 時啟用，否則會搶走全域返回行為。
             BackHandler(enabled = sidebarStage != SidebarStage.RAIL) {
-                SidebarStageMachine.onSystemBack(sidebarStage)?.let {
-                    sidebarStageOrdinal = it.ordinal
-                }
+                SidebarStageMachine.onSystemBack(sidebarStage)?.let { goToStage(it) }
             }
 
-            // ── 寬度：單一真相源 dragPosPx ─────────────────────────────────
-            //
-            // dragPosPx 是從「收合」到「滿屏」的連續位置（px），所有東西都從它推：
-            //   sidebarWidthPx = clamp(dragPosPx, railPx, panelPx)   側欄寬度
-            //   gridProgress    = (dragPosPx - panelPx) / (screenPx - panelPx)
-            //
-            // 拖曳時**同步直接寫** dragPosPx，不經 Channel、不排 coroutine。
-            // 舊碼是 trySend → LaunchedEffect → state，多兩跳排程，是「不跟手」的主因。
-            // 放手後才用彈簧把 dragPosPx 彈到該階的錨點（Motion.snapSpring，帶過衝）。
-            val railPx = with(density) { collapsedWidth.toPx() }
-            val panelPx = with(density) { normalWidth.toPx() }
-            val screenPx = with(density) { totalWidth.toPx() }
-
-            // 從 panel 拖到滿屏只給 1/3 屏寬的行程：跨距太大手腕要拉到很右。
-            val gridGain = if (screenPx > panelPx) {
-                (screenPx - panelPx) / (screenPx * 0.33f)
-            } else 1f
-
-            fun anchorFor(stage: SidebarStage): Float = when (stage) {
-                SidebarStage.RAIL -> railPx
-                SidebarStage.PANEL -> panelPx
-                SidebarStage.GRID -> screenPx
-            }
-
-            /** dragPosPx → SidebarStage 的 0..2 進度，交給已測試的狀態機吸附。 */
-            fun progressFor(p: Float): Float =
-                if (p <= panelPx) {
-                    if (panelPx - railPx <= 1f) 1f else (p - railPx) / (panelPx - railPx)
-                } else {
-                    if (screenPx - panelPx <= 1f) 2f
-                    else 1f + (p - panelPx) / (screenPx - panelPx)
-                }
-
-            var dragPosPx by remember { mutableFloatStateOf(railPx) }
-            var isDraggingSidebar by remember { mutableStateOf(false) }
-
-            val sidebarWidthPx by remember { derivedStateOf { dragPosPx.coerceIn(railPx, panelPx) } }
-            val gridProgress by remember {
-                derivedStateOf {
-                    if (screenPx - panelPx <= 1f) 0f
-                    else ((dragPosPx - panelPx) / (screenPx - panelPx)).coerceIn(0f, 1f)
-                }
-            }
-
-            val scrollRequests = remember { kotlinx.coroutines.channels.Channel<Float>(kotlinx.coroutines.channels.Channel.CONFLATED) }
-            LaunchedEffect(scrollRequests) {
-                for (dy in scrollRequests) mainListState.scrollBy(dy)
-            }
-
-            // 任何非拖曳的階段變更（輕點展開、返回鍵、網格裡的鈕）都走這裡。
-            // 拖曳中不動，避免跟手指搶。
-            LaunchedEffect(sidebarStage) {
-                if (!isDraggingSidebar) {
-                    animate(
-                        initialValue = dragPosPx,
-                        targetValue = anchorFor(sidebarStage),
-                        animationSpec = Motion.snapSpring()
-                    ) { value, _ -> dragPosPx = value }
-                }
-            }
-
-            // AI 抽屜的可用寬度基準：側欄視覺寬度往右到螢幕右緣。
-            val sidebarVisualWpx = sidebarWidthPx
+            // AI 抽屜的可用寬度基準：側欄寬度往右到螢幕右緣。
+            val sidebarVisualWpx = with(density) { currentWidthDp.toPx() }
 
 
             // 工具列高度＝側欄／AI 欄要讓出的上邊界。只有紙（工作區）不讓，
@@ -842,16 +832,15 @@ fun TabletEditorScreen(
                     )
                 }
                 Row(Modifier.fillMaxSize()) {
-                // 側欄寬度直接用 dragPosPx 推導的 sidebarWidthPx。
-                // 報給外層的寬度跟視覺寬度是同一個數，所以拉桿（後面的兄弟節點）
-                // 會自動跟著邊界走，不需要另外算 offset。
+                // 側欄寬度＝動畫後的 currentWidthDp（56↔128dp）。
+                // 拖曳期最佳化已不需要：現在沒有跟手指走的連續寬度。
                 Box(
                     modifier = Modifier
                         .fillMaxHeight()
                         // 不要 padding(top = toolbarH)：側欄不該為了讓開工具列而被往下推。
                         // 頁碼／+／展開鈕都要浮在最上層（工具列玻璃壓在上面），跟工作區的紙同一套邏輯。
                         .layout { measurable, constraints ->
-                            val w = sidebarWidthPx.roundToInt()
+                            val w = with(density) { currentWidthDp.roundToPx() }
                             val placeable = measurable.measure(
                                 constraints.copy(minWidth = w, maxWidth = w)
                             )
@@ -862,7 +851,7 @@ fun TabletEditorScreen(
                 ) {
                     Sidebar(
                 sidebarStage = sidebarStage,
-                onModeChange = { sidebarStageOrdinal = it.ordinal },
+                onModeChange = { goToStage(it) },
                 pdfViewModel = pdfViewModel,
                 pageCount = pageCount,
                 currentPageIndex = currentPageIndex,
@@ -1066,15 +1055,15 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
         // 蓋在紙／側欄／AI 抽屜之上、工具列之下（與 AI 卡片同一套讓位邏輯）。
         // 恆為 fillMaxSize：動畫只動 graphicsLayer，不觸發 measure，
         // 所以「幾百張縮圖的網格」不會在進場時被重排。
-        if (gridProgress > 0.001f || isDraggingSidebar) {
+        if (gridOverlayProgress > 0.001f) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    // 不透明桌面底。沒有它的話疊層本身是透明的，底下��紙張與側欄頁碼
+                    // 不透明桌面底。沒有它的話疊層本身是透明的，底下的紙張與側欄頁碼
                     // 會直接透過網格卡片之間的間隙透出來（實測畫面確認）。
                     .background(if (isEditorDark) WorkspaceDeskDark else WorkspaceDeskLight)
                     .graphicsLayer {
-                        val p = gridProgress
+                        val p = gridOverlayProgress
                         alpha = p
                         // 微量上滑 + 收斂：純視覺，不影響量測
                         translationY = (1f - p) * 24.dp.toPx()
@@ -1092,8 +1081,8 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                     modelHeight = viewModel.modelHeight,
                     hazeState = chromeHaze,
                     isDarkTheme = isEditorDark,
-                    onBack = { sidebarStageOrdinal = SidebarStage.PANEL.ordinal },
-                    onCollapse = { sidebarStageOrdinal = SidebarStage.RAIL.ordinal },
+                    onBack = { goToStage(SidebarStage.PANEL) },
+                    onCollapse = { goToStage(SidebarStage.RAIL) },
                     onPageSelected = { index ->
                         lastSidebarDriveMs = SystemClock.uptimeMillis()
                         onRequestPage(index)
@@ -1108,86 +1097,68 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
             }
         } // Box（GRID 疊層）
 
-        // ── 拉桿：一支走完全程 ──────────────────────────────────────────
+        // ── 拉桿：只輕點，不拖曳 ──────────────────────────────────────
         //
-        // 位置＝dragPosPx，所以它就是「側欄／網格的視覺邊界」：
-        //   第 2 階時在側欄右緣，往右拖它就一路把網格拉出來；第 3 階全開時它就
-        //   停在螢幕最右緣，往左拖就把網格拉回去。
+        // 拉桿不再改變寬度。寬度完全由 sidebarStage 驅動（見上面的 animateDpAsState），
+        // 所以拉桿只是「切換階段」的按鈕：一支不會跟手指搶同一個數值的控制項，
+        // 不會有彈跳、閃爍或跟手問題。
         //
-        // 必須畫在 GRID 疊層**之後**：疊層是 fillMaxSize 的不透明層，拉桿若在它
-        // 下面就會被整片蓋住、收不到事件。
-        if (isDraggingSidebar || sidebarStage != SidebarStage.RAIL) {
+        // 第 2 階 → 第 3 階；第 3 階 → 收合到第 1 階（否則第 3 階沒有出口）。
+        // 第 1 階沒有拉桿（56dp 太窄，24dp 拉桿會吃掉一半寬度），
+        // 展開靠收合態玻璃脊上的展開鈕。
+        //
+        // 畫在 GRID 疊層之後：疊層是 fillMaxSize 的不透明層，畫在下面會被蓋住收不到事件。
+        if (sidebarStage != SidebarStage.RAIL) {
+            val next = if (sidebarStage == SidebarStage.PANEL) {
+                SidebarStage.GRID
+            } else {
+                SidebarStage.RAIL
+            }
             Box(
                 modifier = Modifier
                     .align(Alignment.TopStart)
-                    // 讓拉桿中心對齊 dragPosPx（自身寬 24dp，所以減半）
-                    .offset { IntOffset((dragPosPx - 12.dp.toPx()).roundToInt(), 0) }
+                    // 貼在側欄右緣（第 2 階）；第 3 階貼螢幕最右緣。
+                    .offset {
+                        IntOffset(
+                            if (sidebarStage == SidebarStage.GRID) {
+                                (totalWidth - 24.dp).roundToPx()
+                            } else {
+                                (currentWidthDp - 24.dp).roundToPx()
+                            },
+                            0
+                        )
+                    }
                     .width(24.dp)
                     .fillMaxHeight()
                     .padding(top = toolbarH)
                     .pointerInput(Unit) {
                         awaitEachGesture {
-                            try {
                             val down = awaitFirstDown()
-                            isDraggingSidebar = true
-                            // null = 未定；true = 橫向調寬；false = 直向捲動
-                            var horizontalLock: Boolean? = null
-                            var prevX = down.position.x
-                            var prevY = down.position.y
-                            var accX = 0f
-                            var accY = 0f
-                            var velX = 0f
-                            var lastT = down.uptimeMillis
+                            // 只認純點：按下到放開位移小於 slop 才算輕點，
+                            // 否則使用者只是想捲動，不該觸發階段切換。
+                            var moved = false
+                            val startX = down.position.x
+                            val startY = down.position.y
                             val slop = viewConfiguration.touchSlop
                             while (true) {
                                 val event = awaitPointerEvent()
                                 val change = event.changes.firstOrNull { it.id == down.id } ?: break
                                 if (!change.pressed) {
-                                    isDraggingSidebar = false
-                                    if (horizontalLock == null) {
-                                        // 純點＝往前推進一階
-                                        SidebarStageMachine.expandTarget(sidebarStage)?.let {
-                                            sidebarStageOrdinal = it.ordinal
-                                        }
-                                    } else if (horizontalLock == true) {
-                                        // 放手＝交給狀態機決定停哪一階，
-                                        // 之後由 LaunchedEffect(sidebarStage) 彈過去。
-                                        sidebarStageOrdinal =
-                                            SidebarStageMachine.snap(progressFor(dragPosPx), velX).ordinal
+                                    val dx = change.position.x - startX
+                                    val dy = change.position.y - startY
+                                    if (!moved &&
+                                        kotlin.math.abs(dx) < slop &&
+                                        kotlin.math.abs(dy) < slop
+                                    ) {
+                                        goToStage(next)
                                     }
                                     break
                                 }
-                                val dx = change.position.x - prevX
-                                val dy = change.position.y - prevY
-                                prevX = change.position.x
-                                prevY = change.position.y
-                                if (horizontalLock == null) {
-                                    accX += dx
-                                    accY += dy
-                                    horizontalLock = when {
-                                        kotlin.math.abs(accX) > slop && kotlin.math.abs(accX) >= kotlin.math.abs(accY) -> true
-                                        kotlin.math.abs(accY) > slop -> false
-                                        else -> null
-                                    }
+                                if (kotlin.math.abs(change.position.x - startX) > slop ||
+                                    kotlin.math.abs(change.position.y - startY) > slop
+                                ) {
+                                    moved = true
                                 }
-                                if (horizontalLock == true) {
-                                    val now = change.uptimeMillis
-                                    val dt = (now - lastT).coerceAtLeast(1L)
-                                    lastT = now
-                                    velX = velX * 0.75f + (dx / dt * 1000f) * 0.25f
-                                    change.consume()
-                                    // 1:1 到第 2 階為止；之後加速映射，讓「拖 1/3 屏」
-                                    // 就能到滿屏（否則要跨 1000dp 以上，手腕要拉到很右）。
-                                    val gain = if (dragPosPx > panelPx) gridGain else 1f
-                                    dragPosPx = (dragPosPx + dx * gain).coerceIn(railPx, screenPx)
-                                } else if (horizontalLock == false) {
-                                    // 直向：捲主列表
-                                    change.consume()
-                                    scrollRequests.trySend(-dy)
-                                }
-                            }
-                            } finally {
-                                isDraggingSidebar = false
                             }
                         }
                     },
@@ -1201,6 +1172,7 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                 )
             }
         }
+
         } // Box（紙底層＋chrome 疊層）
 
         // 浮空工具列：只蓋「工作區那一欄」，紙從它下面透上來；

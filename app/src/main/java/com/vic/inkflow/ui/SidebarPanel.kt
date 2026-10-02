@@ -131,6 +131,7 @@ import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.ChevronLeft
 import androidx.compose.material.icons.rounded.Brush
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Gesture
@@ -290,6 +291,35 @@ internal fun Sidebar(
             // Normal / Collapsed — thumbnail list + pinned add-page footer
             Column(Modifier.fillMaxSize()) {
                 val coroutineScope = rememberCoroutineScope()
+
+                // 第 2 階的收合鈕。
+                // 拉桿取消拖曳後只負責「進第 3 階」，收合沒有入口了；沒有這顆會卡住。
+                if (sidebarStage == SidebarStage.PANEL) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(44.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .glassPanel(hazeState, isDarkTheme, CircleShape)
+                                .glassClickable(
+                                    onClick = { onModeChange(SidebarStage.RAIL) },
+                                    shape = CircleShape
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.Outlined.ChevronLeft,
+                                contentDescription = "收合側欄",
+                                modifier = Modifier.size(20.dp),
+                                tint = glassContentColor(isDarkTheme)
+                            )
+                        }
+                    }
+                }
 
                 androidx.compose.foundation.layout.BoxWithConstraints(modifier = Modifier.weight(1f).fillMaxWidth()) {
                     val halfHeight = maxHeight / 2
