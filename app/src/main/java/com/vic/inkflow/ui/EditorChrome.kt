@@ -263,6 +263,14 @@ fun TabletEditorTopBar(
     isSendingPage: Boolean = false,
     isPowerSaver: Boolean = false,
     onTogglePowerSaver: () -> Unit = {},
+    /**
+     * 插圖：工具列按圖片鈕就直接開系統圖片庫。
+     *
+     * 舊版是「選 IMAGE 工具 → 點紙面空白 → 開圖庫」，而「空白」只是四個命中測試都
+     * 沒抓到的 fall-through、沒有 tap/drag 區分 → 手滑想捲頁就彈出圖片庫。
+     * 插圖是明確動作，該由按鈕承擔；紙面留給選取/移動/縮放/旋轉/捲頁。
+     */
+    onPickImage: () -> Unit = {},
     hazeState: dev.chrisbanes.haze.HazeState,
     isDarkTheme: Boolean
 ) {
@@ -508,10 +516,13 @@ fun TabletEditorTopBar(
                                 onClick = {
                                     viewModel.onToolSelected(Tool.IMAGE)
                                     onHideStrokeWidthSlider()
+                                    // 按一下就插圖：不必先點紙面（舊設計的誤觸來源）。
+                                    // 同時切到 IMAGE 工具，選完立刻能調整位置/大小/旋轉。
+                                    onPickImage()
                                 },
                                 isActive = activeTool == Tool.IMAGE,
                                 icon = Icons.Outlined.Image,
-                                contentDescription = "Image Tool"
+                                contentDescription = "Insert Image"
                             )
                         }
                     }

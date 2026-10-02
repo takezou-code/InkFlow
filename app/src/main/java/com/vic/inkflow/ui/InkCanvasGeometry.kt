@@ -40,25 +40,20 @@ internal fun textAnnotationHitRect(
     return Rect(canvasX - 4f, canvasY - effectiveFontPx - 4f, canvasX + textWidth, canvasY - effectiveFontPx + textHeight + 4f)
 }
 
-/** Returns the 48×48 px resize handle hit rect anchored to the bottom-right of [textRect] (24px hit radius; visual is a shared glass handle). */
-internal fun textResizeHandleRect(textRect: Rect): Rect {
-    val h = SEL_HANDLE_HIT_R_PX * 2f
+/** Returns the resize-handle hit rect anchored to the bottom-right of [textRect], centered on that corner. */
+internal fun textResizeHandleRect(textRect: Rect, hitRadiusPx: Float): Rect {
+    val h = hitRadiusPx * 2f
     return Rect(textRect.right - h / 2f, textRect.bottom - h / 2f, textRect.right + h / 2f, textRect.bottom + h / 2f)
 }
 
 // ---- Image annotation hit-testing helpers ----
 
-/** Returns the canvas-pixel bounding rect for [ann] (committed DB values, no in-flight delta). */
+/**
+ * Returns the canvas-pixel bounding rect for [ann] (committed DB values, no in-flight delta).
+ */
 internal fun imageAnnotationRect(ann: ImageAnnotationEntity, sx: Float, sy: Float): Rect =
     Rect(ann.modelX * sx, ann.modelY * sy,
          (ann.modelX + ann.modelWidth) * sx, (ann.modelY + ann.modelHeight) * sy)
-
-/** Returns the 48×48 px resize handle hit rect centered on [center] (24px hit radius; visual is a shared glass handle). */
-internal fun imageResizeHandleRect(center: Offset): Rect {
-    val h = SEL_HANDLE_HIT_R_PX * 2f
-    return Rect(center.x - h / 2f, center.y - h / 2f,
-                center.x + h / 2f, center.y + h / 2f)
-}
 
 /** Uniform-scales [rect] about [anchor] (corner-drag resize keeps aspect). */
 internal fun scaleRectAbout(rect: Rect, anchor: Offset, scale: Float): Rect {
@@ -74,6 +69,20 @@ internal fun effectiveImageRect(base: Rect, move: Offset, anchor: Offset?, scale
     return if (anchor != null && abs(scale - 1f) > 0.0001f) scaleRectAbout(moved, anchor, scale)
     else moved
 }
+
+/**
+ * 無錨點時的落位原點：把 [imgW]×[imgH] 的圖置中在 [modelW]×[modelH] 的頁面裡。
+ *
+ * 圖片插入改由工具列觸發（不再靠「點紙面哪裡插哪裡」），所以沒有錨點可依，
+ * 固定落在頁面中央——位置可預期，不會像舊的左上 10% 那樣疊在一起。
+ *
+ * 圖比頁面大時夾到 0（不產生負座標；橫向捲動交給文件級 pan，不靠負 offset 溢出）。
+ */
+internal fun centeredImageOrigin(modelW: Float, modelH: Float, imgW: Float, imgH: Float): Offset =
+    Offset(
+        ((modelW - imgW) / 2f).coerceIn(0f, maxOf(0f, modelW - imgW)),
+        ((modelH - imgH) / 2f).coerceIn(0f, maxOf(0f, modelH - imgH))
+    )
 
 // ---- M5: image rotation helpers (canvas space; positive degrees = clockwise, matches DrawScope.rotate) ----
 internal const val IMAGE_ROT_HANDLE_GAP_PX = 56f
@@ -126,6 +135,14 @@ internal fun StrokeWithPoints.matches(cached: CachedStrokePath?): Boolean {
 }
 
 // ---- Liquid-glass selection frame, shared by lasso / image / text ----
+//
+// 尺寸全走 ui/theme/Handles.kt（dp），這裡只留「純 px 換算 + 純幾何」。
+// 舊版把 SEL_HANDLE_* 寫死物理 px，在 density 2.75 的平板上命中框只剩 17.5dp
+// （Material 最低 48dp），使用者必須瞄準才抓得到——那個 bug 的根因。
+//
+// 命中半徑另有一層「畫布縮放補償」：紙放大時畫布變寬，把手若跟著放大，
+// 在螢幕上的實體觸控目標反而變大／縮小不定。handleScaleFor 把它校正回
+// 「螢幕上恆定」（同 Editframe transform handles 的 canvas-scale 做法）。
 internal const val SEL_FRAME_CORNER_PX = 14f
 internal const val SEL_FRAME_HALO_PX = 6f
 internal const val SEL_FRAME_INNER_PX = 2.2f
@@ -133,31 +150,88 @@ internal val SEL_FRAME_HALO = BrandIndigo.copy(alpha = 0.22f)
 internal val SEL_FRAME_FILL = Color.White.copy(alpha = 0.10f)
 internal val SEL_FRAME_EDGE_LIGHT = Color.White.copy(alpha = 0.25f)
 internal val SEL_DASH_PATTERN = floatArrayOf(12f, 8f)
-internal const val SEL_HANDLE_R_PX = 10f
-internal const val SEL_HANDLE_HALO_R_PX = 14f
-internal const val SEL_HANDLE_HIT_R_PX = 24f
 internal const val SEL_HANDLE_RING_PX = 2f
+
+// 把手尺寸不在這裡換算：紙面放大是「layout 尺寸變大」（PageWorkspace 的
+// listWdp = viewportWpx * max(docZoom,1) + Surface.fillMaxWidth(docZoom)），
+// **不是**對畫布做像素縮放——畫布鏈路上沒有任何 graphicsLayer（只在 overlay 用）。
+// 所以 1 個畫布 px 恆等於 1 個螢幕 px，把手直接用 dp.toPx() 即可，
+// 在任何 docZoom 下螢幕上都是同一個大小。
+//
+// 曾有 handleScaleFor(dpPx, canvasScale) = dpPx / scale 做「螢幕恆定」補償，
+// 但那個假設錯了（誤以為有像素縮放層），結果 docZoom=2 把手只剩螢幕 12dp、
+// 4x 只剩 6dp——實機回報「放大後把手變小，整個倒過來」。已移除。
+
+/**
+ * 命中測試：取**離 [point] 最近**且在 [hitRadiusPx] 內的把手索引，沒有則 -1。
+ *
+ * 為什麼要「最近」而不是固定順序：命中框放到 48dp 後，小圖的四角命中框會互相重疊，
+ * 旋轉把手也會蓋到角（舊碼註解自己承認這件事）。Material 官方也點出「小而靠很近的
+ * 控制項無法在觸控區不重疊的前提下放大」——所以放大命中區必須配套最近優先，
+ * 否則重疊時會穩定抓到錯誤的那個把手。
+ *
+ * @param candidates 把手中心點，順序即 [result] 的索引對應
+ * @param preferLastTies 同距離時是否讓後面的候選勝出（旋轉把手放最後時傳 true：
+ *   同距離下角把手優先，角比旋轉常用）
+ */
+internal fun nearestHandleIndex(
+    point: Offset,
+    candidates: List<Offset>,
+    hitRadiusPx: Float,
+    preferLastTies: Boolean = false,
+): Int {
+    var bestIdx = -1
+    var bestDist = Float.MAX_VALUE
+    candidates.forEachIndexed { i, c ->
+        val d = (c - point).getDistance()
+        if (d <= hitRadiusPx && (d < bestDist || (preferLastTies && d == bestDist))) {
+            bestDist = d
+            bestIdx = i
+        }
+    }
+    return bestIdx
+}
 
 /**
  * 液態玻璃選取框：淡白填充 + 靛暈外框 + 白虛線內框 + 內緣高光，
  * 手柄是白圓玻璃體（靛圈 + 左上高光點 + 外暈）。深淺紙都可讀。
  */
+/**
+ * 一顆把手的視覺狀態。半徑全部是「螢幕上的大小」經 handleScaleFor 換算後的畫布 px。
+ */
+internal data class HandleVisual(
+    val center: Offset,
+    /** 0f = 靜置；1f = 正在被拖。繪製時乘到半徑上做放大回饋。 */
+    val pressed: Float = 0f,
+    /** 旋轉把手畫成缺口環＋箭頭（跟四角的實心點區分）。 */
+    val isRotation: Boolean = false,
+)
+
+/** 依 [Handles.PressedScale](ui/theme/Handles.kt) 由 pressed(0→1) 插出的放大倍率。 */
+internal fun handlePressedScale(pressed: Float, maxScale: Float): Float =
+    1f + (maxScale - 1f) * pressed.coerceIn(0f, 1f)
+
 internal fun DrawScope.drawLiquidGlassSelectionFrame(
     rect: Rect,
     dashPhase: Float = 0f,
     animateDash: Boolean = false,
-    handleCenters: List<Offset> = emptyList()
+    handleCenters: List<Offset> = emptyList(),
+    visualRadiusPx: Float = 8f,
+    haloRadiusPx: Float = 12f,
+    handles: List<HandleVisual> = emptyList(),
+    /** 邊框線寬倍率（按住把手時 >1，只加粗線不改框大小，不遮內容）。 */
+    strokeScale: Float = 1f,
 ) {
     val topLeft = Offset(rect.left, rect.top)
     val size = Size(rect.width, rect.height)
     val corner = CornerRadius(SEL_FRAME_CORNER_PX, SEL_FRAME_CORNER_PX)
     val innerStroke = if (animateDash) {
         Stroke(
-            width = SEL_FRAME_INNER_PX,
+            width = SEL_FRAME_INNER_PX * strokeScale,
             pathEffect = PathEffect.dashPathEffect(SEL_DASH_PATTERN, dashPhase)
         )
     } else {
-        Stroke(width = SEL_FRAME_INNER_PX)
+        Stroke(width = SEL_FRAME_INNER_PX * strokeScale)
     }
     // Glass body: faint white fill so the frame reads on dark paper too.
     drawRoundRect(
@@ -192,30 +266,62 @@ internal fun DrawScope.drawLiquidGlassSelectionFrame(
             style = Stroke(width = 1.5f)
         )
     }
-    handleCenters.forEach { c ->
-        drawCircle(
-            color = SEL_FRAME_HALO,
-            radius = SEL_HANDLE_HALO_R_PX,
-            center = c
+    // 舊簽名路徑：只給中心點、沒有狀態（跨頁 overlay 用）。
+    if (handles.isEmpty()) {
+        handleCenters.forEach { c ->
+            drawHandle(c, visualRadiusPx, haloRadiusPx, pressed = 0f, isRotation = false)
+        }
+        return
+    }
+    handles.forEach { h ->
+        drawHandle(
+            h.center, visualRadiusPx, haloRadiusPx, h.pressed, h.isRotation
         )
+    }
+}
+
+/**
+ * 單顆把手。靜置＝halo + 白色實心點 + indigo 環 + 高光點（同原設計）；
+ * 旋轉＝外圈加粗成環、中心挖空畫箭頭，一眼跟四角分開；
+ * 按住＝整顆放大（Handles.PressedScale）且 halo 加亮＝「抓到了」。
+ */
+private fun DrawScope.drawHandle(
+    center: Offset,
+    visualRadiusPx: Float,
+    haloRadiusPx: Float,
+    pressed: Float,
+    isRotation: Boolean,
+) {
+    val maxScale = com.vic.inkflow.ui.theme.Handles.PressedScale
+    val s = handlePressedScale(pressed, maxScale)
+    val r = visualRadiusPx * s
+    val halo = haloRadiusPx * s
+    val haloAlpha = if (pressed > 0.01f) 0.22f + 0.22f * pressed else 0.22f
+
+    drawCircle(color = SEL_FRAME_HALO.copy(alpha = haloAlpha), radius = halo, center = center)
+    if (isRotation) {
+        // 旋轉把手＝空心環（vs 四角的實心點），一眼分得出哪個能轉。
+        // 曾試過在中間加旋轉箭頭做二次區分，但那條弧畫在環內、白色環寬又幾乎填滿
+        // 內部，兩者疊成髒色塊（實機回報「看起來像雜質」），已移除。
+        // 白色環做內圈、indigo 環做外圈，雙環本身就有層次感。
         drawCircle(
-            color = Color.White.copy(alpha = 0.85f),
-            radius = SEL_HANDLE_R_PX,
-            center = c
+            color = Color.White.copy(alpha = 0.9f),
+            radius = r,
+            center = center,
+            style = Stroke(width = (r * 0.5f).coerceAtLeast(1.5f))
         )
         drawCircle(
             color = BrandIndigo,
-            radius = SEL_HANDLE_R_PX,
-            center = c,
-            style = Stroke(width = SEL_HANDLE_RING_PX)
+            radius = r,
+            center = center,
+            style = Stroke(width = SEL_HANDLE_RING_PX * s)
         )
-        // Specular dot: sells the glass.
-        drawCircle(
-            color = Color.White,
-            radius = 3f,
-            center = c + Offset(-3f, -3f)
-        )
+        return
     }
+    drawCircle(color = Color.White.copy(alpha = 0.85f), radius = r, center = center)
+    drawCircle(color = BrandIndigo, radius = r, center = center, style = Stroke(width = SEL_HANDLE_RING_PX * s))
+    // Specular dot: sells the glass.
+    drawCircle(color = Color.White, radius = r * 0.3f, center = center + Offset(-r * 0.3f, -r * 0.3f))
 }
 
 internal fun applySelectionTransform(
@@ -235,15 +341,23 @@ internal fun DrawScope.drawLassoSelectionFrame(
     selectionRect: Rect,
     showHandles: Boolean,
     dashPhase: Float,
-    animateDash: Boolean
+    animateDash: Boolean,
+    visualRadiusPx: Float = 8f,
+    haloRadiusPx: Float = 12f,
+    pressedHandleCenter: Offset? = null,
+    strokeScale: Float = 1f,
 ) {
+    val centers = if (showHandles) strokeSelectionHandleCenters(selectionRect) else emptyList()
     drawLiquidGlassSelectionFrame(
         rect = selectionRect,
         dashPhase = dashPhase,
         animateDash = animateDash,
-        handleCenters = if (showHandles)
-            strokeSelectionHandleRects(selectionRect).map { (_, handleRect) -> handleRect.center }
-        else emptyList()
+        handles = centers.map { c ->
+            HandleVisual(center = c, pressed = if (c == pressedHandleCenter) 1f else 0f)
+        },
+        visualRadiusPx = visualRadiusPx,
+        haloRadiusPx = haloRadiusPx,
+        strokeScale = strokeScale
     )
 }
 
@@ -261,21 +375,9 @@ internal fun strokeSelectionResizeAnchor(selectionRect: Rect, handle: StrokeSele
     StrokeSelectionHandle.BOTTOM_RIGHT -> Offset(selectionRect.left, selectionRect.top)
 }
 
-internal fun strokeSelectionHandleRects(selectionRect: Rect): List<Pair<StrokeSelectionHandle, Rect>> = listOf(
-    StrokeSelectionHandle.TOP_LEFT,
-    StrokeSelectionHandle.TOP_RIGHT,
-    StrokeSelectionHandle.BOTTOM_LEFT,
-    StrokeSelectionHandle.BOTTOM_RIGHT
-).map { handle ->
-    handle to strokeSelectionHandleHitRect(strokeSelectionHandleCenter(selectionRect, handle))
-}
-
-internal fun strokeSelectionHandleHitRect(center: Offset): Rect = Rect(
-    left = center.x - SEL_HANDLE_HIT_R_PX,
-    top = center.y - SEL_HANDLE_HIT_R_PX,
-    right = center.x + SEL_HANDLE_HIT_R_PX,
-    bottom = center.y + SEL_HANDLE_HIT_R_PX
-)
+/** Centers of the four stroke-selection corner handles, in [StrokeSelectionHandle] enum order. */
+internal fun strokeSelectionHandleCenters(selectionRect: Rect): List<Offset> =
+    StrokeSelectionHandle.entries.map { strokeSelectionHandleCenter(selectionRect, it) }
 
 internal fun modelTransformedPolygonBoundsToCanvasRect(
     polygon: List<Offset>,

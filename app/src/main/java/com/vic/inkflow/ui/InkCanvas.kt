@@ -120,6 +120,67 @@ import kotlin.math.sin
 
 // ── 連貫畫布 helpers 見 CrossPageCanvas.kt ───────────────────────────────────
 
+/**
+ * 圖片提交後的「落定等待」：記住這次 commit 應該讓 DB 變成什麼樣子，
+ * 等熱流回報的實體真的等於預期值，才讓畫面改用 DB 值。
+ *
+ * 為什麼需要：commit 是 `launch(Dispatchers.IO)` 非同步寫 DB，而繪製層拿到的 DB 值
+ * 更新與預覽位移歸零**不同步**。若靠 `LaunchedEffect` 去歸零預覽，DB 更新那一幀繪製層
+ * 可能還讀到殘留的預覽 → 畫出「新位置 ＋ 舊位移」瞬間偏移再修正＝閃一下。
+ *
+ * 正確做法是**繪製當下即時判斷**（見繪製層的 `settledImg` / `settledTxt`）：
+ * DB 已落定就直接用 DB 值（不疊預覽），還沒落定就疊預覽位移。零時序依賴。
+ */
+internal data class PendingImageSettle(
+    val id: String,
+    val modelX: Float,
+    val modelY: Float,
+    val modelWidth: Float,
+    val modelHeight: Float,
+    val rotation: Float,
+) {
+    fun matches(ann: ImageAnnotationEntity): Boolean =
+        ann.id == id &&
+            near(ann.modelX, modelX) && near(ann.modelY, modelY) &&
+            near(ann.modelWidth, modelWidth) && near(ann.modelHeight, modelHeight) &&
+            near(ann.rotation, rotation)
+}
+
+/** 文字提交後的落定等待，理由同 [PendingImageSettle]。 */
+internal data class PendingTextSettle(
+    val id: String,
+    val modelX: Float,
+    val modelY: Float,
+    val fontSize: Float,
+) {
+    fun matches(ann: TextAnnotationEntity): Boolean =
+        ann.id == id &&
+            near(ann.modelX, modelX) && near(ann.modelY, modelY) &&
+            near(ann.fontSize, fontSize)
+}
+
+/**
+ * 預覽位移在繪製當下該不該疊上去。
+ *
+ * @param pending 這次 commit 記下的預期值（null = 沒在等落定，例如拖曳中或已清掉）
+ * @param current DB／熱流此刻回報的實體
+ * @return true = 還沒落定，要疊預覽位移；false = 已落定，繪製直接用 DB 值
+ */
+internal fun <T> shouldApplyPreview(
+    pending: Any?,
+    current: T?,
+    matches: (Any?, T) -> Boolean,
+): Boolean {
+    if (pending == null || current == null) return true
+    return !matches(pending, current)
+}
+
+/**
+ * 浮動比較。DB 走 Float 落盤（REAL），model 座標算完再存會有微小誤差，
+ * 用整數容差比對避免「差 0.0001 永遠不落定」→ 預覽卡住不歸零。
+ */
+private fun near(a: Float, b: Float): Boolean = abs(a - b) < 0.01f
+
 @OptIn(ExperimentalComposeUiApi::class, ExperimentalLayoutApi::class)
 @Composable
 fun InkCanvas(
@@ -138,7 +199,18 @@ fun InkCanvas(
     /** 頁間隙 px（Workspace 的 Arrangement.spacedBy，需與列表一致）。 */
     pageGapPx: Float = 0f,
     /** 邊緣自動捲：手指拖出紙上下界時回傳期望捲動量 px（正=往後頁）；回傳實際捲動量。 */
-    onEdgeAutoScroll: (Float) -> Float = { _ -> 0f }
+    onEdgeAutoScroll: (Float) -> Float = { _ -> 0f },
+    /**
+     * 插圖請求令牌：工具列按圖片鈕時 +1，畫布看到變化就開系統圖片庫。
+     *
+     * 舊設計是「圖片工具下點紙面空白就開圖庫」，而「空白」只是「四個命中測試都沒抓到」
+     * 的 fall-through，且在 DOWN 當下就執行、沒有 tap/drag 區分 → 想滑頁也會彈圖庫，
+     * 而且 :846-851 的無條件 consume 讓頁面也不會滑。改成令牌觸發後：
+     * 紙面只負責「選取 / 移動 / 縮放 / 旋轉」，插圖是明確的工具列動作。
+     *
+     * 用 Int 令牌（遞增）而非 Boolean：同一頁可能重複請求，布爾翻回去就不會再觸發。
+     */
+    imagePickRequest: Int = 0
 ) {
     // 全活頁：筆/字/圖吃傳入的本頁資料（Workspace 熱流），不再訂閱作用頁流；
     // 工具/顏色/設定等全域態照舊。
@@ -282,14 +354,80 @@ fun InkCanvas(
 
     // Image annotation interactive selection / move / resize state
     // Resize is uniform (aspect locked): a scale about the opposite-corner anchor.
-    // M4: tap-to-place anchor in model space (set on empty-tap, consumed by the import callback).
-    var pendingImageAnchorModel by remember { mutableStateOf<Offset?>(null) }
     var selectedImageAnnotationId by remember { mutableStateOf<String?>(null) }
     var imageMovePreview   by remember { mutableStateOf(Offset.Zero) }
     var imageResizeScale   by remember { mutableFloatStateOf(1f) }
     var imageResizeAnchor  by remember { mutableStateOf<Offset?>(null) }
     // M5: in-flight rotation delta in degrees (0 = none); committed value lives in the entity.
     var imageRotatePreview by remember { mutableFloatStateOf(0f) }
+
+    // ── 提交後的「落定等待」（防放手瞬間閃爍）────────────────────────────────
+    // 四種提交（圖片移動/縮放/旋轉、文字移動/縮放）全是 launch(Dispatchers.IO) 寫 DB，
+    // 而預覽位移的歸零是同步的 → 提交後到 DB 回報前那幾幀，繪製會用「舊值 + 0」，
+    // 圖片先閃回原位、DB 更新後再跳到新位置（實機回報：閃一下）。
+    //
+    // 這裡記住「什麼值算落定」，等 DB 真的回報對上了才清預覽（見下方 LaunchedEffect）。
+    var pendingImageSettle by remember { mutableStateOf<PendingImageSettle?>(null) }
+    var pendingTextSettle by remember { mutableStateOf<PendingTextSettle?>(null) }
+    // 繪製層（drawWithCache.onDrawBehind）需要讀最新值。它讀的是 CapturedValue，
+    // 直接改 mutableStateOf 的屬性在某些組態下會讀到快照（AGENTS 快照訂閱地雷），
+    // 所以這裡用 rememberUpdatedState 保持「永遠指向最新 StateFlow 值」的參考。
+    val pendingImageSettleRef = rememberUpdatedState(pendingImageSettle)
+    val pendingTextSettleRef = rememberUpdatedState(pendingTextSettle)
+
+    // imageAnnotations / textAnnotations 是 Workspace 傳入的熱流值，DB 一更新就換新 List
+    // → 這個 effect 會重跑，屆時比對預期值即可判斷是否落定。
+    //
+    // ⚠️ 這裡**只清狀態、不負責決定繪製對不對**——繪製層自己即時比對（見繪製層的 `settled`）。
+    // 若靠這個 effect 去歸零預覽，DB 更新那一幀 effect 可能還沒跑到，繪製會疊上殘留預覽
+    // → 偏移一下才修正＝閃爍。所以「清」只是收尾，真正的閃爍防護在繪製層。
+    LaunchedEffect(pendingImageSettle, pendingTextSettle, imageAnnotations, textAnnotations) {
+        val img = pendingImageSettle
+        if (img != null) {
+            val now = imageAnnotations.firstOrNull { it.id == img.id }
+            if (now != null && img.matches(now)) {
+                imageMovePreview = Offset.Zero
+                imageResizeScale = 1f
+                imageResizeAnchor = null
+                imageRotatePreview = 0f
+                pendingImageSettle = null
+            }
+        }
+        val txt = pendingTextSettle
+        if (txt != null) {
+            val now = textAnnotations.firstOrNull { it.id == txt.id }
+            if (now != null && txt.matches(now)) {
+                textMoveDelta = Offset.Zero
+                textFontSizeDelta = 0f
+                pendingTextSettle = null
+            }
+        }
+    }
+
+// ── 選取把手尺寸（dp → 畫布 px，直接 1:1）──────────────────────────────
+// 命中半徑 24dp → 螢幕上 48dp 觸控框（Material 最低標準）。舊碼寫死 24 物理px，
+// 在 density 2.75 的平板上只剩 17.5dp，必須瞄準才抓得到。
+// 不做 docZoom 補償：紙放大是 layout 變大、不是像素縮放（畫布無 graphicsLayer），
+// 1 畫布 px 恆＝1 螢幕 px，所以任何縮放下把手都該是同一個螢幕大小。
+    val handleHitRadiusPx = with(density) {
+        com.vic.inkflow.ui.theme.Handles.TouchRadius.toPx()
+    }
+    val handleVisualRadiusPx = with(density) {
+        com.vic.inkflow.ui.theme.Handles.VisualRadius.toPx()
+    }
+    val handleHaloRadiusPx = with(density) {
+        com.vic.inkflow.ui.theme.Handles.HaloRadius.toPx()
+    }
+    val rotHandleGapPx = with(density) {
+        com.vic.inkflow.ui.theme.Handles.RotGap.toPx()
+    }
+
+    // 按住哪顆把手（畫布座標）→ 該顆放大回饋 + 框線加粗。null = 沒按住。
+    var pressedHandleCenter by remember { mutableStateOf<Offset?>(null) }
+    // 命中框放到 48dp 後小圖的四角會重疊、旋轉把手會蓋到角，必須用「最近優先」
+    // 而不是舊碼的固定順序（旋轉 → indexOfFirst），否則重疊時會穩定抓錯把手。
+    fun handleHit(point: Offset, centers: List<Offset>, rotIndex: Int = -1): Int =
+        nearestHandleIndex(point, centers, handleHitRadiusPx, preferLastTies = rotIndex < 0)
 
     // Latest snapshot of image annotations for use inside pointer-input coroutines
     val imageAnnotationsRef    = rememberUpdatedState(imageAnnotations)
@@ -378,14 +516,11 @@ fun InkCanvas(
     // 靜態虛線只建一次（形狀預覽用；選取框已統一走液態玻璃共用繪製）
     val dashPreview = remember { PathEffect.dashPathEffect(floatArrayOf(10f, 10f)) }
 
-    // Image picker launcher — gallery opens on empty-canvas tap (IMAGE tool)
+    // Image picker launcher — opened by the toolbar (imagePickRequest token), not by tapping the page.
     val imagePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 50)
     ) { uris ->
-        if (uris.isEmpty()) {
-            pendingImageAnchorModel = null
-            return@rememberLauncherForActivityResult
-        }
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
         scope.launch {
             data class ImportedImage(val localUriString: String, val imagePixelWidth: Int, val imagePixelHeight: Int)
 
@@ -417,17 +552,15 @@ fun InkCanvas(
             }
 
             var lastInsertedImageId: String? = null
-            // M4: first image lands centered on the tap anchor (if any); the rest keep legacy placement.
-            val tapAnchor = pendingImageAnchorModel
-            pendingImageAnchorModel = null
+            // 插圖來源＝工具列，沒有「點哪插哪」的錨點 → 落位由 EditorViewModel 置中
+            // （見 centeredImageOrigin）。多選：第 1 張放本頁，後續各開新頁（既有行為保留）。
             if (imported.size == 1) {
                 val item = imported.first()
                 lastInsertedImageId = viewModel.placeImageAnnotationOnPage(
                     uri = item.localUriString,
                     targetPageIndex = pageIndex,
                     imagePixelWidth = item.imagePixelWidth,
-                    imagePixelHeight = item.imagePixelHeight,
-                    anchorModel = tapAnchor
+                    imagePixelHeight = item.imagePixelHeight
                 )
             } else {
                 val currentPageIndex = pageIndex
@@ -438,8 +571,7 @@ fun InkCanvas(
                             uri = item.localUriString,
                             targetPageIndex = currentPageIndex,
                             imagePixelWidth = item.imagePixelWidth,
-                            imagePixelHeight = item.imagePixelHeight,
-                            anchorModel = tapAnchor
+                            imagePixelHeight = item.imagePixelHeight
                         )
                     } else {
                         // P0：多頁插入會移位頁號，先清復原棧（單張不動頁，不用清）。
@@ -478,13 +610,24 @@ fun InkCanvas(
         // Stay in IMAGE tool so the user can immediately adjust the placed image
     }
 
-    // Open gallery whenever IMAGE tool is activated; clear selections on tool change
+    // 工具列按圖片鈕 → 開系統圖片庫（只在作用頁開，避免每頁 InkCanvas 都跳一次）。
+    LaunchedEffect(imagePickRequest) {
+        if (imagePickRequest > 0 && pageIndex == viewModel.selectionPage()) {
+            imagePickerLauncher.launch(
+                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+            )
+        }
+    }
+
+    // 切工具時收尾選取狀態。插圖不再由畫布接觸觸發（舊註解寫「Open gallery whenever
+    // IMAGE tool is activated」但這裡從來沒有開圖庫，是從初始 commit 就存在的過期誤導）。
     LaunchedEffect(activeTool) {
         if (activeTool != Tool.TEXT) {
             if (inlineTextNewPos != null || inlineTextEditId != null) commitInlineText()
             selectedTextAnnotationId = null
             textMoveDelta = Offset.Zero
             textFontSizeDelta = 0f
+            pendingTextSettle = null
         }
         if (activeTool != Tool.IMAGE) {
             selectedImageAnnotationId = null
@@ -492,6 +635,7 @@ fun InkCanvas(
             imageResizeScale = 1f
             imageResizeAnchor = null
             imageRotatePreview = 0f
+            pendingImageSettle = null
         }
     }
 
@@ -821,10 +965,18 @@ fun InkCanvas(
 
                 // Claim accepted in-canvas gestures immediately so fast stylus motion cannot
                 // leak through to the workspace pan handler before we enter the tool branch.
-                downEvent.changes
-                    .filter { it.pressed }
-                    .forEach { it.consume() }
-                down.consume()
+                //
+                // 例外＝IMAGE 工具：它是唯一不在紙上畫東西的工具（只做選取/移動/縮放/旋轉），
+                // 紙面空白處沒有東西要認領。這裡不預先 consume，空白處那一指就不會被標記
+                // 為「墨水的」，樞紐（hubShouldPanOnPaper 看 isConsumed）就會接手捲頁；
+                // 而單指落在圖片本體／把手上時，那些分支各自 down.consume()，
+                // 樞紐看到旗標會讓路 → 只移動圖片、不捲頁。兩邊不需要知道對方的工具。
+                if (activeTool != Tool.IMAGE) {
+                    downEvent.changes
+                        .filter { it.pressed }
+                        .forEach { it.consume() }
+                    down.consume()
+                }
                 // 頁鎖兜底：上個手勢若異常退出（未走提交/丟棄），在此清除，不污染新手勢
                 viewModel.setPageLock(false)
                 viewModel.setDragPreviewActive(false)
@@ -858,18 +1010,25 @@ fun InkCanvas(
 
                     if (selAnn != null) {
                         val currentTextRect = textAnnotationHitRect(selAnn, sx, sy).translate(textMoveDelta)
-                        val handleRect = textResizeHandleRect(currentTextRect)
+                        val handleRect = textResizeHandleRect(currentTextRect, handleHitRadiusPx)
 
                         // Resize handle hit
                         if (handleRect.contains(startOffset)) {
                             down.consume()
+                            pressedHandleCenter = handleRect.center
                             var accModelDelta = 0f
                             var drag = awaitDragOrCancellation(down.id)
                             while (drag != null && drag.pressed) {
                                 if (pinchActive) {
                                     viewModel.commitTextAnnotationResize(selAnn.id, selAnn.modelX, selAnn.modelY, selAnn.fontSize + accModelDelta)
-                                    textFontSizeDelta = 0f
+                                    pendingTextSettle = PendingTextSettle(
+                                        id = selAnn.id,
+                                        modelX = selAnn.modelX,
+                                        modelY = selAnn.modelY,
+                                        fontSize = selAnn.fontSize + accModelDelta
+                                    )
                                     activePathVersion++
+                                    pressedHandleCenter = null
                                     return@awaitEachGesture
                                 }
                                 // Standard resize UX: dragging toward bottom-right = bigger
@@ -882,8 +1041,15 @@ fun InkCanvas(
                                 drag = awaitDragOrCancellation(drag.id)
                             }
                             viewModel.commitTextAnnotationResize(selAnn.id, selAnn.modelX, selAnn.modelY, selAnn.fontSize + accModelDelta)
-                            textFontSizeDelta = 0f
+                            // 不歸零 textFontSizeDelta：等熱流回報新字級才清（見 PendingTextSettle）
+                            pendingTextSettle = PendingTextSettle(
+                                id = selAnn.id,
+                                modelX = selAnn.modelX,
+                                modelY = selAnn.modelY,
+                                fontSize = selAnn.fontSize + accModelDelta
+                            )
                             activePathVersion++
+                            pressedHandleCenter = null
                             return@awaitEachGesture
                         }
 
@@ -946,6 +1112,16 @@ fun InkCanvas(
                                 }
                                 viewModel.commitTextAnnotationMove(selAnn.id, totalDelta.x, totalDelta.y)
                                 viewModel.setPageLock(false)
+                                // 不歸零 textMoveDelta：等熱流回報新位置才清（見 PendingTextSettle），
+                                // 否則 DB 回報前的幾幀會用舊位置＋0 繪製 → 文字閃一下。
+                                pendingTextSettle = PendingTextSettle(
+                                    id = selAnn.id,
+                                    modelX = selAnn.modelX + totalDelta.x * scaleX,
+                                    modelY = selAnn.modelY + totalDelta.y * scaleY,
+                                    fontSize = selAnn.fontSize
+                                )
+                                activePathVersion++
+                                return@awaitEachGesture
                             }
                             textMoveDelta = Offset.Zero
                             activePathVersion++
@@ -1001,26 +1177,43 @@ fun InkCanvas(
                         )
                         val screenCorners = localCorners.map { rotatePoint(it, pivot, theta) }
                         // Rotation handle floats above the (rotated) top edge
-                        val rotHandleLocal = Offset(localRect.center.x, localRect.top - IMAGE_ROT_HANDLE_GAP_PX)
+                        val rotHandleLocal = Offset(localRect.center.x, localRect.top - rotHandleGapPx)
                         val rotHandle = rotatePoint(rotHandleLocal, pivot, theta)
 
-                        // — Rotate: tap on the top handle first (may overlap a corner on tiny images) —
-                        if (imageResizeHandleRect(rotHandle).contains(startOffset)) {
+                        // 命中：四角 + 旋轉把手一起比距離，取最近的（rotIndex=4）。
+                        // 舊碼是「旋轉固定優先 → 四角 indexOfFirst」，48dp 命中框在
+                        // 小圖上重疊時會穩定抓錯——改成最近優先後才敢放大命中區。
+                        val allHandles = screenCorners + rotHandle
+                        val ROT_IDX = 4
+                        val hitIdx = handleHit(startOffset, allHandles, rotIndex = ROT_IDX)
+
+                        // — Rotate: nearest handle is the rotation handle —
+                        if (hitIdx == ROT_IDX) {
                             down.consume()
+                            pressedHandleCenter = rotHandleLocal
                             val grabAngle = atan2(startOffset.y - pivot.y, startOffset.x - pivot.x) *
                                 (180f / Math.PI.toFloat())
                             imageRotatePreview = 0f
                             fun commitRotated() {
+                                // 算出這次 commit 會讓 DB 變成什麼，等熱流回報對上了才清預覽
+                                // （否則放手瞬間圖片會閃回原位再跳回來，見 PendingImageSettle）。
+                                val targetRot = ((selAnn.rotation + imageRotatePreview) % 360f + 360f) % 360f
                                 viewModel.commitImageAnnotationRotation(
                                     selAnn.id, selAnn.rotation + imageRotatePreview
                                 )
-                                imageRotatePreview = 0f
+                                pendingImageSettle = PendingImageSettle(
+                                    id = selAnn.id,
+                                    modelX = selAnn.modelX, modelY = selAnn.modelY,
+                                    modelWidth = selAnn.modelWidth, modelHeight = selAnn.modelHeight,
+                                    rotation = targetRot
+                                )
                                 activePathVersion++
                             }
                             var drag = awaitDragOrCancellation(down.id)
                             while (drag != null && drag.pressed) {
                                 if (pinchActive) {
                                     commitRotated()
+                                    pressedHandleCenter = null
                                     return@awaitEachGesture
                                 }
                                 val a = atan2(drag.position.y - pivot.y, drag.position.x - pivot.x) *
@@ -1034,18 +1227,18 @@ fun InkCanvas(
                                 drag = awaitDragOrCancellation(drag.id)
                             }
                             commitRotated()
+                            pressedHandleCenter = null
                             return@awaitEachGesture
                         }
 
-                        // — Resize: tap on any corner handle (aspect locked, rotation-aware) —
-                        val hitIdx = screenCorners.indexOfFirst {
-                            imageResizeHandleRect(it).contains(startOffset)
-                        }
+                        // — Resize: nearest handle is a corner (aspect locked, rotation-aware) —
                         if (hitIdx >= 0) {
                             down.consume()
+                            pressedHandleCenter = allHandles[hitIdx]
                             // All resize math happens in local (unrotated) space about the fixed pivot.
-                            val oppIdx = when (hitIdx) { 0 -> 3; 1 -> 2; 2 -> 1; else -> 0 }
-                            val anchorLocal = localCorners[oppIdx]
+                            val anchorLocal = localCorners[
+                                when (hitIdx) { 0 -> 3; 1 -> 2; 2 -> 1; else -> 0 }
+                            ]
                             val startLocal = rotatePoint(startOffset, pivot, -theta)
                             val grabVec = startLocal - anchorLocal
                             val grabLenSq = (grabVec.x * grabVec.x + grabVec.y * grabVec.y).coerceAtLeast(1f)
@@ -1054,17 +1247,25 @@ fun InkCanvas(
                             fun commitScaled() {
                                 val sc = StrokeTransformUtils.clampUniformScale(imageResizeScale)
                                 val r = scaleRectAbout(imageAnnotationRect(selAnn, sx, sy), anchorLocal, sc)
-                                viewModel.commitImageAnnotationResize(
-                                    selAnn.id, r.left / sx, r.top / sy, r.width / sx, r.height / sy
+                                val nx = r.left / sx
+                                val ny = r.top / sy
+                                val nw = r.width / sx
+                                val nh = r.height / sy
+                                viewModel.commitImageAnnotationResize(selAnn.id, nx, ny, nw, nh)
+                                // 等熱流回報對上了才清預覽（見 PendingImageSettle）
+                                pendingImageSettle = PendingImageSettle(
+                                    id = selAnn.id,
+                                    modelX = nx, modelY = ny,
+                                    modelWidth = nw, modelHeight = nh,
+                                    rotation = selAnn.rotation
                                 )
-                                imageResizeScale = 1f
-                                imageResizeAnchor = null
                                 activePathVersion++
                             }
                             var drag = awaitDragOrCancellation(down.id)
                             while (drag != null && drag.pressed) {
                                 if (pinchActive) {
                                     commitScaled()
+                                    pressedHandleCenter = null
                                     return@awaitEachGesture
                                 }
                                 // Project finger travel onto the grab vector → uniform scale
@@ -1076,6 +1277,7 @@ fun InkCanvas(
                                 drag = awaitDragOrCancellation(drag.id)
                             }
                             commitScaled()
+                            pressedHandleCenter = null
                             return@awaitEachGesture
                         }
 
@@ -1142,7 +1344,16 @@ fun InkCanvas(
                             }
                             viewModel.commitImageAnnotationMove(selAnn.id, totalDelta.x, totalDelta.y)
                             viewModel.setPageLock(false)
-                            imageMovePreview = Offset.Zero
+                            // 不歸零預覽：等熱流回報新位置才清（見 PendingImageSettle）。
+                            // 立即歸零會讓 DB 回報前的幾幀用「舊位置+0」繪製 → 圖片閃回原位再跳回來。
+                            pendingImageSettle = PendingImageSettle(
+                                id = selAnn.id,
+                                modelX = selAnn.modelX + totalDelta.x * scaleX,
+                                modelY = selAnn.modelY + totalDelta.y * scaleY,
+                                modelWidth = selAnn.modelWidth,
+                                modelHeight = selAnn.modelHeight,
+                                rotation = selAnn.rotation
+                            )
                             activePathVersion++
                             viewModel.publishImageDragPreview(null)
                             return@awaitEachGesture
@@ -1164,14 +1375,11 @@ fun InkCanvas(
                         return@awaitEachGesture
                     }
 
-                    // Tap on empty canvas: remember the tap point (model space) so the
-                    // imported image lands centered on it, then open gallery picker
-                    down.consume()
-                    pendingImageAnchorModel = Offset(
-                        startOffset.x / sx.coerceAtLeast(1f),
-                        startOffset.y / sy.coerceAtLeast(1f)
-                    )
-                    imagePickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                    // Tap on empty canvas: do nothing, let the event bubble up to the workspace pan handler.
+                    // 插圖改由工具列觸發（imagePickRequest）。舊版在 DOWN 當下就 launch
+                    // 系統 Activity，而且「空白」只是四個命中測試都沒抓到的 fall-through、
+                    // 沒有 tap/drag 區分 → 想滑頁也會彈圖庫。
+                    // 這裡刻意不 consume：圖片工具不畫東西，空白處該讓事件冒泡去捲頁。
                     return@awaitEachGesture
                 }
 
@@ -1195,11 +1403,13 @@ fun InkCanvas(
                         sy = sy
                     )
                     if (selectionRect != null && !selectionRect.isEmpty) {
-                        val hitHandle = strokeSelectionHandleRects(selectionRect)
-                            .firstOrNull { (_, handleRect) -> handleRect.contains(startOffset) }
+                        val hitIdx = handleHit(startOffset, strokeSelectionHandleCenters(selectionRect))
+                        val hitHandle = if (hitIdx >= 0)
+                            StrokeSelectionHandle.entries.getOrNull(hitIdx) else null
                         if (hitHandle != null) {
                             down.consume()
-                            val handle = hitHandle.first
+                            pressedHandleCenter = strokeSelectionHandleCenter(selectionRect, hitHandle)
+                            val handle = hitHandle
                             val anchorCanvas = strokeSelectionResizeAnchor(selectionRect, handle)
                             val initialHandle = strokeSelectionHandleCenter(selectionRect, handle)
                             val baseDistance = hypot(
@@ -1212,6 +1422,7 @@ fun InkCanvas(
                                 // 縮放介入：提交當前進度後退出（model-space 變換與縮放無關，可安全提交）
                                 if (pinchActive) {
                                     viewModel.commitResizedStrokes()
+                                    pressedHandleCenter = null
                                     return@awaitEachGesture
                                 }
                                 val currentDistance = hypot(
@@ -1223,6 +1434,7 @@ fun InkCanvas(
                                 drag = awaitDragOrCancellation(drag.id)
                             }
                             viewModel.commitResizedStrokes()
+                            pressedHandleCenter = null
                             return@awaitEachGesture
                         }
 
@@ -1921,6 +2133,14 @@ fun InkCanvas(
                 if (bmp != null) {
                     val isSelectedInImageTool = ann.id == selectedImageAnnotationId && activeTool == Tool.IMAGE
                     val isSelectedInSelectionTool = ann.id in selectedImageAnnotationIds && activeTool == Tool.LASSO
+                    // 落定判斷放在「繪製當下」而不是靠 LaunchedEffect 歸零預覽：
+                    // commit 是 launch(IO) 非同步寫 DB，DB 更新觸發重繪的那一幀，
+                    // LaunchedEffect 可能還沒跑到 → 繪製會疊上殘留預覽 = 新位置＋舊位移，
+                    // 下一幀才修正 → 閃一下（實機回報：閃更快但仍看得出）。
+                    // 這裡即時比對：已落定就直接吃 DB 值，零時序依賴。
+                    val settleTarget = pendingImageSettleRef.value
+                    val settled = settleTarget != null &&
+                        settleTarget.id == ann.id && settleTarget.matches(ann)
                     val canvasRect = when {
                         isSelectedInSelectionTool -> modelTransformedImageRectToCanvasRect(
                             image = ann,
@@ -1931,15 +2151,15 @@ fun InkCanvas(
                             sy = sy
                         )
                         else -> {
-                            val dx = if (isSelectedInImageTool) imageMovePreview.x else 0f
-                            val dy = if (isSelectedInImageTool) imageMovePreview.y else 0f
+                            val dx = if (isSelectedInImageTool && !settled) imageMovePreview.x else 0f
+                            val dy = if (isSelectedInImageTool && !settled) imageMovePreview.y else 0f
                             val base = Rect(
                                 left = ann.modelX * sx + dx,
                                 top = ann.modelY * sy + dy,
                                 right = ann.modelX * sx + dx + ann.modelWidth * sx,
                                 bottom = ann.modelY * sy + dy + ann.modelHeight * sy
                             )
-                            val eff = if (isSelectedInImageTool)
+                            val eff = if (isSelectedInImageTool && !settled)
                                 effectiveImageRect(base, Offset.Zero, imageResizeAnchor, imageResizeScale)
                             else base
                             Rect(
@@ -1951,12 +2171,13 @@ fun InkCanvas(
                         }
                     }
                     // M5: rotation pivot is the unscaled base center (= gesture pivot); the
-                    // in-flight rotate delta only applies to the IMAGE-tool-selected image.
+                    // in-flight rotate delta only applies to the IMAGE-tool-selected image,
+                    // 且只在尚未落定時疊加（同上，settled 後 DB 已含新角度）。
                     val imgTheta = ann.rotation +
-                        (if (isSelectedInImageTool) imageRotatePreview else 0f)
+                        (if (isSelectedInImageTool && !settled) imageRotatePreview else 0f)
                     val imgPivot = if (isSelectedInSelectionTool) canvasRect.center else run {
-                        val bx = ann.modelX * sx + (if (isSelectedInImageTool) imageMovePreview.x else 0f)
-                        val by = ann.modelY * sy + (if (isSelectedInImageTool) imageMovePreview.y else 0f)
+                        val bx = ann.modelX * sx + (if (isSelectedInImageTool && !settled) imageMovePreview.x else 0f)
+                        val by = ann.modelY * sy + (if (isSelectedInImageTool && !settled) imageMovePreview.y else 0f)
                         Offset(bx + ann.modelWidth * sx / 2f, by + ann.modelHeight * sy / 2f)
                     }
                     rotate(imgTheta, imgPivot) {
@@ -2051,7 +2272,12 @@ fun InkCanvas(
                         // 把手只在墨/圖子集非空時出現：字不支援套索縮放，有把手沒功能更騙人。
                         showHandles = ownSelectedStrokes.isNotEmpty() || selectedImageAnnotationIds.isNotEmpty(),
                         dashPhase = if (isSelectionTransforming) 0f else lassoDashPhase,
-                        animateDash = !isSelectionTransforming
+                        animateDash = !isSelectionTransforming,
+                        visualRadiusPx = handleVisualRadiusPx,
+                        haloRadiusPx = handleHaloRadiusPx,
+                        pressedHandleCenter = pressedHandleCenter,
+                        strokeScale = if (pressedHandleCenter != null)
+                            com.vic.inkflow.ui.theme.Handles.PressedStrokeScale else 1f
                     )
                 }
             }
@@ -2062,15 +2288,28 @@ fun InkCanvas(
                     imageAnnotations.firstOrNull { it.id == selImgId } else null
                 if (selImgAnn != null) {
                     val r = imageAnnotationRect(selImgAnn, sx, sy)
-                    val imgSelRect = effectiveImageRect(
-                        r, imageMovePreview, imageResizeAnchor, imageResizeScale
-                    )
+                    // 選取框要跟著內容一起落定（否則框先跳一步、內容後跳 → 框脫節＋二次閃）。
+                    val settleT = pendingImageSettleRef.value
+                    val imgSelSettled = settleT != null &&
+                        settleT.id == selImgAnn.id && settleT.matches(selImgAnn)
+                    val selMove = if (imgSelSettled) Offset.Zero else imageMovePreview
+                    val selScale = if (imgSelSettled) 1f else imageResizeScale
+                    val selAnchor = if (imgSelSettled) null else imageResizeAnchor
+                    val selRot = if (imgSelSettled) 0f else imageRotatePreview
+                    val imgSelRect = effectiveImageRect(r, selMove, selAnchor, selScale)
                     // M5: frame + handles live in local space, rotated about the same pivot
                     // the gesture uses (committed+move center).
-                    val imgTheta = selImgAnn.rotation + imageRotatePreview
-                    val imgPivot = r.translate(imageMovePreview).center
+                    val imgTheta = selImgAnn.rotation + selRot
+                    val imgPivot = r.translate(selMove).center
                     val rotTopLocal = Offset(imgSelRect.center.x, imgSelRect.top)
-                    val rotHandleLocal = rotTopLocal + Offset(0f, -IMAGE_ROT_HANDLE_GAP_PX)
+                    val rotHandleLocal = rotTopLocal + Offset(0f, -rotHandleGapPx)
+                    val imgCorners = listOf(
+                        imgSelRect.topLeft, imgSelRect.topRight,
+                        imgSelRect.bottomLeft, imgSelRect.bottomRight
+                    )
+                    // pressedHandleCenter 存的是「local 未旋轉」座標（手勢那側算的），
+                    // 這裡也在 rotate{} 內用 local 座標比，兩邊同一空間才對得上。
+                    val anyHandlePressed = pressedHandleCenter != null
                     rotate(imgTheta, imgPivot) {
                         drawLine(
                             color = BrandIndigo.copy(alpha = 0.6f),
@@ -2080,11 +2319,22 @@ fun InkCanvas(
                         )
                         drawLiquidGlassSelectionFrame(
                             rect = imgSelRect,
-                            handleCenters = listOf(
-                                imgSelRect.topLeft, imgSelRect.topRight,
-                                imgSelRect.bottomLeft, imgSelRect.bottomRight,
-                                rotHandleLocal
-                            )
+                            handles = imgCorners.map { c ->
+                                HandleVisual(
+                                    center = c,
+                                    pressed = if (c == pressedHandleCenter) 1f else 0f
+                                )
+                            } + HandleVisual(
+                                // 旋轉把手畫成缺口環＋箭頭，跟四角的實心點區分
+                                // （形狀區分、不動色票，保持單一 indigo 語言）。
+                                center = rotHandleLocal,
+                                pressed = if (pressedHandleCenter == rotHandleLocal) 1f else 0f,
+                                isRotation = true
+                            ),
+                            visualRadiusPx = handleVisualRadiusPx,
+                            haloRadiusPx = handleHaloRadiusPx,
+                            strokeScale = if (anyHandlePressed)
+                                com.vic.inkflow.ui.theme.Handles.PressedStrokeScale else 1f
                         )
                     }
                 }
@@ -2093,10 +2343,15 @@ fun InkCanvas(
                 drawIntoCanvas { composeCanvas ->
                     textAnnotations.forEach { ann ->
                         val isSelected = ann.id == selectedTextAnnotationId
-                        val dx = if (isSelected) textMoveDelta.x else 0f
-                        val dy = if (isSelected) textMoveDelta.y else 0f
+                        // 同圖片：落定後 DB 已含新值，不再疊預覽（否則閃一下）。見 PendingTextSettle。
+                        val tSettle = pendingTextSettleRef.value
+                        val txtSettled = tSettle != null &&
+                            tSettle.id == ann.id && tSettle.matches(ann)
+                        val dx = if (isSelected && !txtSettled) textMoveDelta.x else 0f
+                        val dy = if (isSelected && !txtSettled) textMoveDelta.y else 0f
+                        val fsDelta = if (isSelected && !txtSettled) textFontSizeDelta else 0f
                         textPaint.textSize = if (isSelected)
-                            (ann.fontSize + textFontSizeDelta).coerceAtLeast(4f) * sy
+                            (ann.fontSize + fsDelta).coerceAtLeast(4f) * sy
                         else ann.fontSize * sy
                         textPaint.color = ann.colorArgb
                         // Multiline: modelY is the first-line baseline (matches PDF export).
@@ -2118,7 +2373,9 @@ fun InkCanvas(
                             )
                             drawLiquidGlassSelectionFrame(
                                 rect = r,
-                                handleCenters = listOf(Offset(r.right, r.bottom))
+                                handleCenters = listOf(Offset(r.right, r.bottom)),
+                                visualRadiusPx = handleVisualRadiusPx,
+                                haloRadiusPx = handleHaloRadiusPx
                             )
                         }
                     }
@@ -2129,11 +2386,25 @@ fun InkCanvas(
                 val selTextAnn = if (selTextId != null && activeTool == Tool.TEXT)
                     textAnnotations.firstOrNull { it.id == selTextId } else null
                 if (selTextAnn != null) {
-                    val fsDelta   = textFontSizeDelta
-                    val textRect  = textAnnotationHitRect(selTextAnn, sx, sy, fsDelta).translate(textMoveDelta)
+                    // 選取框跟著落定（否則框先跳、內容後跳 → 框脫節＋二次閃）。
+                    val tS = pendingTextSettleRef.value
+                    val txtSelSettled = tS != null && tS.id == selTextAnn.id && tS.matches(selTextAnn)
+                    val fsDelta   = if (txtSelSettled) 0f else textFontSizeDelta
+                    val mvDelta   = if (txtSelSettled) Offset.Zero else textMoveDelta
+                    val textRect  = textAnnotationHitRect(selTextAnn, sx, sy, fsDelta).translate(mvDelta)
+                    val textHandle = Offset(textRect.right, textRect.bottom)
                     drawLiquidGlassSelectionFrame(
                         rect = textRect,
-                        handleCenters = listOf(Offset(textRect.right, textRect.bottom))
+                        handles = listOf(
+                            HandleVisual(
+                                center = textHandle,
+                                pressed = if (pressedHandleCenter == textHandle) 1f else 0f
+                            )
+                        ),
+                        visualRadiusPx = handleVisualRadiusPx,
+                        haloRadiusPx = handleHaloRadiusPx,
+                        strokeScale = if (pressedHandleCenter != null)
+                            com.vic.inkflow.ui.theme.Handles.PressedStrokeScale else 1f
                     )
                 }
 

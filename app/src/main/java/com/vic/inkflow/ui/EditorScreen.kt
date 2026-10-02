@@ -1127,7 +1127,10 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                         viewModel.clearUndoStacks()
                         pdfViewModel.deletePages(uri.toString(), indices)
                     },
-                    onStructureChanged = { viewModel.clearUndoStacks() }
+                    onStructureChanged = { viewModel.clearUndoStacks() },
+                    // 讓整張網格從工具列下緣開始，避免 52dp 玻璃頂欄被工具列壓住一半，
+                    // 工具列底下就不會再多出一截小玻璃。
+                    modifier = Modifier.padding(top = toolbarH)
                 )
             }
         } // Box（GRID 疊層）

@@ -1089,22 +1089,25 @@ class EditorViewModel(
         anchorModel: Offset? = null
     ): ImageAnnotationEntity {
         val (initW, initH) = computeInitialImageSize(imagePixelWidth, imagePixelHeight)
-        // M4: anchor = tap point in model space → center the image on it (clamped in-page);
-        // null keeps the legacy top-left default.
-        val modelX = if (anchorModel != null)
-            (anchorModel.x - initW / 2f).coerceIn(0f, maxOf(0f, modelWidth - initW))
-        else modelWidth * 0.1f
-        val modelY = if (anchorModel != null)
-            (anchorModel.y - initH / 2f).coerceIn(0f, maxOf(0f, modelHeight - initH))
-        else modelHeight * 0.1f
+        // 插入由工具列觸發（不再靠點紙面帶錨點）→ 無錨點時置中在頁面中央，
+        // 位置可預期；有錨點仍以它為圖心（相容舊路徑）。
+        // 見 centeredImageOrigin（純函數，有回歸測試）。
+        val origin = if (anchorModel != null) {
+            Offset(
+                (anchorModel.x - initW / 2f).coerceIn(0f, maxOf(0f, modelWidth - initW)),
+                (anchorModel.y - initH / 2f).coerceIn(0f, maxOf(0f, modelHeight - initH))
+            )
+        } else {
+            centeredImageOrigin(modelWidth, modelHeight, initW, initH)
+        }
         return ImageAnnotationEntity(
             documentUri = documentUri,
             pageIndex = targetPageIndex,
             // S1 雙寫：docY 錨點同步存。
-            docY = targetPageIndex * docStride + modelY,
+            docY = targetPageIndex * docStride + origin.y,
             uri = uri,
-            modelX = modelX,
-            modelY = modelY,
+            modelX = origin.x,
+            modelY = origin.y,
             modelWidth = initW,
             modelHeight = initH
         )

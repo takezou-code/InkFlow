@@ -112,7 +112,12 @@ internal fun Workspace(
     db: AppDatabase,
     mainListState: LazyListState = rememberLazyListState(),
     onRequestPage: (Int) -> Unit = {},
-    onScrollPage: (Int) -> Unit = {}
+    onScrollPage: (Int) -> Unit = {},
+    /**
+     * 插圖請求令牌（工具列按圖片鈕時遞增）。傳到每頁 InkCanvas，只有作用頁會開圖片庫。
+     * 見 InkCanvas 的 imagePickRequest 說明（為什麼不用「點紙面空白就插圖」）。
+     */
+    imagePickRequest: Int = 0
 ) {
     val isDarkSurface = isDarkTheme || MaterialTheme.colorScheme.background.luminance() < 0.5f
     // 桌面全透明：底由 EditorScreen 根 Aurora 提供，紙直接浮在光斑上
@@ -162,11 +167,16 @@ internal fun Workspace(
         val side = with(density) { 40.dp.toPx() }
         return ((viewportWpx * zoom) - side).coerceAtLeast(0f)
     }
+    // KEEP：至少留 1/4 紙在區內。放寬到 3/4 是因為使用者要「能推很遠」——
+    // 0.25 太緊，1/4 的紙在畫面裡等於只能微調；3/4 讓 100% 時左右推紙的手感接近放大後捲動。
+    // 放手就停（不彈回），語意跟放大後的 hScroll 一致。
     fun clampPan(raw: Float): Float {
-        val max = paperWpxForPan() * 0.25f
+        val max = paperWpxForPan() * 0.75f
         return raw.coerceIn(-max, max)
     }
     fun isBlankX(x: Float): Boolean {
+        // 放大中沒有「紙外」可言：紙比視窗寬，視窗內每一點都在紙上。
+        // 這裡回 false = 紙上，單指准入改由 fingerPanOnPaperAllowed 決定（觸控筆模式照樣准）。
         if (viewModel.docZoom.value > 1f) return false
         // 紙的實際位置＝置中＋當前橫移：推到底後空出來的地方整條都是活區，點哪都能拉回。
         // （之前沒加 pan，空出來的 [L, L+pan] 被誤判成紙，推到底只剩 20dp 縫能起手＝卡死。）
@@ -242,8 +252,22 @@ internal fun Workspace(
         // 離線算接合延遲、跟手保真度、抖動、放手後位移。不再憑感覺。
         val tracer = TraceRecorder()
         awaitEachGesture {
-            val down = awaitFirstDown(requireUnconsumed = false)
+val down = awaitFirstDown(requireUnconsumed = false)
             val startedBlank = isBlankX(down.position.x)
+            // 單指平移的唯一分流點（hubShouldPanOnPaper）。樞紐與 InkCanvas 各自跑
+            // pointerInput、彼此沒有握手，唯一能判「墨水是否已接手」的是 DOWN 的 isConsumed
+            // ——InkCanvas 是子節點、Main pass 比樞紐早到，它 consume 過就代表這一指是它的。
+            // 少了這一段就會雙寫：拖圖片時樞紐同時 dispatchRawDelta，頁面跟著捲。
+            //
+            // requireUnconsumed = false 仍要保留：DOWN 已被墨水 consume 時樞紐也必須看到那一指，
+            // 否則第二指加入時樞紐湊不到雙指，pinch 競賽會少一個人。
+            //
+            // pointerInput(Unit) 只跑一次：必須讀 viewModel.inputMode.value 拿新鮮值，
+            // 不吃捕獲的 by-delegate 快照（同 applyZoom 裡 docZoom 那條地雷）。
+val allowSinglePan = startedBlank || fingerPanOnPaperAllowed(
+                viewModel.inputMode.value,
+                viewModel.selectedTool.value
+            )
             val fedIds = mutableSetOf<Int>()
             var gestureActive = false // 雙指鎖定接管中（墨水讀 pinchActive 棄筆）
             var lockedKind: GestureStateMachine.Kind? = null
@@ -260,15 +284,20 @@ internal fun Workspace(
                 // 再按住即殺 glide（新起點不疊加不亂飛）。
                 flingJob?.cancel()
                 flingJob = null
-                if (kind == GestureStateMachine.Kind.SINGLE_PAN) return // 空白單指不立旗（舊制）
+                // SINGLE_PAN 不立 pinchActive 旗（空白單指舊制，紙上單指同制：筆一落下就 yield，
+                // 兩者不可能重疊，無需棄筆旗）。但 lockedKind 一定要記，
+                // 否則紙上單指鎖了也不 consume，事件還是漏回 Void。
+                if (kind == GestureStateMachine.Kind.SINGLE_PAN) {
+                    lockedKind = kind
+                    haveZoomFocus = false
+                    return
+                }
                 if (!gestureActive) {
-                    android.util.Log.d("InkFlowGesture", "m2Lock=$kind blank=$startedBlank")
                     viewModel.setPinchActive(true)
                     gestureActive = true
                     lockedKind = kind
                     pdfViewModel.setRendersPaused(true)
                 } else if (lockedKind != kind) {
-                    android.util.Log.d("InkFlowGesture", "m2Upgrade=$lockedKind->$kind")
                     lockedKind = kind
                 }
                 haveZoomFocus = false
@@ -277,10 +306,29 @@ internal fun Workspace(
                 if (gestureActive) {
                     viewModel.setPinchActive(false)
                     gestureActive = false
-                    lockedKind = null
                     pdfViewModel.flushPendingRenders()
                 }
+                lockedKind = null
                 haveZoomFocus = false
+            }
+            // 水平位移唯一寫者（單指/兩指共用這個出口）。
+            // 依縮放丟去不同地方，因為語意不同：
+            // - 100%：紙比視窗窄，水平拖 = 把紙在視窗內推（panOffsetX，clampPan 夾住）。
+            // - 放大：紙比視窗寬，沒有「紙外」可言，水平拖 = 捲動那張寬紙
+            //   （hScrollState，Compose 自己的 coerceIn(0, maxValue) 夾到紙邊緣）。
+            // 這裡是唯一出口 → 不會有兩個寫者搶同一根手指（原生那條已 enabled=false）。
+            //
+            // 符號：panOffsetX 是內容位移（正=紙往右），手指往右 dx>0 → +dx，跟手。
+            // hScrollState 是「捲了多少」的正值，但 ScrollNode 擺放時用 xOffset = -scroll
+            // （Scroll.kt:471-476）→ 值越大內容越往左。手指往右要內容往右＝值變小，
+            // 所以必須取負（跟垂直那條 dispatchRawDelta(-o.dy) 同一個道理）。
+            fun applyHorizontalDelta(dx: Float) {
+                when (horizontalPanTarget(viewModel.docZoom.value)) {
+                    HorizontalPanTarget.PAN_OFFSET_X ->
+                        viewModel.setPanOffsetX(clampPan(viewModel.panOffsetX.value + dx))
+                    HorizontalPanTarget.SCROLL_ZOOMED_CONTENT ->
+                        hScrollState.dispatchRawDelta(-dx)
+                }
             }
             // 捏合施加：zoom 幀 anchor-set 直接定狀態；factor==1 幀跟隨平滑 focus 漂移
             //（舊碼捏合重心漂移照吃，行為保留，輸入換成平滑後的）。
@@ -290,7 +338,9 @@ internal fun Workspace(
                     if (haveZoomFocus) {
                         val dx = fx - lastZoomFx
                         val dy = fy - lastZoomFy
-                        if (dx != 0f) viewModel.setPanOffsetX(clampPan(viewModel.panOffsetX.value + dx))
+                        // 走同一個出口：放大中的捏合重心漂移要捲寬紙，不能再推 panOffsetX
+                        // （那會跟 hScrollState 雙寫，舊碼 pinch 一直在寫 panOffsetX 這裡）。
+                        if (dx != 0f) applyHorizontalDelta(dx)
                         if (dy != 0f) mainListState.dispatchRawDelta(-dy)
                     }
                     lastZoomFx = fx
@@ -344,9 +394,7 @@ internal fun Workspace(
                     val idxNew = (relNew / itemFullNew).toInt().coerceAtLeast(0)
                         .coerceAtMost((totalItems - 1).coerceAtLeast(0))
                     val offNew = (relNew - idxNew * itemFullNew).coerceAtLeast(0f).toInt()
-                    android.util.Log.d("InkFlowPinch", "anchor2 old=$old new=$new cy=$fy idx=$idxNew off=$offNew first=${mainListState.firstVisibleItemIndex}+${mainListState.firstVisibleItemScrollOffset}")
                     mainListState.requestScrollToItem(idxNew, offNew)
-                    android.util.Log.d("InkFlowPinch", "anchor2-post first=${mainListState.firstVisibleItemIndex}+${mainListState.firstVisibleItemScrollOffset}")
                 }
                 lastZoomFx = fx
                 lastZoomFy = fy
@@ -369,23 +417,19 @@ internal fun Workspace(
                     // Start 永遠走 pendingStart（drainStart），這裡不會出現；分支只為窮舉。
                     is GestureStateMachine.Output.GestureStart -> {}
                     is GestureStateMachine.Output.ScrollBy -> {
-                        if (o.dx != 0f) {
-                            viewModel.setPanOffsetX(clampPan(viewModel.panOffsetX.value + o.dx))
-                        }
+                        if (o.dx != 0f) applyHorizontalDelta(o.dx)
                         if (o.dy != 0f) {
                             mainListState.dispatchRawDelta(-o.dy)
                         }
                     }
                     is GestureStateMachine.Output.ZoomBy -> applyZoom(o.focusX, o.focusY, o.factor)
                     is GestureStateMachine.Output.GestureEnd -> {
-                        android.util.Log.d("InkFlowGesture", "m2End=${o.kind}")
                         endedKind = o.kind
                         endAll()
                         tracer.flush("END-${o.kind}").forEach { android.util.Log.d("InkFlowTrace", it) }
                     }
                     GestureStateMachine.Output.YieldToStylus,
                     GestureStateMachine.Output.AbortGesture -> {
-                        android.util.Log.d("InkFlowGesture", "m2$o")
                         fedIds.clear() // 下幀還壓著的手指當新起點重吃（舊 reset 語義）
                         endAll()
                         tracer.flush("$o").forEach { android.util.Log.d("InkFlowTrace", it) }
@@ -408,7 +452,7 @@ internal fun Workspace(
                         apply(
                             machine.pointerDown(
                                 id, down.position.x, down.position.y,
-                                isPalmPointer(down.id.value), startedBlank, down.uptimeMillis
+                                isPalmPointer(down.id.value), allowSinglePan, down.uptimeMillis
                             )
                         )
                     }
@@ -437,7 +481,7 @@ internal fun Workspace(
                             apply(
                                 machine.pointerDown(
                                     id, c.position.x, c.position.y,
-                                    isPalmPointer(c.id.value), startedBlank, now
+                                    isPalmPointer(c.id.value), allowSinglePan, now
                                 )
                             )
                         }
@@ -471,14 +515,35 @@ internal fun Workspace(
                     val o1 = machine.tick(now)
                     apply(o1)
                     val o2 = machine.pointerMove(snap, now)
+                    // ── 讓路判斷放在「施加位移之前」，不是 DOWN 當下 ──
+                    // 實測 log（InkFlowProbe）：樞紐的 DOWN 比 InkCanvas 的分支判定早 17ms，
+                    // DOWN 當下讀 down.isConsumed 永遠是 false → 樞紐以為沒人接手而照捲，
+                    // 於是「拖圖片時頁面跟著捲」。
+                    // PointerInputChange 是同一個實例（同一 Main pass 派同一個 PointerEvent），
+                    // consume() 直接改物件欄位，所以這裡（墨水已跑完）再讀才會看到 true。
+                    val inkTookIt = hubShouldYieldToInk(
+                        hubGotDelta = o2 is GestureStateMachine.Output.ScrollBy,
+                        inkConsumed = down.isConsumed
+                    )
+                    if (inkTookIt) {
+                        // 墨水接手這一指：整段放棄（不施加這一幀位移、不吃速度取樣）。
+                        apply(machine.cancelAll())
+                        endAll()
+                        return@awaitEachGesture
+                    }
                     apply(o2)
-                    // 單指速度取樣（glide 用）：單指＋空白才記，雙指幀不污染速度。
-                    if (pressed.size == 1 && startedBlank) {
-                        val c = pressed[0]
-                        if (c.id.value.toInt() in fedIds) {
-                            sTracker.addPosition(c.uptimeMillis, c.position)
-                            if (sPoints == 0) sT0 = c.uptimeMillis
-                            sPoints++
+                    // 單指速度取樣（glide 用）：單指＋准平移才記，雙指幀不污染速度。
+                    // 用算數手指數（觸控且非手掌），不用 pressed.size——
+                    // 手掌貼著時 size==2 會誤判成多指，慣性就整個不動。
+                    if (allowSinglePan) {
+                        val only = pressed.filter { isCountedFinger(it) }
+                        if (only.size == 1) {
+                            val c = only[0]
+                            if (c.id.value.toInt() in fedIds) {
+                                sTracker.addPosition(c.uptimeMillis, c.position)
+                                if (sPoints == 0) sT0 = c.uptimeMillis
+                                sPoints++
+                            }
                         }
                     }
                     // 施加後立刻讀列表位置（同步已驗證）：手指 vs 紙，同一幀。
@@ -494,10 +559,10 @@ internal fun Workspace(
                         panX = viewModel.panOffsetX.value,
                         zoom = viewModel.docZoom.value
                     )
-                    if (startedBlank || gestureActive) {
+                    if (startedBlank || lockedKind != null || gestureActive) {
                         pressed.forEach { it.consume() }
                     } else {
-                        // 起點紙上未定：只攔新指，首指放行（墨水/原生繼續吃，不斷流）。
+                        // 起點紙上未定（手指模式，紙是墨水的）：只攔新指，首指放行不斷流。
                         pressed.filter { it.id != down.id }.forEach { it.consume() }
                     }
                 }
@@ -667,7 +732,15 @@ internal fun Workspace(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .horizontalScroll(hScrollState, enabled = docZoom > 1f),
+                // enabled = false：原生橫向捲動只留「排版 + 裁切 + 偏移」，
+                // 不再吃觸控。原因：它跟 twoFingerModifier 在同一個 Main pass，
+                // 而且是子節點（由內而外先收到事件）→ 有水平分量就越過自己的 slop 並 consume，
+                // 樞紐那時用絕對座標算位移（不看 isConsumed）→ 同一根手指兩個寫者搶 X：
+                // 約 2 倍速，且兩把鉗制不同（原生物夾 [0,maxValue]、樞紐夾 ±paperW*3/4）
+                // → 撞邊界就卡住或彈回。與 LazyColumn 的 userScrollEnabled=false 同一個道理。
+                // 排版不受影響：ScrollingLayoutElement 無條件套用（Scroll.kt scroll()），
+                // hScrollState.value 的偏移照常套用，pinch 錨定照常 dispatchRawDelta。
+                .horizontalScroll(hScrollState, enabled = false),
             contentAlignment = Alignment.Center
         ) {
             LazyColumn(
@@ -849,6 +922,7 @@ internal fun Workspace(
                 texts = pageTexts,
                 images = pageImages,
                 pageGapPx = pageGapPx,
+                imagePickRequest = imagePickRequest,
                 onEdgeAutoScroll = { dy ->
                     // 同步施加：寫筆中邊緣捲不斷流，提筆即停（不經協程排隊）
                     mainListState.dispatchRawDelta(dy)
@@ -924,6 +998,15 @@ private fun DragPreviewOverlay(
     val dragImg by viewModel.imageDragPreview.collectAsState()
     if (preview.isEmpty() && selImages.isEmpty() && selTexts.isEmpty() && dragImg == null) return
     val context = LocalContext.current
+    // 把手尺寸（dp 基準，1 畫布 px 恆＝1 螢幕 px，不做 docZoom 補償）。跟 InkCanvas 那層一致。
+    // 必須在 Composable 層算：LocalDensity 不能在 drawWithCache 的繪製層取。
+    val overlayDensity = LocalDensity.current
+    val overlayHandleVisualPx = with(overlayDensity) {
+        com.vic.inkflow.ui.theme.Handles.VisualRadius.toPx()
+    }
+    val overlayHandleHaloPx = with(overlayDensity) {
+        com.vic.inkflow.ui.theme.Handles.HaloRadius.toPx()
+    }
     // 圖片解碼快取（1024 封頂，拖曳預覽夠用；與 InkCanvas 各管各的，不共享）。
     val loadedImages = remember { mutableStateMapOf<String, ImageBitmap?>() }
     androidx.compose.runtime.LaunchedEffect(selImages, dragImg?.image?.uri) {
@@ -1071,8 +1154,64 @@ private fun DragPreviewOverlay(
                 selectionRect = rect,
                 showHandles = true,
                 dashPhase = 0f,
-                animateDash = false
+                animateDash = false,
+                visualRadiusPx = overlayHandleVisualPx,
+                haloRadiusPx = overlayHandleHaloPx
             )
         }
     }
 }
+
+/**
+ * 紙面單指平移准入（adapter 閘門，狀態機只聽這裡）。
+ *
+ * 觸控筆模式（STYLUS_ONLY／PALM_REJECTION）下 InkCanvas 對任何 Touch 聯絡
+ * 直接 return 不 consume（InkCanvas.kt STYLUS_ONLY 分支），紙上單指就沒人接手了。
+ * 這裡開門把它交回樞紐，避免事件沉進 Void（LazyColumn userScrollEnabled=false、
+ * horizontalScroll enabled=false、無 nestedScroll → 沒有下游消費者）。
+ *
+ * 手指模式（FREE）原則上門關著——紙上單指是墨水的。
+ * **唯一例外＝IMAGE 工具**：它是唯一不在紙上畫東西的工具（只做選取/移動/縮放/旋轉），
+ * 紙面空白處沒有東西要畫，讓給捲動沒有衝突。搭配 InkCanvas 端 IMAGE 工具不預先
+ * consume（見該檔 activeTool != Tool.IMAGE 的條件），單指在空白紙上就能滑頁；
+ * 單指落在圖片本體／把手上時那些分支各自 consume，樞紐靠 isConsumed 讓路。
+ *
+ * 這個例外不可外溢到畫線/橡皮/套索/文字/形狀，否則手指在紙上畫線會變成捲頁
+ * （FingerPanAdmissionTest 有逐工具釘住）。
+ *
+ * 不看 docZoom：放大後行為必須跟 100% 一樣（放大中 isBlankX 恆 false＝整個視窗都算紙上，
+ * 若這裡再關門就是「放大後單指全死」）。放大時的 X 軸落點由 applyHorizontalDelta 分流，
+ * 樞紐是唯一寫者，不會跟原生搶。
+ */
+internal fun fingerPanOnPaperAllowed(inputMode: InputMode, activeTool: Tool): Boolean =
+    inputMode != InputMode.FREE || activeTool == Tool.IMAGE
+
+/**
+ * 樞紐在這一幀要不要放棄這一指的單指平移（讓路給墨水）。
+ *
+ * **兩個寫者必須一主一主**——樞紐與 InkCanvas 各自獨立跑 `pointerInput`，彼此沒有握手。
+ * 若同一根手指兩邊都平移，畫面會出現「拖圖片時頁面跟著捲」的雙寫。
+ * 唯一仲裁依據是 [PointerInputChange.isConsumed]：InkCanvas 是子節點、Main pass 同派
+ * 同一個 `PointerEvent`，`awaitFirstDown` 拿到的是**同一個 `PointerInputChange` 實例**，
+ * 墨水 `consume()` 直接改該物件欄位 → 樞紐讀得到。
+ *
+ * ⚠️ **必須延後到施加位移前呼叫**：兩個 coroutine 的執行先後沒有保證。實測 log 顯示樞紐的
+ * DOWN 比 InkCanvas 的分支判定早 17ms，在 DOWN 當下讀 `isConsumed` 必定是 false。
+ * 到 `pointerMove` 這裡時墨水已跑完，讀到的才是真值。
+ *
+ * @param hubGotDelta 樞紐這一幀算出了位移（有東西要施加，仲裁才有意義）
+ * @param inkConsumed 這一指的 DOWN 目前是否已被 InkCanvas consume
+ */
+internal fun hubShouldYieldToInk(hubGotDelta: Boolean, inkConsumed: Boolean): Boolean =
+    hubGotDelta && inkConsumed
+
+/**
+ * 水平位移的唯一寫者分流（純函數，便於回歸測試）。
+ *
+ * 100%：紙比視窗窄 → 水平拖是把紙在視窗內推（panOffsetX，clampPan 夾住）。
+ * 放大：紙比視窗寬，沒有紙外可言 → 水平拖是捲動那張寬紙（hScrollState，Compose 夾紙邊緣）。
+ */
+internal enum class HorizontalPanTarget { PAN_OFFSET_X, SCROLL_ZOOMED_CONTENT }
+
+internal fun horizontalPanTarget(docZoom: Float): HorizontalPanTarget =
+    if (docZoom > 1f) HorizontalPanTarget.SCROLL_ZOOMED_CONTENT else HorizontalPanTarget.PAN_OFFSET_X

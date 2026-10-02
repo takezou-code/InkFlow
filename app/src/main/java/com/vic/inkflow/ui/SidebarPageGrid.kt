@@ -218,11 +218,18 @@ internal fun SidebarPageGrid(
                         contentDescription = "回預覽條"
                     )
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(text = "所有頁面", style = MaterialTheme.typography.titleSmall)
+                        // 頂欄文字走玻璃內容色，不是 M3 原味 onSurface。
+                        // 舊碼用 MaterialTheme.colorScheme，在深色模式下直接變成
+                        // 深底＋黑字，整行看不見。
+                        Text(
+                            text = "所有頁面",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = glassContentColor(isDarkTheme)
+                        )
                         Text(
                             text = "${visibleIndices.size} 頁",
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = glassContentColor(isDarkTheme)
                         )
                     }
                     // 書籤開關：玻璃小丸（取代 M3 FilterChip）
