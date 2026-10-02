@@ -810,6 +810,18 @@ fun TabletEditorScreen(
             val toolbarH = 56.dp + if (sliderShown) 42.dp else 0.dp
 
             Box(Modifier.fillMaxSize()) {
+                // ── 第 3 階時，編輯器內容「暫時消失」─────────────────────────
+                //
+                // 疊層完全顯示後把紙張與側欄整個移出 composition，而不是用擋板去擋。
+                // 理由：它們若還留在畫面樹裡，會同時造成兩個問題 ——
+                //   1. 玻璃的 haze 仍會從下面取樣到紙張與頁碼，
+                //      於是網格卡片上會透出下面的東西（看起來像多了一塊容器）。
+                //   2. 觸控仍會漏過疊層的空白處打到紙上。
+                // 移出 composition 兩個問題一起消失，不需要任何擋板。
+                //
+                // 0.98 而不是 1.0：此時紙張 alpha 已剩 0.02（不可見），
+                // 移除不會造成跳動，進出都走同一條淡入淡出。
+                if (gridOverlayProgress < 0.98f) {
                 // ── 紙：整屏最底層 ────────────────────────────────────────────
                 // 紙必須是「整個螢幕」大小，不能只佔側欄右邊那一塊。
                 // 這樣它才會延伸到左邊頁碼底下，頁碼／+／展開鈕才能浮在紙上（iOS 全出血）。
@@ -1071,6 +1083,7 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
             }
         } // Box(內容區：Workspace ＋ AI 抽屜)
         } // Row（側欄＋AI 抽屜，疊在紙上）
+                } // if（疊層完全顯示 → 編輯器內容暫時消失）
 
 
         // ── 第 3 階：頁面網格疊層 ────────────────────────────────────────
@@ -1091,18 +1104,6 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                         translationY = (1f - p) * 24.dp.toPx()
                         scaleX = 0.96f + 0.04f * p
                         scaleY = 0.96f + 0.04f * p
-                    }
-                    // 疊層現在是透明的，網格卡片之間的間隙會把觸控漏給下面的紙 →
-                    // 在第 3 階空白處畫線會畫到看不見的紙上。
-                    // 掛在「疊層自己」而不是卡片上：卡片是子節點，先拿到事件；
-                    // 這裡只擋卡片沒吃掉的空白處。
-                    .pointerInput(Unit) {
-                        awaitPointerEventScope {
-                            while (true) {
-                                awaitPointerEvent(PointerEventPass.Initial)
-                                    .changes.forEach { it.consume() }
-                            }
-                        }
                     }
             ) {
                 SidebarPageGrid(
