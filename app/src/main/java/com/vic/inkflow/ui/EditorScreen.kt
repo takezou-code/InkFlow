@@ -957,6 +957,11 @@ fun TabletEditorScreen(
                             var velX = 0f
                             var lastT = down.uptimeMillis
                             val slop = viewConfiguration.touchSlop
+                            // DIAG-TEMP：拖曳幀時間統計。全部在本地累積、放手才記一次，
+                            // 每幀零開銷。幀間隔 16ms = 順，33/50ms = 還在掉幀。
+                            var diagEvents = 0
+                            var diagMaxGapMs = 0L
+                            var diagPrevT = down.uptimeMillis
                             while (true) {
                                 val event = awaitPointerEvent()
                                 val change = event.changes.firstOrNull { it.id == down.id } ?: break
@@ -965,6 +970,17 @@ fun TabletEditorScreen(
                                     // 舊碼只在 horizontalLock == true 分支裡清，一旦有
                                     // 路徑沒清到，寬度就永遠停在「拖曳模式」。
                                     isDraggingSidebar = false
+                                    // DIAG-TEMP
+                                    if (diagEvents > 0) {
+                                        val dur = change.uptimeMillis - diagPrevT
+                                        android.util.Log.i(
+                                            "InkSidebarDrag",
+                                            "events=$diagEvents maxGapMs=$diagMaxGapMs " +
+                                                "startPx=${with(density) { currentWidthDp.toPx() }.toInt()} " +
+                                                "endPx=${dragVisualWidthPx.toInt()} " +
+                                                "lock=$horizontalLock stage=$sidebarStage"
+                                        )
+                                    }
                                     if (horizontalLock == null) {
                                         // 純點＝展開（RAIL 與 PANEL 都是「往展開走」）。
                                         // 舊碼是 order[(i+1) % 3] 循環，PANEL 點一下進 GRID、
@@ -1012,6 +1028,11 @@ fun TabletEditorScreen(
                                 val dy = change.position.y - prevY
                                 prevX = change.position.x
                                 prevY = change.position.y
+                                // DIAG-TEMP
+                                diagEvents++
+                                val gap = change.uptimeMillis - diagPrevT
+                                diagPrevT = change.uptimeMillis
+                                if (gap > diagMaxGapMs) diagMaxGapMs = gap
                                 if (horizontalLock == null) {
                                     accX += dx
                                     accY += dy
