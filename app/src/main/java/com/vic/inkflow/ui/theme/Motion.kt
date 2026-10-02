@@ -23,4 +23,17 @@ object Motion {
         dampingRatio = Spring.DampingRatioNoBouncy,
         stiffness = Spring.StiffnessMedium
     )
+
+    /**
+     * 放手吸附的彈簧：帶明顯過衝（「Q彈」）。
+     *
+     * dampingRatio 是取捨的關鍵：
+     *  - < 0.5 會來回擺盪收斂，側欄看起來像在抖
+     *  - > 0.7 幾乎沒彈性，等於 [settleSpring]
+     * 0.55 剛好是「到位後輕輕帶一下再停住」。
+     */
+    fun <T> snapSpring() = spring<T>(
+        dampingRatio = 0.55f,
+        stiffness = Spring.StiffnessMediumLow
+    )
 }

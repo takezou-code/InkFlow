@@ -132,16 +132,6 @@ internal fun SidebarPageGrid(
     // 同一列的 item 共用同一個 y offset，取最上面一列數幾個即為欄數。
     val columnCount by remember { derivedStateOf { gridState.measuredColumnCount() } }
     var didInitialScroll by remember { mutableStateOf(false) }
-    // DIAG-TEMP: 驗證欄數實測結果（算式推估 7 欄，需實機確認）
-    LaunchedEffect(columnCount) {
-        if (columnCount > 0) {
-            val first = gridState.layoutInfo.visibleItemsInfo.minByOrNull { it.offset.y }
-            android.util.Log.i(
-                "InkGridDiag",
-                "cols=$columnCount tileW=${first?.size} tileH=${first?.size?.let { first.offset.y }}"
-            )
-        }
-    }
     LaunchedEffect(columnCount) {
         if (!didInitialScroll && columnCount > 0) {
             didInitialScroll = true
