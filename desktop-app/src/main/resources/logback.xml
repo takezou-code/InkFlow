@@ -47,4 +47,22 @@
     <!-- Third-party chatter that says nothing useful to the user. -->
     <logger name="org.apache.pdfbox" level="WARN"/>
     <logger name="org.xerial.sqlite" level="WARN"/>
+
+    <!--
+        PDFBox on JDK 17+ cannot reach `jdk.internal.ref.Cleaner` through
+        MethodHandles, so it cannot eagerly unmap the direct ByteBuffers it
+        rasterises into:
+
+          ERROR o.apache.pdfbox.io.IOUtils - Unmapping is not supported.
+            at org.apache.pdfbox.io.IOUtils.<clinit>
+
+        PDFBox catches this internally and carries on — rendering is unaffected
+        and the buffers are still reclaimed by the GC, it just loses the eager
+        unmap. It fires once per JVM on class init, never per page, so it is
+        pure noise; leaving it at ERROR buries real PDF problems (a genuinely
+        encrypted file, a corrupt stream) that would print the same prefix.
+        Tried and did NOT fix it: the add-opens JVM flag for java.nio (the lookup
+        is on jdk.internal.ref, not java.nio) and upgrading PDFBox to 3.0.8.
+    -->
+    <logger name="org.apache.pdfbox.io.IOUtils" level="OFF"/>
 </configuration>
