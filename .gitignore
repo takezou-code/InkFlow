@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 *.iml
 .gradle
 .kotlin
@@ -15,7 +16,7 @@
 .cxx
 local.properties
 
-# Windows desktop edition: separate git worktree (branch `windows`), not part of this repo tree
+# Windows desktop worktree (branch `windows`), a sibling checkout, not part of this tree
 /InkFlow-Windows/
 
 # Release signing key (never commit; back it up separately)
@@ -24,6 +25,28 @@ local.properties
 *.jks
 *.keystore
 
+# Desktop run artifacts
+*.log
+hs_err_pid*.log
+out/
+.kotlin/
+
 # Agent rules: local-only, never push (purged from all history; restore from local backup if needed)
 /AGENTS.md
 /docs/specs/
+=======
+# Gradle
+.gradle/
+build/
+kotlin-js-store/
+
+# IDE
+.idea/
+.kotlin/
+.vscode/
+
+# Runtime artifacts
+*.log
+hs_err_pid*.log
+out/
+>>>>>>> windows
