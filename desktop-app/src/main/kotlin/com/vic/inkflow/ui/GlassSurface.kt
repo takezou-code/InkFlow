@@ -1,8 +1,6 @@
 package com.vic.inkflow.ui
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -11,152 +9,29 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
-import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.unit.dp
-import com.vic.inkflow.ui.theme.GlassTintDark
-import com.vic.inkflow.ui.theme.GlassTintLight
-import com.vic.inkflow.ui.theme.GlassVeilDark
-import com.vic.inkflow.ui.theme.GlassVeilLight
-import com.vic.inkflow.ui.theme.PaperInkColor
-import com.vic.inkflow.ui.theme.ShapeLg
 import com.vic.inkflow.ui.theme.ShapeMd
-// Tokens come from `:shared` (the tablet's own theme/Color.kt + ShapeTokens.kt),
-// not from a copy in this package — see the note in Theme.kt on why the copy had
-// already drifted.
 
 /**
- * The tablet's liquid-glass material, ported to the desktop.
+ * Desktop-only pieces of the glass material.
  *
- * ## What is and is not portable
+ * The material itself — the tokens, the sheen + rim dressing, [fauxGlassPanel] and
+ * [glassSidePanel] — now lives in `:shared` (`ui/Glass.kt`), which is the tablet's
+ * own code rather than a transcription of it. That file also documents what the
+ * material is: the cue order, why the rim is a 0.75dp hairline, why there is no
+ * `Modifier.shadow()`, and why nothing animates while idle.
  *
- * The tablet (`app/.../ui/GlassSurface.kt`) has two paths. The primary one is
- * built on `dev.chrisbanes.haze`, which does real backdrop blur through
- * Android's `RenderEffect`. That is an Android platform API with no counterpart
- * in Compose Desktop, and emulating a true Gaussian backdrop blur per frame in
- * software would be far too slow to ship.
+ * What stayed here is the part that is genuinely the desktop's: the backdrop, and
+ * the two components whose signatures are driven by desktop concerns.
  *
- * So this port is the tablet's **faux** path — the one the tablet itself falls
- * back to on devices where blur is unavailable — with its numbers taken verbatim
- * from `theme/Color.kt`. That is deliberate: the tablet team tuned those alphas
- * by eye against the real material, so reusing them keeps the two apps looking
- * like the same product rather than like two apps that both happen to be glassy.
- *
- * The cues that carry the material, in the order they matter:
- *
- *  1. a translucent tint (not an opaque surface) so the backdrop shows through;
- *  2. a vertical sheen — bright at the top, dark at the bottom — so it reads as a
- *     lit pane with thickness rather than a flat wash;
- *  3. a hairline rim that is bright at the top edge and nearly invisible
- *     elsewhere, standing in for the highlight along a curved glass lip.
- *
- * Two values are worth keeping and one is worth not keeping:
- *
- *  - The rim is 0.75dp and low-alpha on purpose. A thick rim with a bright line
- *    all the way around is the 2020 filter-UI look, not glass.
- *  - The light-mode extra hairline (`Color(0xFF0F172A)` at 10%) keeps the shape
- *    legible against a pale document page; without it the panel disappears.
- *  - There is no `Modifier.shadow()` anywhere. Elevation is carried by the rim
- *    plus the inner bottom gradient. The tablet team found shadows left visible
- *    glyph outlines behind text on some GPUs; there is no reason to invite that
- *    here.
- *
- * No idle animation: the tablet team measured it costing 60 -> 30-42fps with
- * several glass surfaces on screen. The press response in [glassClickable] is
- * where the motion belongs.
+ * `bubbleGlass` and `pressableGlass` also exist on the tablet, under the same
+ * names and with different bodies — see the note in `:shared`'s `Glass.kt`. These
+ * are the desktop's, not reduced copies of the tablet's.
  */
-
-/** Glass colour tokens, copied from the tablet's `theme/Color.kt`. */
-object GlassTokens {
-    val VeilLight = GlassVeilLight
-    val VeilDark = GlassVeilDark
-    val TintLight = GlassTintLight
-    val TintDark = GlassTintDark
-
-    /** Icons/text sitting on glass should use this, never a hardcoded colour. */
-    fun contentColor(isDark: Boolean): Color = if (isDark) Color.White else PaperInkColor
-}
-
-/**
- * The shared dressing: thin sheen + rim.
- *
- * Split out from [fauxGlassPanel] because the tablet uses the same treatment on
- * its dialogs and pressable chips, and having one definition is the entire point
- * of moving this material into a shared file.
- *
- * @param rim which edge carries the highlight. A glass pane is lit from above, so
- *   a horizontal surface (top bar, dialog, card) reads brightest along its top
- *   edge — but for a full-height strip (nav rail, side panel) that top edge is
- *   off-screen and the edge that actually matters is the vertical one facing the
- *   content. Using the vertical gradient on a rail puts a bright line across the
- *   very top and nothing along the edge you actually see, which is why this is a
- *   parameter and not a constant.
- */
-@Composable
-fun Modifier.glassDressing(
-    isDark: Boolean,
-    shape: Shape,
-    specular: Boolean = true,
-    rim: RimEdge = RimEdge.Top
-): Modifier {
-    var m = this
-        // Sheen: bright at the top edge, clear through the middle, slightly dark
-        // at the bottom so the panel gains apparent thickness.
-        .background(
-            brush = Brush.verticalGradient(
-                colorStops = arrayOf(
-                    0f to Color.White.copy(alpha = if (isDark) 0.07f else 0.08f),
-                    0.06f to Color.White.copy(alpha = if (isDark) 0.02f else 0.02f),
-                    0.35f to Color.Transparent,
-                    0.8f to Color.Transparent,
-                    1f to Color.Black.copy(alpha = if (isDark) 0.08f else 0.05f)
-                )
-            ),
-            shape = shape
-        )
-    if (specular) {
-        val stops = arrayOf(
-            0f to Color.White.copy(alpha = 0.34f),
-            0.18f to Color.White.copy(alpha = 0.06f),
-            0.72f to Color.White.copy(alpha = 0.02f),
-            1f to Color.White.copy(alpha = 0.05f)
-        )
-        m = m.border(
-            border = BorderStroke(
-                width = 0.75.dp,
-brush = when (rim) {
-                    RimEdge.Top -> Brush.verticalGradient(*stops)
-                    RimEdge.Leading -> Brush.horizontalGradient(*stops)
-                }
-            ),
-            shape = shape
-        )
-        if (!isDark) {
-            // Pale hairline for definition against a white document page.
-            m = m.border(
-                border = BorderStroke(
-                    width = 0.5.dp,
-                    color = Color(0xFF0F172A).copy(alpha = 0.10f)
-                ),
-                shape = shape
-            )
-        }
-    }
-    return m
-}
-
-/**
- * Which edge of a glass surface carries the specular highlight.
- *
- * `Top` for anything horizontal (the light source is above). `Leading` for a
- * full-height strip, where the visible boundary is the one facing the content —
- * a top-edge highlight on a rail is stranded off-screen where nobody looks.
- */
-enum class RimEdge { Top, Leading }
 
 /**
  * The background glass needs in order to read as glass: something to be
@@ -208,42 +83,6 @@ fun Modifier.auroraBackdrop(isDark: Boolean): Modifier {
             )
         )
 }
-
-/**
- * The main glass surface. Drop-in for the old hand-tuned `glassPanel`.
- *
- * @param specular false for large quiet panels where a rim would only add noise
- *   (e.g. a full-height sidebar); true for cards, dialogs and chips.
- */
-@Composable
-fun Modifier.fauxGlassPanel(
-    isDark: Boolean,
-    shape: Shape = ShapeLg,
-    specular: Boolean = true
-): Modifier = this
-    .clip(shape)
-    .background(
-        color = if (isDark) GlassTintDark else GlassTintLight,
-        shape = shape
-    )
-    .glassDressing(isDark, shape, specular)
-
-/**
- * A full-height strip of chrome: the nav rail, the AI side panel.
- *
- * Differs from [fauxGlassPanel] only in where the rim goes (see [RimEdge]) and in
- * being square-cornered, so it butts cleanly against the window edge and against
- * the content column without a rounded notch at the bottom.
- */
-@Composable
-fun Modifier.glassSidePanel(isDark: Boolean): Modifier =
-    this
-        .clip(RectangleShape)
-        .background(
-            color = if (isDark) GlassTintDark else GlassTintLight,
-            shape = RectangleShape
-        )
-        .glassDressing(isDark, RectangleShape, specular = true, rim = RimEdge.Leading)
 
 /** Circular glass — avatar wells, round icon buttons, FABs. */
 @Composable
