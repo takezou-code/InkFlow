@@ -56,10 +56,84 @@ Or open the project in Android Studio and run the `app` configuration (a physica
 
 ---
 
+## 兩個平臺
+
+同一個 repo、同一個 Gradle build：
+
+```
+app/            Android 平板（真相來源）
+desktop-app/    Windows 桌面（鏡像）
+shared/         跨平臺共用：玻璃材質、墨跡格式、協定、主題
+```
+
+- **Android**：Room、SAF、haze 真折射玻璃、筆壓與傾斜
+- **Windows**：SQLite JDBC、jpackage 打包、方向鍵、faux 玻璃
+
+平板是唯一寫入者。桌面在同一個 Wi-Fi 下單向 pull：拉取平板的文件、PDF 與筆跡，
+並可在本地加註（本地加註不推回平板）。
+
+### 墨跡格式：只有一份實作
+
+平板記錄的是**每個採樣點各自的寬度**（速度推導，對無壓感筆是 fallback），
+不是整筆一個寬度。實際同步資料裡，一筆 1,174 點的筆跡就有 457 種不同寬度。
+
+- `EnvelopeUtils.generateEnvelopePath()` — 由中心線與半寬生成填充外框
+- `InkWidthModel` — 由速度推導每點寬度
+
+`strokes.strokeWidth` 只是**使用者選的基礎寬度**，供 PDF 匯出用；實際畫出來的寬度在
+`points.width`。這兩個檔案住在 `shared/`：桌面端不再手抄一份，因為手抄過一次，
+而且漂移了。
+
+---
+
+## 目錄結構
+
+```
+├── app/                   Android 平板（來源）
+│   └── src/{main,debug}/
+├── desktop-app/           Windows 桌面（鏡像）
+│   ├── smoke-test.ps1     打包後啟動檢查
+│   └── SYNC_PROTOCOL.md   v3 協定真相來源
+├── shared/                跨平臺共用（KMP）
+└── legacy-prototype/      早期原型，僅供參考
+```
+
+---
+
+## 驗證
+
+### Android
+```bash
+./gradlew :app:assembleDebug
+./gradlew :app:testDebugUnitTest
+```
+
+### Windows
+```bash
+cd desktop-app
+./gradlew test createDistributable
+powershell -File smoke-test.ps1
+```
+
+`smoke-test.ps1` 驗證的是 `gradlew run` **看不出來**的東西：打包後的 runtime image
+是否含 `java.sql`、launcher 是否找得到設定檔、日誌是否真的寫出來。這三個缺陷都曾經
+讓打包的 EXE 完全無法啟動，而開發時一切正常。
+
+### 對真實平板的同步測試
+```powershell
+$env:INKFLOW_PAIRING_CODE = <平板設定頁顯示的 8 位配對碼>
+$env:INKFLOW_TABLET_HOST = <平板區網 IP>
+./gradlew test --tests '*AppDatabaseSyncTest*'
+```
+
+---
+
 ## Branches
 
 - `beta` — day-to-day development
 - `main` — stable (merged only on explicit request)
+
+平板與桌面已合併到同一分支；`windows` 分支的桌面原始碼已併入 `beta`。
 
 ---
 

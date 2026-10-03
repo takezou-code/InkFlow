@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Logs to %USERPROFILE%\.inkflow\desktop.log.
+
+    Without this file logback binds only its default console appender, and a
+    packaged `InkFlow.exe` has no console attached — so every sync failure was
+    written into the void. An app whose main job is "talk to another machine over
+    the network" has to be able to tell the user why that failed.
+
+    Requires the `java.naming` module in the runtime image: logback reads its XML
+    config through `JoranConfigurator`, which instantiates JNDI-backed model
+    handlers. `build.gradle.kts` adds it to `nativeDistributions.modules`. The
+    packaged runtime really does ship it — verified by finding
+    `javax/naming/NamingException` in `runtime/lib/modules`. Without the module
+    the app does not just lose logging, it dies with "Failed to launch JVM".
+
+    Rolling with a hard cap: a sync retry loop that logs per attempt must not be
+    able to fill the user's disk.
+-->
+<configuration>
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${user.home}/.inkflow/desktop.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${user.home}/.inkflow/desktop.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+            <maxFileSize>5MB</maxFileSize>
+            <maxHistory>7</maxHistory>
+            <totalSizeCap>50MB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} %-5level %logger{28} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Keep stderr for `gradlew run` / IDE runs. -->
+    <appender name="STDERR" class="ch.qos.logback.core.ConsoleAppender">
+        <target>System.err</target>
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} %-5level %logger{28} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="FILE"/>
+        <appender-ref ref="STDERR"/>
+    </root>
+
+    <!-- Third-party chatter that says nothing useful to the user. -->
+    <logger name="org.apache.pdfbox" level="WARN"/>
+    <logger name="org.xerial.sqlite" level="WARN"/>
+
+    <!--
+        PDFBox on JDK 17+ cannot reach `jdk.internal.ref.Cleaner` through
+        MethodHandles, so it cannot eagerly unmap the direct ByteBuffers it
+        rasterises into:
+
+          ERROR o.apache.pdfbox.io.IOUtils - Unmapping is not supported.
+            at org.apache.pdfbox.io.IOUtils.<clinit>
+
+        PDFBox catches this internally and carries on — rendering is unaffected
+        and the buffers are still reclaimed by the GC, it just loses the eager
+        unmap. It fires once per JVM on class init, never per page, so it is
+        pure noise; leaving it at ERROR buries real PDF problems (a genuinely
+        encrypted file, a corrupt stream) that would print the same prefix.
+        Tried and did NOT fix it: the add-opens JVM flag for java.nio (the lookup
+        is on jdk.internal.ref, not java.nio) and upgrading PDFBox to 3.0.8.
+    -->
+    <logger name="org.apache.pdfbox.io.IOUtils" level="OFF"/>
+</configuration>
