@@ -9,4 +9,10 @@ plugins {
     // desktop app could never simply be `include`d before.
     alias(libs.plugins.kotlin.jvm) apply false
     alias(libs.plugins.jetbrains.compose) apply false
+
+    // :shared - the Kotlin Multiplatform library both apps depend on. Tracked by
+    // the same `kotlin` version as the tablet, because Kotlin metadata is not
+    // forward-compatible between compiler versions.
+    alias(libs.plugins.kotlin.multiplatform) apply false
+    alias(libs.plugins.android.kotlin.multiplatform.library) apply false
 }

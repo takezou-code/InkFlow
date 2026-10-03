@@ -16,6 +16,14 @@ kotlin = "2.4.10"
 # version-locked to it.
 kotlinJvm = "2.4.10"
 composeMultiplatform = "1.12.1"
+# Compose Multiplatform's Material3 is released on a slower cadence than the rest
+# of CMP, so it cannot simply follow `composeMultiplatform`. Verified against the
+# Gradle cache: at CMP 1.12.1, runtime/ui/foundation/animation-core are all present
+# at 1.12.1, but `org.jetbrains.compose.material3:material3` tops out at 1.9.0
+# (1.12.x exists only as -alpha, and 1.12.1 does not resolve at all). Pinned
+# separately so the skew is explicit and reviewable rather than discovered as a
+# "Could not find" at build time. Revisit when CMP ships a stable material3.
+composeMaterial3 = "1.9.0"
 composeBom = "2026.08.00"
 materialIconsExtended = "1.7.8"
 ksp = "2.3.11"
@@ -64,7 +72,11 @@ mockk = { group = "io.mockk", name = "mockk", version.ref = "mockk" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
+# AGP 9's KMP-aware library plugin. `com.android.library` is rejected next to
+# org.jetbrains.kotlin.multiplatform from AGP 9.0 onward.
+android-kotlin-multiplatform-library = { id = "com.android.kotlin.multiplatform.library", version.ref = "agp" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlinJvm" }
+kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
 jetbrains-compose = { id = "org.jetbrains.compose", version.ref = "composeMultiplatform" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }

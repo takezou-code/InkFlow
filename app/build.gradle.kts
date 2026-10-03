@@ -81,6 +81,9 @@ android {
 }
 
 dependencies {
+    // Code both platforms must agree on byte for byte. See :shared's build file
+    // for why this exists rather than the tablet and desktop each keeping a copy.
+    implementation(project(":shared"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
