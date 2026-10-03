@@ -15,6 +15,7 @@ version = "1.0-SNAPSHOT"
 // now declared centrally in settings.gradle.kts.
 
 dependencies {
+    implementation(project(":shared"))
     // Kotlin Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.9.0")

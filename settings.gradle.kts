@@ -38,3 +38,8 @@ include(":app")
 // impossible: the only option was hand-copying files, and they drifted.
 include(":desktopApp")
 project(":desktopApp").projectDir = file("desktop-app")
+
+// Cross-platform library: the code both apps must agree on byte for byte —
+// the ink format, the sync protocol, the glass material, the motion language.
+// A file that lives here cannot drift between the two.
+include(":shared")
