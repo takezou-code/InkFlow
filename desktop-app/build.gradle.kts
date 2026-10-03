@@ -1,17 +1,18 @@
 plugins {
-    kotlin("jvm") version "2.0.21"
-    id("org.jetbrains.compose") version "1.7.3"
-    kotlin("plugin.compose") version "2.0.21"
+    // Versions live in the root build's plugin block; a module inside a
+    // multi-project build must not declare its own.
+    id("org.jetbrains.kotlin.jvm")
+    id("org.jetbrains.compose")
+    id("org.jetbrains.kotlin.plugin.compose")
 }
 
 group = "com.vic.inkflow"
 version = "1.0-SNAPSHOT"
 
-repositories {
-    mavenCentral()
-    google()
-    maven("https://maven.pkg.jetbrains.space/public/p/compose/dev")
-}
+// No `repositories { }` block here: the root settings declares them with
+// FAIL_ON_PROJECT_REPOS, so a module-level block is an error rather than a
+// convenience. The Compose Multiplatform repository the desktop build needed is
+// now declared centrally in settings.gradle.kts.
 
 dependencies {
     // Kotlin Coroutines
@@ -136,6 +137,14 @@ tasks.register("printRuntimeClasspath") {
  *
  * Cheap and deterministic to fix here rather than hunting for a jpackage flag the
  * Compose plugin does not expose.
+ *
+ * The directory is read from the **task's own project** inside `doLast`, not
+ * captured into a script-level `val`. Inside `afterEvaluate` the script instance
+ * is already gone, so both of these fail:
+ *   - `layout.buildDirectory` -> "this.$this_afterEvaluate is null"
+ *   - a top-level `val`       -> "this.this$0 is null"
+ * At execution time `Task.project` is valid, so that is the only reference that
+ * survives.
  */
 afterEvaluate {
     // Appended to the packaging task itself rather than run as a separate task:
@@ -143,7 +152,8 @@ afterEvaluate {
     // treat that file as an unexpected output and fail the build with
     // "Failed to clean up output files for task ':createDistributable'".
     tasks.findByName("createDistributable")?.doLast {
-        val appDir = layout.buildDirectory.dir("compose/binaries/main/app/InkFlow").get().asFile
+        val appDir = project.layout.buildDirectory
+            .dir("compose/binaries/main/app/InkFlow").get().asFile
         val source = File(appDir, "app/InkFlow.cfg")
         val target = File(appDir, "InkFlow.cfg")
         if (!source.exists()) {
