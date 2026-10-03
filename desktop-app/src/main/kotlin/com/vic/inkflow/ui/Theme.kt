@@ -9,8 +9,6 @@ import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -28,6 +26,8 @@ import com.vic.inkflow.ui.theme.GlassTintDark
 import com.vic.inkflow.ui.theme.GlassTintLight
 import com.vic.inkflow.ui.theme.GlassVeilDark
 import com.vic.inkflow.ui.theme.GlassVeilLight
+import com.vic.inkflow.ui.theme.InkDarkScheme
+import com.vic.inkflow.ui.theme.InkLightScheme
 import com.vic.inkflow.ui.theme.PaperInkColor
 import com.vic.inkflow.ui.theme.ShapeLg
 import com.vic.inkflow.ui.theme.ShapeMd
@@ -35,35 +35,28 @@ import com.vic.inkflow.ui.theme.ShapeSm
 import com.vic.inkflow.ui.theme.ShapeXl
 
 /**
- * Palette shared with the Android tablet build, so the two halves of the product
- * read as one app rather than two.
+ * The product's palette comes from `:shared` — the tablet's own `InkDarkScheme` /
+ * `InkLightScheme` — rather than from a set invented here.
  *
- * The desktop used to be a generic M3 slate/blue scheme. The tablet is deep navy
- * with indigo-violet accents, so that is what this mirrors: dark is the default
- * because the desktop is a reading client and the page should dominate.
+ * This file used to declare a private `InkColors` whose comment claimed the palette
+ * was "shared with the Android tablet build, so the two halves of the product read
+ * as one app rather than two". Comparing them, the desktop had drifted into a
+ * different *hue family*, not merely a different shade: its background ramp was a
+ * blue navy (`Night0` #070B14 … `Night3` #1D2942) where the tablet uses a
+ * near-neutral charcoal (#0B0F1E / #18181B / #27272A), and its accent was
+ * `Indigo500` #5B6CFF against the tablet's `BrandIndigo` #6366F1. Every surface,
+ * card and backdrop was built on that difference.
+ *
+ * Copying the tablet's numbers across would have fixed today's pixels and
+ * reinstated tomorrow's drift — the same failure the second copy of `GlassVeilDark`
+ * caused. So the schemes themselves are shared and this file has no palette left to
+ * own. See the note on `InkDarkScheme` in `:shared`.
+ *
+ * The corner radii (ShapeSm/Md/Lg/Xl) and glass tokens (GlassVeil*, GlassTint*,
+ * PaperInkColor) are likewise imported from `:shared`; those were copied in under a
+ * comment claiming they were "copied verbatim from the tablet's theme/Color.kt",
+ * and two of them had already drifted.
  */
-private object InkColors {
-    // Deep navy backgrounds (tablet "墨夜" family)
-    val Night0 = Color(0xFF070B14)
-    val Night1 = Color(0xFF0D1424)
-    val Night2 = Color(0xFF141D33)
-    val Night3 = Color(0xFF1D2942)
-
-    // Indigo / violet accents (tablet BrandIndigo family)
-    val Indigo200 = Color(0xFFB7C4FF)
-    val Indigo300 = Color(0xFF93A3FF)
-    val Indigo400 = Color(0xFF7488FF)
-    val Indigo500 = Color(0xFF5B6CFF)
-    val Indigo700 = Color(0xFF3A45C4)
-    val Violet400 = Color(0xFFA78BFA)
-
-    // Light surfaces
-    val Paper0 = Color(0xFFF7F8FC)
-    val Paper1 = Color(0xFFFFFFFF)
-    val PaperEdge = Color(0xFFE3E7F0)
-    val Ink = Color(0xFF121826)
-    val InkSoft = Color(0xFF5A6579)
-}
 
 // Corner radii (ShapeSm/Md/Lg/Xl) and the glass colour tokens — GlassVeil*,
 // GlassTint*, PaperInkColor — are imported from `:shared` rather than restated
@@ -81,45 +74,9 @@ private object InkColors {
 // reading heavier and darker than the product it was imitating. Importing makes
 // that class of drift impossible rather than merely noticed.
 
-private val LightInkScheme: ColorScheme = lightColorScheme(
-    primary = InkColors.Indigo700,
-    onPrimary = Color.White,
-    primaryContainer = Color(0xFFDDE2FF),
-    onPrimaryContainer = Color(0xFF1B2170),
-    secondary = InkColors.Violet400,
-    onSecondary = Color.White,
-    secondaryContainer = Color(0xFFEDE6FF),
-    onSecondaryContainer = Color(0xFF2A1B52),
-    tertiary = Color(0xFF2BA6A0),
-    background = InkColors.Paper0,
-    onBackground = InkColors.Ink,
-    surface = InkColors.Paper1,
-    onSurface = InkColors.Ink,
-    surfaceVariant = Color(0xFFEFF1F7),
-    onSurfaceVariant = InkColors.InkSoft,
-    outline = Color(0xFFC3CAD8),
-    outlineVariant = Color(0xFFE3E7F0)
-)
+private val LightInkScheme: ColorScheme = InkLightScheme
 
-private val DarkInkScheme: ColorScheme = darkColorScheme(
-    primary = InkColors.Indigo300,
-    onPrimary = Color(0xFF10163A),
-    primaryContainer = InkColors.Indigo700,
-    onPrimaryContainer = Color(0xFFE0E5FF),
-    secondary = InkColors.Violet400,
-    onSecondary = Color(0xFF1E1233),
-    secondaryContainer = Color(0xFF3B2D63),
-    onSecondaryContainer = Color(0xFFEBE1FF),
-    tertiary = Color(0xFF6FD8CF),
-    background = InkColors.Night0,
-    onBackground = Color(0xFFE8ECF6),
-    surface = InkColors.Night1,
-    onSurface = Color(0xFFE8ECF6),
-    surfaceVariant = InkColors.Night2,
-    onSurfaceVariant = Color(0xFFB6C0D6),
-    outline = Color(0xFF3A4763),
-    outlineVariant = Color(0xFF232F49)
-)
+private val DarkInkScheme: ColorScheme = InkDarkScheme
 
 /** Document cards use 12dp rounded corners; pills are fully rounded. */
 val InkShapes = Shapes(
