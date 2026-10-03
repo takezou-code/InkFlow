@@ -1,4 +1,4 @@
-﻿package com.vic.inkflow.util
+package com.vic.inkflow.util
 
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.lazy.grid.LazyGridState
@@ -30,6 +30,9 @@ class ReorderableLazyGridState(
     var draggingItemIndex by mutableStateOf<Int?>(null)
         private set
 
+    // Drag bookkeeping, used only by this class. Kept internal rather than opened
+    // up: making the file cross-module does not mean every member in it has to
+    // become public API.
     internal var initialItemIndex: Int? = null
     internal var currentItemIndex: Int? = null
 
