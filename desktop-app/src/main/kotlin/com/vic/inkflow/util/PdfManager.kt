@@ -153,6 +153,26 @@ object PdfManager {
             PdfResult.Ok(PageInfo(count, boxInfo(doc, clamped), pageIndex.takeIf { it != clamped }))
         }
 
+    /**
+     * Every page's geometry, without rasterising any of them. Blocking — call from a
+     * background dispatcher.
+     *
+     * The continuous canvas needs this to stack pages vertically, and documents are
+     * **not** uniform. The synced library really does contain mixed sizes in one pass —
+     * A4 (595x842), US Letter (612x792) and 563x720 all show up — so stacking against
+     * one "representative" page size would put the gap in the wrong place, and would
+     * silently attribute a stroke near a boundary to the wrong page.
+     *
+     * Walking the page tree is cheap next to rasterising (no image decode, no paint),
+     * so this is a per-document read, not a per-frame one. The caller caches it.
+     */
+    fun readPageSizes(documentUri: String): PdfResult<List<PageBox>> =
+        withDocument(documentUri) { doc ->
+            val count = doc.numberOfPages
+            if (count <= 0) return@withDocument PdfResult.Err("PDF 沒有任何頁面")
+            PdfResult.Ok((0 until count).map { boxInfo(doc, it) })
+        }
+
     // ── Rasterisation ──────────────────────────────────────────────────────
 
     /**
