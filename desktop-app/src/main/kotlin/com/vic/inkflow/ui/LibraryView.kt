@@ -25,12 +25,17 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.vic.inkflow.data.DatabaseManager
 import com.vic.inkflow.data.DocumentEntity
-import com.vic.inkflow.ui.ShapeMd
+import com.vic.inkflow.ui.theme.ShapeMd
 import com.vic.inkflow.ui.fauxGlassPanel
 import com.vic.inkflow.ui.pressableGlass
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
+import com.vic.inkflow.ui.theme.GlassTintDark
+import com.vic.inkflow.ui.theme.GlassTintLight
+import com.vic.inkflow.ui.theme.GlassVeilDark
+import com.vic.inkflow.ui.theme.GlassVeilLight
+import com.vic.inkflow.ui.theme.PaperInkColor
 
 /**
  * Library View (spec §4A): category rail on the left (handled by MainKt),

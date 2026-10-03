@@ -24,6 +24,15 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.vic.inkflow.ui.theme.GlassTintDark
+import com.vic.inkflow.ui.theme.GlassTintLight
+import com.vic.inkflow.ui.theme.GlassVeilDark
+import com.vic.inkflow.ui.theme.GlassVeilLight
+import com.vic.inkflow.ui.theme.PaperInkColor
+import com.vic.inkflow.ui.theme.ShapeLg
+import com.vic.inkflow.ui.theme.ShapeMd
+import com.vic.inkflow.ui.theme.ShapeSm
+import com.vic.inkflow.ui.theme.ShapeXl
 
 /**
  * Palette shared with the Android tablet build, so the two halves of the product
@@ -54,36 +63,23 @@ private object InkColors {
     val PaperEdge = Color(0xFFE3E7F0)
     val Ink = Color(0xFF121826)
     val InkSoft = Color(0xFF5A6579)
-
-    // Corner radii, from the tablet's `theme/ShapeTokens.kt`. Glass panels are
-    // shaped by these, so both apps round their surfaces identically.
-    val ShapeSm = RoundedCornerShape(12.dp)
-    val ShapeMd = RoundedCornerShape(16.dp)
-    val ShapeLg = RoundedCornerShape(24.dp)
-    val ShapeXl = RoundedCornerShape(32.dp)
 }
 
-// The glass material references these, so they have to be top-level rather than
-// private to InkColors.
-val ShapeSm = InkColors.ShapeSm
-val ShapeMd = InkColors.ShapeMd
-val ShapeLg = InkColors.ShapeLg
-val ShapeXl = InkColors.ShapeXl
-
-// Glass colour tokens, copied verbatim from the tablet's `theme/Color.kt`.
+// Corner radii (ShapeSm/Md/Lg/Xl) and the glass colour tokens — GlassVeil*,
+// GlassTint*, PaperInkColor — are imported from `:shared` rather than restated
+// here.
 //
-// These four values are the glass material. The alphas were tuned by eye against
-// the tablet's real (blur-based) glass, so reusing them exactly is what makes the
-// desktop read as the same product instead of merely something glassy.
+// They used to be copied in, under a comment claiming they were "copied verbatim
+// from the tablet's theme/Color.kt". Two of them had already drifted, which is
+// exactly the failure mode a second copy invites:
 //
-// Veil = what hazed glass is tinted toward. Tint = the faux path's stand-in fill.
-val GlassVeilLight = Color(0x8CFFFFFF) // 55% white
-val GlassVeilDark = Color(0x730F172A)  // 45% deep navy
-val GlassTintLight = Color(0x4DFFFFFF) // 30% white
-val GlassTintDark = Color(0x800F172A)  // 50% deep navy
-
-/** Ink used for text/icons on top of glass in light mode. */
-val PaperInkColor = Color(0xFF121826)
+//   GlassVeilDark  desktop 0x730F172A (45%)  vs  tablet 0x660F172A (40%)
+//   PaperInkColor  desktop 0xFF121826       vs  tablet 0xFF1E293B
+//
+// The tablet had tuned both by eye against its real blur-based glass and recorded
+// why in Color.kt; the desktop kept the superseded numbers, so its glass was
+// reading heavier and darker than the product it was imitating. Importing makes
+// that class of drift impossible rather than merely noticed.
 
 private val LightInkScheme: ColorScheme = lightColorScheme(
     primary = InkColors.Indigo700,

@@ -18,8 +18,16 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.unit.dp
-// Tokens live in `com.vic.inkflow.ui` (Theme.kt) — the desktop has no separate
-// `ui.theme` package the way Android does.
+import com.vic.inkflow.ui.theme.GlassTintDark
+import com.vic.inkflow.ui.theme.GlassTintLight
+import com.vic.inkflow.ui.theme.GlassVeilDark
+import com.vic.inkflow.ui.theme.GlassVeilLight
+import com.vic.inkflow.ui.theme.PaperInkColor
+import com.vic.inkflow.ui.theme.ShapeLg
+import com.vic.inkflow.ui.theme.ShapeMd
+// Tokens come from `:shared` (the tablet's own theme/Color.kt + ShapeTokens.kt),
+// not from a copy in this package — see the note in Theme.kt on why the copy had
+// already drifted.
 
 /**
  * The tablet's liquid-glass material, ported to the desktop.
