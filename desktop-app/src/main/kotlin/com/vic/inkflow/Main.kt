@@ -24,8 +24,8 @@ import com.vic.inkflow.ui.PdfViewer
 import com.vic.inkflow.ui.InkFlowTheme
 import com.vic.inkflow.ui.InkThemeState
 import com.vic.inkflow.ui.LibraryView
-import com.vic.inkflow.ui.ShapeSm
-import com.vic.inkflow.ui.ShapeXl
+import com.vic.inkflow.ui.theme.ShapeSm
+import com.vic.inkflow.ui.theme.ShapeXl
 import com.vic.inkflow.ui.bubbleGlass
 import com.vic.inkflow.ui.auroraBackdrop
 import com.vic.inkflow.ui.glassSidePanel
