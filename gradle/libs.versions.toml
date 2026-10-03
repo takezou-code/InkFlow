@@ -7,11 +7,15 @@ espressoCore = "3.7.0"
 lifecycleRuntimeKtx = "2.11.0"
 activityCompose = "1.13.0"
 kotlin = "2.4.10"
-# Desktop module. Pinned separately from `kotlin` because the Compose Multiplatform
-# plugin version has to match the Kotlin version it was built against; they are
-# raised together.
-kotlinJvm = "2.0.21"
-composeMultiplatform = "1.7.3"
+# The desktop module MUST track the same Kotlin as the tablet. Kotlin metadata is
+# not forward-compatible, so a `:shared` module compiled by one version cannot be
+# read by the other — there is no version skew that "mostly works".
+#
+# Compose Multiplatform has to be raised in lockstep: each CMP release is built
+# against a specific Kotlin compiler, and the compose compiler plugin is
+# version-locked to it.
+kotlinJvm = "2.4.10"
+composeMultiplatform = "1.12.1"
 composeBom = "2026.08.00"
 materialIconsExtended = "1.7.8"
 ksp = "2.3.11"
