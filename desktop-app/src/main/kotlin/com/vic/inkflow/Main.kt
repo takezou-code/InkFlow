@@ -19,6 +19,8 @@ import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import com.vic.inkflow.data.DatabaseManager
 import com.vic.inkflow.sync.LocalSyncManager
+import com.vic.inkflow.ui.AuroraBackground
+import com.vic.inkflow.ui.BackdropTheme
 import com.vic.inkflow.ui.AiAssistantPanel
 import com.vic.inkflow.ui.PdfViewer
 import com.vic.inkflow.ui.InkFlowTheme
@@ -29,6 +31,7 @@ import com.vic.inkflow.ui.theme.ShapeXl
 import com.vic.inkflow.ui.bubbleGlass
 import com.vic.inkflow.ui.auroraBackdrop
 import com.vic.inkflow.ui.glassSidePanel
+import com.vic.inkflow.ui.pressableGlass
 import com.vic.inkflow.ui.fauxGlassPanel
 import androidx.compose.foundation.background
 import androidx.compose.ui.draw.clip
@@ -108,11 +111,22 @@ fun App() {
         // surface, so it is applied at the root rather than per-panel. A
         // translucent panel with a flat colour behind it has nothing to reveal
         // and the whole glass material reads as a flat tint.
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .auroraBackdrop(isDark = InkThemeState.darkMode)
-        ) {
+        //
+        // This is the tablet's own `AuroraBackground` (`:shared`), not a
+        // desktop imitation. It used to be a hand-rolled three-layer gradient
+        // whose "corners" were fractions of a hard-coded 1600x1000 rather than
+        // the real window size — so the glow anchoring drifted as the window
+        // resized, contradicting the comment right above it. The real one derives
+        // every position from the actual constraints.
+        Box(modifier = Modifier.fillMaxSize()) {
+            AuroraBackground(
+                isDarkTheme = InkThemeState.darkMode,
+                // 12 orbs is what the tablet's library uses; the editor drops to 5
+                // because paper covers most of the window there.
+                orbCount = 12,
+                theme = InkThemeState.backdropTheme,
+                modifier = Modifier.fillMaxSize()
+            )
             InkFlowApp()
         }
     }
@@ -408,6 +422,52 @@ private fun SettingsView(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             SettingRow("主題模式", if (InkThemeState.darkMode) "深色（閱讀預設）" else "淺色")
+
+            // Backdrop intensity. The tablet picks this in its own settings screen;
+            // the desktop had no control because it had no real backdrop to tune.
+            // Now that it runs the tablet's AuroraBackground, the four presets mean
+            // something here too — and being able to flip between them is how you
+            // judge whether the backdrop is the thing making a screen look wrong.
+            Text(
+                "背景",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                BackdropTheme.entries.forEach { t ->
+                    val selected = InkThemeState.backdropTheme == t
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .fauxGlassPanel(
+                                isDark = InkThemeState.darkMode,
+                                shape = RoundedCornerShape(50),
+                                specular = !selected
+                            )
+                            .background(
+                                if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)
+                                else Color.Transparent
+                            )
+                            // pressableGlass, not a bare clickable: it is the shared
+                            // press entry, so these chips get the same sweep and scale
+                            // as every other control in the app.
+                            .pressableGlass(
+                                isDark = InkThemeState.darkMode,
+                                shape = RoundedCornerShape(50),
+                                onClick = { InkThemeState.backdropTheme = t }
+                            )
+                            .padding(horizontal = 14.dp, vertical = 7.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            InkThemeState.backdropLabels[t] ?: t.name,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = if (selected) MaterialTheme.colorScheme.onSurface
+                            else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
             SettingRow("資料目錄", AppPaths.dir)
             SettingRow("資料庫", AppPaths.dbPath)
             SettingRow("已連線設備", if (peerNames.isNotBlank()) peerNames else "無（請確認平板與電腦同一 Wi-Fi，且兩端均開啟 InkFlow）")

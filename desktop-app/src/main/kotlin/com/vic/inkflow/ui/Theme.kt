@@ -113,6 +113,23 @@ val InkTypography = base.copy(
 /** Global dark-mode toggle (defaults to dark, per the reading-scenario spec). */
 object InkThemeState {
     var darkMode by mutableStateOf(true)
+
+    /**
+     * Backdrop intensity, using the tablet's four presets.
+     *
+     * SOFT is pixel-identical to the tablet's own default, so it is the right
+     * starting point: if the desktop looks wrong here, the cause is not the
+     * backdrop tuning.
+     */
+    var backdropTheme by mutableStateOf(BackdropTheme.SOFT)
+
+    /** Human-facing labels, in the tablet's terms. */
+    val backdropLabels: Map<BackdropTheme, String> = mapOf(
+        BackdropTheme.SOFT to "柔光",
+        BackdropTheme.VIVID to "熾霞",
+        BackdropTheme.NIGHT to "墨夜",
+        BackdropTheme.CLEAN to "素"
+    )
 }
 
 /** The aurora-like accent used for brand marks and the empty-state glyph. */
