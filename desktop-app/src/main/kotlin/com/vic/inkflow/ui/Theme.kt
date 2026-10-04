@@ -78,13 +78,26 @@ private val LightInkScheme: ColorScheme = InkLightScheme
 
 private val DarkInkScheme: ColorScheme = InkDarkScheme
 
-/** Document cards use 12dp rounded corners; pills are fully rounded. */
+/**
+ * Corner radii for Material components — the tablet's scale, not a second one.
+ *
+ * These used to be 6/10/14/18/24dp, a set of their own, while the glass material in
+ * `:shared` was already rounding panels with `ShapeLg` (24dp). That put two different
+ * corner radii in a single window: a glass panel at 24dp next to an M3 card at 18dp,
+ * with no seam between them. On the tablet both come from the same four tokens, which
+ * is why its surfaces read as one material.
+ *
+ * The mapping below is the tablet's exactly, including `extraSmall` and `small`
+ * sharing `ShapeSm` — that is not a typo, it is what makes small M3 controls (chips,
+ * text-field outlines, menu items) land on the same radius as the shared scale rather
+ * than inventing a fifth size.
+ */
 val InkShapes = Shapes(
-    extraSmall = RoundedCornerShape(6.dp),
-    small = RoundedCornerShape(10.dp),
-    medium = RoundedCornerShape(14.dp),
-    large = RoundedCornerShape(18.dp),
-    extraLarge = RoundedCornerShape(24.dp)
+    extraSmall = ShapeSm,
+    small = ShapeSm,
+    medium = ShapeMd,
+    large = ShapeLg,
+    extraLarge = ShapeXl
 )
 
 private val base = Typography()
