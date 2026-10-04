@@ -24,6 +24,12 @@ composeMultiplatform = "1.12.1"
 # separately so the skew is explicit and reviewable rather than discovered as a
 # "Could not find" at build time. Revisit when CMP ships a stable material3.
 composeMaterial3 = "1.9.0"
+# Compose Multiplatform's Material icons move on the same slow cadence as material3:
+# `material-icons-core` tops out at 1.7.3 even at CMP 1.12.1 (there is no 1.12.1, and
+# 1.12.x exists only as -alpha). `Icons` and the core set are stable API across that
+# gap, so pinning the older line is safe. Needed by `:shared`'s glass dialog/chip
+# components; the AndroidX artifact is Android-only and cannot be used there.
+composeMaterialIcons = "1.7.3"
 composeBom = "2026.08.00"
 materialIconsExtended = "1.7.8"
 ksp = "2.3.11"

@@ -66,6 +66,30 @@ kotlin {
                 "org.jetbrains.compose.material3:material3:" +
                     libs.versions.composeMaterial3.get()
             )
+
+            // Haze 2.0.0 — the same version `:app` already uses, deliberately.
+            //
+            // Haze 1.x was Android-only in practice (real backdrop blur via
+            // `RenderEffect`), which is why `:shared/ui/Glass.kt` originally carried
+            // only the faux path and the desktop had to hand-port it. Haze 2.x runs on
+            // Skia, so the *real* refraction path is multiplatform too — which means
+            // the desktop can stop approximating the tablet's primary material.
+            //
+            // Not bumping Kotlin for this: 2.0.0 is already built against the 2.4.x
+            // line and `:app` compiles on 2.4.10 with it. Only 2.0.1 wanted 2.4.20,
+            // and taking that would have meant a repo-wide compiler bump for one
+            // patch release.
+            implementation(libs.haze)
+            implementation(libs.haze.blur)
+            implementation(libs.haze.glass)
+
+            // GlassSurface.kt's dialog and chip components reference `Icons`, which
+            // lives in the multiplatform icons artifact. The AndroidX one is
+            // Android-only, so it cannot be declared here.
+            implementation(
+                "org.jetbrains.compose.material:material-icons-core:" +
+                    libs.versions.composeMaterialIcons.get()
+            )
         }
         androidMain.dependencies {
             implementation(libs.androidx.core.ktx)
