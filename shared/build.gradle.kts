@@ -90,6 +90,13 @@ kotlin {
                 "org.jetbrains.compose.material:material-icons-core:" +
                     libs.versions.composeMaterialIcons.get()
             )
+            // The outlined icon set (Article, Undo, Redo, Folder, Bookmark, …) used by
+            // the library panels and editor chrome. Same slow-cadence caveat as core:
+            // 1.7.3 is the newest published line.
+            implementation(
+                "org.jetbrains.compose.material:material-icons-extended:" +
+                    libs.versions.composeMaterialIcons.get()
+            )
         }
         androidMain.dependencies {
             implementation(libs.androidx.core.ktx)
