@@ -84,12 +84,14 @@ fun Modifier.auroraBackdrop(isDark: Boolean): Modifier {
         )
 }
 
-/** Circular glass — avatar wells, round icon buttons, FABs. */
-@Composable
-fun Modifier.bubbleGlass(
-    isDark: Boolean,
-    specular: Boolean = true
-): Modifier = fauxGlassPanel(isDark, RoundedCornerShape(50), specular)
+// `bubbleGlass` used to live here as a two-line wrapper over `fauxGlassPanel` at a
+// 50% corner. Now that the tablet's glass system is in `:shared` there are two
+// `bubbleGlass` on the classpath — this one and the tablet's, which is a considered
+// high-coverage floater for sitting on paper (85% white / 90% navy, 1dp gradient
+// rim, plus a deep hairline in light mode because a white rim is invisible on white
+// paper). Two same-named components with different bodies is the situation
+// `:shared/ui/Glass.kt` documents; rather than reconcile them, the wrapper is
+// deleted and the desktop uses the real one. The wrapper was strictly less capable.
 
 /**
  * Glass that reacts to press.

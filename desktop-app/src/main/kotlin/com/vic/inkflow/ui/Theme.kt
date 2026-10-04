@@ -137,12 +137,12 @@ object InkThemeState {
      */
     var backdropTheme by mutableStateOf(BackdropTheme.SOFT)
 
-    /** Human-facing labels, in the tablet's terms. */
+/** Human-facing labels, in the tablet's terms. */
     val backdropLabels: Map<BackdropTheme, String> = mapOf(
-        BackdropTheme.SOFT to "Ã¦Å¸â€Ã¥â€¦â€°",
-        BackdropTheme.VIVID to "Ã§â€ Â¾Ã©Å“Å¾",
-        BackdropTheme.NIGHT to "Ã¥Â¢Â¨Ã¥Â¤Å“",
-        BackdropTheme.CLEAN to "Ã§Â´Â "
+        BackdropTheme.SOFT to "柔光",
+        BackdropTheme.VIVID to "熾霞",
+        BackdropTheme.NIGHT to "墨夜",
+        BackdropTheme.CLEAN to "素"
     )
 }
 
