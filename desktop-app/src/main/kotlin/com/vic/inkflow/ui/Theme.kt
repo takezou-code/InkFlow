@@ -18,11 +18,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.ExperimentalTextApi
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.vic.inkflow.ui.theme.GlassTintDark
+import com.vic.inkflow.ui.theme.inkTypography
 import com.vic.inkflow.ui.theme.GlassTintLight
 import com.vic.inkflow.ui.theme.GlassVeilDark
 import com.vic.inkflow.ui.theme.GlassVeilLight
@@ -35,20 +38,20 @@ import com.vic.inkflow.ui.theme.ShapeSm
 import com.vic.inkflow.ui.theme.ShapeXl
 
 /**
- * The product's palette comes from `:shared` — the tablet's own `InkDarkScheme` /
- * `InkLightScheme` — rather than from a set invented here.
+ * The product's palette comes from `:shared` Ã¢â‚¬â€ the tablet's own `InkDarkScheme` /
+ * `InkLightScheme` Ã¢â‚¬â€ rather than from a set invented here.
  *
  * This file used to declare a private `InkColors` whose comment claimed the palette
  * was "shared with the Android tablet build, so the two halves of the product read
  * as one app rather than two". Comparing them, the desktop had drifted into a
  * different *hue family*, not merely a different shade: its background ramp was a
- * blue navy (`Night0` #070B14 … `Night3` #1D2942) where the tablet uses a
+ * blue navy (`Night0` #070B14 Ã¢â‚¬Â¦ `Night3` #1D2942) where the tablet uses a
  * near-neutral charcoal (#0B0F1E / #18181B / #27272A), and its accent was
  * `Indigo500` #5B6CFF against the tablet's `BrandIndigo` #6366F1. Every surface,
  * card and backdrop was built on that difference.
  *
  * Copying the tablet's numbers across would have fixed today's pixels and
- * reinstated tomorrow's drift — the same failure the second copy of `GlassVeilDark`
+ * reinstated tomorrow's drift Ã¢â‚¬â€ the same failure the second copy of `GlassVeilDark`
  * caused. So the schemes themselves are shared and this file has no palette left to
  * own. See the note on `InkDarkScheme` in `:shared`.
  *
@@ -58,8 +61,8 @@ import com.vic.inkflow.ui.theme.ShapeXl
  * and two of them had already drifted.
  */
 
-// Corner radii (ShapeSm/Md/Lg/Xl) and the glass colour tokens — GlassVeil*,
-// GlassTint*, PaperInkColor — are imported from `:shared` rather than restated
+// Corner radii (ShapeSm/Md/Lg/Xl) and the glass colour tokens Ã¢â‚¬â€ GlassVeil*,
+// GlassTint*, PaperInkColor Ã¢â‚¬â€ are imported from `:shared` rather than restated
 // here.
 //
 // They used to be copied in, under a comment claiming they were "copied verbatim
@@ -79,7 +82,7 @@ private val LightInkScheme: ColorScheme = InkLightScheme
 private val DarkInkScheme: ColorScheme = InkDarkScheme
 
 /**
- * Corner radii for Material components — the tablet's scale, not a second one.
+ * Corner radii for Material components Ã¢â‚¬â€ the tablet's scale, not a second one.
  *
  * These used to be 6/10/14/18/24dp, a set of their own, while the glass material in
  * `:shared` was already rounding panels with `ShapeLg` (24dp). That put two different
@@ -88,7 +91,7 @@ private val DarkInkScheme: ColorScheme = InkDarkScheme
  * is why its surfaces read as one material.
  *
  * The mapping below is the tablet's exactly, including `extraSmall` and `small`
- * sharing `ShapeSm` — that is not a typo, it is what makes small M3 controls (chips,
+ * sharing `ShapeSm` Ã¢â‚¬â€ that is not a typo, it is what makes small M3 controls (chips,
  * text-field outlines, menu items) land on the same radius as the shared scale rather
  * than inventing a fifth size.
  */
@@ -100,15 +103,26 @@ val InkShapes = Shapes(
     extraLarge = ShapeXl
 )
 
-private val base = Typography()
+/**
+ * Inter, loaded the way Compose Desktop actually allows.
+ *
+ * `Font(path = Ã¢â‚¬Â¦)` and `Font(file = Ã¢â‚¬Â¦)` do not exist on this target Ã¢â‚¬â€ checked against
+ * the artifact rather than assumed: `androidx.compose.ui.text.font.FontKt` in
+ * **ui-text-desktop** 1.12.1 declares only `Font(resId: Int, Ã¢â‚¬Â¦)`. The desktop entry
+ * point is a different symbol, `FontFamily_desktopKt.FontFamily(path: String)`, which
+ * resolves the font from the jar's resources. Hence the file living at
+ * `desktop-app/src/main/resources/fonts/inter_variable.ttf` Ã¢â‚¬â€ same 856 KB binary the
+ * tablet ships.
+ *
+ * The path form has no `variationSettings`, so the five Inter weights are selected by
+ * synthesis rather than by axis. The *scale* Ã¢â‚¬â€ sizes, weights, line heights, tracking Ã¢â‚¬â€
+ * is the shared `:shared` `inkTypography` either way, and that is the part that has to
+ * match for the two apps to read as one product.
+ */
+@OptIn(ExperimentalTextApi::class)
+private val InterFamily = FontFamily("fonts/inter_variable.ttf")
 
-val InkTypography = base.copy(
-    headlineLarge = base.headlineLarge.copy(fontWeight = FontWeight.Bold, letterSpacing = (-0.5).sp),
-    headlineMedium = base.headlineMedium.copy(fontWeight = FontWeight.Bold, letterSpacing = (-0.3).sp),
-    titleLarge = base.titleLarge.copy(fontWeight = FontWeight.SemiBold),
-    titleMedium = base.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-    labelLarge = base.labelLarge.copy(fontWeight = FontWeight.Medium)
-)
+val InkTypography = inkTypography(InterFamily)
 
 /** Global dark-mode toggle (defaults to dark, per the reading-scenario spec). */
 object InkThemeState {
@@ -125,10 +139,10 @@ object InkThemeState {
 
     /** Human-facing labels, in the tablet's terms. */
     val backdropLabels: Map<BackdropTheme, String> = mapOf(
-        BackdropTheme.SOFT to "柔光",
-        BackdropTheme.VIVID to "熾霞",
-        BackdropTheme.NIGHT to "墨夜",
-        BackdropTheme.CLEAN to "素"
+        BackdropTheme.SOFT to "Ã¦Å¸â€Ã¥â€¦â€°",
+        BackdropTheme.VIVID to "Ã§â€ Â¾Ã©Å“Å¾",
+        BackdropTheme.NIGHT to "Ã¥Â¢Â¨Ã¥Â¤Å“",
+        BackdropTheme.CLEAN to "Ã§Â´Â "
     )
 }
 
