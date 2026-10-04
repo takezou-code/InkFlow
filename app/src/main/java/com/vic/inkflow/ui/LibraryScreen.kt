@@ -567,7 +567,12 @@ fun DocumentLibraryScreen(
     var isGridView by rememberSaveable { mutableStateOf(true) }
 
     // Outer Box does NOT read any animated State, so it never recomposes at 60 fps.
-    // The animated gradient is drawn by the isolated AnimatedGradientBackground child.
+    // The animated backdrop is the `InkBackdrop` composable at the root, which keeps
+    // its per-frame tick inside its own Canvas rather than in this composition.
+    //
+    // (This used to say the gradient was drawn by "the isolated
+    // AnimatedGradientBackground child". No such child existed — the function lived
+    // in LibraryBackground.kt with zero call sites, and that file has been deleted.)
     val gridScrollState = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
     val listScrollState = rememberLazyListState()
     // 屏根標記 source：對話框穿窗（Sources）採到整屏，不只背景。
