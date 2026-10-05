@@ -16,6 +16,12 @@ version = "1.0-SNAPSHOT"
 
 dependencies {
     implementation(project(":shared"))
+    // Needed for the `HazeState` type that `:shared`'s glass and hero-panel components
+    // take as a parameter. Haze 2.x runs on Skia, so the real backdrop-blur/refraction
+    // path is available on the JVM too — the desktop is no longer limited to the faux
+    // material it used to hand-port.
+    implementation(libs.haze)
+    implementation(libs.haze.glass)
     // Kotlin Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.9.0")
