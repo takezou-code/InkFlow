@@ -45,6 +45,9 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.focus.focusRequester
@@ -75,6 +78,7 @@ import com.vic.inkflow.util.PageBox
 import com.vic.inkflow.util.PdfManager
 import com.vic.inkflow.util.PdfResult
 import com.vic.inkflow.util.RenderedPage
+import com.vic.inkflow.util.UndoStack
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -451,6 +455,11 @@ fun PdfViewer(
      * [strokes] so it appears without waiting for a reload, and on failure it is
      * dropped rather than left on screen as ink that is not saved anywhere.
      */
+    // History is per document and per viewer instance. Switching documents must
+    // discard it: an undo entry referencing strokes from another document would
+    // resurrect content that is not there.
+    val undoStack = remember(documentUri) { UndoStack<InkEdit>() }
+
     fun commitStroke(pts: List<Offset>, modelWidths: List<Float>) {
         val b = box ?: return
         val stroke = StrokeEntity(
@@ -479,7 +488,11 @@ fun PdfViewer(
         }
         runCatching { databaseManager.saveStroke(stroke, points) }
             .onSuccess {
-                strokes = strokes + StrokeWithPoints(stroke, points)
+                val saved = StrokeWithPoints(stroke, points)
+                strokes = strokes + saved
+                // Recorded only after the write succeeded, so undo never tries to
+                // reverse something that is not in the database.
+                undoStack.push(InkEdit.Add(saved))
                 onInkChanged()
             }
             .onFailure {
@@ -487,10 +500,99 @@ fun PdfViewer(
             }
     }
 
+    /**
+     * Removes the strokes a single eraser drag touched.
+     *
+     * Hit testing is against each stroke's stored bounds, which is a rectangle rather
+     * than the true envelope — cheap, and generous enough for a mouse. Deletes are
+     * per stroke id, so overlapping bounds on the same page are all caught.
+     */
+    fun eraseAt(pts: List<Offset>) {
+        if (pts.isEmpty()) return
+        val hit = strokes.filter { swp ->
+            val s = swp.stroke
+            val x0 = minOf(s.boundsLeft, s.boundsRight)
+            val x1 = maxOf(s.boundsLeft, s.boundsRight)
+            val y0 = minOf(s.boundsTop, s.boundsBottom)
+            val y1 = maxOf(s.boundsTop, s.boundsBottom)
+            pts.any { p -> p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1 }
+        }
+        if (hit.isEmpty()) return
+        runCatching { hit.forEach { databaseManager.deleteStroke(it.stroke.id) } }
+            .onSuccess {
+                strokes = strokes - hit.toSet()
+                undoStack.push(InkEdit.Erase(hit))
+                onInkChanged()
+            }
+            .onFailure {
+                logger.error(it) { "Failed to erase on page ${requestedPage + 1}" }
+            }
+    }
+
+    fun undo() {
+        when (val e = undoStack.popUndo()) {
+            null -> return
+            is InkEdit.Add -> runCatching {
+                databaseManager.deleteStroke(e.stroke.stroke.id)
+            }.onSuccess {
+                strokes = strokes - e.stroke
+                onInkChanged()
+            }.onFailure {
+                logger.error(it) { "Undo failed" }
+                // Put it back so history does not claim an undo that did not happen.
+                undoStack.push(e)
+            }
+
+            is InkEdit.Erase -> runCatching {
+                e.strokes.forEach { databaseManager.saveStroke(it.stroke, it.points) }
+            }.onSuccess {
+                strokes = strokes + e.strokes
+                onInkChanged()
+            }.onFailure {
+                logger.error(it) { "Undo of erase failed" }
+                undoStack.push(e)
+            }
+        }
+    }
+
+    fun redo() {
+        when (val e = undoStack.popRedo()) {
+            null -> return
+            is InkEdit.Add -> runCatching {
+                databaseManager.saveStroke(e.stroke.stroke, e.stroke.points)
+            }.onSuccess {
+                strokes = strokes + e.stroke
+                onInkChanged()
+            }.onFailure {
+                logger.error(it) { "Redo failed" }
+                undoStack.push(e)
+            }
+
+            is InkEdit.Erase -> runCatching {
+                e.strokes.forEach { databaseManager.deleteStroke(it.stroke.id) }
+            }.onSuccess {
+                strokes = strokes - e.strokes.toSet()
+                onInkChanged()
+            }.onFailure {
+                logger.error(it) { "Redo of erase failed" }
+                undoStack.push(e)
+            }
+        }
+    }
+
     // Declared after commitStroke so it captures that local function directly.
     val commitStrokeNow by rememberUpdatedState<(List<Offset>, List<Float>) -> Unit> { pts, px ->
         commitStroke(pts, px)
     }
+
+    // Same indirection for the eraser, for the same reason: the pointer coroutine
+    // must call the current-frame function, not the one captured at gesture start.
+    val eraseNow by rememberUpdatedState<(List<Offset>) -> Unit> { pts ->
+        eraseAt(pts)
+    }
+
+    val undoNow by rememberUpdatedState<() -> Unit> { undo() }
+    val redoNow by rememberUpdatedState<() -> Unit> { redo() }
 
     val focusRequester = remember { FocusRequester() }
 
@@ -547,6 +649,19 @@ fun PdfViewer(
                 .focusable()
                 .onPreviewKeyEvent { event ->
                     if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                    // Undo/redo first, and before page navigation: these are the keys a person
+                    // reaches for mid-stroke, and PageUp/PageDown are also plain arrows.
+                    // `event.isCtrlPressed` is pointer API and does not exist on a
+                    // KeyEvent — the keyboard modifiers live on the event too but under
+                    // `keyEvent.isCtrlPressed` in `androidx.compose.ui.input.key`.
+                    val ctrl = event.isCtrlPressed || event.isMetaPressed
+                    if (ctrl) {
+                        when {
+                            event.key == Key.Z && event.isShiftPressed -> { redoNow(); return@onPreviewKeyEvent true }
+                            event.key == Key.Z -> { undoNow(); return@onPreviewKeyEvent true }
+                            event.key == Key.Y -> { redoNow(); return@onPreviewKeyEvent true }
+                        }
+                    }
                     when (event.key) {
                         Key.PageDown, Key.DirectionRight, Key.DirectionDown -> {
                             goToPage(requestedPage + 1); true
@@ -585,8 +700,15 @@ fun PdfViewer(
                         val pts = mutableListOf(Offset(start.x, start.y))
                         val modelWidths = mutableListOf(INK_WIDTH_PT)
                         var lastTime = System.currentTimeMillis()
-                        liveStroke = pts
-                        liveStrokeWidths = modelWidths
+                        // The eraser follows the same pointer path as the pen and
+                        // differs only in what happens on release. Branching here keeps
+                        // one gesture handler, so the two tools cannot fight over the
+                        // same pointer stream the way a separate handler would.
+                        val erasing = tool == InkTool.Eraser
+                        if (!erasing) {
+                            liveStroke = pts
+                            liveStrokeWidths = modelWidths
+                        }
                         while (true) {
                             val event = awaitPointerEvent()
                             val change = event.changes.firstOrNull { it.pressed } ?: break
@@ -620,7 +742,9 @@ fun PdfViewer(
                         }
                         liveStroke = null
                         liveStrokeWidths = emptyList()
-                        if (pts.size >= 2) commitStrokeNow(pts, modelWidths)
+                        if (pts.size >= 2) {
+                            if (erasing) eraseNow(pts) else commitStrokeNow(pts, modelWidths)
+                        }
                     }
                 }
         ) {
@@ -708,6 +832,10 @@ fun PdfViewer(
                 colour = inkColour,
                 onToolChange = { tool = it },
                 onColourChange = { inkColour = it },
+                canUndo = undoStack.canUndo,
+                canRedo = undoStack.canRedo,
+                onUndo = { undoNow() },
+                onRedo = { redoNow() },
                 onClear = {
                     runCatching { databaseManager.deleteStrokesForDocument(documentUri) }
                         .onSuccess {
@@ -731,7 +859,28 @@ fun PdfViewer(
 }
 
 /** Which ink tool the toolbar has armed. */
-enum class InkTool { Pen, Highlighter }
+/**
+ * What an undoable edit did, in terms the desktop can actually reverse.
+ *
+ * Only strokes exist here — the desktop has no text or image annotation tables (and
+ * the sync protocol carries no verbs for them), so the tablet's far richer
+ * `DrawCommand` cannot be reused without copying the parts that do not apply.
+ * What *is* shared is `UndoStack`, the history discipline both platforms now follow.
+ */
+private sealed interface InkEdit {
+    /** A finished stroke was inserted. Undo deletes it; redo re-inserts it. */
+    data class Add(val stroke: StrokeWithPoints) : InkEdit
+
+    /**
+     * One eraser gesture removed these strokes.
+     *
+     * Grouped per gesture rather than per stroke: a single drag across a paragraph
+     * should come back in one press, which is what the tablet's `EraseGesture` does.
+     */
+    data class Erase(val strokes: List<StrokeWithPoints>) : InkEdit
+}
+
+enum class InkTool { Pen, Highlighter, Eraser }
 
 /**
  * Stroke width in **model units** (PDF points), not pixels, so it scales with the
@@ -751,6 +900,10 @@ private fun InkToolbar(
     colour: Int,
     onToolChange: (InkTool) -> Unit,
     onColourChange: (Int) -> Unit,
+    canUndo: Boolean,
+    canRedo: Boolean,
+    onUndo: () -> Unit,
+    onRedo: () -> Unit,
     onClear: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -773,6 +926,14 @@ private fun InkToolbar(
             selected = tool == InkTool.Highlighter,
             onClick = { onToolChange(InkTool.Highlighter) }
         )
+        InkToolButton(
+            label = "橡皮擦",
+            selected = tool == InkTool.Eraser,
+            onClick = { onToolChange(InkTool.Eraser) }
+        )
+        Spacer(Modifier.width(6.dp))
+        InkToolButton(label = "復原", selected = false, enabled = canUndo, onClick = onUndo)
+        InkToolButton(label = "重做", selected = false, enabled = canRedo, onClick = onRedo)
         Spacer(Modifier.width(6.dp))
         INK_PALETTE.forEach { swatch ->
             val chosen = colour == swatch
@@ -799,14 +960,22 @@ private fun InkToolbar(
 }
 
 @Composable
-private fun InkToolButton(label: String, selected: Boolean, onClick: () -> Unit) {
-    TextButton(onClick = onClick) {
+private fun InkToolButton(
+    label: String,
+    selected: Boolean,
+    enabled: Boolean = true,
+    onClick: () -> Unit
+) {
+    TextButton(onClick = onClick, enabled = enabled) {
         Text(
             label,
             style = MaterialTheme.typography.labelMedium,
             fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-            color = if (selected) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant
+            color = when {
+                selected -> MaterialTheme.colorScheme.primary
+                !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
+                else -> MaterialTheme.colorScheme.onSurfaceVariant
+            }
         )
     }
 }
