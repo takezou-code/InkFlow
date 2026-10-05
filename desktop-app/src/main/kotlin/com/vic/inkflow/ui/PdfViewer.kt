@@ -35,6 +35,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.geometry.isSpecified
 import androidx.compose.ui.graphics.Color
@@ -460,6 +461,121 @@ fun PdfViewer(
     // resurrect content that is not there.
     val undoStack = remember(documentUri) { UndoStack<InkEdit>() }
 
+    // ── Selection ────────────────────────────────────────────────────────────
+    // Stroke ids rather than the strokes: the selection has to survive the list being
+    // rebuilt after every edit, and identity is what the ink is keyed on anyway.
+    var selectedIds by remember(documentUri) { mutableStateOf<Set<String>>(emptySet()) }
+
+    /** Rubber-band rectangle during a selection drag, in model units. */
+    var selectionRect by remember { mutableStateOf<Rect?>(null) }
+
+    /**
+     * The most recent live drag, folded into one history entry on release.
+     *
+     * A drag writes the database on every frame it moves, so without this the history
+     * would gain one entry per frame and a single drag would take dozens of undos to
+     * reverse.
+     */
+    var lastMove by remember { mutableStateOf<Triple<List<StrokeWithPoints>, Float, Float>?>(null) }
+
+    /**
+     * Strokes whose bounds intersect [r].
+     *
+     * Bounds-based, not envelope-exact. A rectangle selection that only caught fully
+     * enclosed strokes would skip a long stroke the user plainly dragged across, which
+     * reads as a broken tool rather than a strict one.
+     */
+    fun strokesIntersecting(r: Rect): List<StrokeWithPoints> = strokes.filter { swp ->
+        val s = swp.stroke
+        r.left <= maxOf(s.boundsLeft, s.boundsRight) &&
+            r.right >= minOf(s.boundsLeft, s.boundsRight) &&
+            r.top <= maxOf(s.boundsTop, s.boundsBottom) &&
+            r.bottom >= minOf(s.boundsTop, s.boundsBottom)
+    }
+
+    fun selectByRect(r: Rect, additive: Boolean) {
+        val hits = strokesIntersecting(r).map { it.stroke.id }.toSet()
+        selectedIds = if (additive) selectedIds + hits else hits
+    }
+
+    /** Bounding box of the current selection, or null when nothing is selected. */
+    fun selectionBounds(): Rect? {
+        val sel = strokes.filter { it.stroke.id in selectedIds }
+        if (sel.isEmpty()) return null
+        return Rect(
+            sel.minOf { minOf(it.stroke.boundsLeft, it.stroke.boundsRight) },
+            sel.minOf { minOf(it.stroke.boundsTop, it.stroke.boundsBottom) },
+            sel.maxOf { maxOf(it.stroke.boundsLeft, it.stroke.boundsRight) },
+            sel.maxOf { maxOf(it.stroke.boundsTop, it.stroke.boundsBottom) }
+        )
+    }
+
+    /**
+     * Rewrites [moving] translated by ([dx], [dy]) and persists each under its existing
+     * id.
+     *
+     * The id has to survive: `saveStroke` is INSERT OR REPLACE, so rewriting the same
+     * rows is a move. Minting new ids instead would make the tablet see a deletion plus
+     * an unrelated addition, and the stroke would lose its identity across sync.
+     */
+    fun translateStrokes(
+        moving: List<StrokeWithPoints>,
+        dx: Float,
+        dy: Float
+    ): List<StrokeWithPoints> = moving.map { swp ->
+        swp.copy(
+            stroke = swp.stroke.copy(
+                boundsLeft = swp.stroke.boundsLeft + dx,
+                boundsTop = swp.stroke.boundsTop + dy,
+                boundsRight = swp.stroke.boundsRight + dx,
+                boundsBottom = swp.stroke.boundsBottom + dy
+            ),
+            points = swp.points.map { p -> p.copy(x = p.x + dx, y = p.y + dy) }
+        )
+    }
+
+    /** Commits a live drag as one undoable move. Called repeatedly while dragging. */
+    fun moveSelectionBy(dx: Float, dy: Float) {
+        if (dx == 0f && dy == 0f) return
+        val moving = strokes.filter { it.stroke.id in selectedIds }
+        if (moving.isEmpty()) return
+        val before = moving.map { it.copy() }
+        val after = translateStrokes(moving, dx, dy)
+        runCatching {
+            after.forEach { databaseManager.saveStroke(it.stroke, it.points) }
+        }.onSuccess {
+            strokes = strokes.map { s -> after.firstOrNull { it.stroke.id == s.stroke.id } ?: s }
+            lastMove = Triple(before, dx, dy)
+            onInkChanged()
+        }.onFailure {
+            logger.error(it) { "Failed to move ${moving.size} stroke(s)" }
+        }
+    }
+
+    /** Collapses the drag's incremental writes into one undoable command. */
+    fun commitMove() {
+        val m = lastMove
+        lastMove = null
+        if (m == null) return
+        undoStack.push(InkEdit.Move(m.first, m.second, m.third))
+    }
+
+    /** Deletes the selection as one undoable step. */
+    fun deleteSelection() {
+        val doomed = strokes.filter { it.stroke.id in selectedIds }
+        if (doomed.isEmpty()) return
+        runCatching { doomed.forEach { databaseManager.deleteStroke(it.stroke.id) } }
+            .onSuccess {
+                strokes = strokes - doomed.toSet()
+                selectedIds = emptySet()
+                undoStack.push(InkEdit.Erase(doomed))
+                onInkChanged()
+            }
+            .onFailure {
+                logger.error(it) { "Failed to delete selection" }
+            }
+    }
+
     fun commitStroke(pts: List<Offset>, modelWidths: List<Float>) {
         val b = box ?: return
         val stroke = StrokeEntity(
@@ -552,6 +668,20 @@ fun PdfViewer(
                 logger.error(it) { "Undo of erase failed" }
                 undoStack.push(e)
             }
+
+            // A move is exactly invertible, so undo replays the same translation
+            // backwards over the pre-move snapshots.
+            is InkEdit.Move -> runCatching {
+                translateStrokes(e.originals, -e.dx, -e.dy)
+                    .forEach { databaseManager.saveStroke(it.stroke, it.points) }
+            }.onSuccess { _ ->
+                val back = translateStrokes(e.originals, -e.dx, -e.dy)
+                strokes = strokes.map { s -> back.firstOrNull { it.stroke.id == s.stroke.id } ?: s }
+                onInkChanged()
+            }.onFailure {
+                logger.error(it) { "Undo of move failed" }
+                undoStack.push(e)
+            }
         }
     }
 
@@ -577,6 +707,18 @@ fun PdfViewer(
                 logger.error(it) { "Redo of erase failed" }
                 undoStack.push(e)
             }
+
+            is InkEdit.Move -> runCatching {
+                translateStrokes(e.originals, e.dx, e.dy)
+                    .forEach { databaseManager.saveStroke(it.stroke, it.points) }
+            }.onSuccess { _ ->
+                val fwd = translateStrokes(e.originals, e.dx, e.dy)
+                strokes = strokes.map { s -> fwd.firstOrNull { it.stroke.id == s.stroke.id } ?: s }
+                onInkChanged()
+            }.onFailure {
+                logger.error(it) { "Redo of move failed" }
+                undoStack.push(e)
+            }
         }
     }
 
@@ -593,6 +735,19 @@ fun PdfViewer(
 
     val undoNow by rememberUpdatedState<() -> Unit> { undo() }
     val redoNow by rememberUpdatedState<() -> Unit> { redo() }
+
+    // Selection helpers need the same indirection for the same reason as the ink ones:
+    // the pointer coroutine must call the current-frame function, not the one captured
+    // when the gesture started.
+    val selectionBoundsNow by rememberUpdatedState<() -> Rect?> { selectionBounds() }
+    val moveSelectionNow by rememberUpdatedState<(Float, Float) -> Unit> { dx, dy ->
+        moveSelectionBy(dx, dy)
+    }
+    val commitMoveNow by rememberUpdatedState<() -> Unit> { commitMove() }
+    val selectByRectNow by rememberUpdatedState<(Rect, Boolean) -> Unit> { r, add ->
+        selectByRect(r, add)
+    }
+    val deleteSelectionNow by rememberUpdatedState<() -> Unit> { deleteSelection() }
 
     val focusRequester = remember { FocusRequester() }
 
@@ -679,6 +834,25 @@ fun PdfViewer(
                             goToPage(lastPage); true
                         }
 
+                        // Selection keys only when there is something selected, so
+                        // Backspace still means "delete selection" rather than
+                        // silently swallowing the key while the tool is on the pen.
+                        Key.Delete, Key.Backspace -> {
+                            if (selectedIds.isEmpty()) false else { deleteSelectionNow(); true }
+                        }
+
+                        Key.Escape -> {
+                            if (selectedIds.isEmpty()) false else { selectedIds = emptySet(); true }
+                        }
+
+                        Key.A -> {
+                            if (!ctrl || selectedIds.isEmpty()) {
+                                false
+                            } else {
+                                selectedIds = strokes.map { it.stroke.id }.toSet(); true
+                            }
+                        }
+
                         else -> false
                     }
                 }
@@ -705,6 +879,53 @@ fun PdfViewer(
                         // one gesture handler, so the two tools cannot fight over the
                         // same pointer stream the way a separate handler would.
                         val erasing = tool == InkTool.Eraser
+                        val selecting = tool == InkTool.Select
+                        if (selecting) {
+                            // A press inside the current selection moves it; a press
+                            // anywhere else rubber-bands a new one. Decided on the press,
+                            // not mid-drag, so a gesture cannot change meaning halfway
+                            // through and leave a half-moved selection behind.
+                            val box = selectionBoundsNow()
+                            val moving = box != null && selectedIds.isNotEmpty() &&
+                                start.x >= box.left && start.x <= box.right &&
+                                start.y >= box.top && start.y <= box.bottom
+                            val idsAtPress = selectedIds
+                            val wasMoving = moving
+                            var endX = start.x
+                            var endY = start.y
+                            var additive = false
+                            selectionRect = Rect(start.x, start.y, start.x, start.y)
+
+                            while (true) {
+                                val ev = awaitPointerEvent()
+                                val ch = ev.changes.firstOrNull { it.pressed } ?: break
+                                val mm = toModel(ch.position) ?: continue
+                                additive = ev.keyboardModifiers.isShiftPressed
+                                if (moving) {
+                                    moveSelectionNow(mm.x - start.x, mm.y - start.y)
+                                } else {
+                                    endX = mm.x
+                                    endY = mm.y
+                                    selectionRect = Rect(start.x, start.y, mm.x, mm.y)
+                                }
+                                ch.consume()
+                            }
+
+                            selectionRect = null
+                            if (wasMoving) {
+                                commitMoveNow()
+                                selectedIds = idsAtPress
+                            } else {
+                                selectByRectNow(
+                                    Rect(
+                                        minOf(start.x, endX), minOf(start.y, endY),
+                                        maxOf(start.x, endX), maxOf(start.y, endY)
+                                    ),
+                                    additive
+                                )
+                            }
+                            return@awaitEachGesture
+                        }
                         if (!erasing) {
                             liveStroke = pts
                             liveStrokeWidths = modelWidths
@@ -762,9 +983,38 @@ fun PdfViewer(
                     // Ink shares the image's transform exactly: same scale, same origin, and
                     // the same page box, so pinch and drag move the two together by
                     // construction rather than by two sets of arithmetic agreeing.
-                    for (swp in strokes) {
-                        drawStroke(swp, scale, b)
-                    }
+for (swp in strokes) {
+                            drawStroke(swp, scale, b)
+                        }
+
+                        // Selection outline, drawn inside the same translate as the ink
+                        // so it tracks zoom and pan with the strokes by construction.
+                        // The colour is a fixed indigo rather than the live scheme so
+                        // the outline reads as "UI" and not as part of the drawing.
+                        selectionBoundsNow()?.let { sb ->
+                            drawRect(
+                                color = Color(0xFF6366F1).copy(alpha = 0.95f),
+                                topLeft = Offset(sb.left * scale - b.originX * scale, sb.top * scale - b.originY * scale),
+                                size = androidx.compose.ui.geometry.Size(sb.width * scale, sb.height * scale),
+                                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.5f * scale)
+                            )
+                        }
+                        // Rubber band: dashed-looking by dashing the four edges cheaply
+                        // with a translucent fill instead of a stroke, which at this
+                        // size reads the same and costs one draw call.
+                        selectionRect?.let { rr ->
+                            drawRect(
+                                color = Color(0xFF6366F1).copy(alpha = 0.14f),
+                                topLeft = Offset(rr.left * scale - b.originX * scale, rr.top * scale - b.originY * scale),
+                                size = androidx.compose.ui.geometry.Size(rr.width * scale, rr.height * scale)
+                            )
+                            drawRect(
+                                color = Color(0xFF6366F1).copy(alpha = 0.8f),
+                                topLeft = Offset(rr.left * scale - b.originX * scale, rr.top * scale - b.originY * scale),
+                                size = androidx.compose.ui.geometry.Size(rr.width * scale, rr.height * scale),
+                                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1f * scale)
+                            )
+                        }
                 // The stroke currently under the pointer. Drawn through the same
                     // transform as everything else so it cannot drift from the
                     // committed path it is about to become.
@@ -834,8 +1084,10 @@ fun PdfViewer(
                 onColourChange = { inkColour = it },
                 canUndo = undoStack.canUndo,
                 canRedo = undoStack.canRedo,
+                selectionCount = selectedIds.size,
                 onUndo = { undoNow() },
                 onRedo = { redoNow() },
+                onDeleteSelection = { deleteSelectionNow() },
                 onClear = {
                     runCatching { databaseManager.deleteStrokesForDocument(documentUri) }
                         .onSuccess {
@@ -878,9 +1130,22 @@ private sealed interface InkEdit {
      * should come back in one press, which is what the tablet's `EraseGesture` does.
      */
     data class Erase(val strokes: List<StrokeWithPoints>) : InkEdit
+
+    /**
+     * A selection was dragged by [dx]/[dy] model units.
+     *
+     * [originals] are snapshots taken before the move, which is what undo restores.
+     * A snapshot rather than a reference on purpose: a later edit must not be able to
+     * mutate what the history is holding.
+     *
+     * Stored as a delta rather than an "after" snapshot because a move is exactly
+     * invertible — replaying the same translation forward or back cannot drift the way
+     * storing two independently-computed states could.
+     */
+    data class Move(val originals: List<StrokeWithPoints>, val dx: Float, val dy: Float) : InkEdit
 }
 
-enum class InkTool { Pen, Highlighter, Eraser }
+enum class InkTool { Pen, Highlighter, Eraser, Select }
 
 /**
  * Stroke width in **model units** (PDF points), not pixels, so it scales with the
@@ -902,8 +1167,10 @@ private fun InkToolbar(
     onColourChange: (Int) -> Unit,
     canUndo: Boolean,
     canRedo: Boolean,
+    selectionCount: Int,
     onUndo: () -> Unit,
     onRedo: () -> Unit,
+    onDeleteSelection: () -> Unit,
     onClear: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -931,10 +1198,22 @@ private fun InkToolbar(
             selected = tool == InkTool.Eraser,
             onClick = { onToolChange(InkTool.Eraser) }
         )
+        InkToolButton(
+            label = if (selectionCount > 0) "選取($selectionCount)" else "選取",
+            selected = tool == InkTool.Select,
+            onClick = { onToolChange(InkTool.Select) }
+        )
         Spacer(Modifier.width(6.dp))
         InkToolButton(label = "復原", selected = false, enabled = canUndo, onClick = onUndo)
         InkToolButton(label = "重做", selected = false, enabled = canRedo, onClick = onRedo)
         Spacer(Modifier.width(6.dp))
+        if (selectionCount > 0) {
+            // Delete lives here rather than only on the keyboard: the selection is a
+            // mode, and a control that exists only as a shortcut is a control most
+            // people never find.
+            InkToolButton(label = "刪除選取", selected = false, onClick = onDeleteSelection)
+            Spacer(Modifier.width(6.dp))
+        }
         INK_PALETTE.forEach { swatch ->
             val chosen = colour == swatch
             Box(
