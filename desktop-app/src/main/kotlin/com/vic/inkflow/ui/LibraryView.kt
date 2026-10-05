@@ -7,6 +7,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import com.vic.inkflow.ui.rememberHazeState
+import com.vic.inkflow.ui.LibraryHeroPanel
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
@@ -68,31 +70,33 @@ fun LibraryView(
     }
 
     Column(modifier = modifier.fillMaxSize().padding(horizontal = 20.dp)) {
-        // ── Header row: title + sync status pill ─────────────────────────────
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+        // The tablet's own hero panel — serif italic wordmark with a moving gradient
+        // shimmer, staggered entrance, glass search field, grid/list toggle — lifted
+        // into `:shared` so the desktop runs the same component instead of a
+        // hand-built header row.
+        LibraryHeroPanel(
+            searchQuery = query,
+            onSearchQueryChange = { query = it },
+            isDarkTheme = InkThemeState.darkMode,
+            isGridView = true,
+            onToggleGridView = {},
+            hazeState = rememberHazeState()
+        )
+
+        // Sync status stays here rather than in the hero panel: it has no slot there,
+        // and "has this ever synced" is the only signal the user gets that the
+        // library is populated at all.
+        val tabletOnline = remember(syncStatusText) {
+            !syncStatusText.startsWith("未偵測到") && !syncStatusText.startsWith("等待")
+        }
+        Box(
+            modifier = Modifier.padding(horizontal = 20.dp),
+            contentAlignment = Alignment.CenterStart
         ) {
-            Text(
-                "文件庫",
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.SemiBold
-            )
-            // "Has this ever synced" is the signal that matters here: the pill is the only
-            // place the user gets feedback that the library is populated at all.
-            val tabletOnline = remember(syncStatusText) {
-                !syncStatusText.startsWith("未偵測到") && !syncStatusText.startsWith("等待")
-            }
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(50))
-                    .glassPill(
-                        // Connected reads as armed, so it takes the tinted fill
-                        // rather than neutral glass that would look decorative.
-                        selected = tabletOnline,
-                        alpha = 0.45f
-                    )
+                    .glassPill(selected = tabletOnline, alpha = 0.45f)
                     .padding(horizontal = 12.dp, vertical = 6.dp)
             ) {
                 Text(
@@ -106,41 +110,6 @@ fun LibraryView(
             }
         }
 
-// ── Search bar ────────────────────────────────────────────────────────
-// Wrapped rather than restyled: OutlinedTextField draws its own 1dp outline, and
-// the glass would sit behind that border instead of replacing it, so the field
-// reads as a boxed input with a panel behind it. `specular = false` keeps a
-// hairline off a 48dp-tall control where it would only look like a border.
-Box(
-    modifier = Modifier
-        .fillMaxWidth()
-        .clip(RoundedCornerShape(14.dp))
-        .fauxGlassPanel(InkThemeState.darkMode, RoundedCornerShape(14.dp), specular = false)
-        .padding(horizontal = 12.dp, vertical = 2.dp)
-) {
-    OutlinedTextField(
-        value = query,
-        onValueChange = { query = it },
-        modifier = Modifier.fillMaxWidth(),
-        placeholder = { Text("搜尋文件名或分類…") },
-        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-        trailingIcon = {
-            if (query.isNotEmpty()) {
-                IconButton(onClick = { query = "" }) {
-                    Icon(Icons.Default.Close, contentDescription = "Clear")
-                }
-            }
-        },
-        singleLine = true,
-        shape = RoundedCornerShape(12.dp),
-        colors = OutlinedTextFieldDefaults.colors(
-            focusedContainerColor = Color.Transparent,
-            unfocusedContainerColor = Color.Transparent,
-            focusedBorderColor = MaterialTheme.colorScheme.primary,
-            unfocusedBorderColor = Color.Transparent
-        )
-    )
-}
 
         Spacer(Modifier.height(10.dp))
 

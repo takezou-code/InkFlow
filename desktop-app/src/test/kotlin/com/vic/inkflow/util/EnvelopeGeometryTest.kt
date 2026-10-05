@@ -13,7 +13,7 @@ import kotlin.test.assertTrue
  * `EnvelopeParityTest` used to diff the desktop's port against `TabletReferenceEnvelope`,
  * an unmodified third copy of the tablet's algorithm kept in this same test source
  * set purely so the two could be compared. It was a good test: it caught exactly
- * the failure that mattered â€” a "harmless" tidy-up in the port (a rounding change, a
+ * the failure that mattered - a "harmless" tidy-up in the port (a rounding change, a
  * swapped cap direction, a dropped per-sample disc) that no test written against the
  * port alone would ever notice, and it ran against the real synced data rather than
  * synthetic strokes.
@@ -48,7 +48,7 @@ class EnvelopeGeometryTest {
      * of the per-sample discs.
      *
      * `generateEnvelopePath` calls `addOval` at every sample, and every other piece of
-     * geometry it emits â€” the offset edges, the Bezier control midpoints, the cap arcs â€”
+     * geometry it emits - the offset edges, the Bezier control midpoints, the cap arcs -
      * lies on or inside those circles, because an offset point sits at exactly `width/2`
      * from its sample. So the bounds are not merely close to the disc union; they are
      * the disc union.
@@ -56,7 +56,7 @@ class EnvelopeGeometryTest {
      * That is the property whose absence used to punch transparent holes through fast
      * strokes: drop the discs and the non-zero winding rule leaves gaps wherever the
      * envelope self-intersects. Asserting exact bounds catches that, and per-sample
-     * radii are what makes it exact â€” using the widest radius on every axis would be
+     * radii are what makes it exact - using the widest radius on every axis would be
      * wrong, and was.
      */
     private fun assertEqualsDiscBounds(label: String, pts: List<StrokePoint>) {
