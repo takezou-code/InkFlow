@@ -35,7 +35,17 @@ object SyncConstants {
      * must ship now — it is the one field that cannot be retrofitted later.
      * v2 = length-prefixed frames + manifest diff + SHA-256 + chunked transfer.
      */
-    const val PROTOCOL_VERSION = 3
+    /**
+ * v4 = text annotations travel in `document_detail`.
+ *
+ * The bump is mandatory rather than cosmetic. `document_detail` gained a `texts`
+ * field and `docVersion` gained a text count; an older tablet would decode the
+ * extra field as absent, compute a hash over a different set of fields, and then
+ * disagree with this build about every single document — which looks like a network
+ * fault and is very hard to diagnose. The handshake already rejects a version
+ * mismatch, so bumping turns a silent corruption into one clear error.
+ */
+const val PROTOCOL_VERSION = 4
     const val APP_TAG = "InkFlow"
     const val DOCUMENTS_SUBDIR = "documents"
 }
@@ -160,13 +170,34 @@ data class DocumentManifestEntry(
     val fileSha256: String? = null,
     val fileSize: Long? = null,
     /** v3: content hash of (instanceId, uri, strokeCount, fileSha256, fileSize). */
-    val docVersion: String? = null
+    val docVersion: String? = null,
+    /**
+     * v4: number of text annotations. Part of `docVersion`, so adding or removing a
+     * note makes the document look changed even when no stroke moved.
+     *
+     * Defaults to 0 so a v3 payload decodes without error. It must NOT be -1:
+     * a negative count would also read as "changed" forever and re-pull the whole
+     * document on every pass.
+     */
+    val textCount: Int = 0
 )
 
-/** Answer to TYPE_DOCUMENT_DETAIL: full row + all strokes with points. */
+/**
+ * Answer to TYPE_DOCUMENT_DETAIL: full row, all strokes, and (v4) all notes.
+ *
+ * Notes ship in the same payload as strokes rather than in a verb of their own.
+ * The reason is the deletion model: the manifest is complete and the tablet is
+ * the only writer, so the desktop replaces a document's contents wholesale. A
+ * separate `text_detail` verb would need its own "seen" bookkeeping for no benefit
+ * — the two tables are always fetched together.
+ *
+ * Defaults to an empty list so a v3 payload still decodes.
+ */
 data class DocumentDetailPayload(
     val document: Any?,                      // DocumentEntity (serialized by caller)
-    val strokes: List<Any>                   // List<StrokeWithPoints>
+    val strokes: List<Any>,                  // List<StrokeWithPoints>
+    /** v4: List<TextAnnotationEntity>. */
+    val texts: List<Any> = emptyList()
 )
 
 /** Answer to TYPE_STROKE_DELTA / TYPE_STROKE_PAGE. */
@@ -244,21 +275,34 @@ object SyncWire {
      * ("/a", "b c"). The Android side must use the same separator — see
      * `SyncIdentity.docVersion` in app/src/main/java/com/vic/inkflow/sync/.
      */
-    fun docVersion(
-        instanceId: String,
-        uri: String,
-        strokeCount: Int,
-        fileSha256: String?,
-        fileSize: Long?
-    ): String = sha256Hex(
-        buildString {
-            append(instanceId); append(NUL)
-            append(uri); append(NUL)
-            append(strokeCount); append(NUL)
-            append(fileSha256 ?: "-"); append(NUL)
-            append(fileSize ?: -1L)
-        }.toByteArray(Charsets.UTF_8)
-    )
+fun docVersion(
+            instanceId: String,
+            uri: String,
+            strokeCount: Int,
+            fileSha256: String?,
+            fileSize: Long?,
+            /**
+             * v4. Number of text annotations, appended after [fileSize] so the
+             * field order stays a prefix-extension rather than a reshuffle.
+             *
+             * Why the count is enough: a note's coordinates changing while the count
+             * stays the same is missed, exactly like moving a single stroke point.
+             * The trade-off is identical to the stroke case and for the same reason —
+             * the occasional miss costs nothing because the next full snapshot pull
+             * corrects it, whereas hashing every coordinate would cost a full document
+             * read on every manifest.
+             */
+            textCount: Int = 0
+        ): String = sha256Hex(
+            buildString {
+                append(instanceId); append(NUL)
+                append(uri); append(NUL)
+                append(strokeCount); append(NUL)
+                append(fileSha256 ?: "-"); append(NUL)
+                append(fileSize ?: -1L); append(NUL)
+                append(textCount)
+            }.toByteArray(Charsets.UTF_8)
+        )
 
     /** Field separator for [docVersion]. Must match the Android implementation. */
     const val NUL: Char = '\u0000'

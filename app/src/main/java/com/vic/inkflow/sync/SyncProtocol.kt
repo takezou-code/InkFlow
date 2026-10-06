@@ -22,10 +22,17 @@ object SyncPorts {
 
 object SyncConstants {
     /**
-     * v3。[DiscoveryResponse.instanceId] 與 [SyncIdentity.docVersion] 都只能靠它升級，
-     * 已經出貨的 client 不可能回頭補，所以這個常數兩端必須一致。
+     * v4。
+     *
+     * 升版是**強制**的，不是禮貌性更新。v4 讓 `document_detail` 多帶 `texts` 欄位，
+     * 並讓 `docVersion` 多算一個文字筆數。舊平板會把多出來的欄位當不存在、把雜湊算在
+     * 另一組欄位上，於是**每一份文件**都會被判成「有更新」而整份重拉——症狀看起來像
+     * 網路故障，實際上是版本不一致，極難診斷。
+     *
+     * handshake 本來就會拒絕版本不符，所以升版是為了把「靜默錯亂」換成「一句明確的
+     * 錯誤」。兩端的這個常數必須一致。
      */
-    const val PROTOCOL_VERSION = 3
+    const val PROTOCOL_VERSION = 4
 
     /** 探索封包用的應用程式標記；不是 InkFlow 的封包直接不回應（§3）。 */
     const val APP_TAG = "InkFlow"
@@ -127,14 +134,30 @@ data class DocumentManifestEntry(
     val filePresent: Boolean,
     val fileSha256: String? = null,
     val fileSize: Long? = null,
-    /** SHA-256(instanceId ‖ uri ‖ strokeCount ‖ fileSha256 ‖ fileSize)，見 [SyncIdentity.docVersion]。 */
-    val docVersion: String? = null
+    /** SHA-256(instanceId ‖ uri ‖ strokeCount ‖ fileSha256 ‖ fileSize ‖ textCount)，見 [SyncIdentity.docVersion]。 */
+    val docVersion: String? = null,
+    /**
+     * v4：文字註解筆數，並參與 [docVersion]。沒有它的話「只加了一條註解」在桌面端
+     * 看起來完全沒變化，註解就永遠不會出現——這是 v4 存在的唯一理由。
+     *
+     * 預設 0，讓 v3 payload 仍可解碼。**不可**是 -1：負數同樣代表「有變」，會讓每輪
+     * 都重拉整份文件。
+     */
+    val textCount: Int = 0
 )
 
-/** `document_detail` 的應答：整列 + 全部筆跡（含點）。 */
+/**
+ * `document_detail` 的應答：整列 + 全部筆跡（含點）+（v4）全部文字註解。
+ *
+ * 註解跟筆跡放同一個 payload，而不是另開一個 verb：刪除模型本來就是「manifest 完整、
+ * 平板是唯一寫者、桌面端整份替換」，兩張表本來就一起取。多開一個 verb 只會多一套
+ * 「這一輪看過了」的簿記，沒有任何好處。
+ */
 data class DocumentDetailPayload(
     val document: Any?,
-    val strokes: List<Any>
+    val strokes: List<Any>,
+    /** v4：List<TextAnnotationEntity>。預設空清單讓 v3 payload 仍可解碼。 */
+    val texts: List<Any> = emptyList()
 )
 
 /** `stroke_delta` / `stroke_page` 的應答。 */

@@ -78,6 +78,9 @@ class TabletSyncServer(
     private val digests = FileDigestCache()
     private val strokeCounts = StrokeCountCache(scope)
 
+    /** v4：文字註解筆數快取，與 [strokeCounts] 同一套邏輯與同一套預熱理由。 */
+    private val textCounts = StrokeCountCache(scope)
+
     /** 允許服務的實體檔根目錄；見 [requireServableFile] 的安全說明。 */
     private val servableRoot: File? = (
         appContext.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
@@ -238,7 +241,12 @@ class TabletSyncServer(
                 val strokes = ordered(repos.strokes.getAllStrokesForDocument(doc.uri))
                 // 這一趟本來就把全部筆跡讀出來了，順手餵回快取（免費的精確刷新）。
                 strokeCounts.record(doc.uri, strokes.size)
-                respondJson(out, type, DocumentDetailPayload(doc, strokes))
+                // v4：文字註解跟筆跡走同一個 payload。放在一起的理由是刪除模型——
+                // manifest 是完整的且平板是唯一寫者，桌面端本來就是整份替換。
+                // 分成獨立 verb 只會多一套「這一輪看過了」的簿記，沒有任何好處。
+                val texts = repos.texts.getAllForDocument(doc.uri)
+                textCounts.record(doc.uri, texts.size)
+                respondJson(out, type, DocumentDetailPayload(doc, strokes, texts))
             }
 
             SyncRequest.TYPE_STROKE_DELTA -> {
@@ -299,6 +307,12 @@ class TabletSyncServer(
             val strokeCount = strokeCounts.count(doc.uri) {
                 repos.strokes.getAllStrokesForDocument(doc.uri).size
             }
+            // v4：文字數與筆數走同一套快取與預熱。理由完全相同——這兩個數字遲早都要
+            // 算，而算在請求路徑上會讓桌面端的第一次 manifest 卡到撞上 60 秒
+            // soTimeout，算在背景裡則幾乎是即時的。
+            val textCount = textCounts.count(doc.uri) {
+                repos.texts.getAllForDocument(doc.uri).size
+            }
             DocumentManifestEntry(
                 uri = doc.uri,
                 displayName = doc.displayName,
@@ -307,7 +321,12 @@ class TabletSyncServer(
                 filePresent = present,
                 fileSha256 = sha,
                 fileSize = size,
-                docVersion = SyncIdentity.docVersion(instance, doc.uri, strokeCount, sha, size)
+                textCount = textCount,
+                // textCount 必須放進雜湊，否則「只加了一條註解」在桌面端看起來
+                // 完全沒有變化，註解就永遠不會出現。這是 v4 存在的唯一理由。
+                docVersion = SyncIdentity.docVersion(
+                    instance, doc.uri, strokeCount, sha, size, textCount
+                )
             )
         }
     }
@@ -334,6 +353,10 @@ class TabletSyncServer(
                 runCatching { repos.strokes.getAllStrokesForDocument(doc.uri) }
                     .onSuccess { strokeCounts.record(doc.uri, it.size) }
                     .onFailure { Log.d(TAG, "warm-up skipped ${doc.uri}: ${it.message}") }
+                // v4：文字數一併預熱，否則第一次 manifest 會在請求路徑上等它。
+                runCatching { repos.texts.getAllForDocument(doc.uri) }
+                    .onSuccess { textCounts.record(doc.uri, it.size) }
+                    .onFailure { Log.d(TAG, "warm-up skipped texts for ${doc.uri}: ${it.message}") }
                 delay(WARMUP_GAP_MS)
             }
             return
