@@ -5,6 +5,7 @@ import com.google.gson.reflect.TypeToken
 import com.vic.inkflow.data.DatabaseManager
 import com.vic.inkflow.data.DocumentEntity
 import com.vic.inkflow.data.StrokeWithPoints
+import com.vic.inkflow.data.TextAnnotationEntity
 import mu.KotlinLogging
 import java.io.DataInputStream
 import java.io.DataOutputStream
@@ -39,6 +40,10 @@ data class SyncResult(
     val conflictsSkipped: Int = 0,
     val generationWiped: Boolean = false,
     val orphansRemoved: Int = 0,
+    /** v4: text annotations received. Reported separately from strokes because
+     *  they are a different table and a user needs to be able to tell "my notes
+     *  did not arrive" from "my ink did not arrive". */
+    val textsPulled: Int = 0,
     val errors: List<String> = emptyList()
 )
 
@@ -123,7 +128,28 @@ class LocalSyncManager(
      * buys nothing and only creates concurrency bugs against a single JDBC
      * connection.
      */
+    /**
+     * Retained for compatibility with existing callers, but no longer used for the
+     * listeners — see [startListening]. Sync work runs lock-step against a single
+     * JDBC connection, so the DB lock is what guarantees safety, not pool width.
+     */
     private val executor = Executors.newFixedThreadPool(2)
+
+    /**
+     * Separate pool for inbound sessions.
+     *
+     * This used to share [executor], which meant the server could never actually
+     * serve anyone: `startUdpListener` and `startTcpServer` each block forever on
+     * their own thread, filling both slots, so `serveClient` submissions queued
+     * and never ran. The TCP socket still accepted the connection, so the client
+     * hung waiting for a response that no thread was ever going to write — which
+     * looks like a network fault rather than a dead pool.
+     *
+     * DB access is still serialised by `DatabaseManager`'s own lock, so a wider
+     * pool here does not introduce concurrency against the single connection.
+     */
+    private val sessionExecutor = Executors.newCachedThreadPool()
+
     private val discoveryResponded = AtomicBoolean(false)
 
 
@@ -159,9 +185,14 @@ class LocalSyncManager(
     fun startListening() {
         if (!running.compareAndSet(false, true)) return
 
-        executor.submit { startUdpListener() }
-        executor.submit { startTcpServer() }
-        executor.submit { discoveryLoop() }
+        // Own threads, not [executor]. Both listeners block for the lifetime of the app,
+        // so submitting them to a 2-slot pool would fill it completely and leave
+        // [discoveryLoop] queued forever — which silently disables auto-sync, since
+        // nothing else ever drives it. It would also starve [sessionExecutor]'s
+        // callers if they shared the pool.
+        Thread({ runCatching { startUdpListener() } }, "inkflow-sync-udp").apply { isDaemon = true }.start()
+        Thread({ runCatching { startTcpServer() } }, "inkflow-sync-tcp").apply { isDaemon = true }.start()
+        Thread({ runCatching { discoveryLoop() } }, "inkflow-sync-discovery").apply { isDaemon = true }.start()
 
         logger.info { "Local sync manager started (discovery=$broadcastPort, transfer=$transferPort, protocol v${SyncConstants.PROTOCOL_VERSION})" }
     }
@@ -171,6 +202,7 @@ class LocalSyncManager(
         try { udpSocket?.close() } catch (_: Exception) {}
         try { tcpServer?.close() } catch (_: Exception) {}
         executor.shutdownNow()
+        sessionExecutor.shutdownNow()
         logger.info { "Local sync manager stopped" }
     }
 
@@ -331,6 +363,7 @@ class LocalSyncManager(
         conflictsSkipped = a.conflictsSkipped + b.conflictsSkipped,
         generationWiped = a.generationWiped || b.generationWiped,
         orphansRemoved = a.orphansRemoved + b.orphansRemoved,
+        textsPulled = a.textsPulled + b.textsPulled,
         errors = a.errors + b.errors
     )
 
@@ -356,6 +389,7 @@ class LocalSyncManager(
     fun syncWithTablet(device: DiscoveredDevice): SyncResult {
         var updated = 0; var strokes = 0; var files = 0; var skipped = 0
         var orphans = 0; var wiped = false
+        var texts = 0
         val errors = mutableListOf<String>()
         try {
             Socket(device.ip, device.transferPort).use { socket ->
@@ -385,7 +419,7 @@ class LocalSyncManager(
                         val remoteVersion = entry.docVersion
                             ?: SyncWire.docVersion(
                                 instanceId ?: "", entry.uri, entry.strokeCount,
-                                entry.fileSha256, entry.fileSize
+                                entry.fileSha256, entry.fileSize, entry.textCount
                             )
                         val localVersion = if (instanceId != null)
                             databaseManager.getDocVersion(instanceId, entry.uri) else null
@@ -401,14 +435,21 @@ class LocalSyncManager(
                         }
 
                         // Content changed -> pull the row and the whole stroke snapshot.
-                        val (doc, docStrokes) = fetchDocumentDetail(out, input, entry.uri, instanceId)
+                        val (doc, docStrokes, docTexts) =
+                            fetchDocumentDetail(out, input, entry.uri, instanceId)
                         databaseManager.saveDocument(doc)
                         databaseManager.replaceStrokesForDocument(entry.uri, docStrokes)
+                        // Notes are replaced wholesale for the same reason strokes are:
+                        // the manifest is complete and the tablet is the only writer,
+                        // so anything we still hold that is not in the payload is gone
+                        // over there. A merge would keep deleted notes alive forever.
+                        databaseManager.replaceTextAnnotationsForDocument(entry.uri, docTexts)
                         if (instanceId != null) {
                             databaseManager.setDocVersion(instanceId, entry.uri, remoteVersion, pass)
                         }
                         updated++
                         strokes += docStrokes.size
+                        texts += docTexts.size
 
                         // Ensure the PDF body exists locally.
                         if (needsFileDownload(doc, entry)) {
@@ -452,6 +493,7 @@ class LocalSyncManager(
             conflictsSkipped = skipped,
             generationWiped = wiped,
             orphansRemoved = orphans,
+            textsPulled = texts,
             errors = errors
         )
     }
@@ -580,7 +622,7 @@ class LocalSyncManager(
         input: DataInputStream,
         uri: String,
         instanceId: String?
-    ): Pair<DocumentEntity, List<StrokeWithPoints>> {
+    ): Triple<DocumentEntity, List<StrokeWithPoints>, List<TextAnnotationEntity>> {
         SyncWire.writeText(
             out,
             gson.toJson(
@@ -595,7 +637,14 @@ class LocalSyncManager(
         val type = object : TypeToken<List<StrokeWithPoints>>() {}.type
         val strokes = gson.fromJson<List<StrokeWithPoints>>(gson.toJson(payload.strokes), type)
             ?: emptyList()
-        return doc to strokes
+        // v4. `payload.texts` is `List<Any>` because the payload is decoded before the
+        // concrete entity types are known; re-serializing and re-parsing is how the
+        // strokes are handled too, so notes follow the same path rather than
+        // introducing a second decoding strategy for one payload.
+        val textType = object : TypeToken<List<TextAnnotationEntity>>() {}.type
+        val texts = gson.fromJson<List<TextAnnotationEntity>>(gson.toJson(payload.texts), textType)
+            ?: emptyList()
+        return Triple(doc, strokes, texts)
     }
     /**
      * Download the PDF body for [uri] into documentsDir/<filename>.
@@ -682,7 +731,7 @@ class LocalSyncManager(
             while (running.get()) {
                 try {
                     val client = tcpServer?.accept() ?: break
-                    executor.submit { serveClient(client) }
+                    sessionExecutor.submit { serveClient(client) }
                 } catch (e: SocketException) {
                     if (running.get()) logger.error(e) { "TCP accept error" }
                 }
@@ -697,11 +746,24 @@ class LocalSyncManager(
             s.soTimeout = 120_000
             val input = DataInputStream(s.getInputStream())
             val out = DataOutputStream(s.getOutputStream())
+            // Authentication gate. Previously every verb was served to whoever
+            // connected, which meant anyone on the same Wi-Fi could pull this
+            // machine's whole mirror — including notes the user just wrote — with no
+            // credential at all. The gate is per connection because the protocol has
+            // no notion of a session token; requiring the handshake first means a
+            // client that cannot prove it holds the PSK gets nothing at all.
+            var authenticated = false
             try {
                 while (running.get()) {
                     val reqText = SyncWire.readText(input) ?: break
                     val req = gson.fromJson(reqText, SyncRequest::class.java)
+                    val isHandshake = req.type == SyncRequest.TYPE_HANDSHAKE
+                    if (!isHandshake && !authenticated) {
+                        respondError(out, req.type ?: "unknown", "handshake required before ${req.type ?: "unknown"}")
+                        break
+                    }
                     handleServerRequest(req, input, out)
+                    if (isHandshake) authenticated = true
                 }
             } catch (e: Exception) {
                 logger.debug(e) { "Client session ended" }
@@ -709,11 +771,32 @@ class LocalSyncManager(
         }
     }
 
+    /**
+     * Whether a handshake from [req] may proceed.
+     *
+     * With a pairing code configured, the client must prove it holds the PSK — the
+     * same `pskProof` the tablet requires of us. Without a code configured, any
+     * local client is allowed: that is the documented "unpaired" mode, and
+     * refusing it would make a fresh install unable to sync at all. The settings
+     * screen says so in as many words, because this is the one place where leaving
+     * the field blank is a real security decision.
+     */
+    private fun handshakeAuthorised(req: SyncRequest): Boolean {
+        val configured = pskOrNull() ?: return true
+        val presented = req.psk ?: return false
+        return constantTimeEquals(pskProof(configured), presented)
+    }
+
     private fun handleServerRequest(req: SyncRequest, input: DataInputStream, out: DataOutputStream) {
         try {
             when (req.type) {
-                SyncRequest.TYPE_HANDSHAKE ->
+                SyncRequest.TYPE_HANDSHAKE -> {
+                    if (!handshakeAuthorised(req)) {
+                        respondError(out, req.type, "authentication failed: wrong pairing code")
+                        return
+                    }
                     ack(out, req.type)
+                }
 
                 SyncRequest.TYPE_DOC_MANIFEST -> {
                     val manifest = databaseManager.getAllDocuments().map { doc ->
@@ -725,7 +808,11 @@ class LocalSyncManager(
                             strokeCount = databaseManager.strokeCountForDocument(doc.uri),
                             filePresent = file?.exists() == true,
                             fileSha256 = file?.let { SyncWire.sha256Hex(it) },
-                            fileSize = file?.length()
+                            fileSize = file?.length(),
+                            // v4：文字數與 docVersion 一起送出，否則對方無法判斷
+                            // 「只有註解變了」。這裡沒有 instanceId，所以 docVersion
+                            // 留空讓對方自己算——與 v3 的行為一致。
+                            textCount = databaseManager.textAnnotationCountForDocument(doc.uri)
                         )
                     }
                     respondJson(out, req.type, manifest)
@@ -736,7 +823,8 @@ class LocalSyncManager(
                     val doc = databaseManager.getDocument(uri)
                         ?: throw IllegalArgumentException("unknown document $uri")
                     val strokes = databaseManager.getAllStrokesForDocument(uri)
-                    respondJson(out, req.type, DocumentDetailPayload(doc, strokes))
+                    val texts = databaseManager.getAllTextAnnotationsForDocument(uri)
+                    respondJson(out, req.type, DocumentDetailPayload(doc, strokes, texts))
                 }
 
                 SyncRequest.TYPE_STROKE_DELTA -> {

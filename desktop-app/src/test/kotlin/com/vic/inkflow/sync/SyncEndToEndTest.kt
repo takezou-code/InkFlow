@@ -6,6 +6,7 @@ import com.vic.inkflow.data.DocumentEntity
 import com.vic.inkflow.data.PointEntity
 import com.vic.inkflow.data.StrokeEntity
 import com.vic.inkflow.data.StrokeWithPoints
+import com.vic.inkflow.data.TextAnnotationEntity
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.net.ServerSocket
@@ -187,6 +188,154 @@ class SyncEndToEndTest {
         assertNull(legacy.docY, "pre-v24 strokes must arrive with docY = null")
     }
 
+    // ─── v4: text annotations ─────────────────────────────────────────────────
+
+    /**
+     * The whole point of v4. A note added on the tablet must reach the desktop, and
+     * the only reason it could silently fail is the diff: if the note did not affect
+     * `docVersion`, the desktop would see an unchanged document and never look.
+     */
+    @Test
+    fun `a note added on the tablet reaches the desktop`() {
+        withFakeTablet { srv, tablet ->
+            desktop { db, dir ->
+                val mgr = LocalSyncManager(db, dir.absolutePath, transferPort = srv.localPort)
+                val device = DiscoveredDevice("tab-e2e", "FakeTab", "127.0.0.1", srv.localPort, System.currentTimeMillis())
+
+                // First pass: nothing on the tablet yet.
+                assertEquals(0, mgr.syncWithTablet(device).textsPulled)
+                assertEquals(0, db.getAllTextAnnotationsForDocument(tablet.uri).size)
+
+                // The user writes a note on the tablet.
+                tablet.texts.add(
+                    TextAnnotationEntity(
+                        id = "note-1", documentUri = tablet.uri, pageIndex = 2,
+                        docY = 2f * 842f + 100f,
+                        text = "考試重點", modelX = 72f, modelY = 700f,
+                        fontSize = 16f, colorArgb = 0xFF112233.toInt(), isStamp = false
+                    )
+                )
+
+                val second = mgr.syncWithTablet(device)
+                assertEquals(0, second.errors.size, "errors: ${second.errors}")
+                assertEquals(1, second.documentsUpdated, "the notes-only change must be detected")
+                assertEquals(1, second.textsPulled)
+
+                val arrived = db.getAllTextAnnotationsForDocument(tablet.uri)
+                assertEquals(1, arrived.size, "the note must actually be stored")
+                val n = arrived.single()
+                assertEquals("note-1", n.id)
+                assertEquals("考試重點", n.text)
+                assertEquals(72f, n.modelX)
+                assertEquals(700f, n.modelY)
+                assertEquals(16f, n.fontSize)
+                assertEquals(0xFF112233.toInt(), n.colorArgb)
+                assertEquals(2, n.pageIndex)
+            }
+        }
+    }
+
+    @Test
+    fun `docY is preserved for notes and stays null when the tablet has not backfilled it`() {
+        withFakeTablet { srv, tablet ->
+            tablet.texts.add(
+                TextAnnotationEntity(
+                    id = "with-docy", documentUri = tablet.uri, pageIndex = 1,
+                    docY = 842f + 42f, text = "A", modelX = 10f, modelY = 20f
+                )
+            )
+            tablet.texts.add(
+                TextAnnotationEntity(
+                    id = "no-docy", documentUri = tablet.uri, pageIndex = 0,
+                    docY = null, text = "B", modelX = 30f, modelY = 40f
+                )
+            )
+            desktop { db, dir ->
+                val mgr = LocalSyncManager(db, dir.absolutePath, transferPort = srv.localPort)
+                mgr.syncWithTablet(
+                    DiscoveredDevice("tab-e2e", "FakeTab", "127.0.0.1", srv.localPort, System.currentTimeMillis())
+                )
+                val byId = db.getAllTextAnnotationsForDocument(tablet.uri).associateBy { it.id }
+                assertEquals(884f, byId.getValue("with-docy").docY ?: -1f, 0.001f)
+                assertNull(
+                    byId.getValue("no-docy").docY,
+                    "an un-backfilled note must arrive with null, never a guessed value"
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `a note deleted on the tablet is deleted on the desktop too`() {
+        withFakeTablet { srv, tablet ->
+            desktop { db, dir ->
+                val mgr = LocalSyncManager(db, dir.absolutePath, transferPort = srv.localPort)
+                val device = DiscoveredDevice("tab-e2e", "FakeTab", "127.0.0.1", srv.localPort, System.currentTimeMillis())
+
+                tablet.texts.add(
+                    TextAnnotationEntity(
+                        id = "gone", documentUri = tablet.uri, pageIndex = 0,
+                        text = "x", modelX = 1f, modelY = 2f
+                    )
+                )
+                mgr.syncWithTablet(device)
+                assertEquals(1, db.getAllTextAnnotationsForDocument(tablet.uri).size)
+
+                tablet.texts.clear()
+                mgr.syncWithTablet(device)
+
+                // Wholesale replace, not a merge: merging would keep a note the user
+                // deleted alive forever, which is the failure mode of every naive
+                // "add what is missing" sync.
+                assertEquals(
+                    0, db.getAllTextAnnotationsForDocument(tablet.uri).size,
+                    "a deleted note must not survive as an orphan"
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `a second pass with unchanged notes transfers nothing`() {
+        withFakeTablet { srv, tablet ->
+            tablet.texts.add(
+                TextAnnotationEntity(
+                    id = "n1", documentUri = tablet.uri, pageIndex = 0,
+                    text = "x", modelX = 1f, modelY = 2f
+                )
+            )
+            desktop { db, dir ->
+                val mgr = LocalSyncManager(db, dir.absolutePath, transferPort = srv.localPort)
+                val device = DiscoveredDevice("tab-e2e", "FakeTab", "127.0.0.1", srv.localPort, System.currentTimeMillis())
+
+                assertEquals(1, mgr.syncWithTablet(device).textsPulled)
+                // If textCount were not part of the hash this would re-pull forever,
+                // which for a large document means re-downloading it every pass.
+                assertEquals(0, mgr.syncWithTablet(device).textsPulled, "idempotent second pass")
+            }
+        }
+    }
+
+    @Test
+    fun `notes and strokes arrive together and neither clobbers the other`() {
+        withFakeTablet { srv, tablet ->
+            tablet.texts.add(
+                TextAnnotationEntity(
+                    id = "n1", documentUri = tablet.uri, pageIndex = 0,
+                    text = "hi", modelX = 5f, modelY = 6f
+                )
+            )
+            desktop { db, dir ->
+                val mgr = LocalSyncManager(db, dir.absolutePath, transferPort = srv.localPort)
+                mgr.syncWithTablet(
+                    DiscoveredDevice("tab-e2e", "FakeTab", "127.0.0.1", srv.localPort, System.currentTimeMillis())
+                )
+                assertEquals(1, db.getAllStrokesForDocument(tablet.uri).size, "ink survives")
+                assertEquals(1, db.getAllTextAnnotationsForDocument(tablet.uri).size, "notes survive")
+            }
+        }
+    }
+
     // ─── helpers ─────────────────────────────────────────────────────────────
 
     private data class Tablet(
@@ -196,7 +345,13 @@ class SyncEndToEndTest {
         val sha: String,
         val stroke: StrokeEntity,
         val points: List<PointEntity>,
-        val docVersion: String
+        val docVersion: String,
+        /** v4: the notes this fake tablet serves. Mutable so a test can change the
+         *  tablet's content between two sync passes. */
+        val texts: MutableList<TextAnnotationEntity> = mutableListOf(),
+        /** Recomputes [docVersion] from the current counts. Called after mutating
+         *  [texts], because the count is part of the hash in v4. */
+        val rehash: () -> String
     )
 
     private var lastPdfSize = 0L
@@ -223,13 +378,25 @@ class SyncEndToEndTest {
             boundsLeft = 1f, boundsTop = 2f, boundsRight = 90f, boundsBottom = 80f
         )
         val points = listOf(PointEntity(strokeId = "stroke-1", x = 1f, y = 2f, width = 3f))
-        val version = SyncWire.docVersion(instanceId, tabletUri, 1, sha, tabletPdf.length())
 
-        val tablet = Tablet(tabletDir, tabletUri, tabletPdf, sha, stroke, points, version)
+        val notes = mutableListOf<TextAnnotationEntity>()
+        // The manifest is rebuilt per request rather than captured once, so a test
+        // that adds a note between two passes actually sees the new docVersion.
+        // Capturing it up front would make every "content changed" test pass for the
+        // wrong reason (it would look changed on every pass, not because of the note).
+        fun currentVersion() = SyncWire.docVersion(
+            instanceId, tabletUri, 1, sha, tabletPdf.length(), notes.size
+        )
+
+        val tablet = Tablet(
+            tabletDir, tabletUri, tabletPdf, sha, stroke, points, currentVersion(),
+            texts = notes,
+            rehash = ::currentVersion
+        )
         val manifest = manifestOverride ?: manifestFor?.invoke(tablet) ?: listOf(
             DocumentManifestEntry(
                 tabletUri, "Lecture Notes", 2_000_000_000_000L, 1, true,
-                sha, tabletPdf.length(), version
+                sha, tabletPdf.length(), currentVersion(), textCount = notes.size
             )
         )
 
@@ -289,7 +456,17 @@ class SyncEndToEndTest {
 
                 SyncRequest.TYPE_DOC_MANIFEST -> respond(
                     req.type,
-                    manifest
+                    // Re-hash on read so a mid-test mutation is reflected. Without
+                    // this the fixture would report a stale version and the test
+                    // asserting "notes arrived" could not fail for the right reason.
+                    manifest.map { entry ->
+                        if (entry.uri == tablet.uri) {
+                            entry.copy(
+                                docVersion = tablet.rehash(),
+                                textCount = tablet.texts.size
+                            )
+                        } else entry
+                    }
                 )
 
                 SyncRequest.TYPE_DOCUMENT_DETAIL -> {
@@ -301,7 +478,8 @@ class SyncEndToEndTest {
                             req.type,
                             DocumentDetailPayload(
                                 DocumentEntity(uri, "Lecture Notes", 2_000_000_000_000L, lastPageIndex = 2),
-                                listOf(StrokeWithPoints(tablet.stroke, tablet.points))
+                                listOf(StrokeWithPoints(tablet.stroke, tablet.points)),
+                                tablet.texts.toList()
                             )
                         )
                     }

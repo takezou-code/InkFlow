@@ -125,7 +125,7 @@ Desktop                                   Tablet (server)
 |---|---|---|
 | `handshake` | `psk`（若已配對） | `ack` + `{protocolVersion, instanceId, pskProof}` |
 | `doc_manifest` | – | JSON：`[DocumentManifestEntry]` |
-| `document_detail` | `documentUri` | JSON：`DocumentDetailPayload` |
+| `document_detail` | `documentUri` | JSON：`DocumentDetailPayload`（v4 含 `texts`） |
 | `stroke_delta` | `documentUri` | JSON：`StrokeDeltaPayload` |
 | `stroke_page` | `documentUri`, `pageIndex` | JSON：`StrokeDeltaPayload` |
 | `file_meta` | `documentUri` | JSON：`FileMetaPayload` |
@@ -172,7 +172,7 @@ v2 無法分辨以下三種情況（三者的共同點都是「該 uri 不再出
 
 ---
 
-## 6. 變更判定：`docVersion`（v3 新增）
+## 6. 變更判定：`docVersion`（v3 新增，v4 加入 `textCount`）
 
 ### 為什麼廢除 `lastOpenedAt`
 
@@ -188,14 +188,38 @@ v2 用 `lastOpenedAt` 當修改時間戳（newer wins）。這在**兩個方向*
 ### 解法：內容定址的雜湊
 
 ```
-docVersion = SHA-256(instanceId ‖ uri ‖ strokeCount ‖ fileSha256 ‖ fileSize)
+v3: docVersion = SHA-256(instanceId ‖ uri ‖ strokeCount ‖ fileSha256 ‖ fileSize)
+v4: docVersion = SHA-256(instanceId ‖ uri ‖ strokeCount ‖ fileSha256 ‖ fileSize ‖ textCount)
 ```
 
 分隔符是 NUL byte（URI 與 hex digest 都不含 NUL），避免 `("ab","c")` 與 `("a","bc")`
 雜湊相同的串接歧義。
 
-正確性是**建構上成立**的：內容相同 → 雜湊必然相同；筆跡數、檔案內容或大小任一
-改變 → 雜湊必然改變。它不可能假陽性，也不可能假陰性，並且**完全不需要兩台機器
+**v4 為什麼加了 `textCount`**：同步迴圈是「拿 manifest 的 `docVersion` 與自己存的那
+個比對」。若文字筆數不參與雜湊，使用者在平板加一條註解時桌面端看到的雜湊一模一樣，
+於是**根本不會去拉那份文件**，註解就永遠不會出現。這是 v4 存在的唯一理由。
+
+它附加在 `fileSize` 之後（prefix-extension）而非重排欄位，是為了讓欄位順序保持
+「舊欄位是新欄位的前綴」。
+
+**為什麼只算筆數**：註解座標改變而筆數不變會漏判，這與「改一個筆跡點、刪一個點
+又加一個點」是完全相同的取捨，而且代價相同——偶發漏判的話，下次整份快照拉取時會
+順便修正。反過來把每個座標都雜湊進去，會讓**每一輪 manifest** 都變成一次整份文件
+讀取。
+
+**缺席哨兵是刻意別名的**：`null` 與 `"-"`（或 `-1L`）語意相同，都是「沒有檔案
+內容」，所以**必須**雜湊成同一個值。若兩者算出不同結果，一份文件會因為兩端用不同
+寫法表達「不存在」而每輪都被判成有變更。真正的雜湊（64 個 hex 字元）不可能等於
+`"-"`，所以這個別名是安全的。
+
+> ⚠️ **兩端必須位元組級一致。** 對應平板端：
+> `app/src/main/java/com/vic/inkflow/sync/SyncIdentity.kt` 的
+> `SyncIdentity.docVersion`。任一邊改了分隔符、缺席哨兵、欄位順序或多寡，兩邊就會
+> 算出不同雜湊，結果是**每一份文件每輪都被判成「有更新」而整份重拉**，而且看起來像
+> 網路問題——極難診斷。改這邊之前先改那邊。
+
+正確性是**建構上成立**的：內容相同 → 雜湊必然相同；筆跡數、文字數、檔案內容或大小
+任一改變 → 雜湊必然改變。它不可能假陽性，也不可能假陰性，並且**完全不需要兩台機器
 的時鐘一致**。
 
 桌面端把 `docVersion` 存進**自己的** `sync_docs(instanceId, uri)` 表——平板端的
@@ -289,7 +313,7 @@ pass 編號持久化在 `sync_meta.passCounter`——**不能放在記憶體**�
 
 ---
 
-## 11. v4 規劃（尚未實作，Android 端不必等待）
+## 11. v5 規劃（尚未實作，Android 端不必等待）
 
 1. **`NsdManager` 取代 UDP 廣播**。`255.255.255.255` 不會穿過路由器；客用網路、
    IoT VLAN、mesh WiFi 的 client isolation 會直接讓它失效。更關鍵的是
@@ -307,21 +331,22 @@ pass 編號持久化在 `sync_meta.passCounter`——**不能放在記憶體**�
 
 ## 12. 平板端待辦（Sync Server v3 實作清單）
 
-平板端 `app/src/main/java/com/vic/inkflow/sync/` 需新增：
+平板端 `app/src/main/java/com/vic/inkflow/sync/` 的實作狀態：
 
-- [ ] `SyncIdentity.kt`：首次啟動生成 `instanceId`（UUID）與 `psk`（8 位數字），
+- [x] `SyncIdentity.kt`：首次啟動生成 `instanceId`（UUID）與 `psk`（8 位數字），
       存 SharedPreferences。**不改任何 entity。**
 - [ ] `TabletSyncServer.kt`：`ServerSocket(53531)`，實作 §4 的 7 個 verb。
-      - `handshake`：回 `{protocolVersion: 3, instanceId, pskProof}`，用 constant-time 比對 psk
+      - `handshake`：回 `{protocolVersion: 4, instanceId, pskProof}`，用 constant-time 比對 psk
       - `doc_manifest`：Room `documents` LEFT JOIN `count(strokes)`，逐筆算 `docVersion`
+      - `document_detail`：整列 + 全部筆跡 +（v4）全部文字註解
       - `document_detail` / `stroke_delta` / `stroke_page`：**回傳前依 `points.id` 排序**
         （Room 的 `@Relation` 不保證順序，而順序就是筆劃順序）
       - `file_meta` / `file_data`：`RandomAccessFile.seek(offset)` 讀 chunk
-- [ ] `DiscoveryResponder.kt`：UDP 53530，回應不同 role 的 discover
-- [ ] `TabletSyncService`：前台 Service（`foregroundServiceType="dataSync"`）承載 server
-- [ ] `AndroidManifest.xml`：`ACCESS_NETWORK_STATE`、`CHANGE_WIFI_MULTICAST_STATE`、
+- [x] `DiscoveryResponder.kt`：UDP 53530，回應不同 role 的 discover
+- [x] `TabletSyncService`：前台 Service（`foregroundServiceType="dataSync"`）承載 server
+- [x] `AndroidManifest.xml`：`ACCESS_NETWORK_STATE`、`CHANGE_WIFI_MULTICAST_STATE`、
       Service 宣告、`FOREGROUND_SERVICE_DATA_SYNC`
-- [ ] 設定頁：開關、配對碼顯示、目前連線的桌面裝置
+- [x] 設定頁：開關、配對碼顯示、目前連線的桌面裝置
 
 > **Android 15+ 限制**：`dataSync` 類型每 24 小時只有 **6 小時**上限，超時會
 > `RemoteServiceException`，且**不允許從 `BOOT_COMPLETED` 啟動**。結論是平板只有
@@ -342,4 +367,5 @@ pass 編號持久化在 `sync_meta.passCounter`——**不能放在記憶體**�
 | v2 | 長度前綴幀、manifest diff、SHA-256 校驗、chunked 文件傳輸 |
 | v2.0.1 | 修復 uri repoint bug（同步永不改寫 uri） |
 | **v3** | **`instanceId` 世代偵測、`docVersion` 內容雜湊取代時間戳、刪除傳播（含寬限期）、PSK 認證、`strokes.docY`、兩端 schema 解耦、單執行緒 DB** |
-| v4（規劃） | `NsdManager`、HTTP/1.1、事件驅動同步、增量筆跡 delta |
+| **v4** | **文字註解隨 `document_detail` 傳輸、`docVersion` 加入 `textCount`、`SyncResult.textsPulled`。⚠️ 兩端都必須升版：舊平板會把新增欄位當不存在、雜湊算在另一組欄位上，導致每份文件每輪都被判成有變更** |
+| v5（規劃） | `NsdManager`、HTTP/1.1、事件驅動同步、增量筆跡 delta |

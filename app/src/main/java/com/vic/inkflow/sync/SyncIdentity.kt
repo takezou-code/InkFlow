@@ -130,14 +130,24 @@ object SyncIdentity {
         uri: String,
         strokeCount: Int,
         fileSha256: String?,
-        fileSize: Long?
+        fileSize: Long?,
+        /**
+         * v4：文字註解筆數，附加在 [fileSize] 之後（prefix-extension，不重排欄位）。
+         *
+         * 為什麼只算筆數：註解座標改變而筆數不變會漏判，這和「改一個筆跡點、
+         * 刪一個點又加一個點」是完全相同的取捨，而且代價相同——下次整份快照
+         * 拉取時會順便修正。反過來把每個座標都雜湊進去，會讓每一輪 manifest 都
+         * 變成一次整份文件讀取。
+         */
+        textCount: Int = 0
     ): String {
         val canonical = buildString {
             append(instanceId); append(DOC_VERSION_SEPARATOR)
             append(uri); append(DOC_VERSION_SEPARATOR)
             append(strokeCount); append(DOC_VERSION_SEPARATOR)
             append(fileSha256 ?: ABSENT); append(DOC_VERSION_SEPARATOR)
-            append(fileSize ?: ABSENT_SIZE)
+            append(fileSize ?: ABSENT_SIZE); append(DOC_VERSION_SEPARATOR)
+            append(textCount)
         }
         return SyncWire.sha256Hex(canonical.toByteArray(Charsets.UTF_8))
     }
