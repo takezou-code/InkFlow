@@ -36,6 +36,7 @@ import com.vic.inkflow.ui.theme.ShapeLg
 import com.vic.inkflow.ui.theme.ShapeMd
 import com.vic.inkflow.ui.theme.ShapeSm
 import com.vic.inkflow.ui.theme.ShapeXl
+import com.vic.inkflow.DesktopSettings
 
 /**
  * The product's palette comes from `:shared`  ...  the tablet's own `InkDarkScheme` /
@@ -124,9 +125,18 @@ private val InterFamily = FontFamily("fonts/inter_variable.ttf")
 
 val InkTypography = inkTypography(InterFamily)
 
-/** Global dark-mode toggle (defaults to dark, per the reading-scenario spec). */
+/**
+ * Global theme state.
+ *
+ * Reads are seeded from disk so a restart keeps the user's choice. Reads are also
+ * defensive: the settings file is hand-editable and can be truncated, and failing
+ * to open the app over a theme preference is a bad trade.
+ */
 object InkThemeState {
-    var darkMode by mutableStateOf(true)
+    /** Dark by default, per the reading-scenario spec. */
+    var darkMode by mutableStateOf(
+        runCatching { DesktopSettings.darkMode }.getOrNull() ?: true
+    )
 
     /**
      * Backdrop intensity, using the tablet's four presets.
@@ -135,14 +145,26 @@ object InkThemeState {
      * starting point: if the desktop looks wrong here, the cause is not the
      * backdrop tuning.
      */
-    var backdropTheme by mutableStateOf(BackdropTheme.SOFT)
+    /**
+     * Backdrop intensity.
+     *
+     * Seeded from disk so the choice survives a restart. It used to be a plain
+     * `mutableStateOf(SOFT)`, which silently reset the user's choice every launch
+     * and made the setting look broken rather than unsaved. Reads are guarded
+     * because a settings file can be truncated or hand-edited, and a theme picker
+     * is not worth failing startup over.
+     */
+    var backdropTheme by mutableStateOf(
+        runCatching { BackdropTheme.valueOf(DesktopSettings.backdropThemeName) }
+            .getOrNull() ?: BackdropTheme.SOFT
+    )
 
 /** Human-facing labels, in the tablet's terms. */
     val backdropLabels: Map<BackdropTheme, String> = mapOf(
-        BackdropTheme.SOFT to "??",
-        BackdropTheme.VIVID to "??",
-        BackdropTheme.NIGHT to "??",
-        BackdropTheme.CLEAN to "?"
+        BackdropTheme.SOFT to "柔和",
+        BackdropTheme.VIVID to "鮮明",
+        BackdropTheme.NIGHT to "夜色",
+        BackdropTheme.CLEAN to "純淨"
     )
 }
 

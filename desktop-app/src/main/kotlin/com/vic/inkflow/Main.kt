@@ -69,6 +69,8 @@ object AppPaths {
 object DesktopSettings {
     private val KEY_PAIRING_CODE = "tablet.pairingCode"
     private val KEY_INSTANCE_ID = "tablet.lastKnownInstanceId"
+    private val KEY_DARK_MODE = "ui.darkMode"
+    private val KEY_BACKDROP = "ui.backdropTheme"
 
     fun load(): Properties {
         val props = Properties()
@@ -100,6 +102,30 @@ object DesktopSettings {
         set(value) {
             val props = load()
             if (value.isNullOrBlank()) props.remove(KEY_INSTANCE_ID) else props.setProperty(KEY_INSTANCE_ID, value.trim())
+            save(props)
+        }
+
+    /**
+     * Persisted theme choice.
+     *
+     * Both settings went back to dark on every launch, which made the pickers look
+     * broken rather than unsaved. Read and write go through the same Properties file
+     * as the pairing code, so there is one place that can fail and one file to
+     * inspect when it does.
+     */
+    var darkMode: Boolean
+        get() = load().getProperty(KEY_DARK_MODE)?.toBooleanStrictOrNull() ?: true
+        set(value) {
+            val props = load()
+            props.setProperty(KEY_DARK_MODE, value.toString())
+            save(props)
+        }
+
+    var backdropThemeName: String
+        get() = load().getProperty(KEY_BACKDROP) ?: "SOFT"
+        set(value) {
+            val props = load()
+            props.setProperty(KEY_BACKDROP, value)
             save(props)
         }
 }
@@ -276,8 +302,16 @@ fun InkFlowApp() {
                 ) {
                     Icon(Icons.Default.Refresh, contentDescription = "立即同步")
                 }
-                // Dark mode toggle
-                IconButton(onClick = { InkThemeState.darkMode = !InkThemeState.darkMode }) {
+                // Dark mode toggle. Writes through to disk on every change: the
+                // alternative is a setting that appears to work and then forgets,
+                // which is worse than not having it.
+                IconButton(
+                    onClick = {
+                        val next = !InkThemeState.darkMode
+                        InkThemeState.darkMode = next
+                        DesktopSettings.darkMode = next
+                    }
+                ) {
                     Text(if (InkThemeState.darkMode) "🌙" else "☀️")
                 }
                 // Back to library
@@ -364,13 +398,19 @@ fun InkFlowApp() {
                             ?: if (peerCount > 0) "已連接：$peerNames"
                                else "未偵測到平板（等待局域網發現）",
                         selectedFolderId = selectedFolderId,
-                        onFolderSelected = { selectedFolderId = it },
-                        onDocumentSelected = { uri ->
-                            selectedDocument = uri
-                            currentPageIndex = 0
-                        },
-                        modifier = Modifier.fillMaxSize()
-                    )
+onFolderSelected = { selectedFolderId = it },
+                          onDocumentSelected = { uri ->
+                              selectedDocument = uri
+                              currentPageIndex = 0
+                          },
+                          // PdfManager.mirroredDir() is the same directory — hard-coding a second
+                          // spelling here would let an import land somewhere the
+                          // viewer never looks, and the document would open as
+                          // "file not found".
+                          mirrorRoot = com.vic.inkflow.util.PdfManager.mirroredDir().absolutePath,
+                          onLibraryChanged = { libraryRefresh++ },
+                          modifier = Modifier.fillMaxSize()
+                      )
                     else -> Row(Modifier.fillMaxSize()) {
                         PdfViewer(
                             documentUri = selectedDocument!!,
@@ -454,7 +494,10 @@ private fun SettingsView(
                             .pressableGlass(
                                 isDark = InkThemeState.darkMode,
                                 shape = RoundedCornerShape(50),
-                                onClick = { InkThemeState.backdropTheme = t }
+                                onClick = {
+                                    InkThemeState.backdropTheme = t
+                                    DesktopSettings.backdropThemeName = t.name
+                                }
                             )
                             .padding(horizontal = 14.dp, vertical = 7.dp),
                         contentAlignment = Alignment.Center
