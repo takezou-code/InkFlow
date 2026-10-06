@@ -160,6 +160,33 @@ class DatabaseManager(private val dbPath: String) {
                 )
             """)
 
+            // text_annotations: the tablet's text notes. Added here so notes sync
+            // instead of being silently dropped — the previous schema only knew
+            // about ink, so every note the user wrote on the tablet simply did
+            // not exist on the desktop.
+            //
+            // `modelY` is the first line's BASELINE (see TextAnnotationEntity), and
+            // `docY` is the continuous-canvas anchor with the same NULL semantics as
+            // strokes: NULL means "the tablet has not backfilled this yet", and the
+            // desktop must not guess it.
+            stmt.execute("""
+                CREATE TABLE IF NOT EXISTS text_annotations (
+                    id TEXT PRIMARY KEY,
+                    documentUri TEXT NOT NULL,
+                    pageIndex INTEGER NOT NULL,
+                    docY REAL,
+                    text TEXT NOT NULL,
+                    modelX REAL NOT NULL,
+                    modelY REAL NOT NULL,
+                    fontSize REAL NOT NULL DEFAULT 16,
+                    colorArgb INTEGER NOT NULL,
+                    isStamp INTEGER NOT NULL DEFAULT 0
+                )
+            """)
+
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_text_documentUri ON text_annotations(documentUri, pageIndex)")
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_text_docY ON text_annotations(documentUri, docY)")
+
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_strokes_documentUri ON strokes(documentUri, pageIndex)")
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_strokes_docY ON strokes(documentUri, docY)")
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_points_strokeId ON points(strokeId)")
@@ -175,6 +202,7 @@ class DatabaseManager(private val dbPath: String) {
      * v1 = documents / folders / strokes / points, `strokes` WITHOUT `docY`, and no
      * sync bookkeeping.
      * v2 = adds `strokes.docY` and the `sync_meta` / `sync_docs` tables.
+     * v3 = adds `text_annotations`.
      *
      * Additive only — the desktop is a read-only mirror, so there is nothing to
      * rewrite, and a column that the tablet sends as NULL stays NULL rather than
@@ -192,6 +220,19 @@ class DatabaseManager(private val dbPath: String) {
             if (tableExists(stmt, "strokes") && !columnExists(stmt, "strokes", "docY")) {
                 stmt.execute("ALTER TABLE strokes ADD COLUMN docY REAL")
                 logger.info { "Schema v1 -> v2: added strokes.docY" }
+            }
+        }
+
+        if (version < 3) {
+            // text_annotations is created by initializeDatabase()'s CREATE TABLE IF NOT
+            // EXISTS statement, so there is nothing to ALTER here. The guard below is
+            // belt-and-braces: if that statement ever fails to run, this gives the
+            // migration a second chance rather than letting the app start with notes
+            // missing and no error.
+            if (!tableExists(stmt, "text_annotations")) {
+                logger.warn { "Schema v2 -> v3: text_annotations missing after init; check create statement" }
+            } else {
+                logger.info { "Schema v2 -> v3: text_annotations present" }
             }
         }
 
@@ -222,7 +263,7 @@ class DatabaseManager(private val dbPath: String) {
     }
 
     private companion object {
-        const val SCHEMA_VERSION = 2
+        const val SCHEMA_VERSION = 3
     }
 
     // ─── Sync bookkeeping (v3) ──────────────────────────────────────────────
@@ -567,6 +608,121 @@ class DatabaseManager(private val dbPath: String) {
     fun replaceStrokesForDocument(documentUri: String, strokes: List<StrokeWithPoints>) {
         deleteStrokesForDocument(documentUri)
         strokes.forEach { saveStroke(it.stroke, it.points) }
+    }
+
+    // ─── Text annotations ────────────────────────────────────────────────────
+
+    /**
+     * Insert or update one text annotation.
+     *
+     * UPDATE-not-replace so the id survives: the tablet identifies a note by id,
+     * and a new id would read as "deleted here, added there" on the next sync.
+     */
+    fun saveTextAnnotation(annotation: TextAnnotationEntity) = synchronized(dbLock) {
+        connection?.prepareStatement(
+            """
+            INSERT INTO text_annotations
+                (id, documentUri, pageIndex, docY, text, modelX, modelY, fontSize, colorArgb, isStamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                documentUri = excluded.documentUri,
+                pageIndex = excluded.pageIndex,
+                docY = excluded.docY,
+                text = excluded.text,
+                modelX = excluded.modelX,
+                modelY = excluded.modelY,
+                fontSize = excluded.fontSize,
+                colorArgb = excluded.colorArgb,
+                isStamp = excluded.isStamp
+            """.trimIndent()
+        )?.use { stmt ->
+            stmt.setString(1, annotation.id)
+            stmt.setString(2, annotation.documentUri)
+            stmt.setInt(3, annotation.pageIndex)
+            if (annotation.docY == null) stmt.setNull(4, java.sql.Types.REAL) else stmt.setFloat(4, annotation.docY)
+            stmt.setString(5, annotation.text)
+            stmt.setFloat(6, annotation.modelX)
+            stmt.setFloat(7, annotation.modelY)
+            stmt.setFloat(8, annotation.fontSize)
+            stmt.setInt(9, annotation.colorArgb)
+            stmt.setBoolean(10, annotation.isStamp)
+            stmt.executeUpdate()
+        }
+        Unit
+    }
+
+    fun getTextAnnotationsForPage(documentUri: String, pageIndex: Int): List<TextAnnotationEntity> =
+        queryText("SELECT * FROM text_annotations WHERE documentUri = ? AND pageIndex = ? ORDER BY rowid", documentUri, pageIndex)
+
+    fun getAllTextAnnotationsForDocument(documentUri: String): List<TextAnnotationEntity> =
+        queryText("SELECT * FROM text_annotations WHERE documentUri = ? ORDER BY rowid", documentUri)
+
+    fun getTextAnnotationIdsForDocument(documentUri: String): Set<String> = synchronized(dbLock) {
+        val ids = mutableSetOf<String>()
+        connection?.prepareStatement("SELECT id FROM text_annotations WHERE documentUri = ?")?.use { stmt ->
+            stmt.setString(1, documentUri)
+            stmt.executeQuery().use { rs -> while (rs.next()) ids.add(rs.getString(1)) }
+        }
+        ids
+    }
+
+    fun textAnnotationCountForDocument(documentUri: String): Int {
+        var n = 0
+        connection?.prepareStatement("SELECT COUNT(*) FROM text_annotations WHERE documentUri = ?")?.use { stmt ->
+            stmt.setString(1, documentUri)
+            stmt.executeQuery().use { rs -> if (rs.next()) n = rs.getInt(1) }
+        }
+        return n
+    }
+
+    fun deleteTextAnnotation(id: String) {
+        connection?.prepareStatement("DELETE FROM text_annotations WHERE id = ?")?.use { stmt ->
+            stmt.setString(1, id)
+            stmt.executeUpdate()
+        }
+    }
+
+    fun deleteTextAnnotationsForDocument(documentUri: String) {
+        connection?.prepareStatement("DELETE FROM text_annotations WHERE documentUri = ?")?.use { stmt ->
+            stmt.setString(1, documentUri)
+            stmt.executeUpdate()
+        }
+    }
+
+    fun replaceTextAnnotationsForDocument(documentUri: String, annotations: List<TextAnnotationEntity>) {
+        deleteTextAnnotationsForDocument(documentUri)
+        annotations.forEach { saveTextAnnotation(it) }
+    }
+
+    private fun queryText(sql: String, vararg args: Any?): List<TextAnnotationEntity> {
+        val out = mutableListOf<TextAnnotationEntity>()
+        connection?.prepareStatement(sql)?.use { stmt ->
+            args.forEachIndexed { i, a ->
+                when (a) {
+                    is Int -> stmt.setInt(i + 1, a)
+                    else -> stmt.setString(i + 1, a as String)
+                }
+            }
+            stmt.executeQuery().use { rs ->
+                while (rs.next()) {
+                    out.add(
+                        TextAnnotationEntity(
+                            id = rs.getString("id"),
+                            documentUri = rs.getString("documentUri"),
+                            pageIndex = rs.getInt("pageIndex"),
+                            docY = rs.getObject("docY")?.let { (it as Number).toFloat() },
+                            text = rs.getString("text"),
+                            modelX = rs.getFloat("modelX"),
+                            modelY = rs.getFloat("modelY"),
+                            fontSize = rs.getFloat("fontSize"),
+                            colorArgb = rs.getInt("colorArgb"),
+                            isStamp = rs.getBoolean("isStamp")
+                        )
+                    )
+                }
+            }
+        }
+        return out
     }
 
     private fun queryStrokes(sql: String, vararg args: Any?): List<StrokeWithPoints> {
