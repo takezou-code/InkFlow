@@ -6,8 +6,10 @@ import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
@@ -75,6 +77,15 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.vic.inkflow.data.DatabaseManager
 import com.vic.inkflow.data.StrokeWithPoints
+import com.vic.inkflow.data.TextAnnotationEntity
+import com.vic.inkflow.data.TextMetrics
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.sp
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.focus.focusRequester
+
 import com.vic.inkflow.util.PageBox
 import com.vic.inkflow.util.PdfManager
 import com.vic.inkflow.util.PdfResult
@@ -200,6 +211,26 @@ fun PdfViewer(
     var strokes by remember(documentUri, requestedPage) {
         mutableStateOf<List<StrokeWithPoints>>(emptyList())
     }
+
+    // ── Text annotations ────────────────────────────────────────────────────
+    // Separate list rather than folded into `strokes`: a note has no points and
+    // no width, and forcing it into the envelope renderer would invent geometry
+    // for it. Its own list also keeps the ink fast path from re-measuring text
+    // metrics on every pointer move.
+    var texts by remember(documentUri, requestedPage) {
+        mutableStateOf<List<TextAnnotationEntity>>(emptyList())
+    }
+
+    /**
+     * The note the user is currently typing, before it exists in the database.
+     *
+     * Held as state so the caret and the growing box render at keystroke speed,
+     * with the same split as [liveStroke]: one database write on commit.
+     */
+    var textDraft by remember { mutableStateOf<String?>(null) }
+
+    /** Anchor of the in-progress note, in model units. Null when not typing. */
+    var textDraftAnchor by remember { mutableStateOf<Offset?>(null) }
 
     // ── Drawing ─────────────────────────────────────────────────────────────
     // Kept as plain state next to `strokes` rather than in a ViewModel: the ink
@@ -351,6 +382,17 @@ fun PdfViewer(
             .getOrDefault(emptyList())
     }
 
+    // ── Text ────────────────────────────────────────────────────────────────
+    LaunchedEffect(documentUri, requestedPage) {
+        texts = runCatching {
+            withContext(Dispatchers.IO) {
+                databaseManager.getTextAnnotationsForPage(documentUri, requestedPage)
+            }
+        }
+            .onFailure { logger.error(it) { "Failed to load text for page ${requestedPage + 1}" } }
+            .getOrDefault(emptyList())
+    }
+
     // ── model -> screen transform ───────────────────────────────────────────
     // Derived from the raster itself, never from a separately-read page box: the ink is
     // positioned against the exact geometry of the bitmap underneath it, so "the crop box
@@ -461,22 +503,46 @@ fun PdfViewer(
     // resurrect content that is not there.
     val undoStack = remember(documentUri) { UndoStack<InkEdit>() }
 
+    /**
+     * Snapshot of a drag in progress, folded into one history entry on release.
+     *
+     * A dedicated class rather than a nested Tuple because the shape is now
+     * (strokes, notes, totalDx, totalDy) — no Quadruple exists, and unpacking four
+     * positional fields of a Tuple leaves the reader guessing which float is which axis.
+     */
+    data class DragState(
+        val strokes: List<StrokeWithPoints>,
+        val texts: List<TextAnnotationEntity>,
+        val dx: Float,
+        val dy: Float
+    )
+
     // ── Selection ────────────────────────────────────────────────────────────
-    // Stroke ids rather than the strokes: the selection has to survive the list being
+    // Ids rather than the objects: the selection has to survive the list being
     // rebuilt after every edit, and identity is what the ink is keyed on anyway.
     var selectedIds by remember(documentUri) { mutableStateOf<Set<String>>(emptySet()) }
+
+    // Note ids are a disjoint namespace from stroke ids, so a note and a stroke
+    // can never collide in one set — which is what makes a mixed selection
+    // (drag across both, delete together, undo once) fall out for free.
+    var selectedTextIds by remember(documentUri) { mutableStateOf<Set<String>>(emptySet()) }
 
     /** Rubber-band rectangle during a selection drag, in model units. */
     var selectionRect by remember { mutableStateOf<Rect?>(null) }
 
     /**
-     * The most recent live drag, folded into one history entry on release.
+     * The in-progress drag: the pre-drag snapshots plus the distance travelled so far.
      *
      * A drag writes the database on every frame it moves, so without this the history
      * would gain one entry per frame and a single drag would take dozens of undos to
-     * reverse.
+     * reverse. [DragState] is a dedicated class rather than a nested Tuple because the
+     * shape is now (strokes, notes, totalDx, totalDy) — no Quadruple exists, and
+     * unpacking four positional fields of a Tuple leaves the reader guessing which
+     * float is which axis.
      */
-    var lastMove by remember { mutableStateOf<Triple<List<StrokeWithPoints>, Float, Float>?>(null) }
+    var lastMove by remember {
+        mutableStateOf<DragState?>(null)
+    }
 
     /**
      * Strokes whose bounds intersect [r].
@@ -493,22 +559,67 @@ fun PdfViewer(
             r.bottom >= minOf(s.boundsTop, s.boundsBottom)
     }
 
-    fun selectByRect(r: Rect, additive: Boolean) {
-        val hits = strokesIntersecting(r).map { it.stroke.id }.toSet()
-        selectedIds = if (additive) selectedIds + hits else hits
+    /**
+     * Notes whose box intersects [r], in model units.
+     *
+     * Uses [TextMetrics.bounds] so the hit box is exactly what gets drawn. A
+     * separate, slightly different box here is the reason a note can be plainly
+     * visible and still refuse to be selected.
+     */
+    fun textsIntersecting(r: Rect): List<TextAnnotationEntity> = texts.filter { t ->
+        val tb = TextMetrics.bounds(t.modelX, t.modelY, t.text, t.fontSize) ?: return@filter false
+        r.left <= tb[2] && r.right >= tb[0] && r.top <= tb[3] && r.bottom >= tb[1]
     }
 
-    /** Bounding box of the current selection, or null when nothing is selected. */
+    fun selectByRect(r: Rect, additive: Boolean) {
+        val hits = strokesIntersecting(r).map { it.stroke.id }.toSet()
+        val textHits = textsIntersecting(r).map { it.id }.toSet()
+        selectedIds = if (additive) selectedIds + hits else hits
+        selectedTextIds = if (additive) selectedTextIds + textHits else textHits
+    }
+
+    /**
+     * Bounding box of everything selected, strokes and notes together.
+     *
+     * Note bounds are unioned with the stroke bounds rather than kept separate so
+     * the selection outline wraps a mixed selection in one rectangle — two nested
+     * boxes would read as two unrelated selections.
+     */
     fun selectionBounds(): Rect? {
         val sel = strokes.filter { it.stroke.id in selectedIds }
-        if (sel.isEmpty()) return null
+        val selText = texts.filter { it.id in selectedTextIds }
+        if (sel.isEmpty() && selText.isEmpty()) return null
+
+        val boxes = mutableListOf<Rect>()
+        if (sel.isNotEmpty()) {
+            boxes += Rect(
+                sel.minOf { minOf(it.stroke.boundsLeft, it.stroke.boundsRight) },
+                sel.minOf { minOf(it.stroke.boundsTop, it.stroke.boundsBottom) },
+                sel.maxOf { maxOf(it.stroke.boundsLeft, it.stroke.boundsRight) },
+                sel.maxOf { maxOf(it.stroke.boundsTop, it.stroke.boundsBottom) }
+            )
+        }
+        selText.forEach { t ->
+            TextMetrics.bounds(t.modelX, t.modelY, t.text, t.fontSize)?.let { b ->
+                boxes += Rect(b[0], b[1], b[2], b[3])
+            }
+        }
+        if (boxes.isEmpty()) return null
         return Rect(
-            sel.minOf { minOf(it.stroke.boundsLeft, it.stroke.boundsRight) },
-            sel.minOf { minOf(it.stroke.boundsTop, it.stroke.boundsBottom) },
-            sel.maxOf { maxOf(it.stroke.boundsLeft, it.stroke.boundsRight) },
-            sel.maxOf { maxOf(it.stroke.boundsTop, it.stroke.boundsBottom) }
+            boxes.minOf { it.left }, boxes.minOf { it.top },
+            boxes.maxOf { it.right }, boxes.maxOf { it.bottom }
         )
     }
+
+    /**
+     * Total selected, ink and notes together.
+     *
+     * Every guard reads this instead of `selectedIds.isEmpty()`: a selection can
+     * legitimately consist of notes alone, and checking the stroke set would report
+     * "nothing selected" while a note is plainly outlined — which reads as the
+     * delete key being broken.
+     */
+    val selectionCount: Int = selectedIds.size + selectedTextIds.size
 
     /**
      * Rewrites [moving] translated by ([dx], [dy]) and persists each under its existing
@@ -534,46 +645,134 @@ fun PdfViewer(
         )
     }
 
-    /** Commits a live drag as one undoable move. Called repeatedly while dragging. */
+    /**
+     * Moves the whole selection — strokes and notes together — by an incremental
+     * ([dx], [dy]).
+     *
+     * The delta is incremental on purpose. The drag gesture records where the
+     * pointer was the previous frame, so every call is one step, not the total
+     * travelled so far. Feeding the running total in here instead would apply the
+     * whole displacement again on each frame: the selection accelerates away and
+     * `lastMove` ends up holding the state from an arbitrary mid-drag frame rather
+     * than the original.
+     */
     fun moveSelectionBy(dx: Float, dy: Float) {
         if (dx == 0f && dy == 0f) return
+
         val moving = strokes.filter { it.stroke.id in selectedIds }
-        if (moving.isEmpty()) return
-        val before = moving.map { it.copy() }
+        val movingText = texts.filter { it.id in selectedTextIds }
+        if (moving.isEmpty() && movingText.isEmpty()) return
+
+        // Capture the pre-drag state once. Re-snapshotting on every frame would make
+        // undo replay from wherever the last successful frame happened to land.
+        val origin = lastMove ?: DragState(
+            strokes = moving.map { it.copy() },
+            texts = movingText.map { it.copy() },
+            dx = 0f,
+            dy = 0f
+        ).also { lastMove = it }
+
         val after = translateStrokes(moving, dx, dy)
+        val afterText = movingText.map { it.copy(modelX = it.modelX + dx, modelY = it.modelY + dy) }
         runCatching {
             after.forEach { databaseManager.saveStroke(it.stroke, it.points) }
+            afterText.forEach { databaseManager.saveTextAnnotation(it) }
         }.onSuccess {
-            strokes = strokes.map { s -> after.firstOrNull { it.stroke.id == s.stroke.id } ?: s }
-            lastMove = Triple(before, dx, dy)
+            if (moving.isNotEmpty()) {
+                strokes = strokes.map { s -> after.firstOrNull { it.stroke.id == s.stroke.id } ?: s }
+            }
+            if (afterText.isNotEmpty()) {
+                texts = texts.map { t -> afterText.firstOrNull { it.id == t.id } ?: t }
+            }
+            // Accumulate the total so undo can reverse the whole drag in one step.
+            lastMove = origin.copy(dx = origin.dx + dx, dy = origin.dy + dy)
             onInkChanged()
         }.onFailure {
-            logger.error(it) { "Failed to move ${moving.size} stroke(s)" }
+            logger.error(it) { "Failed to move ${moving.size} stroke(s) / ${movingText.size} note(s)" }
         }
     }
 
-    /** Collapses the drag's incremental writes into one undoable command. */
+    /**
+     * Collapses the drag's incremental writes into one undoable move.
+     *
+     * A drag that ends where it started moves nothing, so it must not leave an
+     * entry behind — otherwise an undo would appear to do nothing and the user
+     * would have to press it twice.
+     */
     fun commitMove() {
         val m = lastMove
         lastMove = null
         if (m == null) return
-        undoStack.push(InkEdit.Move(m.first, m.second, m.third))
+        if (m.dx == 0f && m.dy == 0f) return
+        undoStack.push(InkEdit.Move(m.strokes, m.texts, m.dx, m.dy))
     }
 
-    /** Deletes the selection as one undoable step. */
+    /**
+     * Deletes the selection — strokes and notes together — as one undoable step.
+     *
+     * Ink and text are separate tables, so this is two deletes in one command. Doing
+     * them as one history entry is what stops "select everything, delete, undo" from
+     * bringing back the notes on the second press.
+     */
     fun deleteSelection() {
         val doomed = strokes.filter { it.stroke.id in selectedIds }
-        if (doomed.isEmpty()) return
-        runCatching { doomed.forEach { databaseManager.deleteStroke(it.stroke.id) } }
+        val doomedText = texts.filter { it.id in selectedTextIds }
+        if (doomed.isEmpty() && doomedText.isEmpty()) return
+        runCatching {
+            doomed.forEach { databaseManager.deleteStroke(it.stroke.id) }
+            doomedText.forEach { databaseManager.deleteTextAnnotation(it.id) }
+        }.onSuccess {
+            strokes = strokes - doomed.toSet()
+            texts = texts - doomedText.toSet()
+            selectedIds = emptySet()
+            selectedTextIds = emptySet()
+            undoStack.push(InkEdit.Erase(doomed, doomedText))
+            onInkChanged()
+        }.onFailure {
+            logger.error(it) { "Failed to delete selection" }
+        }
+    }
+
+    /**
+     * Writes the note being typed, then clears the draft.
+     *
+     * A blank note is discarded rather than stored: an empty annotation has no
+     * bounding box, so it cannot be selected and draws nothing — a row that exists
+     * but is unreachable is worse than no row.
+     */
+    fun commitText() {
+        val draft = textDraft
+        val anchor = textDraftAnchor
+        textDraft = null
+        textDraftAnchor = null
+        if (draft == null || anchor == null || draft.isBlank()) return
+
+        val note = TextAnnotationEntity(
+            documentUri = documentUri,
+            pageIndex = requestedPage,
+            docY = null,
+            text = draft,
+            modelX = anchor.x,
+            // modelY is the BASELINE. Offsetting by the font size here is what puts
+            // the visible glyphs where the user clicked rather than a line lower.
+            modelY = anchor.y + TEXT_SIZE_PT,
+            fontSize = TEXT_SIZE_PT,
+            colorArgb = inkColour
+        )
+        runCatching { databaseManager.saveTextAnnotation(note) }
             .onSuccess {
-                strokes = strokes - doomed.toSet()
-                selectedIds = emptySet()
-                undoStack.push(InkEdit.Erase(doomed))
+                texts = texts + note
+                undoStack.push(InkEdit.AddText(note))
                 onInkChanged()
+            }.onFailure {
+                logger.error(it) { "Failed to save note on page ${requestedPage + 1}" }
             }
-            .onFailure {
-                logger.error(it) { "Failed to delete selection" }
-            }
+    }
+
+    /** Discards the note in progress without writing anything. */
+    fun cancelText() {
+        textDraft = null
+        textDraftAnchor = null
     }
 
     fun commitStroke(pts: List<Offset>, modelWidths: List<Float>) {
@@ -633,11 +832,21 @@ fun PdfViewer(
             val y1 = maxOf(s.boundsTop, s.boundsBottom)
             pts.any { p -> p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1 }
         }
-        if (hit.isEmpty()) return
-        runCatching { hit.forEach { databaseManager.deleteStroke(it.stroke.id) } }
+        // Notes are erased by ink too, matching the tablet: an eraser should not be able
+        // to pass straight through a word and leave it behind.
+        val hitText = texts.filter { t ->
+            val tb = TextMetrics.bounds(t.modelX, t.modelY, t.text, t.fontSize) ?: return@filter false
+            pts.any { p -> p.x >= tb[0] && p.x <= tb[2] && p.y >= tb[1] && p.y <= tb[3] }
+        }
+        if (hit.isEmpty() && hitText.isEmpty()) return
+        runCatching {
+            hit.forEach { databaseManager.deleteStroke(it.stroke.id) }
+            hitText.forEach { databaseManager.deleteTextAnnotation(it.id) }
+        }
             .onSuccess {
                 strokes = strokes - hit.toSet()
-                undoStack.push(InkEdit.Erase(hit))
+                texts = texts - hitText.toSet()
+                undoStack.push(InkEdit.Erase(hit, hitText))
                 onInkChanged()
             }
             .onFailure {
@@ -661,22 +870,40 @@ fun PdfViewer(
 
             is InkEdit.Erase -> runCatching {
                 e.strokes.forEach { databaseManager.saveStroke(it.stroke, it.points) }
+                e.texts.forEach { databaseManager.saveTextAnnotation(it) }
             }.onSuccess {
                 strokes = strokes + e.strokes
+                texts = texts + e.texts
                 onInkChanged()
             }.onFailure {
                 logger.error(it) { "Undo of erase failed" }
                 undoStack.push(e)
             }
 
-            // A move is exactly invertible, so undo replays the same translation
-            // backwards over the pre-move snapshots.
+            is InkEdit.AddText -> runCatching {
+                databaseManager.deleteTextAnnotation(e.note.id)
+            }.onSuccess {
+                texts = texts.filterNot { it.id == e.note.id }
+                onInkChanged()
+            }.onFailure {
+                logger.error(it) { "Undo of note add failed" }
+                undoStack.push(e)
+            }
+
+            // Undo restores the pre-drag snapshot VERBATIM — with no delta applied.
+            //
+            // The snapshot is the position before the drag, so undo is a restore, not
+            // a reverse translation. Subtracting the drag total from the snapshot
+            // would move the content that far PAST where it started, which is a
+            // silent misplacement rather than an obvious failure.
+            //
+            // [dx]/[dy] are carried so redo can replay the drag from the same base.
             is InkEdit.Move -> runCatching {
-                translateStrokes(e.originals, -e.dx, -e.dy)
-                    .forEach { databaseManager.saveStroke(it.stroke, it.points) }
-            }.onSuccess { _ ->
-                val back = translateStrokes(e.originals, -e.dx, -e.dy)
-                strokes = strokes.map { s -> back.firstOrNull { it.stroke.id == s.stroke.id } ?: s }
+                e.originals.forEach { databaseManager.saveStroke(it.stroke, it.points) }
+                e.texts.forEach { databaseManager.saveTextAnnotation(it) }
+            }.onSuccess {
+                strokes = strokes.map { s -> e.originals.firstOrNull { it.stroke.id == s.stroke.id } ?: s }
+                texts = texts.map { t -> e.texts.firstOrNull { it.id == t.id } ?: t }
                 onInkChanged()
             }.onFailure {
                 logger.error(it) { "Undo of move failed" }
@@ -700,20 +927,43 @@ fun PdfViewer(
 
             is InkEdit.Erase -> runCatching {
                 e.strokes.forEach { databaseManager.deleteStroke(it.stroke.id) }
+                e.texts.forEach { databaseManager.deleteTextAnnotation(it.id) }
             }.onSuccess {
                 strokes = strokes - e.strokes.toSet()
+                texts = texts - e.texts.toSet()
                 onInkChanged()
             }.onFailure {
                 logger.error(it) { "Redo of erase failed" }
                 undoStack.push(e)
             }
 
+            is InkEdit.AddText -> runCatching {
+                databaseManager.saveTextAnnotation(e.note)
+            }.onSuccess {
+                texts = texts + e.note
+                onInkChanged()
+            }.onFailure {
+                logger.error(it) { "Redo of note add failed" }
+                undoStack.push(e)
+            }
+
+            // Redo replays the drag from the same pre-drag snapshot the undo restored, so
+            // repeated undo/redo cycles converge instead of accumulating error.
             is InkEdit.Move -> runCatching {
                 translateStrokes(e.originals, e.dx, e.dy)
                     .forEach { databaseManager.saveStroke(it.stroke, it.points) }
-            }.onSuccess { _ ->
+                e.texts.forEach {
+                    databaseManager.saveTextAnnotation(
+                        it.copy(modelX = it.modelX + e.dx, modelY = it.modelY + e.dy)
+                    )
+                }
+            }.onSuccess {
                 val fwd = translateStrokes(e.originals, e.dx, e.dy)
                 strokes = strokes.map { s -> fwd.firstOrNull { it.stroke.id == s.stroke.id } ?: s }
+                texts = texts.map { t ->
+                    e.texts.firstOrNull { it.id == t.id }
+                        ?.let { it.copy(modelX = it.modelX + e.dx, modelY = it.modelY + e.dy) } ?: t
+                }
                 onInkChanged()
             }.onFailure {
                 logger.error(it) { "Redo of move failed" }
@@ -749,7 +999,44 @@ fun PdfViewer(
     }
     val deleteSelectionNow by rememberUpdatedState<() -> Unit> { deleteSelection() }
 
+    // Text needs the same treatment, plus a separate one for "the user asked to
+    // start writing here" — the pointer coroutine only knows about geometry.
+    val commitTextNow by rememberUpdatedState<() -> Unit> { commitText() }
+    val cancelTextNow by rememberUpdatedState<() -> Unit> { cancelText() }
+
     val focusRequester = remember { FocusRequester() }
+    val textFieldFocus = remember { FocusRequester() }
+
+    // Notes are composables, not draw calls, so their font size has to be
+    // converted from model units to density-independent units.
+    val density = LocalDensity.current
+
+    // While a note is being typed the canvas keeps its own gesture handler live, so
+    // a stray drag could otherwise pan the page out from under the caret. The text
+    // field is a sibling overlay, not a child of the canvas, so the two never
+    // compete for the same events.
+    val textFieldFocused = textDraft != null
+
+    /**
+     * Where the note editor goes on screen.
+     *
+     * Placed at the click point in *model* units and then mapped through the same
+     * transform as the ink, so it lands under the cursor at any zoom. Positioning it
+     * in screen coordinates instead would make the editor drift away from the click
+     * as soon as the user zoomed.
+     */
+    val textEditorPos: Offset? = remember(textDraftAnchor, box, scale, originX, originY, viewportW, viewportH) {
+        val anchor = textDraftAnchor
+        if (anchor == null || box == null) {
+            null
+        } else {
+            val sx = anchor.x * scale + (originX - box.originX * scale)
+            val sy = anchor.y * scale + (originY - box.originY * scale)
+            // Keep the editor on screen when the user clicks near an edge; otherwise
+            // the caret sits outside the window and typing appears to do nothing.
+            Offset(sx.coerceIn(8f, (viewportW - 8f).coerceAtLeast(8f)), sy.coerceIn(8f, (viewportH - 8f).coerceAtLeast(8f)))
+        }
+    }
 
     Box(modifier = modifier.fillMaxSize().then(ReaderBackdrop(InkThemeState.darkMode))) {
 
@@ -838,18 +1125,33 @@ fun PdfViewer(
                         // Backspace still means "delete selection" rather than
                         // silently swallowing the key while the tool is on the pen.
                         Key.Delete, Key.Backspace -> {
-                            if (selectedIds.isEmpty()) false else { deleteSelectionNow(); true }
+                            if (selectionCount == 0) false else { deleteSelectionNow(); true }
                         }
 
+                        // Escape is overloaded: while a note is being typed it must
+                        // cancel the note, because a stray Escape should not throw
+                        // away the selection the user just made.
                         Key.Escape -> {
-                            if (selectedIds.isEmpty()) false else { selectedIds = emptySet(); true }
+                            when {
+                                textFieldFocused -> { cancelTextNow(); true }
+                                selectionCount == 0 -> false
+                                else -> {
+                                    selectedIds = emptySet()
+                                    selectedTextIds = emptySet()
+                                    true
+                                }
+                            }
                         }
 
+                        // Ctrl+A must work with an empty selection — requiring one
+                        // made the shortcut unreachable on its very first use.
                         Key.A -> {
-                            if (!ctrl || selectedIds.isEmpty()) {
+                            if (!ctrl) {
                                 false
                             } else {
-                                selectedIds = strokes.map { it.stroke.id }.toSet(); true
+                                selectedIds = strokes.map { it.stroke.id }.toSet()
+                                selectedTextIds = texts.map { it.id }.toSet()
+                                true
                             }
                         }
 
@@ -886,15 +1188,24 @@ fun PdfViewer(
                             // not mid-drag, so a gesture cannot change meaning halfway
                             // through and leave a half-moved selection behind.
                             val box = selectionBoundsNow()
-                            val moving = box != null && selectedIds.isNotEmpty() &&
+                            val moving = box != null && selectionCount > 0 &&
                                 start.x >= box.left && start.x <= box.right &&
                                 start.y >= box.top && start.y <= box.bottom
                             val idsAtPress = selectedIds
+                            val textIdsAtPress = selectedTextIds
                             val wasMoving = moving
                             var endX = start.x
                             var endY = start.y
                             var additive = false
                             selectionRect = Rect(start.x, start.y, start.x, start.y)
+
+                            // Track the previous model position so each frame moves the
+                            // selection by one step. Passing the displacement from the
+                            // press instead would re-apply the whole travelled distance
+                            // on every frame — the selection runs away and the stored
+                            // undo baseline ends up being a mid-drag frame.
+                            var prevX = start.x
+                            var prevY = start.y
 
                             while (true) {
                                 val ev = awaitPointerEvent()
@@ -902,7 +1213,9 @@ fun PdfViewer(
                                 val mm = toModel(ch.position) ?: continue
                                 additive = ev.keyboardModifiers.isShiftPressed
                                 if (moving) {
-                                    moveSelectionNow(mm.x - start.x, mm.y - start.y)
+                                    moveSelectionNow(mm.x - prevX, mm.y - prevY)
+                                    prevX = mm.x
+                                    prevY = mm.y
                                 } else {
                                     endX = mm.x
                                     endY = mm.y
@@ -915,6 +1228,7 @@ fun PdfViewer(
                             if (wasMoving) {
                                 commitMoveNow()
                                 selectedIds = idsAtPress
+                                selectedTextIds = textIdsAtPress
                             } else {
                                 selectByRectNow(
                                     Rect(
@@ -924,6 +1238,14 @@ fun PdfViewer(
                                     additive
                                 )
                             }
+                            return@awaitEachGesture
+                        }
+                        if (tool == InkTool.Text) {
+                            // Click-to-type. There is no drag and no preview: the
+                            // caret goes where the user clicked and the note is
+                            // committed by the field itself.
+                            textDraft = ""
+                            textDraftAnchor = start
                             return@awaitEachGesture
                         }
                         if (!erasing) {
@@ -987,6 +1309,14 @@ for (swp in strokes) {
                             drawStroke(swp, scale, b)
                         }
 
+                        // Notes, drawn above the ink and in the same translate.
+                        //
+                        // The top edge comes from TextMetrics (baseline minus ascent)
+                        // rather than from modelY directly: modelY is a baseline, and
+                        // Compose's drawText wants a top-left. Getting this wrong drops
+                        // every note exactly one line below where it was clicked.
+                        
+
                         // Selection outline, drawn inside the same translate as the ink
                         // so it tracks zoom and pan with the strokes by construction.
                         // The colour is a fixed indigo rather than the live scheme so
@@ -1043,6 +1373,42 @@ for (swp in strokes) {
             }
         }
 
+        // ── Notes layer ───────────────────────────────────────────────────────
+        // Real Text composables rather than draw calls on the canvas.
+        //
+        // Two reasons, both practical. DrawScope has no drawText in this Compose
+        // version, and reaching for Skia directly would mean reimplementing font
+        // fallback — which is exactly what breaks when CJK and Latin share a note.
+        // As composables the notes also get proper text shaping and stay crisp at
+        // any DPI for free.
+        //
+        // The layer sits above the canvas and uses the same model->screen mapping,
+        // so notes track zoom and pan with the ink. `pointerInput` is absent on
+        // purpose: a note must never intercept a drag meant for the page beneath it.
+        val noteBox = box
+        if (noteBox != null && texts.isNotEmpty()) {
+            texts.forEach { t ->
+                val tb = TextMetrics.bounds(t.modelX, t.modelY, t.text, t.fontSize)
+                    ?: return@forEach
+                Text(
+                    text = t.text,
+                    modifier = Modifier.offset {
+                        IntOffset(
+                            (tb[0] * scale + (originX - noteBox.originX * scale)).roundToInt(),
+                            (tb[1] * scale + (originY - noteBox.originY * scale)).roundToInt()
+                        )
+                    },
+                    color = Color(t.colorArgb),
+                    fontSize = with(density) { (t.fontSize * scale).toSp() },
+                    // No width cap: the note's own width IS its model width, and
+                    // wrapping it here would desynchronise the drawn text from the
+                    // box used for hit-testing and for syncing.
+                    softWrap = false,
+                    lineHeight = androidx.compose.ui.unit.TextUnit.Unspecified
+                )
+            }
+        }
+
         // Derived, not stored: a missing file, an encrypted file and a slow render are all
         // "nothing to show yet", and only the error state should be able to clear this.
         val loading = loadError == null && rendered == null
@@ -1076,6 +1442,42 @@ for (swp in strokes) {
         // ── Ink toolbar ────────────────────────────────────────────────────
         // Only shown when [editable]. Top-start so it does not collide with the
         // page navigator at the bottom.
+        // ── Note editor ───────────────────────────────────────────────────────
+        // A plain borderless field rather than a Material outlined one: it has to
+        // sit directly on the page and read as part of the annotation, not as a
+        // dialog that happened to land on the paper.
+        //
+        // Commit on focus loss as well as on Enter, because clicking the next word
+        // to keep typing is the natural gesture and it must not discard the note.
+        if (editable && textDraft != null && textEditorPos != null) {
+            val draft = textDraft ?: ""
+            OutlinedTextField(
+                value = draft,
+                onValueChange = { textDraft = it },
+                modifier = Modifier
+                    .offset { IntOffset(textEditorPos.x.roundToInt(), textEditorPos.y.roundToInt()) }
+                    .width(280.dp)
+                    .focusRequester(textFieldFocus),
+                placeholder = { Text("輸入文字，Enter 完成", style = MaterialTheme.typography.bodySmall) },
+                textStyle = MaterialTheme.typography.bodyMedium.copy(color = Color(inkColour)),
+                singleLine = false,
+                maxLines = 4,
+                shape = RoundedCornerShape(8.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = Color(0xFF6366F1),
+                    unfocusedBorderColor = Color(0xFF6366F1).copy(alpha = 0.45f),
+                    focusedContainerColor = Color.White.copy(alpha = 0.92f),
+                    unfocusedContainerColor = Color.White.copy(alpha = 0.92f)
+                )
+            )
+            LaunchedEffect(draft) {
+                // Ask for focus as soon as the field exists. Done in an effect keyed
+                // on the draft so a recomposition from typing does not steal focus
+                // from something the user has since clicked into.
+                runCatching { textFieldFocus.requestFocus() }
+            }
+        }
+
         if (editable && rendered != null && loadError == null) {
             InkToolbar(
                 tool = tool,
@@ -1084,14 +1486,28 @@ for (swp in strokes) {
                 onColourChange = { inkColour = it },
                 canUndo = undoStack.canUndo,
                 canRedo = undoStack.canRedo,
-                selectionCount = selectedIds.size,
+                selectionCount = selectionCount,
                 onUndo = { undoNow() },
                 onRedo = { redoNow() },
                 onDeleteSelection = { deleteSelectionNow() },
                 onClear = {
-                    runCatching { databaseManager.deleteStrokesForDocument(documentUri) }
+                    // Clear covers the whole document, not the page, and it wipes
+                    // notes too. It is the one destructive control with no natural
+                    // inverse, so it pushes an undo entry like everything else —
+                    // "clear" being un-undoable is how people lose work they did not
+                    // mean to lose.
+                    val doomedAll = strokes
+                    val doomedAllText = texts
+                    runCatching {
+                        databaseManager.deleteStrokesForDocument(documentUri)
+                        databaseManager.deleteTextAnnotationsForDocument(documentUri)
+                    }
                         .onSuccess {
                             strokes = emptyList()
+                            texts = emptyList()
+                            selectedIds = emptySet()
+                            selectedTextIds = emptySet()
+                            undoStack.push(InkEdit.Erase(doomedAll, doomedAllText))
                             onInkChanged()
                         }
                         .onFailure {
@@ -1110,42 +1526,65 @@ for (swp in strokes) {
     }
 }
 
-/** Which ink tool the toolbar has armed. */
 /**
  * What an undoable edit did, in terms the desktop can actually reverse.
  *
- * Only strokes exist here — the desktop has no text or image annotation tables (and
- * the sync protocol carries no verbs for them), so the tablet's far richer
- * `DrawCommand` cannot be reused without copying the parts that do not apply.
- * What *is* shared is `UndoStack`, the history discipline both platforms now follow.
+ * Ink and notes both appear here because both tables exist on the desktop now. The
+ * tablet's `DrawCommand` is still not reusable wholesale — it carries shape and image
+ * branches with no desktop counterpart — but the history *discipline* is shared through
+ * `UndoStack`: one gesture is one entry, and every branch has a matching inverse.
  */
 private sealed interface InkEdit {
     /** A finished stroke was inserted. Undo deletes it; redo re-inserts it. */
     data class Add(val stroke: StrokeWithPoints) : InkEdit
 
+    /** A note was inserted. Undo deletes it; redo re-inserts it. */
+    data class AddText(val note: com.vic.inkflow.data.TextAnnotationEntity) : InkEdit
+
     /**
-     * One eraser gesture removed these strokes.
+     * One eraser gesture (or one selection delete) removed these items.
      *
-     * Grouped per gesture rather than per stroke: a single drag across a paragraph
+     * Grouped per gesture rather than per object: a single drag across a paragraph
      * should come back in one press, which is what the tablet's `EraseGesture` does.
+     * Strokes and notes travel together because the user asked for one action —
+     * splitting them would need two undos to reverse one gesture.
      */
-    data class Erase(val strokes: List<StrokeWithPoints>) : InkEdit
+    data class Erase(
+        val strokes: List<StrokeWithPoints>,
+        val texts: List<com.vic.inkflow.data.TextAnnotationEntity> = emptyList()
+    ) : InkEdit
 
     /**
      * A selection was dragged by [dx]/[dy] model units.
      *
-     * [originals] are snapshots taken before the move, which is what undo restores.
-     * A snapshot rather than a reference on purpose: a later edit must not be able to
-     * mutate what the history is holding.
+     * [originals] and [texts] are snapshots taken once at the start of the drag, which
+     * is what undo restores. Snapshots rather than references on purpose: a later edit
+     * must not be able to mutate what the history is holding.
+     *
+     * [dx]/[dy] are the TOTAL for the whole drag, not one frame. A drag writes to the
+     * database on every frame it moves, and folding that into a single entry requires
+     * the total — otherwise a selection that travelled 300pt over 30 frames would have
+     * its 30th frame's 10pt step recorded, and undo would only move it back 10pt.
      *
      * Stored as a delta rather than an "after" snapshot because a move is exactly
      * invertible — replaying the same translation forward or back cannot drift the way
      * storing two independently-computed states could.
      */
-    data class Move(val originals: List<StrokeWithPoints>, val dx: Float, val dy: Float) : InkEdit
+    data class Move(
+        val originals: List<StrokeWithPoints>,
+        val texts: List<com.vic.inkflow.data.TextAnnotationEntity>,
+        val dx: Float,
+        val dy: Float
+    ) : InkEdit
 }
 
-enum class InkTool { Pen, Highlighter, Eraser, Select }
+enum class InkTool { Pen, Highlighter, Eraser, Select, Text }
+
+/**
+ * Note font size in **model units** (PDF points), so it scales with the page exactly
+ * like the ink does. Matches the tablet's `text_annotations.fontSize` default of 16.
+ */
+private const val TEXT_SIZE_PT = 16f
 
 /**
  * Stroke width in **model units** (PDF points), not pixels, so it scales with the
@@ -1174,66 +1613,85 @@ private fun InkToolbar(
     onClear: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Row(
-        modifier = modifier
-            .padding(16.dp)
-            .glassDressing(isDark = InkThemeState.darkMode, shape = RoundedCornerShape(24.dp))
-            .clip(RoundedCornerShape(24.dp))
-            .padding(horizontal = 8.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp)
-    ) {
-        InkToolButton(
-            label = "筆",
-            selected = tool == InkTool.Pen,
-            onClick = { onToolChange(InkTool.Pen) }
-        )
-        InkToolButton(
-            label = "螢光筆",
-            selected = tool == InkTool.Highlighter,
-            onClick = { onToolChange(InkTool.Highlighter) }
-        )
-        InkToolButton(
-            label = "橡皮擦",
-            selected = tool == InkTool.Eraser,
-            onClick = { onToolChange(InkTool.Eraser) }
-        )
-        InkToolButton(
-            label = if (selectionCount > 0) "選取($selectionCount)" else "選取",
-            selected = tool == InkTool.Select,
-            onClick = { onToolChange(InkTool.Select) }
-        )
-        Spacer(Modifier.width(6.dp))
-        InkToolButton(label = "復原", selected = false, enabled = canUndo, onClick = onUndo)
-        InkToolButton(label = "重做", selected = false, enabled = canRedo, onClick = onRedo)
-        Spacer(Modifier.width(6.dp))
-        if (selectionCount > 0) {
-            // Delete lives here rather than only on the keyboard: the selection is a
-            // mode, and a control that exists only as a shortcut is a control most
-            // people never find.
-            InkToolButton(label = "刪除選取", selected = false, onClick = onDeleteSelection)
-            Spacer(Modifier.width(6.dp))
-        }
-        INK_PALETTE.forEach { swatch ->
-            val chosen = colour == swatch
-            Box(
-                modifier = Modifier
-                    .size(24.dp)
-                    .clip(CircleShape)
-                    .background(Color(swatch))
-                    .then(
-                        if (chosen) Modifier.glassDressing(
-                            isDark = InkThemeState.darkMode,
-                            shape = CircleShape
-                        ) else Modifier
-                    )
-                    .clip(CircleShape)
-                    .clickable { onColourChange(swatch) }
+    // Two rows rather than one long strip. With five tools, undo/redo, four swatches
+    // and a destructive clear, a single row overflows on a normal window and the
+    // overflow silently eats the controls the user needs most.
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Row(
+            modifier = modifier
+                .padding(16.dp)
+                .glassDressing(isDark = InkThemeState.darkMode, shape = RoundedCornerShape(24.dp))
+                .clip(RoundedCornerShape(24.dp))
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            InkToolButton(
+                label = "筆",
+                selected = tool == InkTool.Pen,
+                onClick = { onToolChange(InkTool.Pen) }
             )
+            InkToolButton(
+                label = "螢光筆",
+                selected = tool == InkTool.Highlighter,
+                onClick = { onToolChange(InkTool.Highlighter) }
+            )
+            InkToolButton(
+                label = "橡皮擦",
+                selected = tool == InkTool.Eraser,
+                onClick = { onToolChange(InkTool.Eraser) }
+            )
+            InkToolButton(
+                label = if (selectionCount > 0) "選取($selectionCount)" else "選取",
+                selected = tool == InkTool.Select,
+                onClick = { onToolChange(InkTool.Select) }
+            )
+            InkToolButton(
+                label = "文字",
+                selected = tool == InkTool.Text,
+                onClick = { onToolChange(InkTool.Text) }
+            )
+            Spacer(Modifier.width(6.dp))
+            InkToolButton(label = "復原", selected = false, enabled = canUndo, onClick = onUndo)
+            InkToolButton(label = "重做", selected = false, enabled = canRedo, onClick = onRedo)
+            if (selectionCount > 0) {
+                Spacer(Modifier.width(6.dp))
+                // Delete lives here rather than only on the keyboard: the selection is
+                // a mode, and a control that exists only as a shortcut is a control most
+                // people never find.
+                InkToolButton(label = "刪除選取", selected = false, onClick = onDeleteSelection)
+            }
         }
-        Spacer(Modifier.width(6.dp))
-        TextButton(onClick = onClear) {
-            Text("清除", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium)
+
+        Row(
+            modifier = Modifier.padding(bottom = 16.dp)
+                .glassDressing(isDark = InkThemeState.darkMode, shape = RoundedCornerShape(24.dp))
+                .clip(RoundedCornerShape(24.dp))
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            INK_PALETTE.forEach { swatch ->
+                val chosen = colour == swatch
+                Box(
+                    modifier = Modifier
+                        .size(24.dp)
+                        .clip(CircleShape)
+                        .background(Color(swatch))
+                        .then(
+                            if (chosen) Modifier.glassDressing(
+                                isDark = InkThemeState.darkMode,
+                                shape = CircleShape
+                            ) else Modifier
+                        )
+                        .clip(CircleShape)
+                        .clickable { onColourChange(swatch) }
+                )
+            }
+            Spacer(Modifier.width(6.dp))
+            TextButton(onClick = onClear) {
+                Text("清除", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium)
+            }
         }
     }
 }
