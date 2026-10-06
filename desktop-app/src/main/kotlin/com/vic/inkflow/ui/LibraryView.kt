@@ -15,6 +15,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -27,6 +28,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.vic.inkflow.data.DatabaseManager
 import com.vic.inkflow.data.DocumentEntity
+import com.vic.inkflow.util.LocalImport
 import com.vic.inkflow.ui.theme.ShapeMd
 import com.vic.inkflow.ui.fauxGlassPanel
 import com.vic.inkflow.ui.pressableGlass
@@ -52,9 +54,74 @@ fun LibraryView(
     selectedFolderId: String?,            // null = All, "__none__" = Uncategorized
     onFolderSelected: (String?) -> Unit,
     onDocumentSelected: (String) -> Unit,
+    /** Mirror directory the imported copies land in. */
+    mirrorRoot: String,
+    onLibraryChanged: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     var query by remember { mutableStateOf("") }
+
+    // File chooser. Uses the AWT dialog directly rather than Compose's
+    // rememberFileDialogLauncher: the launcher API has to be created in a
+    // @Composable and remembered, and its desktop behaviour around single-instance
+    // dialogs has changed between Compose releases. The AWT call is stable, and it
+    // is modal anyway.
+    var importError by remember { mutableStateOf<String?>(null) }
+    var importing by remember { mutableStateOf(false) }
+
+    fun pickAndImport() {
+        val chosen = runCatching {
+            javax.swing.JFileChooser().apply {
+                fileSelectionMode = javax.swing.JFileChooser.FILES_ONLY
+                isAcceptAllFileFilterUsed = false
+                fileFilter = javax.swing.filechooser.FileNameExtensionFilter("PDF 檔案", "pdf")
+                isMultiSelectionEnabled = false
+            }.let { chooser ->
+                val result = chooser.showOpenDialog(null)
+                if (result == javax.swing.JFileChooser.APPROVE_OPTION) chooser.selectedFile else null
+            }
+        }.getOrNull()
+
+        if (chosen == null) return
+
+        // Validation before any I/O, so a rejected file costs nothing and the
+        // reason reaches the user in words rather than as a stack trace.
+        val ext = LocalImport.checkExtension(chosen.name)
+        if (!ext.isOk) { importError = ext.message; return }
+        val exists = LocalImport.checkExists(chosen)
+        if (!exists.isOk) { importError = exists.message; return }
+        val size = LocalImport.checkSize(chosen.length())
+        if (!size.isOk) { importError = size.message; return }
+
+        importing = true
+        importError = null
+        val uri = LocalImport.toDocumentUri(chosen.absolutePath)
+        val plan = LocalImport.plan(uri, chosen, File(mirrorRoot))
+        val copied = LocalImport.copyIntoMirror(plan)
+
+        if (!copied.isOk) {
+            importError = copied.message
+            importing = false
+            return
+        }
+
+        // Only now does the library learn about the document. Registering it before
+        // the copy succeeded would leave an entry that cannot be opened — the one
+        // state worse than "the file is not in my library yet".
+        val existing = databaseManager.getDocument(uri)
+        databaseManager.saveDocument(
+            DocumentEntity(
+                uri = uri,
+                displayName = plan.displayName,
+                lastOpenedAt = existing?.lastOpenedAt ?: System.currentTimeMillis(),
+                lastPageIndex = existing?.lastPageIndex ?: 0,
+                isFavorite = existing?.isFavorite ?: false,
+                folderId = existing?.folderId
+            )
+        )
+        importing = false
+        onLibraryChanged()
+    }
 
     val folders = remember(refreshToken) { databaseManager.getAllFolders() }
     val allDocs = remember(refreshToken, query) {
@@ -144,6 +211,33 @@ fun LibraryView(
                     colors = glassChipColors()
                 )
             }
+
+        Spacer(Modifier.height(12.dp))
+
+        // ── Actions row ───────────────────────────────────────────────────
+        // The import control sits above the grid rather than inside the hero panel:
+        // the hero is the tablet's shared component and has no slot for one, and
+        // bolting a button onto it would fork shared UI just to suit the desktop.
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            OutlinedButton(onClick = { pickAndImport() }, enabled = !importing) {
+                Icon(Icons.Default.UploadFile, null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(if (importing) "匯入中…" else "開啟本機 PDF")
+            }
+            importError?.let { msg ->
+                Text(
+                    msg,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
 
         Spacer(Modifier.height(12.dp))
 
