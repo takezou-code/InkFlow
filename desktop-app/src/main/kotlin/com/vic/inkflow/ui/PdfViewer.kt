@@ -90,6 +90,7 @@ import com.vic.inkflow.util.PageBox
 import com.vic.inkflow.util.PdfManager
 import com.vic.inkflow.util.PdfResult
 import com.vic.inkflow.util.RenderedPage
+import com.vic.inkflow.util.ShapeGeometry
 import com.vic.inkflow.util.UndoStack
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -249,6 +250,21 @@ fun PdfViewer(
     // with a mouse is a flat hairline and cannot tell it apart from the tablet's
     // pressure-varying ink.
     var liveStrokeWidths by remember { mutableStateOf<List<Float>>(emptyList()) }
+
+    // ── Shapes ──────────────────────────────────────────────────────────────
+    // The subtype is picked in the toolbar before the drag, the way the tablet does
+    // it, so one gesture handler covers all four shapes instead of four handlers
+    // competing over the same pointer stream.
+    var shapeSubType by remember { mutableStateOf(com.vic.inkflow.util.ShapeType.RECT) }
+
+    /**
+     * The shape being dragged right now, in model units.
+     *
+     * Separate from `liveStroke` because a shape previews as a primitive outline,
+     * not through the envelope renderer. Below a couple of pixels a shape has no
+     * visible form, so the preview is discarded rather than committed.
+     */
+    var liveShape by remember { mutableStateOf<Pair<Offset, Offset>?>(null) }
 
     // A pointerInput coroutine captures the values in scope when it *starts*, and
     // it only restarts when its keys change. `box` and `scale` are null/zero on
@@ -775,6 +791,50 @@ fun PdfViewer(
         textDraftAnchor = null
     }
 
+/**
+     * Persists a shape as a two-point stroke, exactly as the tablet does.
+     *
+     * Two points and a `shapeType` tag is the whole representation — no separate
+     * table. That is what lets shapes sync without any protocol change, and it is
+     * why the bounds are computed with min/max here rather than read off the
+     * points: RECT and CIRCLE are drawn from the bounds, so a shape dragged
+     * bottom-to-top must still store `top < bottom` or it renders as a sliver.
+     *
+     * `docY` is left null for the same reason ink is: the tablet backfills it
+     * lazily using the live model height, and a stride guessed here would place
+     * the shape on the wrong page.
+     */
+    fun commitShape(start: Offset, end: Offset) {
+        val b = box ?: return
+        val stroke = StrokeEntity(
+            documentUri = documentUri,
+            pageIndex = requestedPage,
+            docY = null,
+            color = inkColour,
+            strokeWidth = INK_WIDTH_PT,
+            boundsLeft = minOf(start.x, end.x),
+            boundsTop = minOf(start.y, end.y),
+            boundsRight = maxOf(start.x, end.x),
+            boundsBottom = maxOf(start.y, end.y),
+            isHighlighter = false,
+            shapeType = shapeSubType.name
+        )
+        val points = listOf(
+            PointEntity(id = 1L, strokeId = stroke.id, x = start.x, y = start.y, width = INK_WIDTH_PT),
+            PointEntity(id = 2L, strokeId = stroke.id, x = end.x, y = end.y, width = INK_WIDTH_PT)
+        )
+        runCatching { databaseManager.saveStroke(stroke, points) }
+            .onSuccess {
+                val saved = StrokeWithPoints(stroke, points)
+                strokes = strokes + saved
+                undoStack.push(InkEdit.Add(saved))
+                onInkChanged()
+            }
+            .onFailure {
+                logger.error(it) { "Failed to save shape on page ${requestedPage + 1}" }
+            }
+    }
+
     fun commitStroke(pts: List<Offset>, modelWidths: List<Float>) {
         val b = box ?: return
         val stroke = StrokeEntity(
@@ -1003,6 +1063,7 @@ fun PdfViewer(
     // start writing here" — the pointer coroutine only knows about geometry.
     val commitTextNow by rememberUpdatedState<() -> Unit> { commitText() }
     val cancelTextNow by rememberUpdatedState<() -> Unit> { cancelText() }
+    val commitShapeNow by rememberUpdatedState<(Offset, Offset) -> Unit> { a, b -> commitShape(a, b) }
 
     val focusRequester = remember { FocusRequester() }
     val textFieldFocus = remember { FocusRequester() }
@@ -1182,6 +1243,29 @@ fun PdfViewer(
                         // same pointer stream the way a separate handler would.
                         val erasing = tool == InkTool.Eraser
                         val selecting = tool == InkTool.Select
+                        val shaping = tool == InkTool.Shape
+                        if (shaping) {
+                            // Two endpoints, live preview, commit on release. No
+                            // smoothing and no per-point width: a shape's geometry
+                            // IS the drag, and any "helpfulness" here would make the
+                            // stored result disagree with what was on screen.
+                            liveShape = start to start
+                            var end = start
+                            while (true) {
+                                val ev = awaitPointerEvent()
+                                val ch = ev.changes.firstOrNull { it.pressed } ?: break
+                                val m = toModel(ch.position) ?: continue
+                                end = m
+                                liveShape = start to m
+                                ch.consume()
+                            }
+                            liveShape = null
+                            val moved = ShapeGeometry.lineLength(start.x, start.y, end.x, end.y)
+                            // Reject an accidental click: a zero-length shape has no
+                            // geometry and would leave an unselectable row behind.
+                            if (moved * scale >= MIN_SHAPE_PX) commitShapeNow(start, end)
+                            return@awaitEachGesture
+                        }
                         if (selecting) {
                             // A press inside the current selection moves it; a press
                             // anywhere else rubber-bands a new one. Decided on the press,
@@ -1364,12 +1448,73 @@ for (swp in strokes) {
                                     )
                                 }
                             ),
-                            color = Color(inkColour).copy(
-                                alpha = if (tool == InkTool.Highlighter) HIGHLIGHTER_ALPHA else 1f
-                            )
-                        )
-                    }
-                }
+color = Color(inkColour).copy(
+                                  alpha = if (tool == InkTool.Highlighter) HIGHLIGHTER_ALPHA else 1f
+                              )
+                          )
+                      }
+
+                      // Shape preview, drawn through the same translate as
+                      // everything else. Rendered as a primitive outline rather than
+                      // through the envelope path, which is what it will be
+                      // committed as — so the preview cannot differ from the result.
+                      liveShape?.let { (a, z) ->
+                          val sa = Offset(a.x * scale + (originX - b.originX * scale), a.y * scale + (originY - b.originY * scale))
+                          val sz = Offset(z.x * scale + (originX - b.originX * scale), z.y * scale + (originY - b.originY * scale))
+                          val sw = (INK_WIDTH_PT * scale).coerceAtLeast(MIN_INK_PX)
+                          val previewStyle = androidx.compose.ui.graphics.drawscope.Stroke(
+                              width = sw,
+                              cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                              join = androidx.compose.ui.graphics.StrokeJoin.Round
+                          )
+                          val ink = Color(inkColour)
+                          when (shapeSubType) {
+                              com.vic.inkflow.util.ShapeType.RECT -> drawRect(
+                                  color = ink,
+                                  topLeft = Offset(minOf(sa.x, sz.x), minOf(sa.y, sz.y)),
+                                  size = androidx.compose.ui.geometry.Size(
+                                      abs(sz.x - sa.x), abs(sz.y - sa.y)
+                                  ),
+                                  style = previewStyle
+                              )
+
+                              com.vic.inkflow.util.ShapeType.CIRCLE -> drawOval(
+                                  color = ink,
+                                  topLeft = Offset(minOf(sa.x, sz.x), minOf(sa.y, sz.y)),
+                                  size = androidx.compose.ui.geometry.Size(
+                                      abs(sz.x - sa.x), abs(sz.y - sa.y)
+                                  ),
+                                  style = previewStyle
+                              )
+
+                              com.vic.inkflow.util.ShapeType.LINE -> drawLine(
+                                  color = ink, start = sa, end = sz, strokeWidth = sw,
+                                  cap = androidx.compose.ui.graphics.StrokeCap.Round
+                              )
+
+                              com.vic.inkflow.util.ShapeType.ARROW -> {
+                                  drawLine(
+                                      color = ink, start = sa, end = sz, strokeWidth = sw,
+                                      cap = androidx.compose.ui.graphics.StrokeCap.Round
+                                  )
+                                  val head = ShapeGeometry.arrowHead(
+                                      a.x, a.y, z.x, z.y,
+                                      ShapeGeometry.arrowHeadSize(INK_WIDTH_PT)
+                                  )
+                                  drawLine(
+                                      color = ink, start = sz,
+                                      end = Offset(sz.x + head.first.x * scale, sz.y + head.first.y * scale),
+                                      strokeWidth = sw, cap = androidx.compose.ui.graphics.StrokeCap.Round
+                                  )
+                                  drawLine(
+                                      color = ink, start = sz,
+                                      end = Offset(sz.x + head.second.x * scale, sz.y + head.second.y * scale),
+                                      strokeWidth = sw, cap = androidx.compose.ui.graphics.StrokeCap.Round
+                                  )
+                              }
+                          }
+                      }
+                  }
             }
         }
 
@@ -1484,6 +1629,8 @@ for (swp in strokes) {
                 colour = inkColour,
                 onToolChange = { tool = it },
                 onColourChange = { inkColour = it },
+                shapeSubType = shapeSubType,
+                onShapeSubTypeChange = { shapeSubType = it },
                 canUndo = undoStack.canUndo,
                 canRedo = undoStack.canRedo,
                 selectionCount = selectionCount,
@@ -1578,7 +1725,7 @@ private sealed interface InkEdit {
     ) : InkEdit
 }
 
-enum class InkTool { Pen, Highlighter, Eraser, Select, Text }
+enum class InkTool { Pen, Highlighter, Eraser, Select, Text, Shape }
 
 /**
  * Note font size in **model units** (PDF points), so it scales with the page exactly
@@ -1604,6 +1751,8 @@ private fun InkToolbar(
     colour: Int,
     onToolChange: (InkTool) -> Unit,
     onColourChange: (Int) -> Unit,
+    shapeSubType: com.vic.inkflow.util.ShapeType,
+    onShapeSubTypeChange: (com.vic.inkflow.util.ShapeType) -> Unit,
     canUndo: Boolean,
     canRedo: Boolean,
     selectionCount: Int,
@@ -1651,6 +1800,11 @@ private fun InkToolbar(
                 selected = tool == InkTool.Text,
                 onClick = { onToolChange(InkTool.Text) }
             )
+            InkToolButton(
+                label = "形狀",
+                selected = tool == InkTool.Shape,
+                onClick = { onToolChange(InkTool.Shape) }
+            )
             Spacer(Modifier.width(6.dp))
             InkToolButton(label = "復原", selected = false, enabled = canUndo, onClick = onUndo)
             InkToolButton(label = "重做", selected = false, enabled = canRedo, onClick = onRedo)
@@ -1660,6 +1814,28 @@ private fun InkToolbar(
                 // a mode, and a control that exists only as a shortcut is a control most
                 // people never find.
                 InkToolButton(label = "刪除選取", selected = false, onClick = onDeleteSelection)
+            }
+        }
+
+        // Shape subtypes appear only while the shape tool is armed. Showing them
+        // permanently would add four always-relevant-looking buttons to a toolbar
+        // that already wraps onto two rows.
+        if (tool == InkTool.Shape) {
+            Row(
+                modifier = Modifier.padding(bottom = 10.dp)
+                    .glassDressing(isDark = InkThemeState.darkMode, shape = RoundedCornerShape(24.dp))
+                    .clip(RoundedCornerShape(24.dp))
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                com.vic.inkflow.util.ShapeType.entries.forEach { st ->
+                    InkToolButton(
+                        label = SHAPE_LABELS[st] ?: st.name,
+                        selected = shapeSubType == st,
+                        onClick = { onShapeSubTypeChange(st) }
+                    )
+                }
             }
         }
 
@@ -1716,6 +1892,14 @@ private fun InkToolButton(
         )
     }
 }
+
+/** Labels for the shape subtypes, in the tablet's terms. */
+private val SHAPE_LABELS: Map<com.vic.inkflow.util.ShapeType, String> = mapOf(
+    com.vic.inkflow.util.ShapeType.RECT to "矩形",
+    com.vic.inkflow.util.ShapeType.CIRCLE to "橢圓",
+    com.vic.inkflow.util.ShapeType.LINE to "直線",
+    com.vic.inkflow.util.ShapeType.ARROW to "箭頭"
+)
 
 private val INK_PALETTE = listOf(
     0xFF121826.toInt(), // ink black
@@ -1787,14 +1971,26 @@ internal fun screenToModel(
  * more here than the micro-optimisation would.
  */
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawStroke(
-    swp: StrokeWithPoints,
-    scale: Float,
-    box: PageBox
-) {
-    val pts = swp.points
-    if (pts.isEmpty()) return
+      swp: StrokeWithPoints,
+      scale: Float,
+      box: PageBox
+  ) {
+      val pts = swp.points
+      if (pts.isEmpty()) return
 
-    val strokePoints = pts.map {
+      // Shapes branch out here, before the envelope renderer.
+      //
+      // A shape is stored as two points plus a type tag, and it is a stroked
+      // outline — not a variable-width polygon. Feeding it to generateEnvelopePath
+      // turns a rectangle into a thin lens between its two corners, which is why
+      // the tablet never routes shapes through that path either.
+      val shapeType = com.vic.inkflow.util.ShapeGeometry.parseType(swp.stroke.shapeType)
+      if (shapeType != null) {
+          drawShape(swp, shapeType, scale, box)
+          return
+      }
+
+      val strokePoints = pts.map {
         com.vic.inkflow.util.StrokePoint(
             x = (it.x - box.originX) * scale,
             y = (it.y - box.originY) * scale,
@@ -1811,14 +2007,106 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawStroke(
     )
 }
 
-/** Matches the tablet's highlighter opacity. */
-private const val HIGHLIGHTER_ALPHA = 0.35f
+/**
+   * Draw one shape, matching the tablet's `drawShapeOnCanvas`.
+   *
+   * The split that matters: RECT and CIRCLE use the box, LINE and ARROW use the two
+   * endpoints **in stored order**. Sorting the endpoints would flip the direction of
+   * every shape drawn upwards — visible, but not something a user would report,
+   * since the shape is still there.
+   */
+  private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawShape(
+      swp: StrokeWithPoints,
+      type: com.vic.inkflow.util.ShapeType,
+      scale: Float,
+      box: PageBox
+  ) {
+      val ink = Color(swp.stroke.color)
+      val width = com.vic.inkflow.util.ShapeGeometry.strokeWidthFor(type, swp.stroke.strokeWidth)
+          .times(scale).coerceAtLeast(MIN_INK_PX)
+      val style = androidx.compose.ui.graphics.drawscope.Stroke(
+          width = width, cap = androidx.compose.ui.graphics.StrokeCap.Round,
+          join = androidx.compose.ui.graphics.StrokeJoin.Round
+      )
+
+      fun px(mx: Float, my: Float) = Offset(
+          (mx - box.originX) * scale, (my - box.originY) * scale
+      )
+
+      val modelPts = swp.points.map {
+          com.vic.inkflow.util.StrokePoint(it.x, it.y, it.width)
+      }
+      val b = com.vic.inkflow.util.ShapeGeometry.boundsOf(modelPts)
+
+      when (type) {
+          com.vic.inkflow.util.ShapeType.RECT -> drawRect(
+              color = ink,
+              topLeft = px(b[0], b[1]),
+              size = androidx.compose.ui.geometry.Size((b[2] - b[0]) * scale, (b[3] - b[1]) * scale),
+              style = style
+          )
+
+          com.vic.inkflow.util.ShapeType.CIRCLE -> drawOval(
+              color = ink,
+              topLeft = px(b[0], b[1]),
+              size = androidx.compose.ui.geometry.Size((b[2] - b[0]) * scale, (b[3] - b[1]) * scale),
+              style = style
+          )
+
+          com.vic.inkflow.util.ShapeType.LINE -> {
+              val e = com.vic.inkflow.util.ShapeGeometry.endpoints(modelPts)
+              drawLine(
+                  color = ink,
+                  start = px(e[0], e[1]), end = px(e[2], e[3]),
+                  strokeWidth = width, cap = androidx.compose.ui.graphics.StrokeCap.Round
+              )
+          }
+
+          com.vic.inkflow.util.ShapeType.ARROW -> {
+              val e = com.vic.inkflow.util.ShapeGeometry.endpoints(modelPts)
+              val a = px(e[0], e[1])
+              val z = px(e[2], e[3])
+              drawLine(
+                  color = ink, start = a, end = z,
+                  strokeWidth = width, cap = androidx.compose.ui.graphics.StrokeCap.Round
+              )
+              // The head size is computed in model units and scaled with everything
+              // else, so the arrow does not keep a constant pixel size while the
+              // page zooms.
+              val head = com.vic.inkflow.util.ShapeGeometry.arrowHead(
+                  e[0], e[1], e[2], e[3],
+                  com.vic.inkflow.util.ShapeGeometry.arrowHeadSize(swp.stroke.strokeWidth)
+              )
+              drawLine(
+                  color = ink, start = z, end = px(head.first.x, head.first.y),
+                  strokeWidth = width, cap = androidx.compose.ui.graphics.StrokeCap.Round
+              )
+              drawLine(
+                  color = ink, start = z, end = px(head.second.x, head.second.y),
+                  strokeWidth = width, cap = androidx.compose.ui.graphics.StrokeCap.Round
+              )
+          }
+      }
+  }
+
+  /** Matches the tablet's highlighter opacity. */
+  private const val HIGHLIGHTER_ALPHA = 0.35f
 
 /** Never let ink vanish entirely when zoomed far out. */
 private const val MIN_INK_PX = 0.6f
 
 /** Smallest sensible drawn width in model units, mirroring the tablet's floor. */
-private const val MIN_INK_PT = 0.05f
+  private const val MIN_INK_PT = 0.05f
+
+  /**
+   * Shortest shape worth committing, in **pixels**.
+   *
+   * A click with the shape tool produces a zero-length shape with no geometry: it
+   * draws nothing, cannot be selected, and adds a row that only confuses a later
+   * export. Thresholding in pixels rather than model units keeps the rule at "bigger
+   * than a tap" regardless of zoom level.
+   */
+  private const val MIN_SHAPE_PX = 3f
 
 /**
  * One model-space point -> pixels inside the page's own rectangle, i.e. the coordinate
