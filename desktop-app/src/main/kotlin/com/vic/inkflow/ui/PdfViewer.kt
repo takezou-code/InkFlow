@@ -27,6 +27,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -97,6 +98,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -239,6 +241,11 @@ fun PdfViewer(
     // goes through the database.
     var tool by remember { mutableStateOf(InkTool.Pen) }
     var inkColour by remember { mutableIntStateOf(0xFF121826.toInt()) }
+    // Export runs off the UI thread: a long document must not freeze the reader while
+    // PDFBox stamps every page, and the status stays visible under the toolbar.
+    val exportScope = rememberCoroutineScope()
+    var exporting by remember(documentUri) { mutableStateOf(false) }
+    var exportMessage by remember(documentUri) { mutableStateOf<String?>(null) }
     // The stroke being drawn right now. Held separately from `strokes` so the
     // canvas can show an uncommitted stroke at pointer speed while the database
     // write happens once, on release.
@@ -789,6 +796,58 @@ fun PdfViewer(
     fun cancelText() {
         textDraft = null
         textDraftAnchor = null
+    }
+
+    /**
+     * Export the current document's annotations into a new PDF.
+     *
+     * The save dialog runs on the UI thread because it is modal; only the PDFBox
+     * stamping runs off-thread. Resolving the source and model size happens before
+     * the dialog, so a missing body fails fast instead of after the user has picked
+     * a destination.
+     */
+    fun exportNow() {
+        if (exporting) return
+        val src = PdfManager.resolveFile(documentUri)
+        if (src == null) {
+            exportMessage = "找不到原始 PDF，無法匯出"
+            return
+        }
+        val mW = pageBox?.widthPt ?: box?.widthPt ?: 0f
+        val mH = pageBox?.heightPt ?: box?.heightPt ?: 0f
+        val base = documentUri.substringAfterLast('/').substringBeforeLast('.').ifEmpty { "document" }
+        val chooser = javax.swing.JFileChooser().apply {
+            dialogTitle = "匯出 PDF"
+            selectedFile = java.io.File("$base-annotated.pdf")
+            fileFilter = javax.swing.filechooser.FileNameExtensionFilter("PDF 檔案", "pdf")
+            isAcceptAllFileFilterUsed = false
+        }
+        if (chooser.showSaveDialog(null) != javax.swing.JFileChooser.APPROVE_OPTION) return
+        var dest = chooser.selectedFile ?: return
+        if (!dest.name.lowercase().endsWith(".pdf")) {
+            dest = java.io.File(dest.parent, dest.name + ".pdf")
+        }
+
+        exporting = true
+        exportMessage = null
+        exportScope.launch(Dispatchers.IO) {
+            runCatching {
+                com.vic.inkflow.util.PdfExporter.exportFromDatabase(
+                    databaseManager, documentUri, src, dest, mW, mH
+                )
+            }.onSuccess { pages ->
+                withContext(Dispatchers.Main) {
+                    exporting = false
+                    exportMessage = "已匯出 $pages 頁：${dest.absolutePath}"
+                }
+            }.onFailure { e ->
+                logger.error(e) { "Failed to export $documentUri" }
+                withContext(Dispatchers.Main) {
+                    exporting = false
+                    exportMessage = "匯出失敗：${e.message ?: e::class.simpleName}"
+                }
+            }
+        }
     }
 
 /**
@@ -1661,6 +1720,9 @@ color = Color(inkColour).copy(
                             logger.error(it) { "Failed to clear ink on ${documentUri.substringAfterLast('/')}" }
                         }
                 },
+                exporting = exporting,
+                onExport = { exportNow() },
+                exportStatus = exportMessage,
                 modifier = Modifier.align(Alignment.TopStart)
             )
         }
@@ -1760,6 +1822,9 @@ private fun InkToolbar(
     onRedo: () -> Unit,
     onDeleteSelection: () -> Unit,
     onClear: () -> Unit,
+    exporting: Boolean,
+    onExport: () -> Unit,
+    exportStatus: String?,
     modifier: Modifier = Modifier
 ) {
     // Two rows rather than one long strip. With five tools, undo/redo, four swatches
@@ -1865,9 +1930,27 @@ private fun InkToolbar(
                 )
             }
             Spacer(Modifier.width(6.dp))
+            TextButton(onClick = onExport, enabled = !exporting) {
+                Text(
+                    if (exporting) "匯出中…" else "匯出 PDF",
+                    style = MaterialTheme.typography.labelMedium
+                )
+            }
             TextButton(onClick = onClear) {
                 Text("清除", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium)
             }
+        }
+        // Export feedback lives under the toolbar rather than in a dialog: a modal
+        // would interrupt reading, while a missing success message leaves the user
+        // unsure whether the file was actually written.
+        exportStatus?.let { status ->
+            Text(
+                status,
+                modifier = Modifier.padding(bottom = 16.dp),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2
+            )
         }
     }
 }
