@@ -143,6 +143,14 @@ data class SyncRequest(
          * display-only categorization; missing them loses no content.
          */
         const val TYPE_FOLDER_LIST = "folder_list"
+        /**
+         * Per-page counts. Additive verb, no version bump: an old peer answers
+         * "unknown" and the client falls back to a full pull — slower, but correct.
+         * Incremental pull is an optimization, never a correctness requirement.
+         */
+        const val TYPE_PAGE_COUNTS = "page_counts"
+        /** One page of text annotations. The text twin of `stroke_page`. */
+        const val TYPE_TEXT_PAGE = "text_page"
     }
 }
 
@@ -232,6 +240,34 @@ data class FileMetaPayload(
     val exists: Boolean,
     val size: Long = 0,
     val sha256: String? = null
+)
+
+/** Answer to TYPE_TEXT_PAGE: every text annotation on one page. */
+data class TextDeltaPayload(
+    val documentUri: String,
+    val texts: List<Any> = emptyList()
+)
+
+/**
+ * Answer to TYPE_PAGE_COUNTS: per-page stroke and note counts for one document.
+ *
+ * The client diffs these against its own per-page counts and pulls only the pages
+ * that differ. Two indexed GROUP BY queries on the tablet replace a full document
+ * load — the transfer saving is the visible half, the tablet-side CPU/RAM saving
+ * is the other half.
+ */
+data class PageCountsPayload(
+    val documentUri: String,
+    val counts: List<PageCountEntry> = emptyList(),
+    /** The document row, so a delta pull also refreshes metadata. */
+    val document: Any? = null
+)
+
+/** Stroke and note counts for one page. */
+data class PageCountEntry(
+    val pageIndex: Int,
+    val strokes: Int = 0,
+    val texts: Int = 0
 )
 
 /**

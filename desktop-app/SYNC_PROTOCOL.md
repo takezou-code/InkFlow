@@ -135,6 +135,8 @@ Desktop                                   Tablet (server)
 | `proposal_submit` | `documentUri`, `proposal` | JSON：`ProposalStatusPayload`（v5 新增） |
 | `proposal_status` | `proposalId` | JSON：`ProposalStatusPayload`（v5 新增） |
 | `folder_list` | – | JSON：`[FolderEntity]`（加法 verb，不升版；舊端回 unknown 即跳過） |
+| `page_counts` | `documentUri` | JSON：`PageCountsPayload`（加法 verb，不升版；舊端回 unknown 即退回整份拉取） |
+| `text_page` | `documentUri`, `pageIndex` | JSON：`TextDeltaPayload`（`stroke_page` 的文字版） |
 
 ### 4.2 應答信封 `SyncResponse`
 
@@ -377,6 +379,36 @@ pass 編號持久化在 `sync_meta.passCounter`——**不能放在記憶體**�
 應出現 `提案衝突 1` 且桌面內容等於平板。
 
 ---
+
+## 14. 事件驅動與增量拉取
+
+輪詢是兜底，不是同步策略：平板畫完等桌面下一輪才發現，體感是幾十秒的延遲。
+以下兩者把延遲降到秒級、把大文件的傳輸降到變更的頁。
+
+### 14.1 內容變更廣播（UDP）
+
+平板每次提交寫入 `strokes`／`points`／`text_annotations` 的事務，Room 的
+`InvalidationTracker` 都會觸發，`DirtyAnnouncer` 把多次觸發合併成最多 2 秒一封
+`content-changed` 廣播（只帶設備與世代，不帶內容——偽造它最多換來一次走認證連線
+的 manifest 比對，偷不到資料）。
+
+桌面收到後（5 秒去抖、同設備、世代對上才認）立即跑一輪同步；收不到（丟包、舊版
+平板）就等下一輪詢，不丟資料，只是慢。
+
+### 14.2 按頁增量拉取
+
+版本不同時，桌面先拿 `page_counts`（兩條按頁 `GROUP BY` 計數，不是整份載入），
+跟本地按頁筆數比，只拉變了的頁（`stroke_page`＋`text_page`，按頁整頁替換）。
+文件本體變了走整份拉取——對著不同的 PDF 按頁替換會把註解放到錯頁。
+
+兩條退路，缺一不可：
+
+- 對端不懂 `page_counts`（回 unknown）→ 整份拉取。增量是優化，不是正確性前提。
+- 版本不同但按頁全對上 → 整份拉取。按頁計數在此是盲的（同頁同數不同物件），
+  猜「沒變」會把分叉凍結成永久；整份拉取貴，但罕見（要精確的筆數巧合）。
+
+已知殘留：純交換物件（刪 A 加 B，同頁同數）且版本不變時不可見——與座標微調同屬
+`docVersion` 只看筆數的既有取捨，下一次任何筆數變化即自癒。
 
 ## 13. 版本演進
 

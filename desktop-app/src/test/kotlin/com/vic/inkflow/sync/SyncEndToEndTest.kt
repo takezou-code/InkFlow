@@ -534,6 +534,84 @@ class SyncEndToEndTest {
         }
     }
 
+    // ─── incremental pull ─────────────────────────────────────────────────────
+
+    private fun pageStroke(uri: String, id: String, page: Int) = StrokeWithPoints(
+        StrokeEntity(
+            id = id, documentUri = uri, pageIndex = page, docY = null,
+            color = 0xFF000000.toInt(), strokeWidth = 2f,
+            boundsLeft = 1f, boundsTop = 1f, boundsRight = 9f, boundsBottom = 9f
+        ),
+        listOf(
+            PointEntity(id = 1, strokeId = id, x = 1f, y = 1f, width = 2f),
+            PointEntity(id = 2, strokeId = id, x = 9f, y = 9f, width = 2f)
+        )
+    )
+
+    /**
+     * The whole point of `page_counts`: a one-page change must not re-pull the
+     * document. The fake records every page fetch, so this asserts on what crossed
+     * the wire — not just on the final state, which a full pull would also produce.
+     */
+    @Test
+    fun `a one-page change pulls only that page`() {
+        withFakeTablet { srv, tablet ->
+            desktop { db, dir ->
+                val mgr = LocalSyncManager(db, dir.absolutePath, transferPort = srv.localPort)
+                val device = deviceFor(srv)
+                mgr.syncWithTablet(device)
+                tablet.pageFetches.clear()
+
+                // Page 2 is already here; the new content lands on page 5.
+                tablet.pushedStrokes.add(pageStroke(tablet.uri, "p5-stroke", 5))
+                tablet.texts.add(
+                    TextAnnotationEntity(
+                        id = "p5-note", documentUri = tablet.uri, pageIndex = 5,
+                        text = "five", modelX = 10f, modelY = 20f
+                    )
+                )
+
+                val r = mgr.syncWithTablet(device)
+                assertEquals(0, r.errors.size, "errors: ${r.errors}")
+                assertEquals(1, r.documentsUpdated)
+
+                assertEquals(
+                    setOf("stroke_page" to 5, "text_page" to 5),
+                    tablet.pageFetches.toSet(),
+                    "only the changed page may cross the wire, got: ${tablet.pageFetches}"
+                )
+                assertTrue(
+                    db.getAllStrokesForDocument(tablet.uri).any { it.stroke.id == "p5-stroke" },
+                    "the new page's stroke must arrive"
+                )
+                assertTrue(
+                    db.getAllTextAnnotationsForDocument(tablet.uri).any { it.id == "p5-note" },
+                    "the new page's note must arrive"
+                )
+                assertTrue(
+                    db.getAllStrokesForDocument(tablet.uri).any { it.stroke.id == "stroke-1" },
+                    "the untouched page must survive the delta"
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `a peer without page_counts falls back to a full pull`() {
+        // Incremental pull is an optimization, never a correctness requirement: an
+        // older peer answers "unknown" and the client must still converge.
+        withFakeTablet(supportDelta = false) { srv, tablet ->
+            desktop { db, dir ->
+                val mgr = LocalSyncManager(db, dir.absolutePath, transferPort = srv.localPort)
+                val r = mgr.syncWithTablet(deviceFor(srv))
+                assertEquals(0, r.errors.size, "errors: ${r.errors}")
+                assertEquals(1, r.documentsUpdated)
+                assertTrue(tablet.pageFetches.isEmpty(), "no page fetches against an old peer")
+                assertEquals(1, db.getAllStrokesForDocument(tablet.uri).size)
+            }
+        }
+    }
+
     // ─── helpers ─────────────────────────────────────────────────────────────
 
     private data class Tablet(
@@ -553,6 +631,8 @@ class SyncEndToEndTest {
         val folders: MutableList<FolderEntity> = mutableListOf(),
         /** proposalId -> status, proving idempotent resends. */
         val seenProposals: MutableMap<String, ProposalStatusPayload> = mutableMapOf(),
+        /** Every page fetch the desktop made: (verb, page). Proves incrementality. */
+        val pageFetches: MutableList<Pair<String, Int>> = mutableListOf(),
         /** Recomputes [docVersion] from the current counts. Called after mutating
          *  [texts], because the count is part of the hash in v4. */
         val rehash: () -> String
@@ -574,6 +654,8 @@ class SyncEndToEndTest {
         manifestFor: ((Tablet) -> List<DocumentManifestEntry>)? = null,
         /** False simulates a pre-folder_list peer: the verb answers "unknown". */
         supportFolders: Boolean = true,
+        /** False simulates a pre-delta peer: page_counts answers "unknown". */
+        supportDelta: Boolean = true,
         block: (ServerSocket, Tablet) -> Unit
     ) {
         val tabletDir = java.nio.file.Files.createTempDirectory("tablet").toFile()
@@ -627,7 +709,7 @@ class SyncEndToEndTest {
             while (!srv.isClosed) {
                 try {
                         srv.accept().use { s ->
-                            serveFakeTablet(s, instanceId, tablet, manifest, supportFolders)
+                            serveFakeTablet(s, instanceId, tablet, manifest, supportFolders, supportDelta)
                         }
                     } catch (_: Exception) { break }
             }
@@ -650,7 +732,8 @@ class SyncEndToEndTest {
         instanceId: String,
         tablet: Tablet,
         manifest: List<DocumentManifestEntry>,
-        supportFolders: Boolean = true
+        supportFolders: Boolean = true,
+        supportDelta: Boolean = true
     ) {
         socket.soTimeout = 30_000
         val input = DataInputStream(socket.getInputStream())
@@ -803,6 +886,76 @@ class SyncEndToEndTest {
                         SyncWire.writeText(out, gson.toJson(SyncResponse(req.type, ok = false, error = "unknown")))
                     } else {
                         respond(req.type, tablet.folders.toList())
+                    }
+                }
+
+                SyncRequest.TYPE_PAGE_COUNTS -> {
+                    if (!supportDelta) {
+                        SyncWire.writeText(out, gson.toJson(SyncResponse(req.type, ok = false, error = "unknown")))
+                    } else {
+                    val uri = req.documentUri
+                    if (uri != tablet.uri) {
+                        SyncWire.writeText(out, gson.toJson(SyncResponse(req.type, ok = false, error = "unknown document $uri")))
+                    } else {
+                        respond(
+                            req.type,
+                            PageCountsPayload(
+                                uri,
+                                tablet.allStrokes().groupBy { it.stroke.pageIndex }
+                                    .map { (page, swps) ->
+                                        PageCountEntry(
+                                            page,
+                                            swps.size,
+                                            tablet.texts.count { it.pageIndex == page }
+                                        )
+                                    } + tablet.texts.map { it.pageIndex }.distinct()
+                                        .filter { p -> tablet.allStrokes().none { it.stroke.pageIndex == p } }
+                                        .map { p ->
+                                            PageCountEntry(p, 0, tablet.texts.count { it.pageIndex == p })
+                                        },
+                                DocumentEntity(uri, "Lecture Notes", 2_000_000_000_000L, lastPageIndex = 2)
+                            )
+                        )
+                    }
+                    }
+                }
+
+                SyncRequest.TYPE_STROKE_PAGE -> {
+                    if (!supportDelta) {
+                        SyncWire.writeText(out, gson.toJson(SyncResponse(req.type, ok = false, error = "unknown")))
+                    } else {
+                    val uri = req.documentUri
+                    val page = req.pageIndex ?: 0
+                    if (uri != tablet.uri) {
+                        SyncWire.writeText(out, gson.toJson(SyncResponse(req.type, ok = false, error = "unknown document $uri")))
+                    } else {
+                        tablet.pageFetches.add("stroke_page" to page)
+                        respond(
+                            req.type,
+                            StrokeDeltaPayload(
+                                uri,
+                                tablet.allStrokes().filter { it.stroke.pageIndex == page }
+                            )
+                        )
+                    }
+                    }
+                }
+
+                SyncRequest.TYPE_TEXT_PAGE -> {
+                    if (!supportDelta) {
+                        SyncWire.writeText(out, gson.toJson(SyncResponse(req.type, ok = false, error = "unknown")))
+                    } else {
+                    val uri = req.documentUri
+                    val page = req.pageIndex ?: 0
+                    if (uri != tablet.uri) {
+                        SyncWire.writeText(out, gson.toJson(SyncResponse(req.type, ok = false, error = "unknown document $uri")))
+                    } else {
+                        tablet.pageFetches.add("text_page" to page)
+                        respond(
+                            req.type,
+                            TextDeltaPayload(uri, tablet.texts.filter { it.pageIndex == page })
+                        )
+                    }
                     }
                 }
 

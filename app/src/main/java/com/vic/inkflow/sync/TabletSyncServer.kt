@@ -285,6 +285,22 @@ class TabletSyncServer(
                 respondJson(out, type, StrokeDeltaPayload(doc.uri, strokes))
             }
 
+            SyncRequest.TYPE_TEXT_PAGE -> {
+                val doc = requireDocument(req.documentUri)
+                val page = (req.pageIndex ?: 0).coerceAtLeast(0)
+                respondJson(out, type, TextDeltaPayload(doc.uri, repos.texts.getForPageSync(doc.uri, page)))
+            }
+
+            SyncRequest.TYPE_PAGE_COUNTS -> {
+                val doc = requireDocument(req.documentUri)
+                val strokes = repos.strokes.countStrokesByPage(doc.uri).associate { it.pageIndex to it.strokeCount }
+                val texts = repos.texts.countTextsByPage(doc.uri).associate { it.pageIndex to it.textCount }
+                val pages = (strokes.keys + texts.keys).sorted().map { page ->
+                    PageCountEntry(page, strokes[page] ?: 0, texts[page] ?: 0)
+                }
+                respondJson(out, type, PageCountsPayload(doc.uri, pages, doc))
+            }
+
             SyncRequest.TYPE_FILE_META -> {
                 val file = requireServableFile(requireDocument(req.documentUri))
                 val present = file.isFile

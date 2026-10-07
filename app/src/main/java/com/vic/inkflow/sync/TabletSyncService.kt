@@ -52,6 +52,7 @@ class TabletSyncService : Service() {
 
     private var server: TabletSyncServer? = null
     private var discovery: DiscoveryResponder? = null
+    private var announcer: DirtyAnnouncer? = null
     private var stopped = false
 
     override fun onCreate() {
@@ -63,13 +64,19 @@ class TabletSyncService : Service() {
 
         // 開 Room 可能要跑 migration（純磁碟 I/O，大庫時是秒級），**不能**在 main thread。
         // 前景通知已經在了，這裡晚一點綁 socket 使用者完全無感。
-        ioScope.launch {
-            val repos = runCatching { InkFlowRepositories(AppDatabase.getDatabase(this@TabletSyncService)) }
-                .getOrElse { e ->
-                    Log.e(TAG, "cannot open database; giving up on this sync session", e)
-                    stopSelf()
-                    return@launch
-                }
+            ioScope.launch {
+                val db = runCatching { AppDatabase.getDatabase(this@TabletSyncService) }
+                    .getOrElse { e ->
+                        Log.e(TAG, "cannot open database; giving up on this sync session", e)
+                        stopSelf()
+                        return@launch
+                    }
+                val repos = runCatching { InkFlowRepositories(db) }
+                    .getOrElse { e ->
+                        Log.e(TAG, "cannot open database; giving up on this sync session", e)
+                        stopSelf()
+                        return@launch
+                    }
             synchronized(lock) {
                 if (stopped) return@launch // 使用者已經關掉了，別又把 socket 開起來
                 val srv = TabletSyncServer(this@TabletSyncService, repos)
@@ -81,12 +88,15 @@ class TabletSyncService : Service() {
                     stopSelf()
                     return@launch
                 }
-                server = srv
-                isRunning = true
-                // 探索掛掉不致命：TCP 才是重點，UDP 只是讓桌面端自動找到我們。
-                // 只少了自動探索，使用者仍可手動指定 IP。
-                discovery = DiscoveryResponder(this@TabletSyncService)
-                    .also { if (!it.start()) Log.w(TAG, "discovery responder unavailable; TCP still works") }
+                    server = srv
+                    isRunning = true
+                    // 探索掛掉不致命：TCP 才是重點，UDP 只是讓桌面端自動找到我們。
+                    // 只少了自動探索，使用者仍可手動指定 IP。
+                    discovery = DiscoveryResponder(this@TabletSyncService)
+                        .also { if (!it.start()) Log.w(TAG, "discovery responder unavailable; TCP still works") }
+                    // 內容變更廣播同理：掛掉只退回輪詢，不影響正確性。
+                    announcer = DirtyAnnouncer(this@TabletSyncService)
+                        .also { if (!it.start(db)) Log.w(TAG, "dirty announcer unavailable; polling still works") }
             }
         }
     }
@@ -118,16 +128,18 @@ class TabletSyncService : Service() {
 
     /** 冪等，且可從 onTimeout 與 onDestroy 兩條路徑呼叫。 */
     private fun stopEverything() {
-        val (s, d) = synchronized(lock) {
+        val (s, d, a) = synchronized(lock) {
             if (stopped) return
             stopped = true
-            val pair = server to discovery
+            val triple = Triple(server, discovery, announcer)
             server = null
             discovery = null
-            pair
+            announcer = null
+            triple
         }
         s?.stop()
         d?.stop()
+        a?.stop()
         isRunning = false
         ioScope.cancel()
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)

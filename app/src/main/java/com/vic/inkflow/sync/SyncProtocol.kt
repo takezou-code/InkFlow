@@ -110,6 +110,13 @@ data class SyncRequest(
         /** v5：「我的提案後來怎麼樣了」。 */
         const val TYPE_PROPOSAL_STATUS = "proposal_status"
         /**
+         * 按頁筆數。加法 verb，不升版：舊端回「未知 verb」，客戶端退回整份拉取——
+         * 慢，但正確。增量是優化，不是正確性前提。
+         */
+        const val TYPE_PAGE_COUNTS = "page_counts"
+        /** 某頁的全部文字註解。`stroke_page` 的文字版，同樣加法、不升版。 */
+        const val TYPE_TEXT_PAGE = "text_page"
+        /**
          * 資料夾清單。加法 verb，不升版：舊端回「未知 verb」，客戶端跳過即可，
          * 不影響文件同步。文件分類本來就只是顯示屬性，缺它不會丟資料。
          */
@@ -179,6 +186,32 @@ data class StrokeDeltaPayload(
     val deletedStrokeIds: List<String> = emptyList(),
     val hasMore: Boolean = false,
     val nextOffset: Int = 0
+)
+
+/** `text_page` 的應答：List<TextAnnotationEntity>。 */
+data class TextDeltaPayload(
+    val documentUri: String,
+    val texts: List<Any>
+)
+
+/**
+ * `page_counts` 的應答：一份文件每頁的筆數與註解數。
+ *
+ * 桌面拿它跟自己存的按頁筆數比，只拉變了的頁。兩個 GROUP BY 查詢取代一次整份
+ * 文件載入——這正是增量拉取在傳輸之外省下的另一半（平板記憶體與 CPU）。
+ */
+data class PageCountsPayload(
+    val documentUri: String,
+    val counts: List<PageCountEntry>,
+    /** The document row, so a delta pull also refreshes metadata. */
+    val document: Any? = null
+)
+
+/** 一頁的筆數。 */
+data class PageCountEntry(
+    val pageIndex: Int,
+    val strokes: Int,
+    val texts: Int
 )
 
 /** `file_meta` 的應答：PDF 本體的尺寸與校驗碼。 */

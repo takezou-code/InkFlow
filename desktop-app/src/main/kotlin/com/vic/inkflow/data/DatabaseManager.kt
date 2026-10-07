@@ -873,6 +873,45 @@ class DatabaseManager(private val dbPath: String) {
     }
 
     /**
+     * Per-page stroke counts for incremental sync.
+     *
+     * A GROUP BY query, not a load: the whole point of the `page_counts` verb is to
+     * decide *whether* to load a page, so counting must not itself load anything.
+     */
+    fun countStrokesByPage(documentUri: String): Map<Int, Int> {
+        val out = mutableMapOf<Int, Int>()
+        connection?.prepareStatement(
+            "SELECT pageIndex, COUNT(*) FROM strokes WHERE documentUri = ? GROUP BY pageIndex"
+        )?.use { stmt ->
+            stmt.setString(1, documentUri)
+            stmt.executeQuery().use { rs ->
+                while (rs.next()) out[rs.getInt(1)] = rs.getInt(2)
+            }
+        }
+        return out
+    }
+
+    /**
+     * Delete one page's strokes (and their points) without touching other pages.
+     *
+     * Used by incremental pull: only the pages the tablet reports as changed are
+     * replaced. A whole-document replace here would discard clean pages' local
+     * edits along with the dirty ones.
+     */
+    fun deleteStrokesForPage(documentUri: String, pageIndex: Int) = synchronized(dbLock) {
+        val ids = mutableListOf<String>()
+        connection?.prepareStatement(
+            "SELECT id FROM strokes WHERE documentUri = ? AND pageIndex = ?"
+        )?.use { stmt ->
+            stmt.setString(1, documentUri)
+            stmt.setInt(2, pageIndex)
+            stmt.executeQuery().use { rs -> while (rs.next()) ids.add(rs.getString(1)) }
+        }
+        ids.forEach { deleteStroke(it) }
+        Unit
+    }
+
+    /**
      * Replace all local strokes of a document with the remote snapshot.
      * Each stroke is written transactionally via [saveStroke]; callers should
      * only invoke this when conflict resolution decided the remote wins.
@@ -957,6 +996,31 @@ class DatabaseManager(private val dbPath: String) {
     fun deleteTextAnnotationsForDocument(documentUri: String) {
         connection?.prepareStatement("DELETE FROM text_annotations WHERE documentUri = ?")?.use { stmt ->
             stmt.setString(1, documentUri)
+            stmt.executeUpdate()
+        }
+    }
+
+    /** Per-page note counts for incremental sync. See [countStrokesByPage]. */
+    fun countTextsByPage(documentUri: String): Map<Int, Int> {
+        val out = mutableMapOf<Int, Int>()
+        connection?.prepareStatement(
+            "SELECT pageIndex, COUNT(*) FROM text_annotations WHERE documentUri = ? GROUP BY pageIndex"
+        )?.use { stmt ->
+            stmt.setString(1, documentUri)
+            stmt.executeQuery().use { rs ->
+                while (rs.next()) out[rs.getInt(1)] = rs.getInt(2)
+            }
+        }
+        return out
+    }
+
+    /** Delete one page's notes. See [deleteStrokesForPage] for why per-page matters. */
+    fun deleteTextAnnotationsForPage(documentUri: String, pageIndex: Int) {
+        connection?.prepareStatement(
+            "DELETE FROM text_annotations WHERE documentUri = ? AND pageIndex = ?"
+        )?.use { stmt ->
+            stmt.setString(1, documentUri)
+            stmt.setInt(2, pageIndex)
             stmt.executeUpdate()
         }
     }
