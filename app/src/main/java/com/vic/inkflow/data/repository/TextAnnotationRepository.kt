@@ -1,6 +1,7 @@
 package com.vic.inkflow.data.repository
 
 import com.vic.inkflow.data.AppDatabase
+import com.vic.inkflow.data.PageTextCount
 import com.vic.inkflow.data.TextAnnotationDao
 import com.vic.inkflow.data.TextAnnotationEntity
 import kotlinx.coroutines.flow.Flow
@@ -15,6 +16,12 @@ interface TextAnnotationRepository : PageShiftTarget {
     suspend fun getForPageSync(documentUri: String, pageIndex: Int): List<TextAnnotationEntity>
     suspend fun getAllForDocument(documentUri: String): List<TextAnnotationEntity>
     suspend fun getForRange(documentUri: String, y0: Float, y1: Float): List<TextAnnotationEntity>
+
+    /**
+     * Per-page note counts, for the `page_counts` sync verb.
+     * See [StrokeRepository.countStrokesByPage] for why this exists.
+     */
+    suspend fun countTextsByPage(documentUri: String): List<PageTextCount>
 
     suspend fun deleteById(id: String): Int
     suspend fun deleteForPage(documentUri: String, pageIndex: Int)
@@ -43,6 +50,8 @@ class RoomTextAnnotationRepository(
         dao.getForPage(documentUri, pageIndex)
     override suspend fun getForPageSync(documentUri: String, pageIndex: Int) = dao.getForPageSync(documentUri, pageIndex)
     override suspend fun getAllForDocument(documentUri: String) = dao.getAllForDocument(documentUri)
+
+    override suspend fun countTextsByPage(documentUri: String) = dao.countTextsByPage(documentUri)
     override suspend fun getForRange(documentUri: String, y0: Float, y1: Float) = dao.getForRange(documentUri, y0, y1)
     override suspend fun deleteById(id: String): Int = dao.deleteById(id)
     override suspend fun deleteForPage(documentUri: String, pageIndex: Int) = dao.deleteForPage(documentUri, pageIndex)

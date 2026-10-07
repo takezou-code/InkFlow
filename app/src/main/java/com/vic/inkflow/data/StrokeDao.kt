@@ -31,6 +31,16 @@ interface StrokeDao {
     @Query("DELETE FROM strokes WHERE id IN (:strokeIds)")
     suspend fun deleteStrokesByIds(strokeIds: List<String>): Int
 
+    /**
+     * Per-page stroke counts for incremental sync (`page_counts` verb).
+     *
+     * This exists because `getAllStrokesForDocument` loads every point to count them,
+     * which is exactly the cost incremental pull is trying to avoid on large
+     * documents. Two indexed GROUP BY queries replace a full table load.
+     */
+    @Query("SELECT pageIndex AS pageIndex, COUNT(*) AS strokeCount FROM strokes WHERE documentUri = :documentUri GROUP BY pageIndex")
+    suspend fun countStrokesByPage(documentUri: String): List<PageStrokeCount>
+
     @Query("DELETE FROM strokes WHERE documentUri = :documentUri AND pageIndex = :pageIndex")
     suspend fun clearPage(documentUri: String, pageIndex: Int): Int
 

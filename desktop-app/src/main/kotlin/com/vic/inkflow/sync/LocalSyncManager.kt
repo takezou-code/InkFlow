@@ -184,6 +184,15 @@ class LocalSyncManager(
     var devices: List<DiscoveredDevice> = emptyList()
         private set
 
+    /**
+     * Last event-triggered sync per device, by deviceId.
+     *
+     * Content-changed announcements can arrive in bursts (a stroke is dozens of
+     * transactions). Without a per-device throttle each burst becomes a sync pass,
+     * and sync passes queue behind the one already running instead of replacing it.
+     */
+    private val lastEventSyncAt = mutableMapOf<String, Long>()
+
     @Volatile
     var lastSyncResult: SyncResult? = null
         private set
@@ -299,22 +308,33 @@ class LocalSyncManager(
             when (data["type"]) {
                 // A tablet (or desktop) asking who is out there -> identify ourselves.
                 "discover" -> replyToDiscovery(sender)
-                // A tablet announcing itself -> register as sync target.
-                "response" -> {
-                    val id = data["deviceId"] as? String ?: return
-                    if (id == deviceId) return // ignore our own broadcast echo
-                    val role = data["role"] as? String ?: "tablet"
-                    registerDevice(
-                        DiscoveredDevice(
-                            deviceId = id,
-                            deviceName = (data["deviceName"] as? String) ?: sender.hostAddress,
-                            ip = (data["ip"] as? String) ?: sender.hostAddress,
-                            transferPort = (data["transferPort"] as? Double)?.toInt() ?: transferPort,
-                            lastSeenMillis = System.currentTimeMillis()
-                        ),
-                        asTablet = role == DeviceRole.TABLET.name.lowercase()
-                    )
-                }
+                  // A tablet announcing itself -> register as sync target.
+                  "response" -> {
+                      val id = data["deviceId"] as? String ?: return
+                      if (id == deviceId) return // ignore our own broadcast echo
+                      val role = data["role"] as? String ?: "tablet"
+                      registerDevice(
+                          DiscoveredDevice(
+                              deviceId = id,
+                              deviceName = (data["deviceName"] as? String) ?: sender.hostAddress,
+                              ip = (data["ip"] as? String) ?: sender.hostAddress,
+                              transferPort = (data["transferPort"] as? Double)?.toInt() ?: transferPort,
+                              lastSeenMillis = System.currentTimeMillis()
+                          ),
+                          asTablet = role == DeviceRole.TABLET.name.lowercase()
+                      )
+                  }
+                  // A tablet saying "something changed, come sync". The announcement
+                  // carries no content — spoofing it only triggers a manifest diff
+                  // over an authenticated connection, so the worst case is a wasted
+                  // pass, not data exposure. Polling remains the fallback: a dropped
+                  // packet delays sync, it never loses it.
+                  "content-changed" -> {
+                      val id = data["deviceId"] as? String ?: return
+                      if (id == deviceId) return
+                      val announcedInstance = data["instanceId"] as? String
+                      onContentChanged(id, sender.hostAddress, announcedInstance)
+                  }
             }
         } catch (e: Exception) {
             logger.debug(e) { "Could not parse UDP message: $message" }
@@ -350,6 +370,56 @@ class LocalSyncManager(
         synchronized(this) {
             devices = devices.filter { it.lastSeenMillis >= cutoff }
         }
+    }
+
+    /**
+     * A tablet announced content-changed: sync it now instead of waiting for the
+     * next poll.
+     *
+     * Three guards, each load-bearing:
+     * - unknown sender is ignored (discovery will find a genuinely new tablet
+     *   within one poll interval; syncing an unregistered IP would bypass the
+     *   device list the UI shows);
+     * - instance mismatch is ignored (a reinstalled tablet reuses the IP — the
+     *   generation change is handled inside a real sync pass, not here);
+     * - at most one event sync per device per [EVENT_SYNC_MIN_INTERVAL_MS], and
+     *   never while a pass is already running (otherwise every stroke's burst
+     *   queues another full pass behind the current one).
+     */
+    private fun onContentChanged(deviceId: String, senderIp: String, announcedInstance: String?) {
+        val target = findEventTarget(deviceId, senderIp, announcedInstance) ?: return
+        val now = System.currentTimeMillis()
+        synchronized(lastEventSyncAt) {
+            val last = lastEventSyncAt[target.deviceId] ?: 0L
+            if (now - last < EVENT_SYNC_MIN_INTERVAL_MS) return
+            lastEventSyncAt[target.deviceId] = now
+        }
+        if (isSyncing) return
+        sessionExecutor.submit {
+            if (isSyncing) return@submit
+            syncAllTablets()
+        }
+    }
+
+    /**
+     * Which known device an announcement belongs to, or null to ignore it.
+     *
+     * Internal (not private) so the matching rule is unit-testable: it is the only
+     * thing standing between a spoofed packet and a sync pass, so "unknown sender"
+     * and "instance mismatch" must both provably ignore.
+     */
+    internal fun findEventTarget(
+        deviceId: String,
+        senderIp: String,
+        announcedInstance: String?
+    ): DiscoveredDevice? {
+        val target = synchronized(this) {
+            devices.firstOrNull { it.deviceId == deviceId || it.ip == senderIp }
+        } ?: return null
+        if (announcedInstance != null && target.instanceId != null && announcedInstance != target.instanceId) {
+            return null
+        }
+        return target
     }
 
     // ─── Pull sync (client side) ─────────────────────────────────────────────
@@ -504,6 +574,21 @@ class LocalSyncManager(
                             }
                             skipped++
                             continue
+                        }
+
+                        // Changed: try a page-level delta first, fall back to the whole
+                        // snapshot. The delta only runs when the file body already
+                        // matches — per-page replace against a different file would put
+                        // annotations on the wrong pages, so a changed file always
+                        // takes the full path.
+                        if (local != null && entry.filePresent && !needsFileDownload(local, entry)) {
+                            val delta = tryDeltaPull(out, input, entry, instanceId, remoteVersion, pass)
+                            if (delta != null) {
+                                updated++
+                                strokes += delta.strokes
+                                texts += delta.texts
+                                continue
+                            }
                         }
 
                         // Content changed -> pull the row and the whole stroke snapshot.
@@ -702,6 +787,77 @@ class LocalSyncManager(
 
     private fun shortVersion(v: String): String = v.take(8)
 
+    /** What a delta pull transferred. Null means "fall back to a full pull". */
+    private data class DeltaStats(val strokes: Int, val texts: Int)
+
+    /**
+     * Pull only the pages whose counts differ.
+     *
+     * Returns null (fall back to full detail) when: the peer does not know
+     * `page_counts`, the payload is unusable, or the local side has no page
+     * structure to diff against (brand-new document — one full pull beats N
+     * per-page round trips for a document we hold nothing of).
+     *
+     * Counts agreeing everywhere while the version differs means only the file or
+     * row metadata moved: store the version and move on without transferring any
+     * content. (Coordinate-only edits with identical counts are invisible to the
+     * hash by design — same documented trade-off as docVersion itself.)
+     */
+    private fun tryDeltaPull(
+        out: DataOutputStream,
+        input: DataInputStream,
+        entry: DocumentManifestEntry,
+        instanceId: String?,
+        remoteVersion: String,
+        pass: Long
+    ): DeltaStats? {
+        val counts = fetchPageCounts(out, input, entry.uri) ?: return null
+        val doc = gson.fromJson(gson.toJson(counts.document), DocumentEntity::class.java)
+            ?: return null
+        databaseManager.saveDocument(doc)
+
+        val remote = counts.counts.associate { it.pageIndex to (it.strokes to it.texts) }
+        val localStrokes = databaseManager.countStrokesByPage(entry.uri)
+        val localTexts = databaseManager.countTextsByPage(entry.uri)
+        val hasLocalPages = localStrokes.isNotEmpty() || localTexts.isNotEmpty()
+        if (!hasLocalPages) return null
+
+        // A page present locally but absent remotely (e.g. a shorter replacement file
+        // slipped past the file check) diffs against (0, 0) below, so its rows are
+        // removed rather than lingering as ghosts of deleted pages.
+        val changedPages = (remote.keys + localStrokes.keys + localTexts.keys).filter { page ->
+            val (remoteStrokes, remoteTexts) = remote[page] ?: (0 to 0)
+            (localStrokes[page] ?: 0) != remoteStrokes || (localTexts[page] ?: 0) != remoteTexts
+        }
+        if (changedPages.isEmpty()) {
+            // Version differs but every page count agrees: the counts are blind here.
+            // Same count with different objects (e.g. a conflict dropped our edit while
+            // the tablet added one) is indistinguishable from "nothing changed" at this
+            // resolution — and guessing "nothing" would freeze the divergence forever.
+            // A full pull is the only correct answer; it is also rare, because it
+            // requires an exact count coincidence.
+            return null
+        }
+
+        var pulledStrokes = 0
+        var pulledTexts = 0
+        for (page in changedPages) {
+            val pageStrokes = fetchStrokePage(out, input, entry.uri, page)
+            databaseManager.deleteStrokesForPage(entry.uri, page)
+            pageStrokes.forEach { databaseManager.saveStroke(it.stroke, it.points) }
+            pulledStrokes += pageStrokes.size
+
+            val pageTexts = fetchTextPage(out, input, entry.uri, page)
+            databaseManager.deleteTextAnnotationsForPage(entry.uri, page)
+            pageTexts.forEach { databaseManager.saveTextAnnotation(it) }
+            pulledTexts += pageTexts.size
+        }
+        if (instanceId != null) {
+            databaseManager.setDocVersion(instanceId, entry.uri, remoteVersion, pass)
+        }
+        return DeltaStats(pulledStrokes, pulledTexts)
+    }
+
     private fun needsFileDownload(local: DocumentEntity?, entry: DocumentManifestEntry): Boolean {
         if (!entry.filePresent) return false
         // Resolve the body the desktop would actually OPEN (documentsDir mirror
@@ -819,6 +975,66 @@ class LocalSyncManager(
         if (!resp.ok) throw IOException("Manifest error: ${resp.error}")
         val type = object : TypeToken<List<DocumentManifestEntry>>() {}.type
         return gson.fromJson(resp.payload ?: "[]", type)
+    }
+
+    /**
+     * Fetch per-page counts. Null means "the peer does not know this verb" — an
+     * older tablet answers ok=false, and the caller falls back to a full pull.
+     * Transport failures throw, like every other fetch: silence there would turn a
+     * dead socket into an infinite "nothing changed".
+     */
+    private fun fetchPageCounts(
+        out: DataOutputStream,
+        input: DataInputStream,
+        uri: String
+    ): PageCountsPayload? {
+        SyncWire.writeText(
+            out,
+            gson.toJson(SyncRequest(SyncRequest.TYPE_PAGE_COUNTS, deviceId, documentUri = uri))
+        )
+        val resp = readResponse(input) ?: throw IOException("No page_counts response")
+        if (!resp.ok) return null
+        return gson.fromJson(resp.payload, PageCountsPayload::class.java)
+    }
+
+    private fun fetchStrokePage(
+        out: DataOutputStream,
+        input: DataInputStream,
+        uri: String,
+        page: Int
+    ): List<StrokeWithPoints> {
+        SyncWire.writeText(
+            out,
+            gson.toJson(
+                SyncRequest(SyncRequest.TYPE_STROKE_PAGE, deviceId, documentUri = uri, pageIndex = page)
+            )
+        )
+        val resp = readResponse(input) ?: throw IOException("No stroke_page response")
+        if (!resp.ok) throw IOException("Stroke page error: ${resp.error}")
+        val payload = gson.fromJson(resp.payload, StrokeDeltaPayload::class.java)
+        val type = object : TypeToken<List<StrokeWithPoints>>() {}.type
+        return gson.fromJson<List<StrokeWithPoints>>(gson.toJson(payload.strokes), type)
+            ?: emptyList()
+    }
+
+    private fun fetchTextPage(
+        out: DataOutputStream,
+        input: DataInputStream,
+        uri: String,
+        page: Int
+    ): List<TextAnnotationEntity> {
+        SyncWire.writeText(
+            out,
+            gson.toJson(
+                SyncRequest(SyncRequest.TYPE_TEXT_PAGE, deviceId, documentUri = uri, pageIndex = page)
+            )
+        )
+        val resp = readResponse(input) ?: throw IOException("No text_page response")
+        if (!resp.ok) throw IOException("Text page error: ${resp.error}")
+        val payload = gson.fromJson(resp.payload, TextDeltaPayload::class.java)
+        val type = object : TypeToken<List<TextAnnotationEntity>>() {}.type
+        return gson.fromJson<List<TextAnnotationEntity>>(gson.toJson(payload.texts), type)
+            ?: emptyList()
     }
 
     private fun fetchDocumentDetail(
@@ -1099,6 +1315,15 @@ class LocalSyncManager(
     }
 
     companion object {
+        /**
+         * Minimum gap between two event-triggered syncs for the same device.
+         *
+         * Announcements arrive in bursts and each one means the same thing ("dirty
+         * since you last looked"), so there is no point syncing faster than this.
+         * Polling covers anything the throttle drops.
+         */
+        const val EVENT_SYNC_MIN_INTERVAL_MS = 5_000L
+
         /** Stable per-install device id (persisted in the app data dir). */
         fun computeDeviceId(appDataDir: String? = null): String {
             if (appDataDir != null) {

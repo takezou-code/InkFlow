@@ -28,6 +28,13 @@ interface TextAnnotationDao {
     @Query("DELETE FROM text_annotations WHERE id = :id")
     suspend fun deleteById(id: String): Int
 
+    /**
+     * Per-page note counts for incremental sync (`page_counts` verb).
+     * See [StrokeDao.countStrokesByPage] for why this exists.
+     */
+    @Query("SELECT pageIndex AS pageIndex, COUNT(*) AS textCount FROM text_annotations WHERE documentUri = :documentUri GROUP BY pageIndex")
+    suspend fun countTextsByPage(documentUri: String): List<PageTextCount>
+
     @Query("DELETE FROM text_annotations WHERE documentUri = :documentUri AND pageIndex = :pageIndex")
     suspend fun deleteForPage(documentUri: String, pageIndex: Int)
 

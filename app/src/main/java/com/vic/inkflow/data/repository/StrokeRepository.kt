@@ -2,6 +2,7 @@ package com.vic.inkflow.data.repository
 
 import androidx.room.withTransaction
 import com.vic.inkflow.data.AppDatabase
+import com.vic.inkflow.data.PageStrokeCount
 import com.vic.inkflow.data.StrokeDao
 import com.vic.inkflow.data.StrokeEntity
 import com.vic.inkflow.data.StrokeWithPoints
@@ -33,6 +34,13 @@ interface StrokeRepository : PageShiftTarget {
     suspend fun getStrokesForPageSync(documentUri: String, pageIndex: Int): List<StrokeWithPoints>
     suspend fun getAllStrokesForDocument(documentUri: String): List<StrokeWithPoints>
     suspend fun getStrokesForRange(documentUri: String, y0: Float, y1: Float): List<StrokeWithPoints>
+
+    /**
+     * Per-page stroke counts, for the `page_counts` sync verb. A GROUP BY query —
+     * not a full load — because the verb exists precisely to avoid loading the
+     * whole document on large files.
+     */
+    suspend fun countStrokesByPage(documentUri: String): List<PageStrokeCount>
 
     suspend fun deleteStrokesByIds(strokeIds: List<String>): Int
     suspend fun clearPage(documentUri: String, pageIndex: Int): Int
@@ -81,6 +89,9 @@ class RoomStrokeRepository(
 
     override suspend fun getAllStrokesForDocument(documentUri: String): List<StrokeWithPoints> =
         dao.getAllStrokesForDocument(documentUri)
+
+    override suspend fun countStrokesByPage(documentUri: String): List<PageStrokeCount> =
+        dao.countStrokesByPage(documentUri)
 
     override suspend fun getStrokesForRange(documentUri: String, y0: Float, y1: Float): List<StrokeWithPoints> =
         dao.getStrokesForRange(documentUri, y0, y1)
