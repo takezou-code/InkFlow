@@ -6,6 +6,7 @@ import com.vic.inkflow.data.DatabaseManager
 import com.vic.inkflow.data.DocumentEntity
 import com.vic.inkflow.data.StrokeWithPoints
 import com.vic.inkflow.data.TextAnnotationEntity
+import com.vic.inkflow.data.FolderEntity
 import mu.KotlinLogging
 import java.io.DataInputStream
 import java.io.DataOutputStream
@@ -56,6 +57,12 @@ data class SyncResult(
      * the UI drains into the sync summary.
      */
     val proposalConflicts: Int = 0,
+    /**
+     * Folders received this pass. Reported so "my categories did not arrive" is
+     * distinguishable from "my documents did not arrive" — same reasoning as the
+     * separate stroke/text counts.
+     */
+    val foldersSynced: Int = 0,
     val errors: List<String> = emptyList()
 )
 
@@ -385,6 +392,7 @@ class LocalSyncManager(
         textsPulled = a.textsPulled + b.textsPulled,
         proposalsAccepted = a.proposalsAccepted + b.proposalsAccepted,
         proposalConflicts = a.proposalConflicts + b.proposalConflicts,
+        foldersSynced = a.foldersSynced + b.foldersSynced,
         errors = a.errors + b.errors
     )
 
@@ -412,6 +420,7 @@ class LocalSyncManager(
         var orphans = 0; var wiped = false
         var texts = 0
         var proposalsAccepted = 0; var proposalConflicts = 0
+        var folders = 0
         val errors = mutableListOf<String>()
         try {
             Socket(device.ip, device.transferPort).use { socket ->
@@ -433,6 +442,16 @@ class LocalSyncManager(
                 // Persisted so the deletion grace window still works across app restarts.
                 val pass = databaseManager.nextPass()
                 val seen = mutableSetOf<String>()
+
+                // Folders first, documents after: doc rows reference folder ids, so the
+                // categories must exist before anything is filtered by them. A failure
+                // here must never break document sync — folders are display-only, and
+                // losing a whole pass of documents over a category list would be the
+                // tail wagging the dog.
+                fetchFolders(out, input)?.let { remote ->
+                    databaseManager.replaceAllFolders(remote)
+                    folders = remote.size
+                }
 
                 for (entry in manifest) {
                     try {
@@ -549,8 +568,34 @@ class LocalSyncManager(
             textsPulled = texts,
             proposalsAccepted = proposalsAccepted,
             proposalConflicts = proposalConflicts,
+            foldersSynced = folders,
             errors = errors
         )
+    }
+
+    /**
+     * Fetch the tablet's folder list. Null means "skip": either the peer predates
+     * the verb (ok=false, old tablet — folders simply stay as they are) or the
+     * transport hiccuped (logged, retried next pass). In neither case should a
+     * category list be allowed to fail the document sync it rides along with.
+     */
+    private fun fetchFolders(
+        out: DataOutputStream,
+        input: DataInputStream
+    ): List<FolderEntity>? {
+        return try {
+            SyncWire.writeText(
+                out,
+                gson.toJson(SyncRequest(SyncRequest.TYPE_FOLDER_LIST, deviceId))
+            )
+            val resp = readResponse(input) ?: return null
+            if (!resp.ok) return null
+            val type = object : TypeToken<List<FolderEntity>>() {}.type
+            gson.fromJson<List<FolderEntity>>(resp.payload, type) ?: emptyList()
+        } catch (e: Exception) {
+            logger.warn(e) { "Folder sync skipped this pass" }
+            null
+        }
     }
 
     /**
@@ -984,6 +1029,10 @@ class LocalSyncManager(
                     val strokes = databaseManager.getAllStrokesForDocument(uri)
                     val texts = databaseManager.getAllTextAnnotationsForDocument(uri)
                     respondJson(out, req.type, DocumentDetailPayload(doc, strokes, texts))
+                }
+
+                SyncRequest.TYPE_FOLDER_LIST -> {
+                    respondJson(out, req.type, databaseManager.getAllFolders())
                 }
 
                 SyncRequest.TYPE_STROKE_DELTA -> {

@@ -3,6 +3,7 @@ package com.vic.inkflow.sync
 import com.google.gson.Gson
 import com.vic.inkflow.data.DatabaseManager
 import com.vic.inkflow.data.DocumentEntity
+import com.vic.inkflow.data.FolderEntity
 import com.vic.inkflow.data.PointEntity
 import com.vic.inkflow.data.StrokeEntity
 import com.vic.inkflow.data.StrokeWithPoints
@@ -462,6 +463,77 @@ class SyncEndToEndTest {
         }
     }
 
+    // ─── folders ──────────────────────────────────────────────────────────────
+
+    /**
+     * Categories have to travel or the library filter lies: a document with a
+     * folderId no local folder matches vanishes from every filtered view while
+     * still existing, which reads as data loss.
+     */
+    @Test
+    fun `folders arrive and documents resolve against them`() {
+        withFakeTablet { srv, tablet ->
+            desktop { db, dir ->
+                val mgr = LocalSyncManager(db, dir.absolutePath, transferPort = srv.localPort)
+                val device = deviceFor(srv)
+
+                val r = mgr.syncWithTablet(device)
+                assertEquals(0, r.errors.size, "errors: ${r.errors}")
+                assertEquals(2, r.foldersSynced)
+
+                val folders = db.getAllFolders().associateBy { it.id }
+                assertEquals("工作", folders.getValue("f-work").name)
+                assertEquals("f-work", folders.getValue("f-life").parentFolderId)
+
+                // Second pass: folders are stable, documents are stable — nothing moves.
+                val r2 = mgr.syncWithTablet(device)
+                assertEquals(2, r2.foldersSynced, "folders re-sync every pass (they are cheap)")
+                assertEquals(0, r2.documentsUpdated)
+            }
+        }
+    }
+
+    @Test
+    fun `a folder deleted on the tablet un-orphans its documents`() {
+        withFakeTablet { srv, tablet ->
+            desktop { db, dir ->
+                val mgr = LocalSyncManager(db, dir.absolutePath, transferPort = srv.localPort)
+                val device = deviceFor(srv)
+                mgr.syncWithTablet(device)
+
+                // The document claims a folder that is about to disappear.
+                val doc = db.getDocument(tablet.uri)!!
+                db.saveDocument(doc.copy(folderId = "f-life"))
+                assertEquals("f-life", db.getDocument(tablet.uri)!!.folderId)
+
+                tablet.folders.removeAll { it.id == "f-life" }
+                mgr.syncWithTablet(device)
+
+                assertEquals(
+                    null, db.getDocument(tablet.uri)!!.folderId,
+                    "a dangling folderId must reset to uncategorized, not linger"
+                )
+                assertEquals(1, db.getAllFolders().size)
+            }
+        }
+    }
+
+    @Test
+    fun `an old peer without folder_list does not break document sync`() {
+        // The verb is additive: ok=false must skip folder sync and leave the document
+        // flow untouched. Otherwise upgrading either side first would break sync.
+        withFakeTablet(supportFolders = false) { srv, tablet ->
+            desktop { db, dir ->
+                val mgr = LocalSyncManager(db, dir.absolutePath, transferPort = srv.localPort)
+                val r = mgr.syncWithTablet(deviceFor(srv))
+                assertEquals(0, r.errors.size, "errors: ${r.errors}")
+                assertEquals(0, r.foldersSynced)
+                assertEquals(1, r.documentsUpdated, "documents must still sync")
+                assertTrue(db.getAllFolders().isEmpty(), "no folders fabricated from nothing")
+            }
+        }
+    }
+
     // ─── helpers ─────────────────────────────────────────────────────────────
 
     private data class Tablet(
@@ -477,6 +549,8 @@ class SyncEndToEndTest {
         val texts: MutableList<TextAnnotationEntity> = mutableListOf(),
         /** v5: strokes applied via accepted proposals. Mutable for the same reason. */
         val pushedStrokes: MutableList<StrokeWithPoints> = mutableListOf(),
+        /** Folders served by folder_list. Mutable so a test can delete one. */
+        val folders: MutableList<FolderEntity> = mutableListOf(),
         /** proposalId -> status, proving idempotent resends. */
         val seenProposals: MutableMap<String, ProposalStatusPayload> = mutableMapOf(),
         /** Recomputes [docVersion] from the current counts. Called after mutating
@@ -498,6 +572,8 @@ class SyncEndToEndTest {
         manifestOverride: List<DocumentManifestEntry>? = null,
         /** Manifest derived from the fixture, so the listed doc is one the server can serve. */
         manifestFor: ((Tablet) -> List<DocumentManifestEntry>)? = null,
+        /** False simulates a pre-folder_list peer: the verb answers "unknown". */
+        supportFolders: Boolean = true,
         block: (ServerSocket, Tablet) -> Unit
     ) {
         val tabletDir = java.nio.file.Files.createTempDirectory("tablet").toFile()
@@ -532,6 +608,10 @@ class SyncEndToEndTest {
         val tablet = Tablet(
             tabletDir, tabletUri, tabletPdf, sha, stroke, points, currentVersion(),
             texts = notes,
+            folders = mutableListOf(
+                FolderEntity(id = "f-work", name = "工作"),
+                FolderEntity(id = "f-life", name = "生活", parentFolderId = "f-work")
+            ),
             rehash = ::currentVersion
         )
         tabletLateInit[0] = tablet
@@ -546,10 +626,10 @@ class SyncEndToEndTest {
         val acceptLoop = Thread {
             while (!srv.isClosed) {
                 try {
-                    srv.accept().use { s ->
-                        serveFakeTablet(s, instanceId, tablet, manifest)
-                    }
-                } catch (_: Exception) { break }
+                        srv.accept().use { s ->
+                            serveFakeTablet(s, instanceId, tablet, manifest, supportFolders)
+                        }
+                    } catch (_: Exception) { break }
             }
         }
         acceptLoop.isDaemon = true
@@ -564,12 +644,13 @@ class SyncEndToEndTest {
         try { block(db, dir) } finally { db.disconnect() }
     }
 
-    /** Minimal protocol-v3 tablet server serving one document + its PDF body. */
+    /** Minimal protocol-v5 tablet server serving one document + its PDF body. */
     private fun serveFakeTablet(
         socket: Socket,
         instanceId: String,
         tablet: Tablet,
-        manifest: List<DocumentManifestEntry>
+        manifest: List<DocumentManifestEntry>,
+        supportFolders: Boolean = true
     ) {
         socket.soTimeout = 30_000
         val input = DataInputStream(socket.getInputStream())
@@ -715,6 +796,14 @@ class SyncEndToEndTest {
                             message = "no record of this proposal"
                         )
                     )
+                }
+
+                SyncRequest.TYPE_FOLDER_LIST -> {
+                    if (!supportFolders) {
+                        SyncWire.writeText(out, gson.toJson(SyncResponse(req.type, ok = false, error = "unknown")))
+                    } else {
+                        respond(req.type, tablet.folders.toList())
+                    }
                 }
 
                 else -> SyncWire.writeText(out, gson.toJson(SyncResponse(req.type, ok = false, error = "unknown")))

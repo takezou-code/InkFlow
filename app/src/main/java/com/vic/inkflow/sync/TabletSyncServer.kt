@@ -20,6 +20,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
@@ -326,6 +327,12 @@ class TabletSyncServer(
                         message = "no record of this proposal (restarted, or never received)"
                     )
                 )
+            }
+
+            SyncRequest.TYPE_FOLDER_LIST -> {
+                // 整批快照：資料夾是顯示屬性，沒有增量語義，客戶端整批替換。
+                // Flow 取一次即走，不訂閱——同步是拉取，不是訂閱。
+                respondJson(out, type, repos.folders.getAllFolders().first())
             }
 
             else -> respondError(out, type, "unknown request type $type")
