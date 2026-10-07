@@ -137,6 +137,12 @@ data class SyncRequest(
         const val TYPE_PROPOSAL_SUBMIT = "proposal_submit"
         /** v5: "what happened to my proposal". */
         const val TYPE_PROPOSAL_STATUS = "proposal_status"
+        /**
+         * Folder list. Additive verb, no version bump: an old peer answers
+         * "unknown request type" and the client skips gracefully. Folders are
+         * display-only categorization; missing them loses no content.
+         */
+        const val TYPE_FOLDER_LIST = "folder_list"
     }
 }
 

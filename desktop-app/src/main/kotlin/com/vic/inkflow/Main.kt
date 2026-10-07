@@ -212,7 +212,7 @@ fun InkFlowApp() {
                     val pending = proposalQueue.pendingOpCount()
                     val notes = proposalQueue.drainNotices()
                     lastSyncSummary = "文件 ${r.documentsUpdated} · 筆跡 ${r.strokesPulled} · " +
-                        "文字 ${r.textsPulled} · PDF ${r.filesTransferred} · 衝突保留 ${r.conflictsSkipped}" +
+                        "文字 ${r.textsPulled} · 分類 ${r.foldersSynced} · PDF ${r.filesTransferred} · 衝突保留 ${r.conflictsSkipped}" +
                         (if (r.proposalsAccepted > 0) " · 已送出 ${r.proposalsAccepted}" else "") +
                         (if (r.proposalConflicts > 0) " · 提案衝突 ${r.proposalConflicts}" else "") +
                         (if (pending > 0) " · 待送出 $pending" else "") +
@@ -308,7 +308,7 @@ fun InkFlowApp() {
                                 val pending = proposalQueue.pendingOpCount()
                                 val notes = proposalQueue.drainNotices()
                                 lastSyncSummary = "手動同步：文件 ${result.documentsUpdated} · 筆跡 ${result.strokesPulled} · " +
-                                    "文字 ${result.textsPulled} · PDF ${result.filesTransferred} · 衝突保留 ${result.conflictsSkipped}" +
+                                    "文字 ${result.textsPulled} · 分類 ${result.foldersSynced} · PDF ${result.filesTransferred} · 衝突保留 ${result.conflictsSkipped}" +
                                     (if (result.proposalsAccepted > 0) " · 已送出 ${result.proposalsAccepted}" else "") +
                                     (if (result.proposalConflicts > 0) " · 提案衝突 ${result.proposalConflicts}" else "") +
                                     (if (pending > 0) " · 待送出 $pending" else "") +

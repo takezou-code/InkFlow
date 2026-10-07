@@ -728,6 +728,52 @@ class DatabaseManager(private val dbPath: String) {
         }
     }
 
+    /**
+     * Replace the whole folder list with the tablet's snapshot.
+     *
+     * Wholesale rather than merged: folders are display-only categorization with no
+     * local writes on the desktop (nothing here creates folders), so there is no
+     * local state a merge would need to preserve. A merge would instead keep folders
+     * the user deleted on the tablet alive forever.
+     *
+     * Documents pointing at vanished folders are reset to uncategorized. Leaving the
+     * dangling id would make those documents disappear from every filtered view while
+     * still existing — visible in "all", invisible everywhere else, which reads as
+     * data loss.
+     */
+    fun replaceAllFolders(folders: List<FolderEntity>) = synchronized(dbLock) {
+        connection?.autoCommit = false
+        try {
+            connection?.createStatement()?.use { stmt ->
+                stmt.executeUpdate("DELETE FROM folders")
+            }
+            folders.forEach { saveFolder(it) }
+            val valid = folders.map { it.id }.toSet()
+            if (valid.isEmpty()) {
+                connection?.createStatement()?.use { stmt ->
+                    stmt.executeUpdate("UPDATE documents SET folderId = NULL WHERE folderId IS NOT NULL")
+                }
+            } else {
+                // Placeholders keep the statement valid for any size; an empty IN ()
+                // is a syntax error, hence the branch above.
+                val marks = valid.joinToString(",") { "?" }
+                connection?.prepareStatement(
+                    "UPDATE documents SET folderId = NULL WHERE folderId IS NOT NULL AND folderId NOT IN ($marks)"
+                )?.use { stmt ->
+                    valid.forEachIndexed { i, id -> stmt.setString(i + 1, id) }
+                    stmt.executeUpdate()
+                }
+            }
+            connection?.commit()
+        } catch (e: Exception) {
+            connection?.rollback()
+            throw e
+        } finally {
+            connection?.autoCommit = true
+        }
+        Unit
+    }
+
     // ─── Stroke operations ───────────────────────────────────────────────────
 
     fun saveStroke(stroke: StrokeEntity, points: List<PointEntity>) = synchronized(dbLock) {

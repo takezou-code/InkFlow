@@ -109,6 +109,11 @@ data class SyncRequest(
         const val TYPE_PROPOSAL_SUBMIT = "proposal_submit"
         /** v5：「我的提案後來怎麼樣了」。 */
         const val TYPE_PROPOSAL_STATUS = "proposal_status"
+        /**
+         * 資料夾清單。加法 verb，不升版：舊端回「未知 verb」，客戶端跳過即可，
+         * 不影響文件同步。文件分類本來就只是顯示屬性，缺它不會丟資料。
+         */
+        const val TYPE_FOLDER_LIST = "folder_list"
     }
 }
 

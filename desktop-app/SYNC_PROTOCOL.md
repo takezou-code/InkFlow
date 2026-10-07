@@ -134,6 +134,7 @@ Desktop                                   Tablet (server)
 | `file_data` | `documentUri`, `offset`, `limit` | **二進制幀** |
 | `proposal_submit` | `documentUri`, `proposal` | JSON：`ProposalStatusPayload`（v5 新增） |
 | `proposal_status` | `proposalId` | JSON：`ProposalStatusPayload`（v5 新增） |
+| `folder_list` | – | JSON：`[FolderEntity]`（加法 verb，不升版；舊端回 unknown 即跳過） |
 
 ### 4.2 應答信封 `SyncResponse`
 
@@ -356,6 +357,8 @@ pass 編號持久化在 `sync_meta.passCounter`——**不能放在記憶體**�
       - `proposal_submit` / `proposal_status`（v5）：`ProposalArbiter.decide` 比對
         `baseDocVersion`，接受則 `repos.transaction` 同事務寫入並刷新筆數快取，否則
         整筆駁回；最近 64 筆結果留記憶體供冪等重送
+      - `folder_list`（加法 verb）：全部資料夾快照，桌面整批替換並把懸空 `folderId`
+        歸零；舊端回 unknown 即跳過，不影響文件同步
 - [x] `DiscoveryResponder.kt`：UDP 53530，回應不同 role 的 discover
 - [x] `TabletSyncService`：前台 Service（`foregroundServiceType="dataSync"`）承載 server
 - [x] `AndroidManifest.xml`：`ACCESS_NETWORK_STATE`、`CHANGE_WIFI_MULTICAST_STATE`、
