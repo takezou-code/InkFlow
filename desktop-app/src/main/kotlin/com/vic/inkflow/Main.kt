@@ -19,6 +19,7 @@ import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import com.vic.inkflow.data.DatabaseManager
 import com.vic.inkflow.sync.LocalSyncManager
+import com.vic.inkflow.sync.ProposalQueue
 import com.vic.inkflow.ui.AuroraBackground
 import com.vic.inkflow.ui.BackdropTheme
 import com.vic.inkflow.ui.AiAssistantPanel
@@ -162,8 +163,13 @@ fun App() {
 @Composable
 fun InkFlowApp() {
     val databaseManager = remember { DatabaseManager(AppPaths.dbPath).also { it.connect() } }
+    // v5: one outbox shared by the editor (records) and the sync loop (sends).
+    // Shared rather than owned by either side so the queue survives both: the editor
+    // writes without knowing about sockets, and the sync loop sends without knowing
+    // about gestures.
+    val proposalQueue = remember { ProposalQueue(databaseManager) }
     val syncManager = remember {
-        LocalSyncManager(databaseManager, AppPaths.dir, psk = DesktopSettings.pairingCode)
+        LocalSyncManager(databaseManager, AppPaths.dir, psk = DesktopSettings.pairingCode, proposalQueue = proposalQueue)
     }
 
     LaunchedEffect(Unit) {
@@ -200,9 +206,18 @@ fun InkFlowApp() {
             if (!isSyncing && syncManager.isSyncing) isSyncing = true
             if (isSyncing && !syncManager.isSyncing) {
                 syncManager.lastSyncResult?.let { r ->
+                    // Pending proposals and conflict notes come from the outbox, not
+                    // the result: they describe what did NOT travel, which is exactly
+                    // what the user needs to see when the counts look fine.
+                    val pending = proposalQueue.pendingOpCount()
+                    val notes = proposalQueue.drainNotices()
                     lastSyncSummary = "文件 ${r.documentsUpdated} · 筆跡 ${r.strokesPulled} · " +
-                        "PDF ${r.filesTransferred} · 衝突保留 ${r.conflictsSkipped}" +
-                        (if (r.errors.isNotEmpty()) " · 錯誤 ${r.errors.size}" else "")
+                        "文字 ${r.textsPulled} · PDF ${r.filesTransferred} · 衝突保留 ${r.conflictsSkipped}" +
+                        (if (r.proposalsAccepted > 0) " · 已送出 ${r.proposalsAccepted}" else "") +
+                        (if (r.proposalConflicts > 0) " · 提案衝突 ${r.proposalConflicts}" else "") +
+                        (if (pending > 0) " · 待送出 $pending" else "") +
+                        (if (r.errors.isNotEmpty()) " · 錯誤 ${r.errors.size}" else "") +
+                        notes.joinToString("") { " · $it" }
                 }
                 isSyncing = false
                 libraryRefresh++
@@ -290,9 +305,15 @@ fun InkFlowApp() {
                         if (!isSyncing) {
                             isSyncing = true
                             syncManager.requestSyncNow { result ->
+                                val pending = proposalQueue.pendingOpCount()
+                                val notes = proposalQueue.drainNotices()
                                 lastSyncSummary = "手動同步：文件 ${result.documentsUpdated} · 筆跡 ${result.strokesPulled} · " +
-                                    "PDF ${result.filesTransferred} · 衝突保留 ${result.conflictsSkipped}" +
-                                    (if (result.errors.isNotEmpty()) " · 錯誤 ${result.errors.size}" else "")
+                                    "文字 ${result.textsPulled} · PDF ${result.filesTransferred} · 衝突保留 ${result.conflictsSkipped}" +
+                                    (if (result.proposalsAccepted > 0) " · 已送出 ${result.proposalsAccepted}" else "") +
+                                    (if (result.proposalConflicts > 0) " · 提案衝突 ${result.proposalConflicts}" else "") +
+                                    (if (pending > 0) " · 待送出 $pending" else "") +
+                                    (if (result.errors.isNotEmpty()) " · 錯誤 ${result.errors.size}" else "") +
+                                    notes.joinToString("") { " · $it" }
                                 isSyncing = false
                                 libraryRefresh++
                             }
@@ -417,11 +438,13 @@ onFolderSelected = { selectedFolderId = it },
                             pageIndex = currentPageIndex,
                             databaseManager = databaseManager,
                             onPageChange = { currentPageIndex = it },
-                            // Ink is opt-in (see the parameter's doc): the sync
-                            // protocol is pull-only, so strokes drawn here live in
-                            // the desktop database only.
-                            editable = true,
-                            onInkChanged = { libraryRefresh++ },
+                              // Ink is opt-in (see the parameter's doc). Local edits are
+                              // filed into the v5 proposal queue and pushed for tablet
+                              // arbitration on the next sync; without a tablet they stay
+                              // local until one appears.
+                              editable = true,
+                              onInkChanged = { libraryRefresh++ },
+                              proposalQueue = proposalQueue,
                             modifier = Modifier.weight(1f).fillMaxHeight()
                         )
                         AiAssistantPanel(

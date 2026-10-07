@@ -223,7 +223,7 @@ class TextAnnotationDbTest {
         after.close()
 
         assertTrue(hasNotes, "migration must create text_annotations")
-        assertEquals(3, version, "user_version must advance to SCHEMA_VERSION")
+        assertEquals(4, version, "user_version must advance to SCHEMA_VERSION")
         assertTrue(stillHasStrokes, "migration must not disturb existing tables")
     }
 }

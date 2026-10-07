@@ -22,17 +22,15 @@ object SyncPorts {
 
 object SyncConstants {
     /**
-     * v4。
+     * v5。
      *
-     * 升版是**強制**的，不是禮貌性更新。v4 讓 `document_detail` 多帶 `texts` 欄位，
-     * 並讓 `docVersion` 多算一個文字筆數。舊平板會把多出來的欄位當不存在、把雜湊算在
-     * 另一組欄位上，於是**每一份文件**都會被判成「有更新」而整份重拉——症狀看起來像
-     * 網路故障，實際上是版本不一致，極難診斷。
-     *
-     * handshake 本來就會拒絕版本不符，所以升版是為了把「靜默錯亂」換成「一句明確的
-     * 錯誤」。兩端的這個常數必須一致。
+     * 升版是**強制**的。v5 新增 `proposal_submit`/`proposal_status` 兩個 verb；
+     * 舊平板會回「未知 verb」，新桌面若不檢查版本就會一直排提案進永遠沒人讀的
+     * 佇列——佇列無限增長，而症狀只是「桌面改的東西沒過去」。handshake 本來就會拒
+     * 絕版本不符，所以升版是為了把「靜默漏寫」換成「一句明確的錯誤」。兩端的這個
+     * 常數必須一致。
      */
-    const val PROTOCOL_VERSION = 4
+    const val PROTOCOL_VERSION = 5
 
     /** 探索封包用的應用程式標記；不是 InkFlow 的封包直接不回應（§3）。 */
     const val APP_TAG = "InkFlow"
@@ -93,7 +91,11 @@ data class SyncRequest(
     /** 僅 file_data。 */
     val limit: Int? = null,
     /** 僅 handshake：原始 PSK，不是雜湊。 */
-    val psk: String? = null
+    val psk: String? = null,
+    /** v5：僅 proposal_submit，提案 body。其他 verb 為 null。 */
+    val proposal: ProposalSubmitPayload? = null,
+    /** v5：僅 proposal_status，查詢哪個提案。 */
+    val proposalId: String? = null
 ) {
     companion object {
         const val TYPE_HANDSHAKE = "handshake"
@@ -103,6 +105,10 @@ data class SyncRequest(
         const val TYPE_STROKE_PAGE = "stroke_page"
         const val TYPE_FILE_META = "file_meta"
         const val TYPE_FILE_DATA = "file_data"
+        /** v5：desktop → tablet，「我改了這些」。 */
+        const val TYPE_PROPOSAL_SUBMIT = "proposal_submit"
+        /** v5：「我的提案後來怎麼樣了」。 */
+        const val TYPE_PROPOSAL_STATUS = "proposal_status"
     }
 }
 
@@ -176,6 +182,69 @@ data class FileMetaPayload(
     val size: Long = 0,
     val sha256: String? = null
 )
+
+/**
+ * v5：提案裡的一個 id 級變更。
+ *
+ * 按物件 id 操作，絕不用整檔快照：整檔快照當提案會把「桌面舊快照蓋掉平板新筆跡」
+ * 重新引入，而那正是整份取代拉取要避免的失敗。upsert 帶完整物件、delete 只帶 id，
+ * 兩者按 id 冪等——重送同一提案會落在同一狀態，不需持久化去重表。
+ */
+data class ProposalOp(
+    /** "upsert_stroke" | "delete_stroke" | "upsert_text" | "delete_text"。 */
+    val op: String,
+    /** op == "upsert_stroke" 時：StrokeWithPoints。 */
+    val stroke: Any? = null,
+    /** op == "upsert_text" 時：TextAnnotationEntity。 */
+    val text: Any? = null,
+    /** op 以 "delete_" 開頭時：目標 id。 */
+    val id: String? = null
+) {
+    companion object {
+        const val UPSERT_STROKE = "upsert_stroke"
+        const val DELETE_STROKE = "delete_stroke"
+        const val UPSERT_TEXT = "upsert_text"
+        const val DELETE_TEXT = "delete_text"
+    }
+}
+
+/**
+ * v5 `proposal_submit` 的 body。
+ *
+ * [baseDocVersion] 是樂觀鎖 token：桌面做這些修改時看到的版本。平板若已經往前走，
+ * 提案算過期，直接回衝突而不是靜默覆寫新內容。「合併」與「按意外讓最後寫入者贏」
+ * 的全部差別就在這一次比對。
+ */
+data class ProposalSubmitPayload(
+    /** UUID 冪等鍵。重送同一提案絕不應用兩次。 */
+    val proposalId: String,
+    val documentUri: String,
+    val baseDocVersion: String,
+    val baseInstanceId: String?,
+    val actorDeviceId: String,
+    val ops: List<ProposalOp>
+)
+
+/**
+ * v5 對 `proposal_submit` 與 `proposal_status` 的應答。
+ */
+data class ProposalStatusPayload(
+    val proposalId: String,
+    /** "accepted" | "conflict_stale" | "rejected" | "unknown"。 */
+    val status: String,
+    /** 平板當前版本——桌面要 rebase 到的版本。 */
+    val winnerDocVersion: String? = null,
+    /** 提案動過但已對不上的物件 id。接受時為空。 */
+    val conflictIds: List<String> = emptyList(),
+    val message: String? = null
+) {
+    companion object {
+        const val ACCEPTED = "accepted"
+        const val CONFLICT_STALE = "conflict_stale"
+        const val REJECTED = "rejected"
+        const val UNKNOWN = "unknown"
+    }
+}
 
 /**
  * `handshake` 的應答 payload（§8）。

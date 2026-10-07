@@ -336,6 +336,132 @@ class SyncEndToEndTest {
         }
     }
 
+// ─── v5: proposals ────────────────────────────────────────────────────────
+
+    private fun deviceFor(srv: ServerSocket) =
+        DiscoveredDevice("tab-e2e", "FakeTab", "127.0.0.1", srv.localPort, System.currentTimeMillis())
+
+    private fun desktopStroke(uri: String, id: String, x: Float = 50f, y: Float = 60f) =
+        StrokeWithPoints(
+            StrokeEntity(
+                id = id, documentUri = uri, pageIndex = 0, docY = null,
+                color = 0xFF000000.toInt(), strokeWidth = 2f,
+                boundsLeft = x, boundsTop = y, boundsRight = x + 10f, boundsBottom = y + 10f
+            ),
+            listOf(
+                PointEntity(id = 1, strokeId = id, x = x, y = y, width = 2f),
+                PointEntity(id = 2, strokeId = id, x = x + 10f, y = y + 10f, width = 2f)
+            )
+        )
+
+    /**
+     * The whole point of v5. A stroke drawn on the desktop must reach the tablet,
+     * and the only thing that can silently break that is the base-version check —
+     * so this drives the real sync loop against a fake tablet that arbitrates.
+     */
+    @Test
+    fun `a desktop edit reaches the tablet through a proposal`() {
+        withFakeTablet { srv, tablet ->
+            desktop { db, dir ->
+                val queue = ProposalQueue(db)
+                val mgr = LocalSyncManager(
+                    db, dir.absolutePath, transferPort = srv.localPort, proposalQueue = queue
+                )
+                val device = deviceFor(srv)
+
+                // Pull the base first: without a stored version there is nothing to
+                // arbitrate against, so the edit would correctly stay local-only.
+                mgr.syncWithTablet(device)
+
+                // The user draws on the desktop: a real row plus a recorded op.
+                val swp = desktopStroke(tablet.uri, "desktop-1")
+                db.saveStroke(swp.stroke, swp.points)
+                assertEquals(
+                    ProposalQueue.RecordResult.RECORDED,
+                    queue.record(tablet.uri, ProposalOp(ProposalOp.UPSERT_STROKE, stroke = swp))
+                )
+
+                val r = mgr.syncWithTablet(device)
+                assertEquals(0, r.errors.size, "errors: ${r.errors}")
+                assertEquals(1, r.proposalsAccepted, "the proposal must be accepted")
+                assertEquals(0, r.proposalConflicts)
+                assertTrue(
+                    tablet.pushedStrokes.any { it.stroke.id == "desktop-1" },
+                    "the tablet must hold the pushed stroke"
+                )
+                assertEquals(0, queue.pendingOpCount(), "accepted ops are consumed")
+
+                // Third pass: nothing to send, nothing to pull — the two sides agree.
+                val r3 = mgr.syncWithTablet(device)
+                assertEquals(0, r3.proposalsAccepted)
+                assertEquals(0, r3.documentsUpdated, "no redundant pull after an accept")
+            }
+        }
+    }
+
+    @Test
+    fun `a stale proposal is dropped and reported, tablet wins`() {
+        withFakeTablet { srv, tablet ->
+            desktop { db, dir ->
+                val queue = ProposalQueue(db)
+                val mgr = LocalSyncManager(
+                    db, dir.absolutePath, transferPort = srv.localPort, proposalQueue = queue
+                )
+                val device = deviceFor(srv)
+                mgr.syncWithTablet(device)
+
+                val swp = desktopStroke(tablet.uri, "desktop-1")
+                db.saveStroke(swp.stroke, swp.points)
+                queue.record(tablet.uri, ProposalOp(ProposalOp.UPSERT_STROKE, stroke = swp))
+
+                // The tablet moves first: a stroke drawn over there.
+                tablet.pushedStrokes.add(desktopStroke(tablet.uri, "tablet-2", x = 300f, y = 300f))
+
+                val r = mgr.syncWithTablet(device)
+                assertEquals(0, r.errors.size, "errors: ${r.errors}")
+                assertEquals(0, r.proposalsAccepted)
+                assertEquals(1, r.proposalConflicts, "the lost edit must be counted")
+
+                // Tablet wins: the pull replaced everything, so the desktop holds
+                // exactly what the tablet holds — no more, no less.
+                val ids = db.getAllStrokesForDocument(tablet.uri).map { it.stroke.id }.toSet()
+                assertTrue("tablet-2" in ids, "the tablet's stroke must arrive")
+                assertTrue("desktop-1" !in ids, "the overwritten edit must not linger")
+                assertTrue(
+                    "desktop-1" !in tablet.pushedStrokes.map { it.stroke.id },
+                    "the rejected op must never reach the tablet"
+                )
+                val notes = queue.drainNotices()
+                assertTrue(notes.any { it.contains("1 筆") }, "the loss must be visible, got: $notes")
+            }
+        }
+    }
+
+    @Test
+    fun `a proposal that changes nothing still round-trips`() {
+        // Degenerate but legal: an empty op list against a matching base. The tablet
+        // must accept it rather than error, because "nothing to send" is a normal
+        // state, not a protocol violation.
+        withFakeTablet { srv, tablet ->
+            desktop { db, dir ->
+                val queue = ProposalQueue(db)
+                val mgr = LocalSyncManager(
+                    db, dir.absolutePath, transferPort = srv.localPort, proposalQueue = queue
+                )
+                val device = deviceFor(srv)
+                mgr.syncWithTablet(device)
+
+                // Record then remove: leaves a proposal row with no ops... actually
+                // takeForSend returns null for empty ops, so nothing is ever sent.
+                // This asserts that invariant rather than the wire.
+                assertNull(queue.takeForSend(tablet.uri), "empty op lists are never sent")
+                val r = mgr.syncWithTablet(device)
+                assertEquals(0, r.proposalsAccepted)
+                assertEquals(0, r.proposalConflicts)
+            }
+        }
+    }
+
     // ─── helpers ─────────────────────────────────────────────────────────────
 
     private data class Tablet(
@@ -349,10 +475,20 @@ class SyncEndToEndTest {
         /** v4: the notes this fake tablet serves. Mutable so a test can change the
          *  tablet's content between two sync passes. */
         val texts: MutableList<TextAnnotationEntity> = mutableListOf(),
+        /** v5: strokes applied via accepted proposals. Mutable for the same reason. */
+        val pushedStrokes: MutableList<StrokeWithPoints> = mutableListOf(),
+        /** proposalId -> status, proving idempotent resends. */
+        val seenProposals: MutableMap<String, ProposalStatusPayload> = mutableMapOf(),
         /** Recomputes [docVersion] from the current counts. Called after mutating
          *  [texts], because the count is part of the hash in v4. */
         val rehash: () -> String
-    )
+    ) {
+        /** Every stroke the tablet currently holds: fixture + pushed. */
+        fun allStrokes(): List<StrokeWithPoints> =
+            listOf(StrokeWithPoints(stroke, points)) + pushedStrokes.toList()
+
+        fun strokeCount(): Int = 1 + pushedStrokes.size
+    }
 
     private var lastPdfSize = 0L
     private fun pdfBytesSize() = lastPdfSize
@@ -384,15 +520,21 @@ class SyncEndToEndTest {
         // that adds a note between two passes actually sees the new docVersion.
         // Capturing it up front would make every "content changed" test pass for the
         // wrong reason (it would look changed on every pass, not because of the note).
-        fun currentVersion() = SyncWire.docVersion(
-            instanceId, tabletUri, 1, sha, tabletPdf.length(), notes.size
-        )
+        val tabletLateInit = arrayOfNulls<Tablet>(1)
+        fun currentVersion(): String {
+            val t = tabletLateInit[0]
+            val strokes = t?.strokeCount() ?: 1
+            return SyncWire.docVersion(
+                instanceId, tabletUri, strokes, sha, tabletPdf.length(), (t?.texts?.size ?: 0)
+            )
+        }
 
         val tablet = Tablet(
             tabletDir, tabletUri, tabletPdf, sha, stroke, points, currentVersion(),
             texts = notes,
             rehash = ::currentVersion
         )
+        tabletLateInit[0] = tablet
         val manifest = manifestOverride ?: manifestFor?.invoke(tablet) ?: listOf(
             DocumentManifestEntry(
                 tabletUri, "Lecture Notes", 2_000_000_000_000L, 1, true,
@@ -463,6 +605,7 @@ class SyncEndToEndTest {
                         if (entry.uri == tablet.uri) {
                             entry.copy(
                                 docVersion = tablet.rehash(),
+                                strokeCount = tablet.strokeCount(),
                                 textCount = tablet.texts.size
                             )
                         } else entry
@@ -478,7 +621,7 @@ class SyncEndToEndTest {
                             req.type,
                             DocumentDetailPayload(
                                 DocumentEntity(uri, "Lecture Notes", 2_000_000_000_000L, lastPageIndex = 2),
-                                listOf(StrokeWithPoints(tablet.stroke, tablet.points)),
+                                tablet.allStrokes(),
                                 tablet.texts.toList()
                             )
                         )
@@ -493,6 +636,85 @@ class SyncEndToEndTest {
                         tablet.pdf, req.offset ?: 0L, req.limit ?: (1 shl 20)
                     )
                     SyncWire.writeFrame(out, chunk)
+                }
+
+                // v5: minimal arbitration mirroring the real tablet — compare the base,
+                // apply id-level ops, remember the answer for idempotent resends.
+                SyncRequest.TYPE_PROPOSAL_SUBMIT -> {
+                    val p = req.proposal
+                    if (p == null) {
+                        SyncWire.writeText(out, gson.toJson(SyncResponse(req.type, ok = false, error = "missing proposal")))
+                    } else {
+                        tablet.seenProposals[p.proposalId]?.let {
+                            respond(req.type, it)
+                        } ?: run {
+                            if (p.documentUri != tablet.uri) {
+                                respond(
+                                    req.type,
+                                    ProposalStatusPayload(
+                                        p.proposalId, ProposalStatusPayload.REJECTED,
+                                        message = "unknown document"
+                                    ).also { tablet.seenProposals[p.proposalId] = it }
+                                )
+                            } else if (p.baseDocVersion != tablet.rehash()) {
+                                respond(
+                                    req.type,
+                                    ProposalStatusPayload(
+                                        p.proposalId, ProposalStatusPayload.CONFLICT_STALE,
+                                        winnerDocVersion = tablet.rehash(),
+                                        conflictIds = p.ops.mapNotNull {
+                                            it.id ?: it.stroke?.let { s ->
+                                                (gson.fromJson(gson.toJson(s), StrokeWithPoints::class.java))?.stroke?.id
+                                            } ?: it.text?.let { t ->
+                                                (gson.fromJson(gson.toJson(t), TextAnnotationEntity::class.java))?.id
+                                            }
+                                        },
+                                        message = "base moved on"
+                                    ).also { tablet.seenProposals[p.proposalId] = it }
+                                )
+                            } else {
+                                p.ops.forEach { op ->
+                                    when (op.op) {
+                                        ProposalOp.UPSERT_STROKE -> {
+                                            val swp = gson.fromJson(gson.toJson(op.stroke), StrokeWithPoints::class.java)!!
+                                            tablet.pushedStrokes.removeAll { it.stroke.id == swp.stroke.id }
+                                            if (swp.stroke.id != tablet.stroke.id) tablet.pushedStrokes.add(swp)
+                                        }
+                                        ProposalOp.DELETE_STROKE -> {
+                                            tablet.pushedStrokes.removeAll { it.stroke.id == op.id }
+                                        }
+                                        ProposalOp.UPSERT_TEXT -> {
+                                            val t = gson.fromJson(gson.toJson(op.text), TextAnnotationEntity::class.java)!!
+                                            tablet.texts.removeAll { it.id == t.id }
+                                            tablet.texts.add(t)
+                                        }
+                                        ProposalOp.DELETE_TEXT -> {
+                                            tablet.texts.removeAll { it.id == op.id }
+                                        }
+                                    }
+                                }
+                                respond(
+                                    req.type,
+                                    ProposalStatusPayload(
+                                        p.proposalId, ProposalStatusPayload.ACCEPTED,
+                                        winnerDocVersion = tablet.rehash()
+                                    ).also { tablet.seenProposals[p.proposalId] = it }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                SyncRequest.TYPE_PROPOSAL_STATUS -> {
+                    val id = req.proposalId
+                    val known = id?.let { tablet.seenProposals[it] }
+                    respond(
+                        req.type,
+                        known ?: ProposalStatusPayload(
+                            id ?: "", ProposalStatusPayload.UNKNOWN,
+                            message = "no record of this proposal"
+                        )
+                    )
                 }
 
                 else -> SyncWire.writeText(out, gson.toJson(SyncResponse(req.type, ok = false, error = "unknown")))

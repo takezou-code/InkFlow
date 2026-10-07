@@ -187,6 +187,37 @@ class DatabaseManager(private val dbPath: String) {
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_text_documentUri ON text_annotations(documentUri, pageIndex)")
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_text_docY ON text_annotations(documentUri, docY)")
 
+            // sync_proposals + sync_oplog (v5): the desktop's outbox for bidirectional sync.
+            //
+            // The mirror tables (strokes/texts) mix pulled content and local edits
+            // indistinguishably, so at sync time there is no way to reconstruct "what
+            // did I change". The oplog records each local edit as an id-level op at
+            // write time; at sync time the pending ops for a document become one
+            // proposal carrying the base version they were made against.
+            //
+            // One proposal row per document: ops accumulate until they are sent. The
+            // proposalId survives retries so a resend is idempotent on the tablet.
+            stmt.execute("""
+                CREATE TABLE IF NOT EXISTS sync_proposals (
+                    documentUri TEXT PRIMARY KEY,
+                    proposalId TEXT NOT NULL,
+                    baseDocVersion TEXT NOT NULL,
+                    baseInstanceId TEXT,
+                    overflow INTEGER NOT NULL DEFAULT 0,
+                    updatedAt INTEGER NOT NULL DEFAULT 0
+                )
+            """)
+            stmt.execute("""
+                CREATE TABLE IF NOT EXISTS sync_oplog (
+                    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                    documentUri TEXT NOT NULL,
+                    opJson TEXT NOT NULL,
+                    createdAt INTEGER NOT NULL DEFAULT 0
+                )
+            """)
+
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_oplog_documentUri ON sync_oplog(documentUri, seq)")
+
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_strokes_documentUri ON strokes(documentUri, pageIndex)")
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_strokes_docY ON strokes(documentUri, docY)")
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_points_strokeId ON points(strokeId)")
@@ -203,6 +234,7 @@ class DatabaseManager(private val dbPath: String) {
      * sync bookkeeping.
      * v2 = adds `strokes.docY` and the `sync_meta` / `sync_docs` tables.
      * v3 = adds `text_annotations`.
+     * v4 = adds `sync_proposals` / `sync_oplog` (the v5 proposal outbox).
      *
      * Additive only — the desktop is a read-only mirror, so there is nothing to
      * rewrite, and a column that the tablet sends as NULL stays NULL rather than
@@ -236,6 +268,16 @@ class DatabaseManager(private val dbPath: String) {
             }
         }
 
+        if (version < 4) {
+            // sync_proposals / sync_oplog are created by initializeDatabase()'s
+            // CREATE TABLE IF NOT EXISTS statements, same pattern as v3.
+            if (!tableExists(stmt, "sync_proposals") || !tableExists(stmt, "sync_oplog")) {
+                logger.warn { "Schema v3 -> v4: proposal tables missing after init; check create statements" }
+            } else {
+                logger.info { "Schema v3 -> v4: proposal tables present" }
+            }
+        }
+
         // sync_meta / sync_docs are created by initializeDatabase()'s CREATE TABLE IF NOT
         // EXISTS statements, so nothing to do here for them.
 
@@ -263,7 +305,7 @@ class DatabaseManager(private val dbPath: String) {
     }
 
     private companion object {
-        const val SCHEMA_VERSION = 3
+        const val SCHEMA_VERSION = 4
     }
 
     // ─── Sync bookkeeping (v3) ──────────────────────────────────────────────
@@ -357,6 +399,11 @@ class DatabaseManager(private val dbPath: String) {
             stmt.executeUpdate("DELETE FROM text_annotations")
             stmt.executeUpdate("DELETE FROM documents")
             stmt.executeUpdate("DELETE FROM sync_docs")
+            // Pending proposals belong to the old generation: their base versions are
+            // from another install and can never arbitrate. Keeping them would send
+            // proposals the tablet must reject, every pass, forever.
+            stmt.executeUpdate("DELETE FROM sync_oplog")
+            stmt.executeUpdate("DELETE FROM sync_proposals")
         }
         logger.info { "Wiped previous tablet generation (instanceId changed)" }
     }
@@ -368,6 +415,11 @@ class DatabaseManager(private val dbPath: String) {
             stmt.executeUpdate("DELETE FROM strokes WHERE documentUri = '$uri'")
             stmt.executeUpdate("DELETE FROM text_annotations WHERE documentUri = '$uri'")
             stmt.executeUpdate("DELETE FROM documents WHERE uri = '$uri'")
+            // A purged document is gone on the tablet; any queued proposal for it
+            // would come back "unknown document". Drop it here rather than letting
+            // every future pass waste a round trip learning that.
+            stmt.executeUpdate("DELETE FROM sync_oplog WHERE documentUri = '$uri'")
+            stmt.executeUpdate("DELETE FROM sync_proposals WHERE documentUri = '$uri'")
         }
     }
 
@@ -465,6 +517,177 @@ class DatabaseManager(private val dbPath: String) {
         }
         deleteStrokesForDocument(uri)
         deleteTextAnnotationsForDocument(uri)
+        deleteProposalForDocument(uri)
+    }
+
+    /** Drop a document's queued proposal and ops. Used by delete paths. */
+    fun deleteProposalForDocument(documentUri: String) {
+        connection?.prepareStatement("DELETE FROM sync_oplog WHERE documentUri = ?")?.use { stmt ->
+            stmt.setString(1, documentUri)
+            stmt.executeUpdate()
+        }
+        connection?.prepareStatement("DELETE FROM sync_proposals WHERE documentUri = ?")?.use { stmt ->
+            stmt.setString(1, documentUri)
+            stmt.executeUpdate()
+        }
+    }
+
+    // ─── Proposal outbox (v5) ─────────────────────────────────────────────
+
+    /** One document's pending proposal header. Null when nothing is queued. */
+    data class ProposalRow(
+        val documentUri: String,
+        val proposalId: String,
+        val baseDocVersion: String,
+        val baseInstanceId: String?,
+        val overflow: Boolean
+    )
+
+    fun getProposalRow(documentUri: String): ProposalRow? {
+        var row: ProposalRow? = null
+        connection?.prepareStatement("SELECT * FROM sync_proposals WHERE documentUri = ?")?.use { stmt ->
+            stmt.setString(1, documentUri)
+            stmt.executeQuery().use { rs ->
+                if (rs.next()) {
+                    row = ProposalRow(
+                        documentUri = rs.getString("documentUri"),
+                        proposalId = rs.getString("proposalId"),
+                        baseDocVersion = rs.getString("baseDocVersion"),
+                        baseInstanceId = rs.getString("baseInstanceId"),
+                        overflow = rs.getBoolean("overflow")
+                    )
+                }
+            }
+        }
+        return row
+    }
+
+    fun upsertProposalRow(row: ProposalRow) = synchronized(dbLock) {
+        connection?.prepareStatement(
+            """
+            INSERT INTO sync_proposals (documentUri, proposalId, baseDocVersion, baseInstanceId, overflow, updatedAt)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(documentUri) DO UPDATE SET
+                proposalId = excluded.proposalId,
+                baseDocVersion = excluded.baseDocVersion,
+                baseInstanceId = excluded.baseInstanceId,
+                overflow = excluded.overflow,
+                updatedAt = excluded.updatedAt
+            """.trimIndent()
+        )?.use { stmt ->
+            stmt.setString(1, row.documentUri)
+            stmt.setString(2, row.proposalId)
+            stmt.setString(3, row.baseDocVersion)
+            stmt.setString(4, row.baseInstanceId)
+            stmt.setBoolean(5, row.overflow)
+            stmt.setLong(6, System.currentTimeMillis())
+            stmt.executeUpdate()
+        }
+        Unit
+    }
+
+    fun deleteProposalRow(documentUri: String) {
+        connection?.prepareStatement("DELETE FROM sync_proposals WHERE documentUri = ?")?.use { stmt ->
+            stmt.setString(1, documentUri)
+            stmt.executeUpdate()
+        }
+    }
+
+    fun setProposalOverflow(documentUri: String, overflow: Boolean) = synchronized(dbLock) {
+        connection?.prepareStatement("UPDATE sync_proposals SET overflow = ? WHERE documentUri = ?")?.use { stmt ->
+            stmt.setBoolean(1, overflow)
+            stmt.setString(2, documentUri)
+            stmt.executeUpdate()
+        }
+        Unit
+    }
+
+    fun appendOp(documentUri: String, opJson: String) = synchronized(dbLock) {
+        connection?.prepareStatement(
+            "INSERT INTO sync_oplog (documentUri, opJson, createdAt) VALUES (?, ?, ?)"
+        )?.use { stmt ->
+            stmt.setString(1, documentUri)
+            stmt.setString(2, opJson)
+            stmt.setLong(3, System.currentTimeMillis())
+            stmt.executeUpdate()
+        }
+        Unit
+    }
+
+    /** (seq, opJson) in send order. */
+    fun getOps(documentUri: String): List<Pair<Long, String>> {
+        val out = mutableListOf<Pair<Long, String>>()
+        connection?.prepareStatement(
+            "SELECT seq, opJson FROM sync_oplog WHERE documentUri = ? ORDER BY seq"
+        )?.use { stmt ->
+            stmt.setString(1, documentUri)
+            stmt.executeQuery().use { rs ->
+                while (rs.next()) out.add(rs.getLong("seq") to rs.getString("opJson"))
+            }
+        }
+        return out
+    }
+
+    fun countOps(documentUri: String): Int {
+        var n = 0
+        connection?.prepareStatement("SELECT COUNT(*) FROM sync_oplog WHERE documentUri = ?")?.use { stmt ->
+            stmt.setString(1, documentUri)
+            stmt.executeQuery().use { rs -> if (rs.next()) n = rs.getInt(1) }
+        }
+        return n
+    }
+
+    fun totalPendingOps(): Int {
+        var n = 0
+        connection?.createStatement()?.use { stmt ->
+            stmt.executeQuery("SELECT COUNT(*) FROM sync_oplog").use { rs ->
+                if (rs.next()) n = rs.getInt(1)
+            }
+        }
+        return n
+    }
+
+    fun pendingProposalDocuments(): List<String> {
+        val out = mutableListOf<String>()
+        connection?.createStatement()?.use { stmt ->
+            stmt.executeQuery("SELECT documentUri FROM sync_proposals").use { rs ->
+                while (rs.next()) out.add(rs.getString(1))
+            }
+        }
+        return out
+    }
+
+    /** Delete the oldest ops beyond [keepNewest], for the overflow cap. */
+    fun deleteOldestOps(documentUri: String, keepNewest: Int) = synchronized(dbLock) {
+        connection?.prepareStatement(
+            """
+            DELETE FROM sync_oplog WHERE documentUri = ? AND seq NOT IN (
+                SELECT seq FROM sync_oplog WHERE documentUri = ? ORDER BY seq DESC LIMIT ?
+            )
+            """.trimIndent()
+        )?.use { stmt ->
+            stmt.setString(1, documentUri)
+            stmt.setString(2, documentUri)
+            stmt.setInt(3, keepNewest)
+            stmt.executeUpdate()
+        }
+        Unit
+    }
+
+    /** Delete ops up to and including [maxSeq] — what a send consumed. */
+    fun deleteOpsUpTo(documentUri: String, maxSeq: Long) {
+        connection?.prepareStatement("DELETE FROM sync_oplog WHERE documentUri = ? AND seq <= ?")?.use { stmt ->
+            stmt.setString(1, documentUri)
+            stmt.setLong(2, maxSeq)
+            stmt.executeUpdate()
+        }
+    }
+
+    fun deleteAllOps(documentUri: String) {
+        connection?.prepareStatement("DELETE FROM sync_oplog WHERE documentUri = ?")?.use { stmt ->
+            stmt.setString(1, documentUri)
+            stmt.executeUpdate()
+        }
     }
 
     // ─── Folder operations (category support) ────────────────────────────────

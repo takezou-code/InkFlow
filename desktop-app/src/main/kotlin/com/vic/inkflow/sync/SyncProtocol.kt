@@ -36,16 +36,16 @@ object SyncConstants {
      * v2 = length-prefixed frames + manifest diff + SHA-256 + chunked transfer.
      */
     /**
- * v4 = text annotations travel in `document_detail`.
+ * v5 = proposals travel desktop -> tablet.
  *
- * The bump is mandatory rather than cosmetic. `document_detail` gained a `texts`
- * field and `docVersion` gained a text count; an older tablet would decode the
- * extra field as absent, compute a hash over a different set of fields, and then
- * disagree with this build about every single document — which looks like a network
- * fault and is very hard to diagnose. The handshake already rejects a version
- * mismatch, so bumping turns a silent corruption into one clear error.
+ * The bump is mandatory rather than cosmetic. A v4 tablet would answer
+ * `proposal_submit` with "unknown request type", and a v4 desktop would never send
+ * one — but a MIXED pair would otherwise half-work: the desktop would keep queueing
+ * proposals no tablet will ever read, growing the queue forever. The handshake
+ * already rejects a version mismatch, so bumping turns a silent queue leak into one
+ * clear error.
  */
-const val PROTOCOL_VERSION = 4
+const val PROTOCOL_VERSION = 5
     const val APP_TAG = "InkFlow"
     const val DOCUMENTS_SUBDIR = "documents"
 }
@@ -115,7 +115,15 @@ data class SyncRequest(
      * The server answers with a proof so the desktop can verify the tablet holds
      * the same secret. Compared in constant time on both sides.
      */
-    val psk: String? = null
+    val psk: String? = null,
+    /**
+     * v5: proposal body for TYPE_PROPOSAL_SUBMIT, JSON-encoded.
+     * A typed field rather than a generic string keeps the envelope self-describing;
+     * null on every other verb.
+     */
+    val proposal: ProposalSubmitPayload? = null,
+    /** v5: which proposal TYPE_PROPOSAL_STATUS is asking about. */
+    val proposalId: String? = null
 ) {
     companion object {
         const val TYPE_HANDSHAKE = "handshake"
@@ -125,6 +133,10 @@ data class SyncRequest(
         const val TYPE_STROKE_PAGE = "stroke_page"
         const val TYPE_FILE_META = "file_meta"
         const val TYPE_FILE_DATA = "file_data"
+        /** v5: desktop -> tablet, "here is what I changed". */
+        const val TYPE_PROPOSAL_SUBMIT = "proposal_submit"
+        /** v5: "what happened to my proposal". */
+        const val TYPE_PROPOSAL_STATUS = "proposal_status"
     }
 }
 
@@ -215,6 +227,75 @@ data class FileMetaPayload(
     val size: Long = 0,
     val sha256: String? = null
 )
+
+/**
+ * v5: one id-level change inside a proposal.
+ *
+ * Ops are per object id, never whole-document snapshots. A whole snapshot as a
+ * proposal would reintroduce the exact failure whole-snapshot pull avoids: a stale
+ * desktop overwriting newer tablet content in one move. Id-level ops let the tablet
+ * arbitrate each object against what it currently holds.
+ *
+ * Upserts carry the full object; deletes carry only the id. Both are idempotent by
+ * construction — applying the same op twice lands in the same state — which is what
+ * makes retried proposals safe without a persistent dedup store.
+ */
+data class ProposalOp(
+    /** "upsert_stroke" | "delete_stroke" | "upsert_text" | "delete_text". */
+    val op: String,
+    /** Present when op == "upsert_stroke". Serialized StrokeWithPoints. */
+    val stroke: Any? = null,
+    /** Present when op == "upsert_text". Serialized TextAnnotationEntity. */
+    val text: Any? = null,
+    /** Present when op starts with "delete_". */
+    val id: String? = null
+) {
+    companion object {
+        const val UPSERT_STROKE = "upsert_stroke"
+        const val DELETE_STROKE = "delete_stroke"
+        const val UPSERT_TEXT = "upsert_text"
+        const val DELETE_TEXT = "delete_text"
+    }
+}
+
+/**
+ * v5 body of TYPE_PROPOSAL_SUBMIT.
+ *
+ * [baseDocVersion] is the optimistic-locking token: the version the desktop saw when
+ * it made these edits. If the tablet has moved on since, the proposal is stale and
+ * comes back as a conflict instead of silently overwriting newer content. That single
+ * comparison is the whole difference between "merge" and "last writer wins by accident".
+ */
+data class ProposalSubmitPayload(
+    /** UUID idempotency key. Resending the same proposal never applies it twice. */
+    val proposalId: String,
+    val documentUri: String,
+    val baseDocVersion: String,
+    val baseInstanceId: String?,
+    val actorDeviceId: String,
+    val ops: List<ProposalOp>
+)
+
+/**
+ * v5 answer to TYPE_PROPOSAL_SUBMIT and TYPE_PROPOSAL_STATUS.
+ */
+data class ProposalStatusPayload(
+    val proposalId: String,
+    /** "accepted" | "conflict_stale" | "rejected" | "unknown". */
+    val status: String,
+    /** The tablet's current version — what the desktop must rebase onto. */
+    val winnerDocVersion: String? = null,
+    /** Object ids the proposal touched that no longer match. Empty when accepted. */
+    val conflictIds: List<String> = emptyList(),
+    val message: String? = null
+) {
+    companion object {
+        const val ACCEPTED = "accepted"
+        const val CONFLICT_STALE = "conflict_stale"
+        const val REJECTED = "rejected"
+        const val UNKNOWN = "unknown"
+    }
+}
 
 // ─── Wire helpers ────────────────────────────────────────────────────────────
 

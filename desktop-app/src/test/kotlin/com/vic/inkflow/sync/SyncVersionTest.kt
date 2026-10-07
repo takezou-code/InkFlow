@@ -16,10 +16,52 @@ import kotlin.test.assertNotEquals
 class SyncVersionTest {
 
     @Test
-    fun `the protocol version is 4 because this build adds text annotations`() {
-        // Bumping this is a promise that the payload shape changed. The handshake
-        // rejects a mismatch outright, so a stale tablet cannot read a v4 payload.
-        assertEquals(4, SyncConstants.PROTOCOL_VERSION)
+    fun `proposal verbs are distinct from every existing verb`() {
+        val verbs = setOf(
+            SyncRequest.TYPE_HANDSHAKE, SyncRequest.TYPE_DOC_MANIFEST,
+            SyncRequest.TYPE_DOCUMENT_DETAIL, SyncRequest.TYPE_STROKE_DELTA,
+            SyncRequest.TYPE_STROKE_PAGE, SyncRequest.TYPE_FILE_META,
+            SyncRequest.TYPE_FILE_DATA, SyncRequest.TYPE_PROPOSAL_SUBMIT,
+            SyncRequest.TYPE_PROPOSAL_STATUS
+        )
+        assertEquals(9, verbs.size, "a new verb must not alias an old one")
+    }
+
+    @Test
+    fun `a proposal survives a gson round trip with its ops intact`() {
+        // The tablet parses what the desktop sends through the same Gson shape. If a
+        // field silently renamed on one side, arbitration would compare garbage —
+        // and the failure would surface as "every proposal conflicts", not as a
+        // parse error.
+        val gson = com.google.gson.Gson()
+        val payload = ProposalSubmitPayload(
+            proposalId = "p1", documentUri = "file:///a.pdf",
+            baseDocVersion = "v9", baseInstanceId = "inst-a", actorDeviceId = "pc-1",
+            ops = listOf(
+                ProposalOp(ProposalOp.DELETE_STROKE, id = "s1"),
+                ProposalOp(ProposalOp.UPSERT_TEXT, text = mapOf("id" to "n1"))
+            )
+        )
+        val back = gson.fromJson(gson.toJson(payload), ProposalSubmitPayload::class.java)
+        assertEquals("p1", back.proposalId)
+        assertEquals("v9", back.baseDocVersion)
+        assertEquals(2, back.ops.size)
+        assertEquals(ProposalOp.DELETE_STROKE, back.ops[0].op)
+        assertEquals("s1", back.ops[0].id)
+    }
+
+    @Test
+    fun `status values are the four the tablet can send`() {
+        // The desktop switches on these strings. A fifth value from the tablet must
+        // fall into the conflict branch, which the sender guarantees by treating
+        // anything non-accepted as a conflict — this pins the set it knows.
+        assertEquals(
+            setOf("accepted", "conflict_stale", "rejected", "unknown"),
+            setOf(
+                ProposalStatusPayload.ACCEPTED, ProposalStatusPayload.CONFLICT_STALE,
+                ProposalStatusPayload.REJECTED, ProposalStatusPayload.UNKNOWN
+            )
+        )
     }
 
     @Test

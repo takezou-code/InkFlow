@@ -182,13 +182,21 @@ fun PdfViewer(
     onPageCountChange: (Int) -> Unit = {},
     onPageChange: (Int) -> Unit = {},
     /**
+     * v5 proposal outbox. When non-null, every local edit is also filed as an
+     * id-level op against the last synced version, so the next sync can push it to
+     * the tablet for arbitration. Null means local-only (the old pull-only
+     * behaviour): edits show up immediately but are never pushed and the next pull
+     * can discard them.
+     */
+    proposalQueue: com.vic.inkflow.sync.ProposalQueue? = null,
+    /**
      * Turns on the ink toolbar and lets the user draw on the page.
      *
-     * Off by default because the sync protocol is **pull-only**: the tablet is the
-     * only writer (see SYNC_PROTOCOL.md §1), so a stroke made here lands in the
-     * desktop database and shows up immediately, but is never pushed back to the
-     * tablet and the next pull can discard it. Drawing is therefore opt-in per
-     * call site rather than something the reader discovers by accident.
+     * Off by default. With a [proposalQueue] (v5) local edits are filed as
+     * proposals and pushed for tablet arbitration on the next sync; without one
+     * they live in the desktop database only and the next pull can discard them.
+     * Drawing is therefore opt-in per call site rather than something the reader
+     * discovers by accident.
      */
     editable: Boolean = false,
     /** Fired after a stroke is committed, so the caller can refresh counts. */
@@ -716,6 +724,24 @@ fun PdfViewer(
     }
 
     /**
+     * Files local edits into the v5 proposal queue.
+     *
+     * Called next to every undo push, on success only — the queue mirrors what is
+     * actually in the database, never what was attempted. A null queue means
+     * local-only mode and skips silently.
+     */
+    fun recordOps(ops: List<com.vic.inkflow.sync.ProposalOp>) {
+        val q = proposalQueue ?: return
+        ops.forEach { op ->
+            when (q.record(documentUri, op)) {
+                com.vic.inkflow.sync.ProposalQueue.RecordResult.STALE_DROPPED ->
+                    logger.info { "Older desktop edits for ${documentUri.substringAfterLast('/')} were overwritten by a pull" }
+                else -> Unit
+            }
+        }
+    }
+
+    /**
      * Collapses the drag's incremental writes into one undoable move.
      *
      * A drag that ends where it started moves nothing, so it must not leave an
@@ -728,6 +754,19 @@ fun PdfViewer(
         if (m == null) return
         if (m.dx == 0f && m.dy == 0f) return
         undoStack.push(InkEdit.Move(m.strokes, m.texts, m.dx, m.dy))
+        // The moved objects' final state is already in the lists; filing it as
+        // upserts (one per object, not per frame) is what makes a drag one proposal.
+        recordOps(
+            strokes.filter { it.stroke.id in selectedIds }.map {
+                com.vic.inkflow.sync.ProposalOp(
+                    op = com.vic.inkflow.sync.ProposalOp.UPSERT_STROKE, stroke = it
+                )
+            } + texts.filter { it.id in selectedTextIds }.map {
+                com.vic.inkflow.sync.ProposalOp(
+                    op = com.vic.inkflow.sync.ProposalOp.UPSERT_TEXT, text = it
+                )
+            }
+        )
     }
 
     /**
@@ -750,6 +789,17 @@ fun PdfViewer(
             selectedIds = emptySet()
             selectedTextIds = emptySet()
             undoStack.push(InkEdit.Erase(doomed, doomedText))
+            recordOps(
+                doomed.map {
+                    com.vic.inkflow.sync.ProposalOp(
+                        op = com.vic.inkflow.sync.ProposalOp.DELETE_STROKE, id = it.stroke.id
+                    )
+                } + doomedText.map {
+                    com.vic.inkflow.sync.ProposalOp(
+                        op = com.vic.inkflow.sync.ProposalOp.DELETE_TEXT, id = it.id
+                    )
+                }
+            )
             onInkChanged()
         }.onFailure {
             logger.error(it) { "Failed to delete selection" }
@@ -786,6 +836,13 @@ fun PdfViewer(
             .onSuccess {
                 texts = texts + note
                 undoStack.push(InkEdit.AddText(note))
+                recordOps(
+                    listOf(
+                        com.vic.inkflow.sync.ProposalOp(
+                            op = com.vic.inkflow.sync.ProposalOp.UPSERT_TEXT, text = note
+                        )
+                    )
+                )
                 onInkChanged()
             }.onFailure {
                 logger.error(it) { "Failed to save note on page ${requestedPage + 1}" }
@@ -887,6 +944,13 @@ fun PdfViewer(
                 val saved = StrokeWithPoints(stroke, points)
                 strokes = strokes + saved
                 undoStack.push(InkEdit.Add(saved))
+                recordOps(
+                    listOf(
+                        com.vic.inkflow.sync.ProposalOp(
+                            op = com.vic.inkflow.sync.ProposalOp.UPSERT_STROKE, stroke = saved
+                        )
+                    )
+                )
                 onInkChanged()
             }
             .onFailure {
@@ -927,6 +991,13 @@ fun PdfViewer(
                 // Recorded only after the write succeeded, so undo never tries to
                 // reverse something that is not in the database.
                 undoStack.push(InkEdit.Add(saved))
+                recordOps(
+                    listOf(
+                        com.vic.inkflow.sync.ProposalOp(
+                            op = com.vic.inkflow.sync.ProposalOp.UPSERT_STROKE, stroke = saved
+                        )
+                    )
+                )
                 onInkChanged()
             }
             .onFailure {
@@ -966,6 +1037,17 @@ fun PdfViewer(
                 strokes = strokes - hit.toSet()
                 texts = texts - hitText.toSet()
                 undoStack.push(InkEdit.Erase(hit, hitText))
+                recordOps(
+                    hit.map {
+                        com.vic.inkflow.sync.ProposalOp(
+                            op = com.vic.inkflow.sync.ProposalOp.DELETE_STROKE, id = it.stroke.id
+                        )
+                    } + hitText.map {
+                        com.vic.inkflow.sync.ProposalOp(
+                            op = com.vic.inkflow.sync.ProposalOp.DELETE_TEXT, id = it.id
+                        )
+                    }
+                )
                 onInkChanged()
             }
             .onFailure {
@@ -980,6 +1062,16 @@ fun PdfViewer(
                 databaseManager.deleteStroke(e.stroke.stroke.id)
             }.onSuccess {
                 strokes = strokes - e.stroke
+                // Undo is a real write too: without its own op the queue would still
+                // say "upsert" for a stroke that no longer exists, and the tablet
+                // would end up with a ghost the desktop does not have.
+                recordOps(
+                    listOf(
+                        com.vic.inkflow.sync.ProposalOp(
+                            op = com.vic.inkflow.sync.ProposalOp.DELETE_STROKE, id = e.stroke.stroke.id
+                        )
+                    )
+                )
                 onInkChanged()
             }.onFailure {
                 logger.error(it) { "Undo failed" }
@@ -993,6 +1085,17 @@ fun PdfViewer(
             }.onSuccess {
                 strokes = strokes + e.strokes
                 texts = texts + e.texts
+                recordOps(
+                    e.strokes.map {
+                        com.vic.inkflow.sync.ProposalOp(
+                            op = com.vic.inkflow.sync.ProposalOp.UPSERT_STROKE, stroke = it
+                        )
+                    } + e.texts.map {
+                        com.vic.inkflow.sync.ProposalOp(
+                            op = com.vic.inkflow.sync.ProposalOp.UPSERT_TEXT, text = it
+                        )
+                    }
+                )
                 onInkChanged()
             }.onFailure {
                 logger.error(it) { "Undo of erase failed" }
@@ -1003,6 +1106,13 @@ fun PdfViewer(
                 databaseManager.deleteTextAnnotation(e.note.id)
             }.onSuccess {
                 texts = texts.filterNot { it.id == e.note.id }
+                recordOps(
+                    listOf(
+                        com.vic.inkflow.sync.ProposalOp(
+                            op = com.vic.inkflow.sync.ProposalOp.DELETE_TEXT, id = e.note.id
+                        )
+                    )
+                )
                 onInkChanged()
             }.onFailure {
                 logger.error(it) { "Undo of note add failed" }
@@ -1023,6 +1133,17 @@ fun PdfViewer(
             }.onSuccess {
                 strokes = strokes.map { s -> e.originals.firstOrNull { it.stroke.id == s.stroke.id } ?: s }
                 texts = texts.map { t -> e.texts.firstOrNull { it.id == t.id } ?: t }
+                recordOps(
+                    e.originals.map {
+                        com.vic.inkflow.sync.ProposalOp(
+                            op = com.vic.inkflow.sync.ProposalOp.UPSERT_STROKE, stroke = it
+                        )
+                    } + e.texts.map {
+                        com.vic.inkflow.sync.ProposalOp(
+                            op = com.vic.inkflow.sync.ProposalOp.UPSERT_TEXT, text = it
+                        )
+                    }
+                )
                 onInkChanged()
             }.onFailure {
                 logger.error(it) { "Undo of move failed" }
@@ -1038,6 +1159,13 @@ fun PdfViewer(
                 databaseManager.saveStroke(e.stroke.stroke, e.stroke.points)
             }.onSuccess {
                 strokes = strokes + e.stroke
+                recordOps(
+                    listOf(
+                        com.vic.inkflow.sync.ProposalOp(
+                            op = com.vic.inkflow.sync.ProposalOp.UPSERT_STROKE, stroke = e.stroke
+                        )
+                    )
+                )
                 onInkChanged()
             }.onFailure {
                 logger.error(it) { "Redo failed" }
@@ -1050,6 +1178,17 @@ fun PdfViewer(
             }.onSuccess {
                 strokes = strokes - e.strokes.toSet()
                 texts = texts - e.texts.toSet()
+                recordOps(
+                    e.strokes.map {
+                        com.vic.inkflow.sync.ProposalOp(
+                            op = com.vic.inkflow.sync.ProposalOp.DELETE_STROKE, id = it.stroke.id
+                        )
+                    } + e.texts.map {
+                        com.vic.inkflow.sync.ProposalOp(
+                            op = com.vic.inkflow.sync.ProposalOp.DELETE_TEXT, id = it.id
+                        )
+                    }
+                )
                 onInkChanged()
             }.onFailure {
                 logger.error(it) { "Redo of erase failed" }
@@ -1060,6 +1199,13 @@ fun PdfViewer(
                 databaseManager.saveTextAnnotation(e.note)
             }.onSuccess {
                 texts = texts + e.note
+                recordOps(
+                    listOf(
+                        com.vic.inkflow.sync.ProposalOp(
+                            op = com.vic.inkflow.sync.ProposalOp.UPSERT_TEXT, text = e.note
+                        )
+                    )
+                )
                 onInkChanged()
             }.onFailure {
                 logger.error(it) { "Redo of note add failed" }
@@ -1083,6 +1229,18 @@ fun PdfViewer(
                     e.texts.firstOrNull { it.id == t.id }
                         ?.let { it.copy(modelX = it.modelX + e.dx, modelY = it.modelY + e.dy) } ?: t
                 }
+                recordOps(
+                    fwd.map {
+                        com.vic.inkflow.sync.ProposalOp(
+                            op = com.vic.inkflow.sync.ProposalOp.UPSERT_STROKE, stroke = it
+                        )
+                    } + e.texts.map {
+                        com.vic.inkflow.sync.ProposalOp(
+                            op = com.vic.inkflow.sync.ProposalOp.UPSERT_TEXT,
+                            text = it.copy(modelX = it.modelX + e.dx, modelY = it.modelY + e.dy)
+                        )
+                    }
+                )
                 onInkChanged()
             }.onFailure {
                 logger.error(it) { "Redo of move failed" }
@@ -1714,6 +1872,17 @@ color = Color(inkColour).copy(
                             selectedIds = emptySet()
                             selectedTextIds = emptySet()
                             undoStack.push(InkEdit.Erase(doomedAll, doomedAllText))
+                            recordOps(
+                                doomedAll.map {
+                                    com.vic.inkflow.sync.ProposalOp(
+                                        op = com.vic.inkflow.sync.ProposalOp.DELETE_STROKE, id = it.stroke.id
+                                    )
+                                } + doomedAllText.map {
+                                    com.vic.inkflow.sync.ProposalOp(
+                                        op = com.vic.inkflow.sync.ProposalOp.DELETE_TEXT, id = it.id
+                                    )
+                                }
+                            )
                             onInkChanged()
                         }
                         .onFailure {
