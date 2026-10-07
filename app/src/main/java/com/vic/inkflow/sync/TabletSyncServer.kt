@@ -8,6 +8,7 @@ import android.util.Log
 import com.google.gson.Gson
 import com.vic.inkflow.data.DocumentEntity
 import com.vic.inkflow.data.StrokeWithPoints
+import com.vic.inkflow.data.TextAnnotationEntity
 import com.vic.inkflow.data.repository.InkFlowRepositories
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineName
@@ -42,13 +43,15 @@ import java.util.concurrent.atomic.AtomicReference
 private const val TAG = "InkFlowSync"
 
 /**
- * 平板端 LAN 同步 server（協定 v3，§4）。
+ * 平板端 LAN 同步 server（協定 v5，§4）。
  *
- * 角色：**桌面端是 client，平板是 server，而且是唯一的寫入者**（pull-only）。所以這個
- * 類別只做「讀資料庫、回應請求」，永遠不寫——寫入權留在 [com.vic.inkflow.data]。
+ * 角色：桌面端是 client，平板是 server。v4 以前是 pull-only（這個類別只讀不寫）；
+ * v5 起接受桌面的提案寫入，但**仲裁權在平板**：提案帶 `baseDocVersion`，對不上
+ * 當前版本就整筆駁回，絕不合併——合併是靜默覆寫的另一種寫法。
  *
  * 資料存取一律走 [InkFlowRepositories]（AGENTS：repository 是唯一入口，禁直呼 DAO），
- * 而且不新增任何 repository 方法。
+ * 而且不新增任何 repository 方法：upsert 靠 `REPLACE` 語義的 insert，刪除靠既有
+ * delete 方法。
  *
  * 兩個必須注意的效能陷阱：
  *  1. **不要在每次請求上重算 PDF 的 SHA-256。** 這裡的實例是 300 MB 以上，而桌面端
@@ -77,6 +80,24 @@ class TabletSyncServer(
     private val clientSlots = Semaphore(maxConcurrentClients)
     private val digests = FileDigestCache()
     private val strokeCounts = StrokeCountCache(scope)
+
+    /**
+     * v5：最近的提案仲裁結果，key 是 proposalId。
+     *
+     * 只做重送去重，不做持久化——持久化不需要，因為 ops 按 id 冪等：同一提案重送
+     * 落在同一狀態。重啟後 map 是空的，重送的提案若 base 已過期會被正常駁回，
+     * 若 base 仍有效則冪等重應用，兩種結果都正確。
+     *
+     * 有界 64：提案結果只在重試窗口內有用，無限增長是記憶體洩漏。
+     */
+    private val recentProposals: MutableMap<String, ProposalStatusPayload> =
+        java.util.Collections.synchronizedMap(
+            object : LinkedHashMap<String, ProposalStatusPayload>(64, 0.75f, true) {
+                override fun removeEldestEntry(
+                    eldest: MutableMap.MutableEntry<String, ProposalStatusPayload>
+                ): Boolean = size > 64
+            }
+        )
 
     /** v4：文字註解筆數快取，與 [strokeCounts] 同一套邏輯與同一套預熱理由。 */
     private val textCounts = StrokeCountCache(scope)
@@ -287,8 +308,194 @@ class TabletSyncServer(
                 }
             }
 
+            SyncRequest.TYPE_PROPOSAL_SUBMIT -> {
+                val proposal = req.proposal
+                    ?: throw SyncRequestException("missing proposal")
+                respondJson(out, type, arbitrateProposal(proposal))
+            }
+
+            SyncRequest.TYPE_PROPOSAL_STATUS -> {
+                val id = req.proposalId?.takeIf { it.isNotBlank() }
+                    ?: throw SyncRequestException("missing proposalId")
+                val known = recentProposals[id]
+                respondJson(
+                    out, type,
+                    known ?: ProposalStatusPayload(
+                        proposalId = id,
+                        status = ProposalStatusPayload.UNKNOWN,
+                        message = "no record of this proposal (restarted, or never received)"
+                    )
+                )
+            }
+
             else -> respondError(out, type, "unknown request type $type")
         }
+    }
+
+    /**
+     * v5 仲裁：接受或整筆駁回桌面的提案，沒有第三種結果。
+     *
+     * 沒有「部分接受」：一個提案要嘛全部落，要嘛全部不落。部分接受會讓桌面以為
+     * 「送出去的就是生效的」，而實際上只有一半生效——下次拉取時另一半憑空消失，
+     * 那是比明確駁回難十倍的故障。
+     *
+     * 冪等：同一個 proposalId 重送直接回上次的結果，不重新比對、不重新寫入。
+     * 這讓客戶端的重試是安全的：超時後不知道對端到底寫了沒，直接重送即可。
+     *
+     * 併發寫入走 `repos.transaction`：提案的 ops 必須同生同死，否則一半 ops 落庫
+     * 而另一半沒有，文件就處於桌面和提案都沒描述過的狀態。
+     */
+    private suspend fun arbitrateProposal(p: ProposalSubmitPayload): ProposalStatusPayload {
+        recentProposals[p.proposalId]?.let { return it }
+
+        val doc = try {
+            requireDocument(p.documentUri)
+        } catch (e: SyncRequestException) {
+            return reject(p, "unknown document").also { recentProposals[p.proposalId] = it }
+        }
+
+        val instance = SyncIdentity.instanceId(appContext)
+        val current = currentDocVersion(doc)
+        // 決策是純函數（見 ProposalArbiter）：這裡只負責執行，不重新發明規則。
+        // 規則若有兩份實現，遲早各改各的，然後在某個深夜以資料損毀的方式分叉。
+        when (val decision = ProposalArbiter.decide(
+            currentVersion = current,
+            currentInstance = instance,
+            baseVersion = p.baseDocVersion,
+            baseInstance = p.baseInstanceId,
+            opIds = p.ops.mapNotNull { it.id ?: strokeIdOf(it) }
+        )) {
+            is ProposalArbiter.Decision.Reject -> {
+                return reject(p, decision.message).also { recentProposals[p.proposalId] = it }
+            }
+            is ProposalArbiter.Decision.ConflictStale -> {
+                return ProposalStatusPayload(
+                    proposalId = p.proposalId,
+                    status = ProposalStatusPayload.CONFLICT_STALE,
+                    winnerDocVersion = current,
+                    conflictIds = decision.conflictIds,
+                    message = "base version moved on; rebase onto $current and resubmit"
+                ).also { recentProposals[p.proposalId] = it }
+            }
+            ProposalArbiter.Decision.Accept -> Unit
+        }
+
+        if (p.ops.isEmpty()) {
+            return accept(p, current).also { recentProposals[p.proposalId] = it }
+        }
+
+        // 應用前先校驗每個 op 的目標屬於這份文件：否則一個提案可以把別的文件的
+        // 物件寫進來，而 requireDocument 只檢查了文件本身。
+        val decoded = p.ops.map { decodeOp(p.documentUri, it) }
+
+        repos.transaction {
+            decoded.forEach { applyOp(it) }
+        }
+
+        // 快取跟著寫入走，否則下一輪 manifest 會用舊筆數算出舊版本，
+        // 把剛接受的提案判成「又變了」而讓桌面白拉一次。
+        val strokes = repos.strokes.getAllStrokesForDocument(doc.uri)
+        val texts = repos.texts.getAllForDocument(doc.uri)
+        strokeCounts.record(doc.uri, strokes.size)
+        textCounts.record(doc.uri, texts.size)
+        val winner = currentDocVersion(doc)
+        return accept(p, winner).also { recentProposals[p.proposalId] = it }
+    }
+
+    private fun reject(p: ProposalSubmitPayload, message: String) = ProposalStatusPayload(
+        proposalId = p.proposalId,
+        status = ProposalStatusPayload.REJECTED,
+        message = message
+    )
+
+    private fun accept(p: ProposalSubmitPayload, winner: String) = ProposalStatusPayload(
+        proposalId = p.proposalId,
+        status = ProposalStatusPayload.ACCEPTED,
+        winnerDocVersion = winner
+    )
+
+    /** 和 buildManifest 同一公式，但讀新鮮值而非快取：仲裁用的版本不能是舊的。 */
+    private suspend fun currentDocVersion(doc: DocumentEntity): String {
+        val instance = SyncIdentity.instanceId(appContext)
+        val file = documentFile(doc.uri)
+        val present = file?.exists() == true
+        val sha = if (present) digests.sha256Hex(file!!) else null
+        val size = file?.length()
+        val strokes = repos.strokes.getAllStrokesForDocument(doc.uri).size
+        val texts = repos.texts.getAllForDocument(doc.uri).size
+        return SyncIdentity.docVersion(instance, doc.uri, strokes, sha, size, texts)
+    }
+
+    /** 解碼一個 op，並確認它操作的是提案聲稱的那份文件。 */
+    private fun decodeOp(documentUri: String, op: ProposalOp): DecodedOp = when (op.op) {
+        ProposalOp.UPSERT_STROKE -> {
+            val swp = gson.fromJson(gson.toJson(op.stroke), StrokeWithPoints::class.java)
+                ?: throw SyncRequestException("bad upsert_stroke payload")
+            if (swp.stroke.documentUri != documentUri) {
+                throw SyncRequestException("op targets a different document")
+            }
+            DecodedOp.UpsertStroke(swp)
+        }
+        ProposalOp.DELETE_STROKE -> {
+            val id = op.id?.takeIf { it.isNotBlank() }
+                ?: throw SyncRequestException("delete_stroke without id")
+            DecodedOp.DeleteStroke(id)
+        }
+        ProposalOp.UPSERT_TEXT -> {
+            val text = gson.fromJson(gson.toJson(op.text), TextAnnotationEntity::class.java)
+                ?: throw SyncRequestException("bad upsert_text payload")
+            if (text.documentUri != documentUri) {
+                throw SyncRequestException("op targets a different document")
+            }
+            DecodedOp.UpsertText(text)
+        }
+        ProposalOp.DELETE_TEXT -> {
+            val id = op.id?.takeIf { it.isNotBlank() }
+                ?: throw SyncRequestException("delete_text without id")
+            DecodedOp.DeleteText(id)
+        }
+        else -> throw SyncRequestException("unknown op ${op.op}")
+    }
+
+    private sealed interface DecodedOp {
+        data class UpsertStroke(val swp: StrokeWithPoints) : DecodedOp
+        data class DeleteStroke(val id: String) : DecodedOp
+        data class UpsertText(val text: TextAnnotationEntity) : DecodedOp
+        data class DeleteText(val id: String) : DecodedOp
+    }
+
+    /**
+     * 在事務內應用一個已解碼的 op。
+     *
+     * upsert 靠 DAO 的 REPLACE 語義：同 id 存在即覆寫，不存在即插入，所以重送天然
+     * 冪等。筆跡要先清舊點再插新點，否則改過的筆會同時留著新舊兩套點。
+     */
+    private suspend fun InkFlowRepositories.applyOp(op: DecodedOp) {
+        when (op) {
+            is DecodedOp.UpsertStroke -> {
+                strokes.insertStroke(op.swp.stroke)
+                strokes.deletePointsForStroke(op.swp.stroke.id)
+                strokes.insertPoints(op.swp.points)
+            }
+            is DecodedOp.DeleteStroke -> {
+                strokes.deletePointsForStroke(op.id)
+                strokes.deleteStrokesByIds(listOf(op.id))
+            }
+            is DecodedOp.UpsertText -> texts.insert(op.text)
+            is DecodedOp.DeleteText -> texts.deleteById(op.id)
+        }
+    }
+
+    private fun strokeIdOf(op: ProposalOp): String? = try {
+        when (op.op) {
+            ProposalOp.UPSERT_STROKE ->
+                gson.fromJson(gson.toJson(op.stroke), StrokeWithPoints::class.java)?.stroke?.id
+            ProposalOp.UPSERT_TEXT ->
+                gson.fromJson(gson.toJson(op.text), TextAnnotationEntity::class.java)?.id
+            else -> null
+        }
+    } catch (_: Exception) {
+        null
     }
 
     // ─── doc_manifest ────────────────────────────────────────────────────────

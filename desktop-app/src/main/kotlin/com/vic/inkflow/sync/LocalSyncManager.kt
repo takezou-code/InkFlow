@@ -44,6 +44,18 @@ data class SyncResult(
      *  they are a different table and a user needs to be able to tell "my notes
      *  did not arrive" from "my ink did not arrive". */
     val textsPulled: Int = 0,
+    /**
+     * v5: proposals the tablet accepted. This is the number that tells the user
+     * "your desktop edits reached the tablet" — without it a sync can report all
+     * green while every local edit silently stayed local.
+     */
+    val proposalsAccepted: Int = 0,
+    /**
+     * v5: queued proposals dropped because the tablet had moved on. Each one means
+     * local edits were overwritten; the detail lives in the queue's notices, which
+     * the UI drains into the sync summary.
+     */
+    val proposalConflicts: Int = 0,
     val errors: List<String> = emptyList()
 )
 
@@ -98,7 +110,14 @@ class LocalSyncManager(
      * has already started listening — recreating the whole manager (and its two
      * sockets) just to change one secret would drop any connection in flight.
      */
-    psk: String? = null
+    psk: String? = null,
+    /**
+     * v5 proposal outbox, shared with the editor. Null disables pushing: the
+     * manager stays pull-only and local edits are never sent. Passed in rather
+     * than constructed here so the editor and the sync loop share one queue —
+     * two queues would each believe they own the ops.
+     */
+    val proposalQueue: ProposalQueue? = null
 ) {
 
     @Volatile
@@ -364,6 +383,8 @@ class LocalSyncManager(
         generationWiped = a.generationWiped || b.generationWiped,
         orphansRemoved = a.orphansRemoved + b.orphansRemoved,
         textsPulled = a.textsPulled + b.textsPulled,
+        proposalsAccepted = a.proposalsAccepted + b.proposalsAccepted,
+        proposalConflicts = a.proposalConflicts + b.proposalConflicts,
         errors = a.errors + b.errors
     )
 
@@ -390,6 +411,7 @@ class LocalSyncManager(
         var updated = 0; var strokes = 0; var files = 0; var skipped = 0
         var orphans = 0; var wiped = false
         var texts = 0
+        var proposalsAccepted = 0; var proposalConflicts = 0
         val errors = mutableListOf<String>()
         try {
             Socket(device.ip, device.transferPort).use { socket ->
@@ -424,6 +446,37 @@ class LocalSyncManager(
                         val localVersion = if (instanceId != null)
                             databaseManager.getDocVersion(instanceId, entry.uri) else null
                         val changed = local == null || localVersion == null || localVersion != remoteVersion
+
+                        // v5: push before pull. When our queued ops' base matches what the
+                        // tablet reports, the tablet has not moved under us: sending first
+                        // means the pull below brings back a state that already includes
+                        // our edits, instead of wiping them and calling it a conflict.
+                        // When the base does NOT match, the outcome is already decided —
+                        // sending would only waste a round trip learning it.
+                        val push = tryPushProposal(out, input, entry, instanceId, remoteVersion, pass)
+                        when (push) {
+                            // Accepted: the tablet now holds our edits. The stored version
+                            // jumps straight to the winner, so the pull below would be a
+                            // no-op fetch of content we already have — skip it.
+                            PushOutcome.SENT_ACCEPTED -> {
+                                proposalsAccepted++
+                                continue
+                            }
+                            // The tablet moved first: our edits are already gone from the
+                            // local rows (the pull below replaces them), so drop the dead
+                            // ops loudly and let the pull proceed.
+                            PushOutcome.CONFLICT -> {
+                                proposalConflicts++
+                            }
+                            // Transport died mid-proposal: the tablet may or may not have
+                            // applied it. Keep the ops (same proposalId, so a retry is
+                            // idempotent) and skip the pull for this document — pulling
+                            // now could overwrite edits we are about to successfully send.
+                            PushOutcome.TRANSPORT_FAILED -> {
+                                continue
+                            }
+                            PushOutcome.NOTHING_QUEUED -> Unit
+                        }
 
                         if (!changed) {
                             // Content identical: only make sure the file body exists.
@@ -494,9 +547,115 @@ class LocalSyncManager(
             generationWiped = wiped,
             orphansRemoved = orphans,
             textsPulled = texts,
+            proposalsAccepted = proposalsAccepted,
+            proposalConflicts = proposalConflicts,
             errors = errors
         )
     }
+
+    /**
+     * v5 push step for one manifest entry. Returns what the pull step should do.
+     *
+     * The handshake already guarantees a v5 peer, so reaching here means the tablet
+     * understands proposals — no version check needed per document.
+     */
+    private enum class PushOutcome {
+        /** Nothing queued for this document; proceed with the pull as usual. */
+        NOTHING_QUEUED,
+        /** Accepted; stored version already advanced, pull is a no-op — skip it. */
+        SENT_ACCEPTED,
+        /** Tablet had moved on; ops dropped loudly, let the pull proceed. */
+        CONFLICT,
+        /** Transport died; ops kept for retry, skip the pull to protect them. */
+        TRANSPORT_FAILED
+    }
+
+    private fun tryPushProposal(
+        out: DataOutputStream,
+        input: DataInputStream,
+        entry: DocumentManifestEntry,
+        instanceId: String?,
+        remoteVersion: String,
+        pass: Long
+    ): PushOutcome {
+        val queue = proposalQueue ?: return PushOutcome.NOTHING_QUEUED
+        val pending = queue.takeForSend(entry.uri) ?: return PushOutcome.NOTHING_QUEUED
+        if (pending.ops.isEmpty()) return PushOutcome.NOTHING_QUEUED
+
+        if (pending.baseDocVersion != remoteVersion) {
+            // Known stale before a single byte is sent: the tablet's manifest already
+            // says it moved on. Sending would only waste the round trip to learn that.
+            queue.onConflict(
+                entry.uri, pending.ops.size,
+                "平板已有新內容（${shortVersion(remoteVersion)}）"
+            )
+            logger.info { "Proposal for ${entry.uri} known stale; dropping ${pending.ops.size} ops" }
+            return PushOutcome.CONFLICT
+        }
+
+        val status = try {
+            submitProposal(out, input, pending, instanceId)
+        } catch (e: Exception) {
+            logger.error(e) { "Proposal submit failed for ${entry.uri}; keeping ${pending.ops.size} ops for retry" }
+            return PushOutcome.TRANSPORT_FAILED
+        }
+
+        return when (status.status) {
+            ProposalStatusPayload.ACCEPTED -> {
+                val winner = status.winnerDocVersion ?: remoteVersion
+                queue.onAccepted(entry.uri, pending.ops.maxOf { it.first }, winner, instanceId ?: "")
+                if (instanceId != null) {
+                    databaseManager.setDocVersion(instanceId, entry.uri, winner, pass)
+                }
+                logger.info { "Proposal ${pending.proposalId} accepted for ${entry.uri}" }
+                PushOutcome.SENT_ACCEPTED
+            }
+            else -> {
+                // conflict_stale (lost a race after the manifest), rejected (the tablet
+                // refused, e.g. generation changed), or unknown: the ops describe a dead
+                // base either way, so keeping them only retries a known failure.
+                val reason = status.message ?: status.status
+                queue.onConflict(entry.uri, pending.ops.size, reason)
+                logger.info { "Proposal ${pending.proposalId} for ${entry.uri} not applied: $reason" }
+                PushOutcome.CONFLICT
+            }
+        }
+    }
+
+    private fun submitProposal(
+        out: DataOutputStream,
+        input: DataInputStream,
+        pending: ProposalQueue.Pending,
+        instanceId: String?
+    ): ProposalStatusPayload {
+        val type = object : TypeToken<ProposalOp>() {}.type
+        val payload = ProposalSubmitPayload(
+            proposalId = pending.proposalId,
+            documentUri = pending.documentUri,
+            baseDocVersion = pending.baseDocVersion,
+            baseInstanceId = pending.baseInstanceId,
+            actorDeviceId = deviceId,
+            ops = pending.ops.map { (_, json) ->
+                gson.fromJson<ProposalOp>(json, type)
+            }
+        )
+        SyncWire.writeText(
+            out,
+            gson.toJson(
+                SyncRequest(
+                    SyncRequest.TYPE_PROPOSAL_SUBMIT, deviceId,
+                    instanceId = instanceId, documentUri = pending.documentUri,
+                    proposal = payload
+                )
+            )
+        )
+        val resp = readResponse(input) ?: throw IOException("No proposal response")
+        if (!resp.ok) throw IOException("Proposal error: ${resp.error}")
+        return gson.fromJson(resp.payload, ProposalStatusPayload::class.java)
+            ?: throw IOException("Null proposal status")
+    }
+
+    private fun shortVersion(v: String): String = v.take(8)
 
     private fun needsFileDownload(local: DocumentEntity?, entry: DocumentManifestEntry): Boolean {
         if (!entry.filePresent) return false

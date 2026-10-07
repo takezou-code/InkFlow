@@ -1,4 +1,4 @@
-# InkFlow Local LAN Sync Protocol — v3
+# InkFlow Local LAN Sync Protocol — v5
 
 > 本文件是 Android 平板端與 Windows 桌面端之間的**唯一協定真相來源（single source of truth）**。
 > 實作：
@@ -29,7 +29,9 @@
 設計原則：
 
 - **零雲端**：僅局域網內通信，不經公網。
-- **Desktop 為 client、Tablet 為 server**：所有數據以平板為準（tablet is the writer of truth），桌面只做拉取（pull-only）。
+- **Desktop 為 client、Tablet 為 server**：連線總是由桌面發起。
+- ** tablet 仲裁，預設 tablet-wins**：v5 起桌面可以送提案（proposal），但接受與否由平板按
+  `baseDocVersion` 決定；對不上就整筆駁回，不合併。合併是靜默覆寫的另一種寫法。
 - **JSON over length-prefixed frames**：易調試，且能安全承載大體積二進制。
 
 > **規劃中的替換**：UDP 廣播與自架幀格式在 v4 會分別換成 `NsdManager`（DNS-SD）與
@@ -130,6 +132,8 @@ Desktop                                   Tablet (server)
 | `stroke_page` | `documentUri`, `pageIndex` | JSON：`StrokeDeltaPayload` |
 | `file_meta` | `documentUri` | JSON：`FileMetaPayload` |
 | `file_data` | `documentUri`, `offset`, `limit` | **二進制幀** |
+| `proposal_submit` | `documentUri`, `proposal` | JSON：`ProposalStatusPayload`（v5 新增） |
+| `proposal_status` | `proposalId` | JSON：`ProposalStatusPayload`（v5 新增） |
 
 ### 4.2 應答信封 `SyncResponse`
 
@@ -166,8 +170,10 @@ v2 無法分辨以下三種情況（三者的共同點都是「該 uri 不再出
 桌面端行為：
 
 - 記住上次看到的 `instanceId`。
-- 收到**不同**的 `instanceId` → 視為重灌：清空本地鏡像（documents / strokes / points / sync_docs），
-  從乾淨狀態重新同步。`SyncResult.generationWiped = true`。
+- 收到**不同**的 `instanceId` → 視為重灌：清空本地鏡像（documents / strokes / points /
+  text_annotations / sync_docs / sync_proposals / sync_oplog），從乾淨狀態重新同步。
+  `SyncResult.generationWiped = true`。提案佇列必須一起清：舊世代的 base 版本在新世代
+  永遠仲裁不過，留著只會每輪送必被駁回的提案。
 - 收到**相同**的 `instanceId` → 同一世代，缺席 manifest 才代表刪除（見 §6）。
 
 ---
@@ -232,8 +238,9 @@ schema 完全不需要動。
 
 ## 7. 刪除傳播（v3 新增）
 
-平板是唯一寫入者，而且桌面端每次都請求**完整** manifest，所以「完整 manifest 中
-缺席」在語意上就是「已被刪除」。
+平板是刪除的唯一仲裁者，而且桌面端每次都請求**完整** manifest，所以「完整 manifest 中
+缺席」在語意上就是「已被刪除」。提案（v5）只能增改物件，不能刪除文件——文件級刪除
+永遠以 manifest 缺席為準。
 
 v2 從不刪除任何東西，這是孤兒問題的另一半。v3：
 
@@ -272,7 +279,11 @@ pass 編號持久化在 `sync_meta.passCounter`——**不能放在記憶體**�
 > 欄位變更都變成長期稅負）。
 
 桌面端實際儲存的表（見 `DatabaseManager`）：`documents`、`folders`、`strokes`
-（**含 v3 新增的 `docY`**）、`points`、`sync_meta`、`sync_docs`。
+（**含 v3 新增的 `docY`**）、`points`、`sync_meta`、`sync_docs`、`text_annotations`
+（v3 新增），以及 v5 提案 outbox `sync_proposals`／`sync_oplog`（桌面 schema v4）。
+
+> v5 起桌面不再是唯讀鏡像：本地修改會按物件 id 記入 `sync_oplog`，下輪同步時以
+> 提案送往平板仲裁。上面的「唯讀鏡像」只描述 v4 以前的行為。
 
 ### documents
 
@@ -313,7 +324,7 @@ pass 編號持久化在 `sync_meta.passCounter`——**不能放在記憶體**�
 
 ---
 
-## 11. v5 規劃（尚未實作，Android 端不必等待）
+## 11. v6 規劃（尚未實作，Android 端不必等待）
 
 1. **`NsdManager` 取代 UDP 廣播**。`255.255.255.255` 不會穿過路由器；客用網路、
    IoT VLAN、mesh WiFi 的 client isolation 會直接讓它失效。更關鍵的是
@@ -335,13 +346,16 @@ pass 編號持久化在 `sync_meta.passCounter`——**不能放在記憶體**�
 
 - [x] `SyncIdentity.kt`：首次啟動生成 `instanceId`（UUID）與 `psk`（8 位數字），
       存 SharedPreferences。**不改任何 entity。**
-- [ ] `TabletSyncServer.kt`：`ServerSocket(53531)`，實作 §4 的 7 個 verb。
-      - `handshake`：回 `{protocolVersion: 4, instanceId, pskProof}`，用 constant-time 比對 psk
+- [x] `TabletSyncServer.kt`：`ServerSocket(53531)`，實作 §4 的 9 個 verb。
+      - `handshake`：回 `{protocolVersion: 5, instanceId, pskProof}`，用 constant-time 比對 psk
       - `doc_manifest`：Room `documents` LEFT JOIN `count(strokes)`，逐筆算 `docVersion`
       - `document_detail`：整列 + 全部筆跡 +（v4）全部文字註解
       - `document_detail` / `stroke_delta` / `stroke_page`：**回傳前依 `points.id` 排序**
         （Room 的 `@Relation` 不保證順序，而順序就是筆劃順序）
       - `file_meta` / `file_data`：`RandomAccessFile.seek(offset)` 讀 chunk
+      - `proposal_submit` / `proposal_status`（v5）：`ProposalArbiter.decide` 比對
+        `baseDocVersion`，接受則 `repos.transaction` 同事務寫入並刷新筆數快取，否則
+        整筆駁回；最近 64 筆結果留記憶體供冪等重送
 - [x] `DiscoveryResponder.kt`：UDP 53530，回應不同 role 的 discover
 - [x] `TabletSyncService`：前台 Service（`foregroundServiceType="dataSync"`）承載 server
 - [x] `AndroidManifest.xml`：`ACCESS_NETWORK_STATE`、`CHANGE_WIFI_MULTICAST_STATE`、
@@ -354,8 +368,10 @@ pass 編號持久化在 `sync_meta.passCounter`——**不能放在記憶體**�
 > 但要設計成「使用者按『連線到電腦』」而不是看不見的背景輪詢。
 
 驗收方式：兩台設備同 WiFi → 桌面自動出現平板卡片 → 點 Sync → 檢查
-`updated / strokes / files / skipped / orphansRemoved` 計數，第二次同步應全部
-`skipped`（冪等性）；接著在平板刪掉一份文件，第三次同步應出現 `orphansRemoved = 1`。
+`updated / strokes / texts / files / skipped / orphansRemoved` 計數，第二次同步應全部
+`skipped`（冪等性）；接著在平板刪掉一份文件，第三次同步應出現 `orphansRemoved = 1`；
+在桌面畫一筆再同步，應出現 `已送出 1` 且平板出現該筆；平板先改、桌面後改同一文件再同步，
+應出現 `提案衝突 1` 且桌面內容等於平板。
 
 ---
 
@@ -368,4 +384,5 @@ pass 編號持久化在 `sync_meta.passCounter`——**不能放在記憶體**�
 | v2.0.1 | 修復 uri repoint bug（同步永不改寫 uri） |
 | **v3** | **`instanceId` 世代偵測、`docVersion` 內容雜湊取代時間戳、刪除傳播（含寬限期）、PSK 認證、`strokes.docY`、兩端 schema 解耦、單執行緒 DB** |
 | **v4** | **文字註解隨 `document_detail` 傳輸、`docVersion` 加入 `textCount`、`SyncResult.textsPulled`。⚠️ 兩端都必須升版：舊平板會把新增欄位當不存在、雜湊算在另一組欄位上，導致每份文件每輪都被判成有變更** |
-| v5（規劃） | `NsdManager`、HTTP/1.1、事件驅動同步、增量筆跡 delta |
+| **v5** | **雙向提案：桌面 `sync_oplog` 按物件 id 記錄本地修改，`proposal_submit` 帶 `baseDocVersion` 送平板仲裁（接受／整筆駁回，不合併），`proposal_status` 可查詢；桌面 schema v4 新增 `sync_proposals`／`sync_oplog`；`SyncResult.proposalsAccepted/proposalConflicts`。⚠️ 兩端都必須升版，否則桌面只會排永遠沒人讀的提案** |
+| v6（規劃） | `NsdManager`、HTTP/1.1、事件驅動同步、增量筆跡 delta |
