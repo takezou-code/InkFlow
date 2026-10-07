@@ -151,6 +151,46 @@ class TextAnnotationDbTest {
     }
 
     @Test
+    fun `purgeDocument removes notes instead of orphaning them`() {
+        // Deletion propagation ends here after the grace pass. If notes survived,
+        // a document deleted on the tablet would keep its text on the desktop.
+        val db = newDb("purge")
+        db.saveTextAnnotation(ann.copy(id = "a1"))
+        db.saveTextAnnotation(ann.copy(id = "b1", documentUri = "file:///b.pdf"))
+
+        db.purgeDocument("file:///a.pdf")
+
+        assertTrue(db.getAllTextAnnotationsForDocument("file:///a.pdf").isEmpty())
+        assertEquals(1, db.getAllTextAnnotationsForDocument("file:///b.pdf").size)
+        db.disconnect()
+    }
+
+    @Test
+    fun `wipeGeneration clears notes from the previous generation`() {
+        // A reinstall changes instanceId and starts clean. Notes belong to that
+        // generation, so they must go with the strokes rather than linger.
+        val db = newDb("wipe")
+        db.saveTextAnnotation(ann.copy(id = "a1"))
+
+        db.wipeGeneration()
+
+        assertTrue(db.getAllTextAnnotationsForDocument("file:///a.pdf").isEmpty())
+        db.disconnect()
+    }
+
+    @Test
+    fun `deleteDocument removes notes with the document`() {
+        val db = newDb("docdelete")
+        db.saveTextAnnotation(ann.copy(id = "a1"))
+
+        db.deleteDocument("file:///a.pdf")
+
+        assertTrue(db.getAllTextAnnotationsForDocument("file:///a.pdf").isEmpty())
+        assertNull(db.getDocument("file:///a.pdf"))
+        db.disconnect()
+    }
+
+    @Test
     fun `the notes table exists after migration on a database that predates it`() {
         // Simulates the shipped upgrade: an old database gets opened and must end
         // up with notes available, without losing the strokes it already had.

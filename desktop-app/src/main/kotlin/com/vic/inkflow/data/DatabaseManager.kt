@@ -354,6 +354,7 @@ class DatabaseManager(private val dbPath: String) {
         connection?.createStatement()?.use { stmt ->
             stmt.executeUpdate("DELETE FROM points")
             stmt.executeUpdate("DELETE FROM strokes")
+            stmt.executeUpdate("DELETE FROM text_annotations")
             stmt.executeUpdate("DELETE FROM documents")
             stmt.executeUpdate("DELETE FROM sync_docs")
         }
@@ -365,6 +366,7 @@ class DatabaseManager(private val dbPath: String) {
         connection?.createStatement()?.use { stmt ->
             stmt.executeUpdate("DELETE FROM points WHERE strokeId IN (SELECT id FROM strokes WHERE documentUri = '$uri')")
             stmt.executeUpdate("DELETE FROM strokes WHERE documentUri = '$uri'")
+            stmt.executeUpdate("DELETE FROM text_annotations WHERE documentUri = '$uri'")
             stmt.executeUpdate("DELETE FROM documents WHERE uri = '$uri'")
         }
     }
@@ -462,6 +464,7 @@ class DatabaseManager(private val dbPath: String) {
             stmt.executeUpdate()
         }
         deleteStrokesForDocument(uri)
+        deleteTextAnnotationsForDocument(uri)
     }
 
     // ─── Folder operations (category support) ────────────────────────────────
