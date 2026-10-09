@@ -250,6 +250,9 @@ internal fun Sidebar(
     modelWidth: Float,
     modelHeight: Float,
     onPageSelected: (Int) -> Unit,
+    // RAIL 拖動中的中央頁預覽（紙跟走、不提交）；放手才經 onPageSelected 提交。
+    // 預設空實作：其他呼叫端維持舊行為（直接提交）。
+    onPagePreview: (Int) -> Unit = {},
     onAddPage: (afterIndex: Int) -> Unit,
     onDeletePages: (List<Int>) -> Unit,
     // R2：頁面結構操作（拖拽移頁）超出復原範圍——呼叫方清棧，杜絕舊命令錯位。
@@ -454,8 +457,12 @@ internal fun Sidebar(
                     // 2. 只有頁碼模式才隨滑動翻頁：預覽/全頁模式滑動只用來看，點了才翻。
                     // 只跟真手勢：interactionSource 只有手指拖才有 DragInteraction，
                     // 程式捲動（跟隨/點擊/吸附）沒有——從源頭斷迴圈。門衛旗當第二道。
+                    // 拖動中只報預覽（紙跟走、不提交）；放手才提交（單一標準：放手／停穩才算）。
+                    // 注意：下方 LaunchedEffect(listState) 只跑一次，讀到的 stage／current 必須經 ref 拿新鮮值。
                     var sidebarUserScrolling by remember { mutableStateOf(false) }
                     var lastSidebarDragEndMs by remember { mutableStateOf(0L) }
+                    val sidebarStageRef = androidx.compose.runtime.rememberUpdatedState(sidebarStage)
+                    val sidebarCurrentRef = androidx.compose.runtime.rememberUpdatedState(currentPageIndex)
                     androidx.compose.runtime.LaunchedEffect(listState) {
                         listState.interactionSource.interactions.collect { interaction ->
                             when (interaction) {
@@ -465,6 +472,11 @@ internal fun Sidebar(
                                 is androidx.compose.foundation.interaction.DragInteraction.Cancel -> {
                                     sidebarUserScrolling = false
                                     lastSidebarDragEndMs = android.os.SystemClock.uptimeMillis()
+                                    if (sidebarStageRef.value == SidebarStage.RAIL) {
+                                        centerItemIndex?.let { settled ->
+                                            if (settled != sidebarCurrentRef.value) onPageSelected(settled)
+                                        }
+                                    }
                                 }
                                 else -> Unit
                             }
@@ -478,7 +490,7 @@ internal fun Sidebar(
                         if (!sidebarUserScrolling && !recentDrag) return@LaunchedEffect
                         centerItemIndex?.let { newIndex ->
                             if (newIndex != currentPageIndex) {
-                                onPageSelected(newIndex)
+                                onPagePreview(newIndex)
                             }
                         }
                     }

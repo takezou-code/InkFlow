@@ -303,40 +303,74 @@ fun TabletEditorScreen(
     val sidebarListState = rememberLazyListState()
     val mainListState = rememberLazyListState()
     val pinchActive by viewModel.pinchActive.collectAsState()
+    // 頁數訂閱提前到當前頁狀態機之前：applyCommit／previewNavigate／settle 都要夾取，
+    // 詞法作用域要求先宣告。只是 State 訂閱，提前無副作用。
+    val pageCount by pdfViewModel.pageCount.collectAsState()
     // 初次捲到位旗標：PDF 載入前主列表停在第 0 頁，此時 PageWorkspace 的跟隨回報必須忽略，
     // 否則會把剛從 DB 讀回的頁碼洗回 0（記住上次頁面失效的主因之一）。
     // 純 remember（不 Saveable）：旋轉重建後回到 false，剛好重捲一次。
     var initialScrollDone by remember(uri) { mutableStateOf(false) }
-    // 程式化捲動目標：點按/增刪頁觸發主列表動畫時記下目標頁，
-    // 動畫中途經過的中間頁一律忽略（不改 currentPageIndex），到位才認。
-    // 否則中間頁會觸發跟隨 effect 回拉側欄、側欄滑動又推回主列表 → 兩邊互推、
-    // 放手後主列表還被 animateScrollToItem 拽走（彈跳感）。2.5s 超時自清，避免動畫被取消時卡住。
-    var programmaticTarget by remember { mutableStateOf<Int?>(null) }
-    androidx.compose.runtime.LaunchedEffect(programmaticTarget) {
-        if (programmaticTarget != null) {
-            kotlinx.coroutines.delay(2500)
-            programmaticTarget = null
+    // 當前頁單一標準（見 CurrentPageOwner）：主紙最大可見頁經穩定門才提交；
+    // 側欄拖動／scrub 的手指目標先當 preview（紙跟著走），放手／到位／接管才提交。
+    // 這裡取代舊的 programmaticTarget＋2.5s 超時：預期／接管／超時規則寫死在狀態機裡，用單測釘住。
+    val pageOwner = remember { CurrentPageOwner() }
+    var previewPage by remember { mutableStateOf<Int?>(null) }
+    val settleGen = remember { java.util.concurrent.atomic.AtomicInteger(0) }
+    var previewNavJob by remember { mutableStateOf<Job?>(null) }
+    // 單一提交點：全編輯器只有這裡能寫 currentPageIndex＋setActivePage。
+    // DB 補寫與側欄置中沿用下方既有 effect（只聽 committed 變化）。
+    fun applyCommit(commit: PageCommit, prefetch: Boolean) {
+        previewPage = null
+        if (commit.page == currentPageIndex) return
+        currentPageIndex = commit.page
+        viewModel.setActivePage(commit.page, prefetch = prefetch)
+    }
+    // 穩定門驅動：候選不變滿 settleMs 才提交；結構操作中凍結（留著候選等操作結束）。
+    fun scheduleSettleCommit() {
+        val g = settleGen.incrementAndGet()
+        scope.launch {
+            kotlinx.coroutines.delay(pageOwner.settleMs)
+            if (g != settleGen.get()) return@launch
+            if (pdfViewModel.isPageOperationInProgress.value) return@launch
+            val now = android.os.SystemClock.uptimeMillis()
+            pageOwner.settle(currentPageIndex, pageCount, now)?.let { applyCommit(it, prefetch = false) }
+        }
+    }
+    // 預覽導航（側欄拖動／scrub 中）：紙跟著手指走，但不提交；
+    // 到位回報經 onScrollPage→owner 判為 arrival 才提交，放手也會結算。
+    fun previewNavigate(index: Int) {
+        val target = pageOwner.clamp(index, pageCount)
+        if (target == currentPageIndex && previewPage == null) return
+        previewPage = target
+        pageOwner.expectTarget(target, pageCount, android.os.SystemClock.uptimeMillis())
+        previewNavJob?.cancel()
+        previewNavJob = scope.launch {
+            kotlinx.coroutines.delay(80)
+            runCatching { mainListState.animateScrollToItem(target) }
         }
     }
     // 程式化捲動的命：手勢一接管（pinchActive）立刻取消，未跑完的動畫不許在手勢中/手勢後
-    // 把紙拽回舊目標（反方向回彈主因）。目標旗跟著清，2.5s 自清照舊當保險。
+    // 把紙拽回舊目標（反方向回彈主因）。owner 的預期跟著清。
     var programmaticScrollJob by remember { mutableStateOf<Job?>(null) }
     androidx.compose.runtime.LaunchedEffect(pinchActive) {
         if (pinchActive) {
             programmaticScrollJob?.cancel()
             programmaticScrollJob = null
-            programmaticTarget = null
+            previewNavJob?.cancel()
+            previewNavJob = null
+            pageOwner.cancelExpected()
         }
     }
-    // 點選意圖（側欄/靜態頁）：換作用頁 + 主列表滑過去
+    // 點選意圖（側欄點選／網格點選／放手結算）：立刻提交＋設預期，過渡頁忽略。
     // 用戶親自點了 = 接管，初次捲動不再搶回去。
     val onRequestPage: (Int) -> Unit = { index ->
         initialScrollDone = true
-        programmaticTarget = index
-        currentPageIndex = index
-        viewModel.setActivePage(index)
+        val commit = pageOwner.commitNow(index, PageOwner.ProgrammaticNav, pageCount)
+        pageOwner.expectTarget(commit.page, pageCount, android.os.SystemClock.uptimeMillis())
+        applyCommit(commit, prefetch = true)
+        previewNavJob?.cancel()
         programmaticScrollJob?.cancel()
-        programmaticScrollJob = scope.launch { runCatching { mainListState.animateScrollToItem(index) } }
+        programmaticScrollJob = scope.launch { runCatching { mainListState.animateScrollToItem(commit.page) } }
     }
     // R3：提取整組撤銷的頁操作接線（VM 碰不到 PdfViewModel/Context，由這層提供；
     // model 尺寸每次現讀，避免閉包陳舊）。
@@ -399,15 +433,18 @@ fun TabletEditorScreen(
             }
         }
     }
-    // 卷動跟隨：主列表滑到哪頁就換作用頁（不捲主列表，避免打架；側欄由下方 effect 置中）
+    // 卷動跟隨：主列表的最大可見頁先當候選（不直接寫），穩定門／到位／接管由 pageOwner 判。
+    // 不捲主列表（避免打架）；側欄置中與 DB 補寫由下方 committed effect 做。
     val onScrollPage: (Int) -> Unit = { index ->
         if (initialScrollDone && index != currentPageIndex) {
-            val target = programmaticTarget
-            if (target == null || index == target) {
-                if (index == target) programmaticTarget = null
-                currentPageIndex = index
-                // 排放側已 prefetchPages(first, last)，此處不再重查（融重複預取）。
-                viewModel.setActivePage(index, prefetch = false)
+            val now = android.os.SystemClock.uptimeMillis()
+            val arrival = pageOwner.onCandidate(PageOwner.MainScroll, index, pageCount, now)
+            if (arrival != null) {
+                // 到位／接管：提交。排放側已 prefetchPages(first, last)，此處不再重查。
+                applyCommit(arrival, prefetch = false)
+            } else {
+                if (index != currentPageIndex) previewPage = pageOwner.clamp(index, pageCount)
+                scheduleSettleCommit()
             }
         }
     }
@@ -442,8 +479,9 @@ fun TabletEditorScreen(
         if (!initialPageRestored) {
             val stored = docViewModel.getLastPageIndex(uri.toString())
             if (stored > 0) {
-                currentPageIndex = stored
-                viewModel.setActivePage(stored)
+                // 還原走單一提交點（owner=Restore），不設預期：捲動等下方 pageCount effect 做。
+                // 這裡 pageCount 還是 0（PDF 還沒 open），夾取必須 bypass（只做提交，不做夾）。
+                applyCommit(pageOwner.commitNow(stored, PageOwner.Restore, Int.MAX_VALUE), prefetch = true)
             }
             initialPageRestored = true
         }
@@ -504,15 +542,14 @@ fun TabletEditorScreen(
         docViewModel.markDocumentOpened(uri.toString())
         pdfViewModel.openPdf(uri)
     }
-    val pageCount by pdfViewModel.pageCount.collectAsState()
+    // pageCount 訂閱已上移（當前頁狀態機之前），這裡不再重複宣告。
     // PDF 載入完成後再捲到記憶頁：restore effect 跑時 pageCount 還是 0（openPdf 還沒回來），
     // 在那裡捲等於沒捲。等首個有效 pageCount 落定、DB 值已讀回，才一次捲到位；
     // 之後頁數變化（增刪頁）不再亂捲，只做夾取。門由 initialScrollDone 擋跟隨回寫。
     androidx.compose.runtime.LaunchedEffect(pageCount, initialPageRestored) {
         if (initialPageRestored && !initialScrollDone && pageCount > 0) {
-            val safe = currentPageIndex.coerceIn(0, pageCount - 1)
-            currentPageIndex = safe
-            viewModel.setActivePage(safe)
+            val safe = pageOwner.clamp(currentPageIndex, pageCount)
+            applyCommit(pageOwner.commitNow(safe, PageOwner.Restore, pageCount), prefetch = true)
             runCatching { mainListState.scrollToItem(safe) }
             runCatching { sidebarListState.scrollToCenter(safe) }
             initialScrollDone = true
@@ -684,17 +721,17 @@ fun TabletEditorScreen(
             .hazeSource(editorHaze)
     ) {
 
-        // Auto-navigate to the newly inserted page
+        // Auto-navigate to the newly inserted page（結構事件走單一提交點，owner=StructuralOp）
         val lastInsertedPage by pdfViewModel.lastInsertedPageIndex.collectAsState()
         androidx.compose.runtime.LaunchedEffect(lastInsertedPage) {
             val idx = lastInsertedPage ?: return@LaunchedEffect
             if (initialPageRestored) {
-                programmaticTarget = idx
-                currentPageIndex = idx
-                viewModel.setActivePage(idx)
-                sidebarListState.animateScrollToCenter(idx)
+                val commit = pageOwner.commitNow(idx, PageOwner.StructuralOp, pageCount)
+                pageOwner.expectTarget(commit.page, pageCount, android.os.SystemClock.uptimeMillis())
+                applyCommit(commit, prefetch = true)
+                sidebarListState.animateScrollToCenter(commit.page)
                 programmaticScrollJob?.cancel()
-                programmaticScrollJob = scope.launch { runCatching { mainListState.animateScrollToItem(idx) } }
+                programmaticScrollJob = scope.launch { runCatching { mainListState.animateScrollToItem(commit.page) } }
                 pdfViewModel.consumeInsertedPageEvent()
             }
         }
@@ -708,11 +745,11 @@ fun TabletEditorScreen(
                 deletedIndices = lastDeletedPages,
                 pageCountAfter = pageCount
             )
-            currentPageIndex = clamped
-            programmaticTarget = clamped
-            viewModel.setActivePage(clamped)
-            sidebarListState.animateScrollToCenter(clamped)
-            runCatching { mainListState.scrollToItem(clamped) }
+            val commit = pageOwner.commitNow(clamped, PageOwner.StructuralOp, pageCount)
+            pageOwner.expectTarget(commit.page, pageCount, android.os.SystemClock.uptimeMillis())
+            applyCommit(commit, prefetch = true)
+            sidebarListState.animateScrollToCenter(commit.page)
+            runCatching { mainListState.scrollToItem(commit.page) }
             pdfViewModel.consumeDeletedPageEvent()
         }
 
@@ -899,6 +936,8 @@ fun TabletEditorScreen(
                     lastSidebarDriveMs = SystemClock.uptimeMillis()
                     onRequestPage(index)
                 },
+                // RAIL 拖動中只報預覽（紙跟走、不提交）；放手／點選才經 onPageSelected 提交。
+                onPagePreview = { previewNavigate(it) },
                 onAddPage = { afterIndex ->
                     // R2：結構操作超出復原範圍——先清棧，杜絕舊命令錯位寫入。
                     viewModel.clearUndoStacks()
@@ -1194,9 +1233,16 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                                 val change = event.changes.firstOrNull { it.id == down.id } ?: break
                                 if (!change.pressed) {
                                     isDraggingSidebar = false
-                                    // Scrub 收尾：泡泡熄燈、拇指交還給主列表跟隨。
-                                    // 主列表已經 scrollToItem 到位，不用再捲。
+                                    // Scrub 收尾：有 scrub 目標就結算提交（走單一提交點，owner=SidebarDrive），
+                                    // 再熄泡泡、拇指交還給主列表跟隨。
+                                    val scrubSettled = scrubPage
                                     scrubPage = null
+                                    if (scrubSettled != null) {
+                                        initialScrollDone = true
+                                        val commit = pageOwner.commitNow(scrubSettled, PageOwner.SidebarDrive, pageCount)
+                                        pageOwner.expectTarget(commit.page, pageCount, android.os.SystemClock.uptimeMillis())
+                                        applyCommit(commit, prefetch = true)
+                                    }
                                     when {
                                         dragged -> {
                                             // 放手＝交給狀態機決定停哪一階，再彈過去。
@@ -1260,13 +1306,8 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                                         if (jump != scrubPage) {
                                             scrubPage = jump
                                             initialScrollDone = true
-                                            programmaticTarget = jump
-                                            currentPageIndex = jump
-                                            viewModel.setActivePage(jump)
-                                            programmaticScrollJob?.cancel()
-                                            programmaticScrollJob = scope.launch {
-                                                runCatching { mainListState.scrollToItem(jump) }
-                                            }
+                                            // 拖動中只預覽（泡泡報數、紙跟走），放手才提交。
+                                            previewNavigate(jump)
                                         }
                                     }
                                 }
