@@ -2457,18 +2457,32 @@ private fun InkToolIcon(
     onClick: () -> Unit
 ) {
     val isDark = InkThemeState.darkMode
+    // Selected state in the theme colour, not the pearl pill: pearl-on-glass
+    // washes out to near-white in both modes, so the armed tool was invisible.
+    // Armed = primary-tinted fill + primary ring + primary icon; the icon stays
+    // readable on light and dark alike.
+    val primary = MaterialTheme.colorScheme.primary
     Box(
         modifier = Modifier
             .size(40.dp)
             .clip(CircleShape)
-            .then(if (selected) Modifier.glassSelectionPill(CircleShape) else Modifier)
+            .then(
+                if (selected) Modifier
+                    .background(primary.copy(alpha = 0.22f), CircleShape)
+                    .border(1.5.dp, primary.copy(alpha = 0.65f), CircleShape)
+                else Modifier
+            )
             .glassClickable(onClick = onClick, shape = CircleShape, enabled = enabled),
         contentAlignment = Alignment.Center
     ) {
         Icon(
             icon,
             contentDescription = description,
-            tint = glassContentColor(isDark).copy(alpha = if (enabled) 1f else 0.35f),
+            tint = when {
+                !enabled -> glassContentColor(isDark).copy(alpha = 0.35f)
+                selected -> primary
+                else -> glassContentColor(isDark)
+            },
             modifier = Modifier.size(22.dp)
         )
         // Selection count rides on the icon rather than in a label: the row stays
