@@ -1232,8 +1232,9 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * P0 落定：只對可見範圍補高清（flow 存在但空、且快取也空才發；compose 中的
+     * P0 落定：對指定範圍補高清（flow 存在但空、且快取也空才發；compose 中的
      * getPageBitmap 會兜底剩餘，雙發時第二個命中快取直接返回）。
+     * 呼叫端傳可見 ±2（附近頁一併清晰）；越界下標此處擋掉。
      */
     fun ensureHighQualityVisible(range: IntRange) {
         range.forEach { index ->

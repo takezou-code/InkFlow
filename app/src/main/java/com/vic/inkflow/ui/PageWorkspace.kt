@@ -653,10 +653,11 @@ val allowSinglePan = startedBlank || fingerPanOnPaperAllowed(
                 val l = lastFastLast
                 pdfViewModel.setScrollingFast(false)
                 if (f != Int.MAX_VALUE && l >= 0 && f <= l) {
-                    pdfViewModel.ensureHighQualityVisible(f..l)
+                    // 附近頁一併補高清（可見 ±2，與 DB 鄰頁快取同窗；
+                    // ensure 只寫 flow、prefetch 只進快取，前者已覆蓋後者）。
+                    // 半露出的鄰頁滑回來直接清晰，不用等第二輪。
+                    pdfViewModel.ensureHighQualityVisible((f - 2)..(l + 2))
                     pdfViewModel.flushPendingRenders(f..l)
-                    pdfViewModel.prefetchPage(f - 1)
-                    pdfViewModel.prefetchPage(l + 1)
                     // P1 有界：窗外無訂閱的高清 flow 釋放（滑回來自動補渲）。
                     pdfViewModel.trimBitmapFlowsToWindow(f..l)
                 }
