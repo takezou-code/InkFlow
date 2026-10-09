@@ -103,7 +103,14 @@ compose.desktop {
             //
             // `java.logging` because PDFBox and the JRE's own logging bridge expect
             // it; cheap insurance.
-            modules("java.sql", "java.naming", "java.logging")
+            //
+            // `jdk.unsupported` is where `sun.misc.Unsafe` lives, and Gson allocates
+            // every DTO without a no-arg constructor through it. Without the module,
+            // the packaged app throws "Unable to create instance of class ..." on the
+            // first sync handshake — while `gradlew run` (full JDK) and all unit tests
+            // are perfectly happy, which is why this only ever showed up in the EXE,
+            // exactly like the java.sql/java.naming trimmings above.
+            modules("java.sql", "java.naming", "java.logging", "jdk.unsupported")
 
             windows {
                 menuGroup = "InkFlow"
