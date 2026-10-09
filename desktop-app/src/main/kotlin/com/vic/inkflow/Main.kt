@@ -1,17 +1,24 @@
 package com.vic.inkflow
 
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Sync
-import androidx.compose.material.icons.filled.SyncDisabled
+import androidx.compose.material.icons.outlined.DarkMode
+import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.LightMode
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Sync
+import androidx.compose.material.icons.outlined.SyncDisabled
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
@@ -29,8 +36,14 @@ import com.vic.inkflow.ui.InkThemeState
 import com.vic.inkflow.ui.LibraryView
 import com.vic.inkflow.ui.theme.ShapeSm
 import com.vic.inkflow.ui.theme.ShapeXl
+import com.vic.inkflow.ui.theme.ShapeMd
+import com.vic.inkflow.ui.theme.Motion
+import com.vic.inkflow.ui.AccentGradient
 import com.vic.inkflow.ui.bubbleGlass
 import com.vic.inkflow.ui.auroraBackdrop
+import com.vic.inkflow.ui.glassClickable
+import com.vic.inkflow.ui.glassContentColor
+import com.vic.inkflow.ui.glassSelectionPill
 import com.vic.inkflow.ui.glassSidePanel
 import com.vic.inkflow.ui.pressableGlass
 import com.vic.inkflow.ui.fauxGlassPanel
@@ -280,8 +293,8 @@ fun InkFlowApp() {
                         if (isSyncing || syncManager.isSyncing) {
                             CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
                         } else {
-                            Icon(
-                                if (peerCount > 0) Icons.Default.Sync else Icons.Default.SyncDisabled,
+                                Icon(
+                                    if (peerCount > 0) Icons.Outlined.Sync else Icons.Outlined.SyncDisabled,
                                 null,
                                 modifier = Modifier.size(16.dp),
                                 tint = if (peerCount > 0) MaterialTheme.colorScheme.primary
@@ -321,145 +334,204 @@ fun InkFlowApp() {
                     },
                     enabled = !isSyncing
                 ) {
-                    Icon(Icons.Default.Refresh, contentDescription = "立即同步")
-                }
-                // Dark mode toggle. Writes through to disk on every change: the
-                // alternative is a setting that appears to work and then forgets,
-                // which is worse than not having it.
-                IconButton(
-                    onClick = {
-                        val next = !InkThemeState.darkMode
-                        InkThemeState.darkMode = next
-                        DesktopSettings.darkMode = next
-                    }
-                ) {
-                    Text(if (InkThemeState.darkMode) "🌙" else "☀️")
+                    Icon(Icons.Outlined.Refresh, contentDescription = "立即同步")
                 }
                 // Back to library
                 if (selectedDocument != null || showSettings) {
                     IconButton(onClick = { selectedDocument = null; showSettings = false }) {
-                        Icon(Icons.Default.Home, contentDescription = "返回文件庫")
+                        Icon(Icons.Outlined.Home, contentDescription = "返回文件庫")
                     }
                 }
             }
         )
 
-        // ── Body: Navigation rail + content (+ AI panel in reader) ──────────
+        // ── Body: tablet-style floating dock + content (+ AI panel in reader) ──
+        // The old M3 NavigationRail read as a second app bolted to the side.
+        // The tablet uses a floating 76dp glass capsule with a brand dot and
+        // self-drawn rail items, so the desktop does the same. Destinations stay
+        // desktop ones (Library/Sync/Settings); only the material changes.
         Row(modifier = Modifier.fillMaxSize()) {
-            NavigationRail(
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier
-                    .width(88.dp)
-                    // Chrome, not content: the rail floats over whatever is to its
-                    // right, so a solid M3 fill here makes the layout read as two
-                    // separate apps bolted together. Leading rim, because on a
-                    // full-height strip that is the only edge you ever see.
-                    .glassSidePanel(InkThemeState.darkMode),
-                containerColor = Color.Transparent,
-                header = { Spacer(Modifier.height(8.dp)) }
+                    .fillMaxHeight()
+                    .padding(start = 12.dp, top = 12.dp, bottom = 12.dp)
+                    .width(76.dp)
+                    .fauxGlassPanel(isDark = InkThemeState.darkMode, shape = ShapeMd)
+                    .padding(vertical = 8.dp)
             ) {
-                NavigationRailItem(
-                    selected = selectedDocument == null && !showSettings,
-                    onClick = { selectedDocument = null; showSettings = false },
-                    icon = { Icon(Icons.Default.Home, contentDescription = null) },
-                    label = { Text("文件庫") }
-                )
-                NavigationRailItem(
-                    selected = false,
-                    onClick = { /* manual sync */
-                        if (!isSyncing) { isSyncing = true; syncManager.requestSyncNow { isSyncing = false; libraryRefresh++ } }
-                    },
-                    icon = {
-                        if (isSyncing || syncManager.isSyncing)
-                            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                        else
-                            Icon(Icons.Default.Sync, contentDescription = null)
-                    },
-                    label = { Text("同步") }
-                )
-                NavigationRailItem(
-                    selected = showSettings,
-                    onClick = { showSettings = true; selectedDocument = null },
-                    icon = { Icon(Icons.Default.Settings, contentDescription = null) },
-                    label = { Text("設定") }
-                )
-                Spacer(Modifier.weight(1f))
-                Box(Modifier.fillMaxWidth().padding(bottom = 12.dp), contentAlignment = Alignment.Center) {
+                Spacer(Modifier.height(8.dp))
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .background(AccentGradient, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
                     Text(
-                        if (peerCount > 0) "● $peerCount" else "○",
-                        color = if (peerCount > 0) MaterialTheme.colorScheme.primary
-                                else MaterialTheme.colorScheme.outline,
-                        style = MaterialTheme.typography.labelLarge
+                        "I",
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            color = androidx.compose.ui.graphics.Color.White,
+                            fontWeight = FontWeight.ExtraBold
+                        )
                     )
                 }
+                Spacer(Modifier.height(16.dp))
+                DesktopRailItem(
+                    selected = selectedDocument == null && !showSettings,
+                    onClick = { selectedDocument = null; showSettings = false },
+                    icon = Icons.Outlined.Home,
+                    label = "文件庫"
+                )
+                DesktopRailItem(
+                    selected = false,
+                    busy = isSyncing || syncManager.isSyncing,
+                    onClick = {
+                        if (!isSyncing) { isSyncing = true; syncManager.requestSyncNow { isSyncing = false; libraryRefresh++ } }
+                    },
+                    icon = Icons.Outlined.Sync,
+                    label = "同步"
+                )
+                DesktopRailItem(
+                    selected = showSettings,
+                    onClick = { showSettings = true; selectedDocument = null },
+                    icon = Icons.Outlined.Settings,
+                    label = "設定"
+                )
+                Spacer(Modifier.weight(1f))
+                IconButton(onClick = {
+                    val next = !InkThemeState.darkMode
+                    InkThemeState.darkMode = next
+                    DesktopSettings.darkMode = next
+                }) {
+                    Icon(
+                        imageVector = if (InkThemeState.darkMode) Icons.Outlined.LightMode else Icons.Outlined.DarkMode,
+                        contentDescription = "切換主題",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                // Peer presence as words, not just a coloured dot: colour-only
+                // status is invisible to anyone who cannot distinguish it.
+                Text(
+                    if (peerCount > 0) "$peerCount 在線" else "離線",
+                    color = if (peerCount > 0) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.outline,
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.padding(bottom = 4.dp)
+                )
             }
 
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxHeight()
-            ) {
-                when {
-                    showSettings -> SettingsView(
-                        peerNames = peerNames,
-                        lastSyncSummary = lastSyncSummary,
-                        pairingCode = pairingCode,
-                        onPairingCodeChange = { code ->
-                            pairingCode = code
-                            syncManager.setPairingCode(code)
-                            // Persist on every keystroke rather than on blur: the user
-                            // has no "save" affordance here, and losing the code on a
-                            // crash would mean re-reading it off the tablet screen.
-                            DesktopSettings.pairingCode = code
-                        }
-                    )
-                    selectedDocument == null -> LibraryView(
-                        databaseManager = databaseManager,
-                        refreshToken = libraryRefresh,
-                        syncStatusText = lastSyncSummary
-                            ?: if (peerCount > 0) "已連接：$peerNames"
-                               else "未偵測到平板（等待局域網發現）",
-                        selectedFolderId = selectedFolderId,
-onFolderSelected = { selectedFolderId = it },
-                          onDocumentSelected = { uri ->
-                              selectedDocument = uri
-                              currentPageIndex = 0
-                          },
-                          // PdfManager.mirroredDir() is the same directory — hard-coding a second
-                          // spelling here would let an import land somewhere the
-                          // viewer never looks, and the document would open as
-                          // "file not found".
-                          mirrorRoot = com.vic.inkflow.util.PdfManager.mirroredDir().absolutePath,
-                          onLibraryChanged = { libraryRefresh++ },
-                          modifier = Modifier.fillMaxSize()
-                      )
-                    else -> Row(Modifier.fillMaxSize()) {
-                        PdfViewer(
-                            documentUri = selectedDocument!!,
-                            pageIndex = currentPageIndex,
+            // Screen transitions follow the tablet's motion language: one normal
+            // crossfade between destinations, not a hard cut.
+            Crossfade(
+                targetState = showSettings to selectedDocument,
+                animationSpec = tween(Motion.DURATION_NORMAL),
+                modifier = Modifier.weight(1f).fillMaxHeight()
+            ) { screen ->
+                val (settingsOpen, doc) = screen
+                Box(modifier = Modifier.fillMaxSize()) {
+                    when {
+                        settingsOpen -> SettingsView(
+                            peerNames = peerNames,
+                            lastSyncSummary = lastSyncSummary,
+                            pairingCode = pairingCode,
+                            onPairingCodeChange = { code ->
+                                pairingCode = code
+                                syncManager.setPairingCode(code)
+                                // Persist on every keystroke rather than on blur: the user
+                                // has no "save" affordance here, and losing the code on a
+                                // crash would mean re-reading it off the tablet screen.
+                                DesktopSettings.pairingCode = code
+                            }
+                        )
+                        doc == null -> LibraryView(
                             databaseManager = databaseManager,
-                            onPageChange = { currentPageIndex = it },
-                              // Ink is opt-in (see the parameter's doc). Local edits are
-                              // filed into the v5 proposal queue and pushed for tablet
-                              // arbitration on the next sync; without a tablet they stay
-                              // local until one appears.
-                              editable = true,
-                              onInkChanged = { libraryRefresh++ },
-                              proposalQueue = proposalQueue,
-                              // The same token drives the library: every sync pass and
-                              // every local edit bumps it, so the reader reloads its
-                              // page from the database instead of showing stale ink.
-                              refreshToken = libraryRefresh,
-                            modifier = Modifier.weight(1f).fillMaxHeight()
+                            refreshToken = libraryRefresh,
+                            syncStatusText = lastSyncSummary
+                                ?: if (peerCount > 0) "已連接：$peerNames"
+                                   else "未偵測到平板（等待局域網發現）",
+                            selectedFolderId = selectedFolderId,
+                            onFolderSelected = { selectedFolderId = it },
+                            onDocumentSelected = { uri ->
+                                selectedDocument = uri
+                                currentPageIndex = 0
+                            },
+                            // PdfManager.mirroredDir() is the same directory — hard-coding a second
+                            // spelling here would let an import land somewhere the
+                            // viewer never looks, and the document would open as
+                            // "file not found".
+                            mirrorRoot = com.vic.inkflow.util.PdfManager.mirroredDir().absolutePath,
+                            onLibraryChanged = { libraryRefresh++ },
+                            modifier = Modifier.fillMaxSize()
                         )
-                        AiAssistantPanel(
-                            documentUri = selectedDocument!!,
-                            collapsed = aiPanelCollapsed,
-                            onToggleCollapsed = { aiPanelCollapsed = !aiPanelCollapsed }
-                        )
+                        else -> Row(Modifier.fillMaxSize()) {
+                            PdfViewer(
+                                documentUri = doc,
+                                pageIndex = currentPageIndex,
+                                databaseManager = databaseManager,
+                                onPageChange = { currentPageIndex = it },
+                                // Ink is opt-in (see the parameter's doc). Local edits are
+                                // filed into the v5 proposal queue and pushed for tablet
+                                // arbitration on the next sync; without a tablet they stay
+                                // local until one appears.
+                                editable = true,
+                                onInkChanged = { libraryRefresh++ },
+                                proposalQueue = proposalQueue,
+                                // The same token drives the library: every sync pass and
+                                // every local edit bumps it, so the reader reloads its
+                                // page from the database instead of showing stale ink.
+                                refreshToken = libraryRefresh,
+                                modifier = Modifier.weight(1f).fillMaxHeight()
+                            )
+                            AiAssistantPanel(
+                                documentUri = doc,
+                                collapsed = aiPanelCollapsed,
+                                onToggleCollapsed = { aiPanelCollapsed = !aiPanelCollapsed }
+                            )
+                        }
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun DesktopRailItem(
+    selected: Boolean,
+    onClick: () -> Unit,
+    icon: ImageVector,
+    label: String,
+    busy: Boolean = false
+) {
+    // Tablet GlassRailItem in desktop material: selected state rides the shared
+    // selection pill, press rides glassClickable, and the icon/label follow the
+    // same selected-primary / unselected-muted language. Desktop has no Haze, so
+    // the pill is the faux shared one, not the tablet's Haze-backed panel.
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+        modifier = Modifier
+            .padding(vertical = 4.dp)
+            .then(if (selected) Modifier.glassSelectionPill(CircleShape) else Modifier)
+            .glassClickable(onClick = onClick, shape = CircleShape)
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+    ) {
+        if (busy) {
+            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+        } else {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = if (selected) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (selected) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 
