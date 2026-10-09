@@ -1176,10 +1176,10 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
     private fun launchBitmapRender(flow: MutableStateFlow<Bitmap?>, pageIndex: Int) {
         val ticket = scrollGen
         renderScope.launch {
-            // 高清等待落定：快旗或 hold 任一成立就等（靜止 0.5s 才開渲）；
+            // M2 慢滑跟手清：只在快旗時等待落定；慢滑直接渲（手指推到哪清到哪）。
             // 票被超車（快旗升/落）直接丟棄，不欠渲染債。
             var waits = 0
-            while ((_isScrollingFast.value || renderHold.get()) && ticket == scrollGen && waits < 100) {
+            while (_isScrollingFast.value && ticket == scrollGen && waits < 100) {
                 kotlinx.coroutines.delay(100)
                 waits++
             }
