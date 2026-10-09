@@ -245,7 +245,9 @@ fun PdfViewer(
     editable: Boolean = false,
     onInkChanged: () -> Unit = {},
     refreshToken: Int = 0,
-    documentTitle: String = ""
+    documentTitle: String = "",
+    /** Fired (debounced by the receiver) whenever a local edit lands in the outbox. */
+    onLocalEdit: () -> Unit = {}
 ) {
     var pageCount by remember(documentUri) { mutableIntStateOf(0) }
     var docError by remember(documentUri) { mutableStateOf<String?>(null) }
@@ -464,6 +466,7 @@ fun PdfViewer(
                         onInkChanged = onInkChanged,
                         refreshToken = refreshToken,
                         docRefresh = docRefresh,
+                        onLocalEdit = onLocalEdit,
                         tool = tool,
                         inkColour = inkColour,
                         shapeSubType = shapeSubType,
@@ -516,6 +519,7 @@ private fun PageView(
     onInkChanged: () -> Unit = {},
     refreshToken: Int = 0,
     docRefresh: Int = 0,
+    onLocalEdit: () -> Unit = {},
     tool: InkTool = InkTool.Pen,
     inkColour: Int = 0xFF121826.toInt(),
     shapeSubType: com.vic.inkflow.util.ShapeType = com.vic.inkflow.util.ShapeType.RECT,
@@ -1018,13 +1022,22 @@ private fun PageView(
      */
     fun recordOps(ops: List<com.vic.inkflow.sync.ProposalOp>) {
         val q = proposalQueue ?: return
+        var filed = false
         ops.forEach { op ->
             when (q.record(documentUri, op)) {
-                com.vic.inkflow.sync.ProposalQueue.RecordResult.STALE_DROPPED ->
+                com.vic.inkflow.sync.ProposalQueue.RecordResult.STALE_DROPPED -> {
                     logger.info { "Older desktop edits for ${documentUri.substringAfterLast('/')} were overwritten by a pull" }
+                    // The current edit was still filed under the new base, so it
+                    // still needs a ride — a stale drop is not "nothing to send".
+                    filed = true
+                }
+                com.vic.inkflow.sync.ProposalQueue.RecordResult.RECORDED -> filed = true
                 else -> Unit
             }
         }
+        // Write-through: a filed op must not wait for the next 28s poll tick.
+        // The receiver debounces, so a whole stroke burst costs one pass.
+        if (filed) onLocalEdit()
     }
 
     /**
