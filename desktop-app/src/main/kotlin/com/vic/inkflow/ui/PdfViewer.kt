@@ -907,14 +907,15 @@ fun PdfViewer(
         val mW = pageBox?.widthPt ?: box?.widthPt ?: 0f
         val mH = pageBox?.heightPt ?: box?.heightPt ?: 0f
         val base = documentUri.substringAfterLast('/').substringBeforeLast('.').ifEmpty { "document" }
-        val chooser = javax.swing.JFileChooser().apply {
-            dialogTitle = "匯出 PDF"
-            selectedFile = java.io.File("$base-annotated.pdf")
-            fileFilter = javax.swing.filechooser.FileNameExtensionFilter("PDF 檔案", "pdf")
-            isAcceptAllFileFilterUsed = false
-        }
-        if (chooser.showSaveDialog(null) != javax.swing.JFileChooser.APPROVE_OPTION) return
-        var dest = chooser.selectedFile ?: return
+        // Native save dialog, not Swing: same reason as the import dialog — the
+        // Swing one looks a decade older than everything around it.
+        val fd = java.awt.FileDialog(null as java.awt.Frame?, "匯出 PDF", java.awt.FileDialog.SAVE)
+        fd.file = "$base-annotated.pdf"
+        fd.filenameFilter = java.io.FilenameFilter { _, name -> name.lowercase().endsWith(".pdf") }
+        fd.isVisible = true
+        if (fd.file == null) { fd.dispose(); return }
+        var dest = java.io.File(fd.directory, fd.file)
+        fd.dispose()
         if (!dest.name.lowercase().endsWith(".pdf")) {
             dest = java.io.File(dest.parent, dest.name + ".pdf")
         }

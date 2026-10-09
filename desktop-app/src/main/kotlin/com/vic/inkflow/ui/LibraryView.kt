@@ -11,6 +11,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.UploadFile
+import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -25,6 +26,7 @@ import com.vic.inkflow.data.DatabaseManager
 import com.vic.inkflow.data.DocumentEntity
 import com.vic.inkflow.util.LocalImport
 import com.vic.inkflow.ui.theme.ShapeMd
+import com.vic.inkflow.ui.theme.ShapeXl
 import com.vic.inkflow.ui.fauxGlassPanel
 import java.io.File
 import java.text.SimpleDateFormat
@@ -50,26 +52,18 @@ fun LibraryView(
 ) {
     var query by remember { mutableStateOf("") }
 
-    // File chooser. Uses the AWT dialog directly rather than Compose's
-    // rememberFileDialogLauncher: the launcher API has to be created in a
-    // @Composable and remembered, and its desktop behaviour around single-instance
-    // dialogs has changed between Compose releases. The AWT call is stable, and it
-    // is modal anyway.
+    // File dialog. The native AWT FileDialog, not Swing's JFileChooser: the Swing
+    // dialog looks like 2005 and breaks the whole visual language, while the
+    // native one matches the OS. It is modal and blocking, same as before.
     var importError by remember { mutableStateOf<String?>(null) }
     var importing by remember { mutableStateOf(false) }
 
     fun pickAndImport() {
-        val chosen = runCatching {
-            javax.swing.JFileChooser().apply {
-                fileSelectionMode = javax.swing.JFileChooser.FILES_ONLY
-                isAcceptAllFileFilterUsed = false
-                fileFilter = javax.swing.filechooser.FileNameExtensionFilter("PDF 檔案", "pdf")
-                isMultiSelectionEnabled = false
-            }.let { chooser ->
-                val result = chooser.showOpenDialog(null)
-                if (result == javax.swing.JFileChooser.APPROVE_OPTION) chooser.selectedFile else null
-            }
-        }.getOrNull()
+        val fd = java.awt.FileDialog(null as java.awt.Frame?, "開啟 PDF", java.awt.FileDialog.LOAD)
+        fd.filenameFilter = java.io.FilenameFilter { _, name -> name.lowercase().endsWith(".pdf") }
+        fd.isVisible = true
+        val chosen = if (fd.file != null) File(fd.directory, fd.file) else null
+        fd.dispose()
 
         if (chosen == null) return
 
@@ -259,7 +253,7 @@ fun LibraryView(
 
         // ── Document card grid ───────────────────────────────────────────────
         if (docs.isEmpty()) {
-            EmptyLibrary(query = query)
+            EmptyLibrary(query = query, onImport = { pickAndImport() })
         } else {
             LazyVerticalGrid(
                 columns = GridCells.Adaptive(minSize = 210.dp),
@@ -282,21 +276,42 @@ fun LibraryView(
 }
 
 @Composable
-private fun EmptyLibrary(query: String) {
+private fun EmptyLibrary(query: String, onImport: () -> Unit) {
+    // A real empty state, not two grey lines: glass card, icon, guidance, and
+    // the one action that gets the user out of here. The import dialog it opens
+    // is the same native one as the import button above.
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier
+                .widthIn(max = 420.dp)
+                .fauxGlassPanel(InkThemeState.darkMode, ShapeXl)
+                .padding(28.dp)
+        ) {
+            Icon(
+                Icons.Outlined.Description,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(40.dp)
+            )
+            Spacer(Modifier.height(12.dp))
             Text(
                 if (query.isNotBlank()) "找不到符合「$query」的文件"
                 else "尚無文件",
-                style = MaterialTheme.typography.titleMedium,
+                style = MaterialTheme.typography.titleLarge,
                 color = MaterialTheme.colorScheme.onSurface
             )
             Spacer(Modifier.height(8.dp))
             Text(
-                "等待局域網同步從平板拉取筆記，或在平板端開啟 InkFlow 後點擊右上角同步按鈕。",
+                if (query.isNotBlank()) "換個關鍵字，或清除搜尋看看全部文件。"
+                else "等待局域網同步從平板拉取筆記，或直接開啟本機 PDF。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            if (query.isBlank()) {
+                Spacer(Modifier.height(16.dp))
+                GlassTextButton(text = "開啟本機 PDF", onClick = onImport)
+            }
         }
     }
 }
