@@ -20,6 +20,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.rounded.Backspace
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Brush
 import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.Gesture
@@ -226,7 +227,11 @@ fun PdfViewer(
      * bar that used to carry it is gone (vertical space belongs to the page),
      * so the title rides here where the document actually is.
      */
-    documentTitle: String = ""
+    documentTitle: String = "",
+    /** Whether the AI panel shell is open; drives the toolbar AI button state. */
+    isAiPanelOpen: Boolean = false,
+    /** Toggles the AI panel shell. Reserved UI only — no backend call. */
+    onToggleAiPanel: () -> Unit = {}
 ) {
     // ── Which page ───────────────────────────────────────────────────────────
     // Seeded from the incoming pageIndex, and reset whenever the document changes.
@@ -1943,6 +1948,8 @@ color = Color(inkColour).copy(
                 onExport = { exportNow() },
                 exportStatus = exportMessage,
                 documentTitle = documentTitle,
+                isAiPanelOpen = isAiPanelOpen,
+                onToggleAiPanel = onToggleAiPanel,
                 modifier = Modifier.align(Alignment.TopStart)
             )
         }
@@ -2046,23 +2053,34 @@ private fun InkToolbar(
     onExport: () -> Unit,
     exportStatus: String?,
     documentTitle: String,
+    isAiPanelOpen: Boolean,
+    onToggleAiPanel: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    // One pill, not three: the old stack of floating pills ate the top of the
-    // page and read as clutter. Inside, rows are separated by spacing only, and
-    // the tool row scrolls horizontally (like the tablet's center cluster)
-    // instead of overflowing off-screen on a narrow window.
+    // One row, period: tools, history, colours, actions and AI ride a single
+    // horizontal pill that scrolls instead of wrapping. A wrapping toolbar cost
+    // a second row of page space and read as clutter; scrolling costs nothing
+    // because the primary tools sit at the head of the row.
+    //
+    // Near-opaque on purpose: a translucent pill over body text fails both
+    // ways — the page shows through and neither layer stays legible. The rim
+    // and sheen from glassDressing keep the glass read without the washout.
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Column(
+        val pillShape = RoundedCornerShape(24.dp)
+        Row(
             modifier = modifier
                 .padding(12.dp)
-                .glassDressing(isDark = InkThemeState.darkMode, shape = RoundedCornerShape(24.dp))
-                .clip(RoundedCornerShape(24.dp))
-                .padding(horizontal = 10.dp, vertical = 8.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-        Row(
-            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                .clip(pillShape)
+                .background(
+                    MaterialTheme.colorScheme.surface.copy(
+                        alpha = if (InkThemeState.darkMode) 0.88f else 0.92f
+                    ),
+                    pillShape
+                )
+                .glassDressing(isDark = InkThemeState.darkMode, shape = pillShape)
+                .clip(pillShape)
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 10.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(2.dp)
         ) {
@@ -2145,33 +2163,28 @@ private fun InkToolbar(
                     onClick = onDeleteSelection
                 )
             }
-        }
 
-        // Shape subtypes appear only while the shape tool is armed. Showing them
-        // permanently would add four always-relevant-looking buttons to a toolbar
-        // that already wraps onto two rows.
+        // Shape subtypes ride the same row while the shape tool is armed — no
+        // second row, no popup. They scroll with everything else.
         if (tool == InkTool.Shape) {
-            Row(
-                modifier = Modifier.padding(top = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                com.vic.inkflow.util.ShapeType.entries.forEach { st ->
-                    GlassOptionChip(
-                        text = SHAPE_LABELS[st] ?: st.name,
-                        selected = shapeSubType == st,
-                        onClick = { onShapeSubTypeChange(st) },
-                        isDark = InkThemeState.darkMode
-                    )
-                }
+            androidx.compose.material3.VerticalDivider(
+                modifier = Modifier.height(24.dp).padding(horizontal = 6.dp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
+            )
+            com.vic.inkflow.util.ShapeType.entries.forEach { st ->
+                GlassOptionChip(
+                    text = SHAPE_LABELS[st] ?: st.name,
+                    selected = shapeSubType == st,
+                    onClick = { onShapeSubTypeChange(st) },
+                    isDark = InkThemeState.darkMode
+                )
             }
         }
 
-        Row(
-            modifier = Modifier.padding(top = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
+        androidx.compose.material3.VerticalDivider(
+            modifier = Modifier.height(24.dp).padding(horizontal = 6.dp),
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
+        )
             INK_PALETTE.forEach { swatch ->
                 val chosen = colour == swatch
                 // Every swatch keeps a faint ring: without it the near-black ink
@@ -2202,7 +2215,19 @@ private fun InkToolbar(
                 onClick = onClear,
                 color = MaterialTheme.colorScheme.error
             )
-        }
+            // AI rides the same chain: one entry point, always visible, never a
+            // second floating control. The backend stays reserved — the button
+            // only opens and closes the panel shell.
+            androidx.compose.material3.VerticalDivider(
+                modifier = Modifier.height(24.dp).padding(horizontal = 6.dp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
+            )
+            InkToolIcon(
+                icon = Icons.Rounded.AutoAwesome,
+                description = "AI 助手",
+                selected = isAiPanelOpen,
+                onClick = onToggleAiPanel
+            )
         }
         // Export feedback lives under the toolbar rather than in a dialog: a modal
         // would interrupt reading, while a missing success message leaves the user
