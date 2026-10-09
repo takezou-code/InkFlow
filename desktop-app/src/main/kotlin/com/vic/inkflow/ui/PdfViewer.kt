@@ -2082,12 +2082,13 @@ private fun InkToolbar(
         ) {
             // The document title lives here now that the top app bar is gone: a
             // compact chip that shrinks to an ellipsis instead of shoving tools
-            // off the row.
+            // off the row. Bright content colour, not the muted variant: in dark
+            // mode every primary text must stand at full brightness.
             if (documentTitle.isNotBlank()) {
                 Text(
                     documentTitle,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                    color = glassContentColor(InkThemeState.darkMode),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.widthIn(max = 180.dp).padding(end = 4.dp)
@@ -2523,27 +2524,45 @@ private fun PageNavBar(
     modifier: Modifier = Modifier
 ) {
     val shape = ShapeLg
+    val isDark = InkThemeState.darkMode
+    // Same rule as the toolbar: anything floating over the page is near-opaque,
+    // or the page text bleeds through and neither layer stays legible.
     Row(
         modifier = modifier
             .padding(16.dp)
             .widthIn(min = 240.dp)
-            .glassDressing(isDark = InkThemeState.darkMode, shape = shape)
+            .clip(shape)
+            .background(
+                MaterialTheme.colorScheme.surface.copy(alpha = if (isDark) 0.88f else 0.92f),
+                shape
+            )
+            .glassDressing(isDark = isDark, shape = shape)
             .clip(shape)
             .padding(horizontal = 6.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceEvenly
     ) {
+        val contentColor = glassContentColor(isDark)
         IconButton(onClick = onPrevious, enabled = pageIndex > 0) {
-            Icon(Icons.Default.ChevronLeft, contentDescription = "上一頁")
+            Icon(
+                Icons.Default.ChevronLeft,
+                contentDescription = "上一頁",
+                tint = contentColor.copy(alpha = if (pageIndex > 0) 1f else 0.35f)
+            )
         }
         Text(
             "第 ${pageIndex + 1} 頁 / 共 $pageCount 頁",
             style = MaterialTheme.typography.labelLarge,
+            color = contentColor,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
         IconButton(onClick = onNext, enabled = pageIndex < pageCount - 1) {
-            Icon(Icons.Default.ChevronRight, contentDescription = "下一頁")
+            Icon(
+                Icons.Default.ChevronRight,
+                contentDescription = "下一頁",
+                tint = contentColor.copy(alpha = if (pageIndex < pageCount - 1) 1f else 0.35f)
+            )
         }
     }
 }

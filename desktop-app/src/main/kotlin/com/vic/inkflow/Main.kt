@@ -622,7 +622,7 @@ private fun SettingRow(label: String, value: String) {
         Text(
             value,
             style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = MaterialTheme.colorScheme.onSurface,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.widthIn(max = 520.dp)

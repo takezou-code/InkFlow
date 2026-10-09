@@ -289,7 +289,7 @@ private fun EmptyLibrary(query: String) {
                 if (query.isNotBlank()) "找不到符合「$query」的文件"
                 else "尚無文件",
                 style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = MaterialTheme.colorScheme.onSurface
             )
             Spacer(Modifier.height(8.dp))
             Text(
