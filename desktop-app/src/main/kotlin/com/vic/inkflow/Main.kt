@@ -55,6 +55,9 @@ import androidx.compose.ui.graphics.painter.Painter
 import mu.KotlinLogging
 import java.io.File
 import java.util.Properties
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 private val logger = KotlinLogging.logger {}
 
@@ -207,6 +210,35 @@ fun InkFlowApp() {
     var peerNames by remember { mutableStateOf("") }
     var pairingCode by remember { mutableStateOf(DesktopSettings.pairingCode ?: "") }
 
+    // Write-through sync state (see triggerEditSync below): a filed proposal
+    // must not wait for the next 28s poll tick. Declared before the poll loop
+    // so the loop can fire an armed request when a running pass ends.
+    val scope = rememberCoroutineScope()
+    var editSyncArmed by remember { mutableStateOf(false) }
+    var editSyncJob by remember { mutableStateOf<Job?>(null) }
+
+    // Manual sync, shared by every entry point. Defined before the poll loop so
+    // the loop can fire an armed write-through request when a pass ends; the
+    // summary string is built once here so triggers cannot drift apart.
+    fun requestManualSync() {
+        if (!isSyncing) {
+            isSyncing = true
+            syncManager.requestSyncNow { result ->
+                val pending = proposalQueue.pendingOpCount()
+                val notes = proposalQueue.drainNotices()
+                lastSyncSummary = "手動同步：文件 ${result.documentsUpdated} · 筆跡 ${result.strokesPulled} · " +
+                    "文字 ${result.textsPulled} · 分類 ${result.foldersSynced} · PDF ${result.filesTransferred} · 衝突保留 ${result.conflictsSkipped}" +
+                    (if (result.proposalsAccepted > 0) " · 已送出 ${result.proposalsAccepted}" else "") +
+                    (if (result.proposalConflicts > 0) " · 提案衝突 ${result.proposalConflicts}" else "") +
+                    (if (pending > 0) " · 待送出 $pending" else "") +
+                    (if (result.errors.isNotEmpty()) " · 錯誤 ${result.errors.size}" else "") +
+                    notes.joinToString("") { " · $it" }
+                isSyncing = false
+                libraryRefresh++
+            }
+        }
+    }
+
     LaunchedEffect(Unit) {
         while (true) {
             peerCount = syncManager.devices.count { System.currentTimeMillis() - it.lastSeenMillis < 90_000 }
@@ -230,27 +262,27 @@ fun InkFlowApp() {
                 isSyncing = false
                 libraryRefresh++
             }
+            // A write-through request armed while the pass was running fires now:
+            // the finished pass may have moved past the edited file already.
+            if (editSyncArmed) {
+                editSyncArmed = false
+                requestManualSync()
+            }
             kotlinx.coroutines.delay(1000)
         }
     }
 
-    // Manual sync, shared by every entry point. The summary string is built once
-    // here so the dock button and any future trigger cannot drift apart.
-    fun requestManualSync() {
-        if (!isSyncing) {
-            isSyncing = true
-            syncManager.requestSyncNow { result ->
-                val pending = proposalQueue.pendingOpCount()
-                val notes = proposalQueue.drainNotices()
-                lastSyncSummary = "手動同步：文件 ${result.documentsUpdated} · 筆跡 ${result.strokesPulled} · " +
-                    "文字 ${result.textsPulled} · 分類 ${result.foldersSynced} · PDF ${result.filesTransferred} · 衝突保留 ${result.conflictsSkipped}" +
-                    (if (result.proposalsAccepted > 0) " · 已送出 ${result.proposalsAccepted}" else "") +
-                    (if (result.proposalConflicts > 0) " · 提案衝突 ${result.proposalConflicts}" else "") +
-                    (if (pending > 0) " · 待送出 $pending" else "") +
-                    (if (result.errors.isNotEmpty()) " · 錯誤 ${result.errors.size}" else "") +
-                    notes.joinToString("") { " · $it" }
-                isSyncing = false
-                libraryRefresh++
+    // Strokes reset the 1.5s quiet timer, so one burst costs one pass; if a pass
+    // is already running the request stays armed and the poll loop above fires
+    // it when that pass ends.
+    fun triggerEditSync() {
+        editSyncArmed = true
+        editSyncJob?.cancel()
+        editSyncJob = scope.launch {
+            delay(1500)
+            if (!isSyncing) {
+                editSyncArmed = false
+                requestManualSync()
             }
         }
     }
@@ -408,6 +440,7 @@ fun InkFlowApp() {
                                 editable = true,
                                 onInkChanged = { libraryRefresh++ },
                                 proposalQueue = proposalQueue,
+                                onLocalEdit = { triggerEditSync() },
                                 // The same token drives the library: every sync pass and
                                 // every local edit bumps it, so the reader reloads its
                                 // page from the database instead of showing stale ink.
