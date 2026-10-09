@@ -395,6 +395,8 @@ fun InkFlowApp() {
                                 // page from the database instead of showing stale ink.
                                 refreshToken = libraryRefresh,
                                 documentTitle = doc.substringAfterLast('/').substringAfterLast('\\'),
+                                isAiPanelOpen = !aiPanelCollapsed,
+                                onToggleAiPanel = { aiPanelCollapsed = !aiPanelCollapsed },
                                 modifier = Modifier.weight(1f).fillMaxHeight()
                             )
                             AiAssistantPanel(
