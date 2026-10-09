@@ -33,7 +33,6 @@ import com.vic.inkflow.sync.LocalSyncManager
 import com.vic.inkflow.sync.ProposalQueue
 import com.vic.inkflow.ui.AuroraBackground
 import com.vic.inkflow.ui.BackdropTheme
-import com.vic.inkflow.ui.AiAssistantPanel
 import com.vic.inkflow.ui.PdfViewer
 import com.vic.inkflow.ui.InkFlowTheme
 import com.vic.inkflow.ui.InkThemeState
@@ -200,7 +199,6 @@ fun InkFlowApp() {
     var showSettings by remember { mutableStateOf(false) }
     var currentPageIndex by remember { mutableStateOf(0) }
     var selectedFolderId by remember { mutableStateOf<String?>(null) }
-    var aiPanelCollapsed by remember { mutableStateOf(true) }
 
     // ── Sync state (polled so the indicator tracks background auto-sync) ────
     var isSyncing by remember { mutableStateOf(false) }
@@ -419,14 +417,7 @@ fun InkFlowApp() {
                                 // page from the database instead of showing stale ink.
                                 refreshToken = libraryRefresh,
                                 documentTitle = doc.substringAfterLast('/').substringAfterLast('\\'),
-                                isAiPanelOpen = !aiPanelCollapsed,
-                                onToggleAiPanel = { aiPanelCollapsed = !aiPanelCollapsed },
-                                modifier = Modifier.weight(1f).fillMaxHeight()
-                            )
-                            AiAssistantPanel(
-                                documentUri = doc,
-                                collapsed = aiPanelCollapsed,
-                                onToggleCollapsed = { aiPanelCollapsed = !aiPanelCollapsed }
+                                modifier = Modifier.fillMaxSize()
                             )
                         }
                     }

@@ -226,11 +226,7 @@ fun PdfViewer(
      * bar that used to carry it is gone (vertical space belongs to the page),
      * so the title rides here where the document actually is.
      */
-    documentTitle: String = "",
-    /** Whether the AI panel shell is open; drives the toolbar AI button state. */
-    isAiPanelOpen: Boolean = false,
-    /** Toggles the AI panel shell. Reserved UI only — no backend call. */
-    onToggleAiPanel: () -> Unit = {}
+    documentTitle: String = ""
 ) {
     // ── Which page ───────────────────────────────────────────────────────────
     // Seeded from the incoming pageIndex, and reset whenever the document changes.
@@ -1947,8 +1943,6 @@ color = Color(inkColour).copy(
                 onExport = { exportNow() },
                 exportStatus = exportMessage,
                 documentTitle = documentTitle,
-                isAiPanelOpen = isAiPanelOpen,
-                onToggleAiPanel = onToggleAiPanel,
                 modifier = Modifier.align(Alignment.TopStart)
             )
         }
@@ -2052,8 +2046,6 @@ private fun InkToolbar(
     onExport: () -> Unit,
     exportStatus: String?,
     documentTitle: String,
-    isAiPanelOpen: Boolean,
-    onToggleAiPanel: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     // One row, period: tools, history, colours, actions and AI ride a single
@@ -2213,19 +2205,6 @@ private fun InkToolbar(
                 text = "清除",
                 onClick = onClear,
                 color = MaterialTheme.colorScheme.error
-            )
-            // AI rides the same chain: one entry point, always visible, never a
-            // second floating control. The backend stays reserved — the button
-            // only opens and closes the panel shell.
-            androidx.compose.material3.VerticalDivider(
-                modifier = Modifier.height(24.dp).padding(horizontal = 6.dp),
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
-            )
-            InkToolIcon(
-                icon = GeminiSparkle,
-                description = "AI 助手",
-                selected = isAiPanelOpen,
-                onClick = onToggleAiPanel
             )
         }
         // Export feedback lives under the toolbar rather than in a dialog: a modal
