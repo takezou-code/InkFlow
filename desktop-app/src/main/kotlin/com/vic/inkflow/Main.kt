@@ -1,7 +1,12 @@
 package com.vic.inkflow
 
-import androidx.compose.animation.Crossfade
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -334,11 +339,30 @@ fun InkFlowApp() {
                 )
             }
 
-            // Screen transitions follow the tablet's motion language: one normal
-            // crossfade between destinations, not a hard cut.
-            Crossfade(
+            // Screen transitions speak the tablet's language: the incoming screen
+            // slides in from the right and fades in, the outgoing slides a
+            // quarter-width out to the left and fades — the same spec as the
+            // tablet's NavHost (Motion SLOW). The old plain crossfade was wrong
+            // for two reasons: a pure blend of two heavy screens reads as a
+            // muddy smear rather than navigation, and with no direction the user
+            // cannot tell whether they went deeper or back out.
+            AnimatedContent(
                 targetState = showSettings to selectedDocument,
-                animationSpec = tween(Motion.DURATION_NORMAL),
+                transitionSpec = {
+                    (slideInHorizontally(
+                        initialOffsetX = { it },
+                        animationSpec = tween(Motion.DURATION_SLOW)
+                    ) + fadeIn(
+                        animationSpec = tween(Motion.DURATION_SLOW)
+                    )) togetherWith
+                    (slideOutHorizontally(
+                        targetOffsetX = { -it / 4 },
+                        animationSpec = tween(Motion.DURATION_SLOW)
+                    ) + fadeOut(
+                        animationSpec = tween(Motion.DURATION_SLOW)
+                    ))
+                },
+                label = "ScreenSwitch",
                 modifier = Modifier.weight(1f).fillMaxHeight()
             ) { screen ->
                 val (settingsOpen, doc) = screen
