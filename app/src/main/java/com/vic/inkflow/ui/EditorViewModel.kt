@@ -457,9 +457,12 @@ class EditorViewModel(
         }
     }
 
-    fun setActivePage(index: Int) {
+    fun setActivePage(index: Int, prefetch: Boolean = true) {
         _pageIndex.value = index
-        prefetchPages(index, index)
+        // onScrollPage 路徑傳 prefetch=false：排放側已用可視窗預取過，
+        // 這裡再查一次是重疊窗口（世代守衛會擋，但白跑一輪 IO）。
+        // 冷啟動/點選/增刪頁路徑保持預取（那時排放還沒來）。
+        if (prefetch) prefetchPages(index, index)
     }
 
     /** 鄰頁預渲染快取：可視範圍 ±1 的已查筆跡，給 Workspace item 當 Flow 初始值，
