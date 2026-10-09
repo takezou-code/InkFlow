@@ -12,7 +12,6 @@ import androidx.compose.material.icons.outlined.LightMode
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Sync
-import androidx.compose.material.icons.outlined.SyncDisabled
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -34,23 +33,18 @@ import com.vic.inkflow.ui.PdfViewer
 import com.vic.inkflow.ui.InkFlowTheme
 import com.vic.inkflow.ui.InkThemeState
 import com.vic.inkflow.ui.LibraryView
-import com.vic.inkflow.ui.theme.ShapeSm
 import com.vic.inkflow.ui.theme.ShapeXl
 import com.vic.inkflow.ui.theme.ShapeMd
 import com.vic.inkflow.ui.theme.Motion
 import com.vic.inkflow.ui.AccentGradient
-import com.vic.inkflow.ui.bubbleGlass
-import com.vic.inkflow.ui.auroraBackdrop
 import com.vic.inkflow.ui.glassClickable
 import com.vic.inkflow.ui.glassContentColor
 import com.vic.inkflow.ui.glassSelectionPill
-import com.vic.inkflow.ui.glassSidePanel
 import com.vic.inkflow.ui.pressableGlass
 import com.vic.inkflow.ui.fauxGlassPanel
 import androidx.compose.foundation.background
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.graphics.painter.Painter
@@ -172,7 +166,6 @@ fun App() {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun InkFlowApp() {
     val databaseManager = remember { DatabaseManager(AppPaths.dbPath).also { it.connect() } }
@@ -239,111 +232,33 @@ fun InkFlowApp() {
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        // ── Top App Bar ──────────────────────────────────────────────────────
-        TopAppBar(
-            title = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("InkFlow", style = MaterialTheme.typography.titleLarge)
-                    Spacer(Modifier.width(12.dp))
-                    Text(
-                        selectedDocument?.substringAfterLast('/')?.substringAfterLast('\\')
-                            ?: "AI 輔助閱讀 · 文件管理",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            },
-            // Glass, not a solid M3 surfaceVariant fill. The bar floats over the
-            // reading surface, so it has to be translucent or the page stops
-            // running under it and the layout reads as two stacked documents.
-            colors = TopAppBarDefaults.topAppBarColors(
-                containerColor = Color.Transparent
-            ),
-            modifier = Modifier.fauxGlassPanel(
-                isDark = InkThemeState.darkMode,
-                shape = RectangleShape,
-                // Full-height bar: a rim down both long edges is noise, so only the
-                // bottom hairline matters and the sheen carries the rest.
-                specular = false
-            ),
-            actions = {
-                // Sync status chip. Connected state reads as "armed" so it breaks
-                // from the neutral glass; disconnected stays glass.
-                Box(
-                    modifier = Modifier
-                        .padding(end = 8.dp)
-                        .then(
-                            if (peerCount > 0) {
-                                Modifier.clip(ShapeSm).background(
-                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
-                                )
-                            } else {
-                                Modifier.bubbleGlass(InkThemeState.darkMode)
-                                    .padding(0.dp)
-                            }
-                        )
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                    ) {
-                        if (isSyncing || syncManager.isSyncing) {
-                            CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
-                        } else {
-                                Icon(
-                                    if (peerCount > 0) Icons.Outlined.Sync else Icons.Outlined.SyncDisabled,
-                                null,
-                                modifier = Modifier.size(16.dp),
-                                tint = if (peerCount > 0) MaterialTheme.colorScheme.primary
-                                       else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            when {
-                                isSyncing || syncManager.isSyncing -> "同步中…"
-                                peerCount > 0 -> "$peerCount 台設備在線"
-                                else -> "離線"
-                            },
-                            style = MaterialTheme.typography.labelMedium
-                        )
-                    }
-                }
-                // Manual sync trigger
-                IconButton(
-                    onClick = {
-                        if (!isSyncing) {
-                            isSyncing = true
-                            syncManager.requestSyncNow { result ->
-                                val pending = proposalQueue.pendingOpCount()
-                                val notes = proposalQueue.drainNotices()
-                                lastSyncSummary = "手動同步：文件 ${result.documentsUpdated} · 筆跡 ${result.strokesPulled} · " +
-                                    "文字 ${result.textsPulled} · 分類 ${result.foldersSynced} · PDF ${result.filesTransferred} · 衝突保留 ${result.conflictsSkipped}" +
-                                    (if (result.proposalsAccepted > 0) " · 已送出 ${result.proposalsAccepted}" else "") +
-                                    (if (result.proposalConflicts > 0) " · 提案衝突 ${result.proposalConflicts}" else "") +
-                                    (if (pending > 0) " · 待送出 $pending" else "") +
-                                    (if (result.errors.isNotEmpty()) " · 錯誤 ${result.errors.size}" else "") +
-                                    notes.joinToString("") { " · $it" }
-                                isSyncing = false
-                                libraryRefresh++
-                            }
-                        }
-                    },
-                    enabled = !isSyncing
-                ) {
-                    Icon(Icons.Outlined.Refresh, contentDescription = "立即同步")
-                }
-                // Back to library
-                if (selectedDocument != null || showSettings) {
-                    IconButton(onClick = { selectedDocument = null; showSettings = false }) {
-                        Icon(Icons.Outlined.Home, contentDescription = "返回文件庫")
-                    }
-                }
+    // Manual sync, shared by every entry point. The summary string is built once
+    // here so the dock button and any future trigger cannot drift apart.
+    fun requestManualSync() {
+        if (!isSyncing) {
+            isSyncing = true
+            syncManager.requestSyncNow { result ->
+                val pending = proposalQueue.pendingOpCount()
+                val notes = proposalQueue.drainNotices()
+                lastSyncSummary = "手動同步：文件 ${result.documentsUpdated} · 筆跡 ${result.strokesPulled} · " +
+                    "文字 ${result.textsPulled} · 分類 ${result.foldersSynced} · PDF ${result.filesTransferred} · 衝突保留 ${result.conflictsSkipped}" +
+                    (if (result.proposalsAccepted > 0) " · 已送出 ${result.proposalsAccepted}" else "") +
+                    (if (result.proposalConflicts > 0) " · 提案衝突 ${result.proposalConflicts}" else "") +
+                    (if (pending > 0) " · 待送出 $pending" else "") +
+                    (if (result.errors.isNotEmpty()) " · 錯誤 ${result.errors.size}" else "") +
+                    notes.joinToString("") { " · $it" }
+                isSyncing = false
+                libraryRefresh++
             }
-        )
+        }
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        // No top app bar: it cost a full row of vertical space on every screen for
+        // controls that all have better homes now — Library/Sync/Settings and the
+        // theme toggle live in the dock, the peer count rides the Sync icon, the
+        // sync detail lives in the library pill and settings, and the document
+        // title rides the reader toolbar where the document actually is.
 
         // ── Body: tablet-style floating dock + content (+ AI panel in reader) ──
         // The old M3 NavigationRail read as a second app bolted to the side.
@@ -385,9 +300,8 @@ fun InkFlowApp() {
                 DesktopRailItem(
                     selected = false,
                     busy = isSyncing || syncManager.isSyncing,
-                    onClick = {
-                        if (!isSyncing) { isSyncing = true; syncManager.requestSyncNow { isSyncing = false; libraryRefresh++ } }
-                    },
+                    badgeCount = peerCount,
+                    onClick = { requestManualSync() },
                     icon = Icons.Outlined.Sync,
                     label = "同步"
                 )
@@ -480,6 +394,7 @@ fun InkFlowApp() {
                                 // every local edit bumps it, so the reader reloads its
                                 // page from the database instead of showing stale ink.
                                 refreshToken = libraryRefresh,
+                                documentTitle = doc.substringAfterLast('/').substringAfterLast('\\'),
                                 modifier = Modifier.weight(1f).fillMaxHeight()
                             )
                             AiAssistantPanel(
@@ -501,7 +416,8 @@ private fun DesktopRailItem(
     onClick: () -> Unit,
     icon: ImageVector,
     label: String,
-    busy: Boolean = false
+    busy: Boolean = false,
+    badgeCount: Int = 0
 ) {
     // Tablet GlassRailItem in desktop material: selected state rides the shared
     // selection pill, press rides glassClickable, and the icon/label follow the
@@ -519,12 +435,27 @@ private fun DesktopRailItem(
         if (busy) {
             CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
         } else {
-            Icon(
-                imageVector = icon,
-                contentDescription = label,
-                tint = if (selected) MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = if (badgeCount > 0) "$label（$badgeCount 台在線）" else label,
+                    tint = if (selected) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                // Peer count rides the icon: the top bar that used to carry
+                // "N 台設備在線" is gone, and the number has to live somewhere
+                // that is visible on every screen.
+                if (badgeCount > 0) {
+                    Text(
+                        text = if (badgeCount > 99) "99+" else badgeCount.toString(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.align(Alignment.BottomEnd)
+                            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.85f), CircleShape)
+                            .padding(horizontal = 3.dp)
+                    )
+                }
+            }
         }
         Text(
             text = label,
