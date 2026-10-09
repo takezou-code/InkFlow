@@ -245,10 +245,25 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
     private var renderScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     /**
      * P0 快滑世代：快旗每次升/落（transition）+1，排隊中的高清渲染憑票驗證，
-     * 被超車的直接丟棄（落定由 ensureHighQualityVisible 只補可見頁）。
+     * 被超車的直接丟棄（落定由 ensureHighQualityAround 按序只補 5 頁）。
      * 頁操作的 renderGen 不動，兩條世代正交。
      */
     private var scrollGen = 0L
+    /**
+     * 渲染hold：捲動中（不限快慢）高清一律等待，靜止 0.5s 落定才放行。
+     * 縮圖不受影響（掠過就靠它）。由 Workspace 每次排放舉旗、落定放旗。
+     */
+    private val renderHold = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** 捲動中：凍結高清（已排隊的等，放行後憑票＋訂閱雙驗才渲）。 */
+    fun holdRenders() {
+        renderHold.set(true)
+    }
+
+    /** 落定：放行高清。票不換代——排隊中的可見頁按原順序直接渲，不重排。 */
+    fun releaseRenders() {
+        renderHold.set(false)
+    }
 
     /**
      * 手勢中暫停貼圖投送（治頓挫）：渲染照跑（暖機不停，IO 執行緒無影響），
@@ -1161,14 +1176,20 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
     private fun launchBitmapRender(flow: MutableStateFlow<Bitmap?>, pageIndex: Int) {
         val ticket = scrollGen
         renderScope.launch {
-            // P0 快滑：高速期間高清等待落定；票被超車（快旗升/落）直接丟棄，
-            // 落定由 ensureHighQualityVisible 只補可見頁，中間頁不欠渲染債。
+            // 高清等待落定：快旗或 hold 任一成立就等（靜止 0.5s 才開渲）；
+            // 票被超車（快旗升/落）直接丟棄，不欠渲染債。
             var waits = 0
-            while (_isScrollingFast.value && ticket == scrollGen && waits < 50) {
+            while ((_isScrollingFast.value || renderHold.get()) && ticket == scrollGen && waits < 100) {
                 kotlinx.coroutines.delay(100)
                 waits++
             }
             if (ticket != scrollGen) return@launch
+            // 等過的排隊者：沒人訂閱（已滑走拆掉）且快取也空就不渲，
+            // 滑回來 remember 重跑會重發。沒等過的（靜止時組成）照常渲，
+            // 避開「flow 剛建、collect 還沒訂上」的 race。
+            if (waits > 0 && flow.subscriptionCount.value == 0 && bitmapCache[pageIndex] == null) {
+                return@launch
+            }
             // F2 黑頁修復：剛插頁重開空窗期 pdfRenderer 為 null，這次必回 null；
             // 以前只試一次就永久黑，現在退避重試（flow 留空等重試，不毒化快取）。
             repeat(4) { attempt ->
@@ -1232,12 +1253,20 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * P0 落定：對指定範圍補高清（flow 存在但空、且快取也空才發；compose 中的
-     * getPageBitmap 會兜底剩餘，雙發時第二個命中快取直接返回）。
-     * 呼叫端傳可見 ±2（附近頁一併清晰）；越界下標此處擋掉。
+     * 落定：以當前頁為中心補高清，優先序本頁→下一頁→上一頁→下兩頁→上兩頁
+     *（例：當前 3 → 3,4,2,5,1）。只發這 5 頁（flow 存在但空、且快取也空才發；
+     * compose 中的 getPageBitmap 會兜底剩餘，雙發時第二個命中快取直接返回）。
+     * mutex 串行，發射順序即渲染順序。越界下標此處擋掉。
      */
-    fun ensureHighQualityVisible(range: IntRange) {
-        range.forEach { index ->
+    fun ensureHighQualityAround(center: Int, radius: Int = 2) {
+        if (center < 0 || center >= pageCount.value) return
+        buildList {
+            add(center)
+            for (d in 1..radius) {
+                add(center + d)
+                add(center - d)
+            }
+        }.forEach { index ->
             if (index < 0 || index >= pageCount.value) return@forEach
             if (bitmapCache[index] != null) return@forEach
             val flow = bitmapFlowCache[index] ?: return@forEach
