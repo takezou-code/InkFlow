@@ -1,10 +1,5 @@
 package com.vic.inkflow.ui
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxScope
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
@@ -12,18 +7,10 @@ import androidx.compose.material3.Typography
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.ExperimentalTextApi
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.vic.inkflow.ui.theme.GlassTintDark
 import com.vic.inkflow.ui.theme.inkTypography
 import com.vic.inkflow.ui.theme.GlassTintLight
@@ -176,70 +163,6 @@ val AccentGradient: Brush
             MaterialTheme.colorScheme.secondary
         )
     )
-
-/**
- * Filled pill used for chips, the sync button and the page navigator.
- *
- * A selected pill deliberately breaks from the glass material: it needs to read
- * as "armed", so it takes a tinted fill and a brighter rim instead of the neutral
- * translucent veil.
- */
-@Composable
-fun Modifier.glassPill(
-    selected: Boolean = false,
-    alpha: Float = 0.55f
-): Modifier {
-    val shape = RoundedCornerShape(50)
-    val fill = if (selected) {
-        MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
-    } else {
-        MaterialTheme.colorScheme.surface.copy(alpha = alpha)
-    }
-    val border = if (selected) {
-        MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
-    } else {
-        MaterialTheme.colorScheme.outline.copy(alpha = 0.20f)
-    }
-    return this
-        .clip(shape)
-        .background(fill)
-        .border(1.dp, border, shape)
-}
-
-/** Decorative full-bleed background: vertical night gradient plus a soft accent bloom. */
-@Composable
-fun BoxScope.auroraBackdrop(content: @Composable () -> Unit) {
-    Box(
-        modifier = Modifier
-            .matchParentSize()
-            .background(
-                Brush.verticalGradient(
-                    listOf(
-                        MaterialTheme.colorScheme.background,
-                        MaterialTheme.colorScheme.surface,
-                        MaterialTheme.colorScheme.background
-                    )
-                )
-            )
-    ) {
-        // Two offset blooms give the same "light behind glass" read as the tablet's
-        // aurora scenes without shipping a shader.
-        Box(
-            modifier = Modifier
-                .matchParentSize()
-                .background(
-                    Brush.radialGradient(
-                        colors = listOf(
-                            MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
-                            androidx.compose.ui.graphics.Color.Transparent
-                        ),
-                        radius = 900f
-                    )
-                )
-        )
-        content()
-    }
-}
 
 @Composable
 fun InkFlowTheme(

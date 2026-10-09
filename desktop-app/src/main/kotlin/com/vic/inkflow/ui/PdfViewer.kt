@@ -19,15 +19,15 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
-import androidx.compose.material.icons.rounded.Backspace
+import androidx.compose.material.icons.automirrored.rounded.Backspace
+import androidx.compose.material.icons.automirrored.rounded.Redo
+import androidx.compose.material.icons.automirrored.rounded.Undo
 import androidx.compose.material.icons.rounded.Brush
 import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.Gesture
 import androidx.compose.material.icons.rounded.Highlight
-import androidx.compose.material.icons.rounded.Redo
 import androidx.compose.material.icons.rounded.ShapeLine
 import androidx.compose.material.icons.rounded.TextFields
-import androidx.compose.material.icons.rounded.Undo
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -100,6 +100,11 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.focus.focusRequester
 
+import com.vic.inkflow.ui.theme.BrandIndigo
+import com.vic.inkflow.ui.theme.ShapeLg
+import com.vic.inkflow.ui.theme.ShapeSm
+import com.vic.inkflow.ui.theme.WorkspaceDeskDark
+import com.vic.inkflow.ui.theme.WorkspaceDeskLight
 import com.vic.inkflow.util.PageBox
 import com.vic.inkflow.util.PdfManager
 import com.vic.inkflow.util.PdfResult
@@ -1653,7 +1658,7 @@ for (swp in strokes) {
                         // the outline reads as "UI" and not as part of the drawing.
                         selectionBoundsNow()?.let { sb ->
                             drawRect(
-                                color = Color(0xFF6366F1).copy(alpha = 0.95f),
+                                color = BrandIndigo.copy(alpha = 0.95f),
                                 topLeft = Offset(sb.left * scale - b.originX * scale, sb.top * scale - b.originY * scale),
                                 size = androidx.compose.ui.geometry.Size(sb.width * scale, sb.height * scale),
                                 style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.5f * scale)
@@ -1664,12 +1669,12 @@ for (swp in strokes) {
                         // size reads the same and costs one draw call.
                         selectionRect?.let { rr ->
                             drawRect(
-                                color = Color(0xFF6366F1).copy(alpha = 0.14f),
+                                color = BrandIndigo.copy(alpha = 0.14f),
                                 topLeft = Offset(rr.left * scale - b.originX * scale, rr.top * scale - b.originY * scale),
                                 size = androidx.compose.ui.geometry.Size(rr.width * scale, rr.height * scale)
                             )
                             drawRect(
-                                color = Color(0xFF6366F1).copy(alpha = 0.8f),
+                                color = BrandIndigo.copy(alpha = 0.8f),
                                 topLeft = Offset(rr.left * scale - b.originX * scale, rr.top * scale - b.originY * scale),
                                 size = androidx.compose.ui.geometry.Size(rr.width * scale, rr.height * scale),
                                 style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1f * scale)
@@ -1868,7 +1873,7 @@ color = Color(inkColour).copy(
                 textStyle = MaterialTheme.typography.bodyMedium.copy(color = Color(inkColour)),
                 singleLine = false,
                 maxLines = 4,
-                shape = RoundedCornerShape(8.dp),
+                shape = ShapeSm,
                 // Container follows the theme, not a hardcoded white: on a dark
                 // backdrop a white box glares, and with a dark ink colour the text
                 // inside it becomes unreadable. surfaceVariant keeps contrast with
@@ -2057,7 +2062,7 @@ private fun InkToolbar(
     // ways — the page shows through and neither layer stays legible. The rim
     // and sheen from glassDressing keep the glass read without the washout.
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        val pillShape = RoundedCornerShape(24.dp)
+        val pillShape = ShapeLg
         Row(
             modifier = modifier
                 .padding(12.dp)
@@ -2130,14 +2135,14 @@ private fun InkToolbar(
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
             )
             InkToolIcon(
-                icon = Icons.Rounded.Undo,
+                icon = Icons.AutoMirrored.Rounded.Undo,
                 description = "復原",
                 selected = false,
                 enabled = canUndo,
                 onClick = onUndo
             )
             InkToolIcon(
-                icon = Icons.Rounded.Redo,
+                icon = Icons.AutoMirrored.Rounded.Redo,
                 description = "重做",
                 selected = false,
                 enabled = canRedo,
@@ -2148,7 +2153,7 @@ private fun InkToolbar(
                 // mode, and a control that exists only as a shortcut is a control most
                 // people never find.
                 InkToolIcon(
-                    icon = Icons.Rounded.Backspace,
+                    icon = Icons.AutoMirrored.Rounded.Backspace,
                     description = "刪除選取",
                     selected = false,
                     onClick = onDeleteSelection
@@ -2211,11 +2216,15 @@ private fun InkToolbar(
         // would interrupt reading, while a missing success message leaves the user
         // unsure whether the file was actually written.
         exportStatus?.let { status ->
+            // Success reads primary, failure reads error: a single muted colour
+            // for both is how "匯出失敗" went unnoticed under the toolbar.
+            val failed = status.startsWith("匯出失敗") || status.startsWith("找不到")
             Text(
                 status,
-                modifier = Modifier.padding(bottom = 16.dp),
+                modifier = Modifier.padding(bottom = 12.dp),
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = if (failed) MaterialTheme.colorScheme.error
+                else MaterialTheme.colorScheme.primary,
                 maxLines = 2
             )
         }
@@ -2261,7 +2270,7 @@ private fun InkToolIcon(
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.align(Alignment.BottomEnd)
-                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.85f), CircleShape)
+                    .background(MaterialTheme.colorScheme.surface, CircleShape)
                     .padding(horizontal = 3.dp)
             )
         }
@@ -2297,9 +2306,12 @@ private val INK_PALETTE = listOf(
  */
 @Composable
 private fun ReaderBackdrop(isDark: Boolean): Modifier = Modifier.background(
+    // Token ramp only: surfaceVariant melts into the workspace desk colour, so
+    // the page surround belongs to the same material as the rest of the app
+    // instead of a hand-mixed grey slab.
     Brush.verticalGradient(
-        0f to (if (isDark) Color(0xFF0B1120) else Color(0xFFEDEFF6)),
-        1f to (if (isDark) Color(0xFF060911) else Color(0xFFE2E6F0))
+        0f to (if (isDark) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.surface),
+        1f to (if (isDark) WorkspaceDeskDark else WorkspaceDeskLight)
     )
 )
 
@@ -2510,7 +2522,7 @@ private fun PageNavBar(
     onNext: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val shape = RoundedCornerShape(28.dp)
+    val shape = ShapeLg
     Row(
         modifier = modifier
             .padding(16.dp)

@@ -1,19 +1,14 @@
 package com.vic.inkflow.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import com.vic.inkflow.ui.rememberHazeState
-import com.vic.inkflow.ui.LibraryHeroPanel
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.*
@@ -31,15 +26,9 @@ import com.vic.inkflow.data.DocumentEntity
 import com.vic.inkflow.util.LocalImport
 import com.vic.inkflow.ui.theme.ShapeMd
 import com.vic.inkflow.ui.fauxGlassPanel
-import com.vic.inkflow.ui.pressableGlass
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
-import com.vic.inkflow.ui.theme.GlassTintDark
-import com.vic.inkflow.ui.theme.GlassTintLight
-import com.vic.inkflow.ui.theme.GlassVeilDark
-import com.vic.inkflow.ui.theme.GlassVeilLight
-import com.vic.inkflow.ui.theme.PaperInkColor
 
 /**
  * Library View (spec §4A): category rail on the left (handled by MainKt),
@@ -136,7 +125,7 @@ fun LibraryView(
         }
     }
 
-    Column(modifier = modifier.fillMaxSize().padding(horizontal = 20.dp)) {
+    Column(modifier = modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         // The tablet's own hero panel — serif italic wordmark with a moving gradient
         // shimmer, staggered entrance, glass search field, grid/list toggle — lifted
         // into `:shared` so the desktop runs the same component instead of a
@@ -156,14 +145,20 @@ fun LibraryView(
         val tabletOnline = remember(syncStatusText) {
             !syncStatusText.startsWith("未偵測到") && !syncStatusText.startsWith("等待")
         }
+        // Sync status rides the shared selection pill when online (armed state, in
+        // the tablet's language) and plain faux glass when offline. The old
+        // private glassPill is gone — one selection language everywhere.
         Box(
-            modifier = Modifier.padding(horizontal = 20.dp),
+            modifier = Modifier.padding(horizontal = 16.dp),
             contentAlignment = Alignment.CenterStart
         ) {
             Box(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(50))
-                    .glassPill(selected = tabletOnline, alpha = 0.45f)
+                    .then(
+                        if (tabletOnline) Modifier.glassSelectionPill(CircleShape)
+                        else Modifier.fauxGlassPanel(InkThemeState.darkMode, CircleShape)
+                    )
+                    .clip(CircleShape)
                     .padding(horizontal = 12.dp, vertical = 6.dp)
             ) {
                 Text(
@@ -178,39 +173,40 @@ fun LibraryView(
         }
 
 
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(12.dp))
 
-        // ── Folder filter chips ──────────────────────────────────────────────
-        // Folder chips take the glass pill so the filter row belongs to the same
-            // material as everything else. They stay inline (not a FlowRow) because
-            // the folder list comes from the tablet and has no bounded length yet.
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                FilterChip(
-                    selected = selectedFolderId == null,
-                    onClick = { onFolderSelected(null) },
-                    label = { Text("全部") },
-                    colors = glassChipColors()
-                )
-                folders.forEach { f ->
-                    FilterChip(
-                        selected = selectedFolderId == f.id,
-                        onClick = { onFolderSelected(f.id) },
-                        label = { Text(f.name) },
-                        leadingIcon = { Icon(Icons.Default.Folder, null, modifier = Modifier.size(16.dp)) },
-                        colors = glassChipColors()
-                    )
-                }
-                FilterChip(
-                    selected = selectedFolderId == "__none__",
-                    onClick = { onFolderSelected("__none__") },
-                    label = { Text("未分類") },
-                    colors = glassChipColors()
+        // ── Folder filter ──────────────────────────────────────────────────
+        // Shared option chips in a scrolling row, not M3 FilterChips: the folder
+        // list comes from the tablet and has no bounded length, so the row
+        // scrolls instead of clipping.
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+        ) {
+            GlassOptionChip(
+                text = "全部",
+                selected = selectedFolderId == null,
+                onClick = { onFolderSelected(null) },
+                isDark = InkThemeState.darkMode
+            )
+            folders.forEach { f ->
+                GlassOptionChip(
+                    text = f.name,
+                    selected = selectedFolderId == f.id,
+                    onClick = { onFolderSelected(f.id) },
+                    isDark = InkThemeState.darkMode
                 )
             }
+            GlassOptionChip(
+                text = "未分類",
+                selected = selectedFolderId == "__none__",
+                onClick = { onFolderSelected("__none__") },
+                isDark = InkThemeState.darkMode
+            )
+        }
 
         Spacer(Modifier.height(12.dp))
 
@@ -223,10 +219,30 @@ fun LibraryView(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
-            OutlinedButton(onClick = { pickAndImport() }, enabled = !importing) {
-                Icon(Icons.Default.UploadFile, null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(6.dp))
-                Text(if (importing) "匯入中…" else "開啟本機 PDF")
+            // Glass pill button, not an M3 OutlinedButton: actions on glass stay in
+            // the shared press language (glassClickable) instead of bolting an
+            // opaque control onto the backdrop.
+            Box(
+                modifier = Modifier
+                    .fauxGlassPanel(InkThemeState.darkMode, CircleShape)
+                    .glassClickable(
+                        onClick = { pickAndImport() },
+                        shape = CircleShape,
+                        enabled = !importing
+                    )
+                    .padding(horizontal = 14.dp, vertical = 8.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    val contentColor = glassContentColor(InkThemeState.darkMode)
+                        .copy(alpha = if (importing) 0.38f else 1f)
+                    Icon(Icons.Default.UploadFile, null, modifier = Modifier.size(16.dp), tint = contentColor)
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        if (importing) "匯入中…" else "開啟本機 PDF",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = contentColor
+                    )
+                }
             }
             importError?.let { msg ->
                 Text(
@@ -265,35 +281,6 @@ fun LibraryView(
     }
 }
 
-/**
- * Filter-chip colours that match the glass material.
- *
- * The unselected fill has to be translucent or the chip reads as an opaque M3
- * surface sitting on glass, which is the mismatch that made the first pass look
- * like two apps in one window.
- */
-@Composable
-private fun glassChipColors(): SelectableChipColors {
-    val muted = MaterialTheme.colorScheme.onSurfaceVariant
-    return SelectableChipColors(
-        containerColor = if (InkThemeState.darkMode) GlassTintDark else GlassTintLight,
-        labelColor = muted,
-        leadingIconColor = muted,
-        trailingIconColor = muted,
-        disabledContainerColor = Color.Transparent,
-        disabledLabelColor = muted,
-        disabledLeadingIconColor = muted,
-        disabledTrailingIconColor = muted,
-        selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.22f),
-        selectedLabelColor = MaterialTheme.colorScheme.primary,
-        selectedLeadingIconColor = MaterialTheme.colorScheme.primary,
-        selectedTrailingIconColor = MaterialTheme.colorScheme.primary,
-        // SelectableChipColors has no default for this one either; the chips are
-        // never disabled on this screen.
-        disabledSelectedContainerColor = Color.Transparent
-    )
-}
-
 @Composable
 private fun EmptyLibrary(query: String) {
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -329,11 +316,8 @@ private fun DocumentCard(
     Box(
         modifier = Modifier
             .height(210.dp)
-            .pressableGlass(
-                isDark = InkThemeState.darkMode,
-                shape = ShapeMd,
-                onClick = onClick
-            )
+            .fauxGlassPanel(InkThemeState.darkMode, ShapeMd)
+            .glassClickable(onClick = onClick, shape = ShapeMd)
             .clip(ShapeMd)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -343,10 +327,12 @@ private fun DocumentCard(
                     .fillMaxWidth()
                     .weight(1f)
                     .background(
+                        // surfaceVariant to surface, never secondaryContainer: the
+                        // near-white container flashes on dark scroll.
                         Brush.linearGradient(
                             listOf(
                                 MaterialTheme.colorScheme.surfaceVariant,
-                                MaterialTheme.colorScheme.secondaryContainer
+                                MaterialTheme.colorScheme.surface
                             )
                         )
                     ),
