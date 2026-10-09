@@ -20,7 +20,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.rounded.Backspace
-import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Brush
 import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.Gesture
@@ -2223,7 +2222,7 @@ private fun InkToolbar(
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
             )
             InkToolIcon(
-                icon = Icons.Rounded.AutoAwesome,
+                icon = GeminiSparkle,
                 description = "AI 助手",
                 selected = isAiPanelOpen,
                 onClick = onToggleAiPanel
