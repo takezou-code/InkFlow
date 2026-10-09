@@ -589,6 +589,7 @@ val allowSinglePan = startedBlank || fingerPanOnPaperAllowed(
         var lastFastPos = -1L
         var lastFastFirst = 0
         var lastFastLast = -1
+        var lastFastBest = -1
         var settleJob: Job? = null
         snapshotFlow {
             val info = mainListState.layoutInfo
@@ -631,35 +632,36 @@ val allowSinglePan = startedBlank || fingerPanOnPaperAllowed(
             lastFastPos = pos
             lastFastFirst = first
             lastFastLast = last
+            lastFastBest = idx
             settleJob?.cancel()
+            // 捲動中高清凍結：每次排放先舉 hold（靜止 0.5s 落定才放行開渲），
+            // 期間只預熱縮圖——不管快慢滑，高清都不在路上，清單只有落定那 5 頁。
+            pdfViewModel.holdRenders()
             // 可視範圍預取：未露臉的鄰頁先查好，快取當初始值，第一幀就有墨
             if (first != Int.MAX_VALUE && last != Int.MIN_VALUE) {
                 viewModel.prefetchPages(first, last)
-                if (pdfViewModel.isScrollingFast.value) {
-                    // 高速：鄰頁只預熱縮圖，高清等落定（不欠渲染債）。
-                    for (p in first - 1..last + 1) pdfViewModel.prefetchThumbnail(p)
-                } else {
-                    // 點陣預熱：可視 ±1 底先渲好，滑入直接顯示（API 自帶邊界守衛＋渲染排隊）
-                    for (p in first - 1..last + 1) pdfViewModel.prefetchPage(p)
-                }
+                // 鄰頁只預熱縮圖（便宜，240px 封頂），高清等落定按序補。
+                for (p in first - 1..last + 1) pdfViewModel.prefetchThumbnail(p)
             }
             // 頁鎖期間（跨頁手勢中）：忽略自動捲帶來的頁面切換，避免中途換頁斷筆；
             // 全活頁下各頁本來就活著，手勢結束也無需激活跳轉。
             if (!viewModel.isPageLocked() && idx in 0 until pageCount) onScrollPage(idx)
-            // 落定：250ms 無新排放才補高清（快滑唯一的出口；慢滑從未立旗，ensure 冪等無害）。
+            // 落定：0.5s 無新排放才開渲。只渲 5 頁：當前頁±2，
+            // 順序本頁→下一頁→上一頁→下兩頁→上兩頁（3 → 3,4,2,5,1）。
             settleJob = launch {
-                delay(250)
+                delay(500)
+                val c = lastFastBest
                 val f = lastFastFirst
                 val l = lastFastLast
                 pdfViewModel.setScrollingFast(false)
-                if (f != Int.MAX_VALUE && l >= 0 && f <= l) {
-                    // 附近頁一併補高清（可見 ±2，與 DB 鄰頁快取同窗；
-                    // ensure 只寫 flow、prefetch 只進快取，前者已覆蓋後者）。
-                    // 半露出的鄰頁滑回來直接清晰，不用等第二輪。
-                    pdfViewModel.ensureHighQualityVisible((f - 2)..(l + 2))
+                pdfViewModel.releaseRenders()
+                if (c in 0 until pageCount && f != Int.MAX_VALUE && l >= 0 && f <= l) {
+                    pdfViewModel.ensureHighQualityAround(c, radius = 2)
                     pdfViewModel.flushPendingRenders(f..l)
-                    // P1 有界：窗外無訂閱的高清 flow 釋放（滑回來自動補渲）。
-                    pdfViewModel.trimBitmapFlowsToWindow(f..l)
+                    // 有界：只留「當前±2 ∪ 可見窗」，其餘無訂閱高清釋放（滑回來自動補渲）。
+                    val keepFirst = minOf(f, c - 2)
+                    val keepLast = maxOf(l, c + 2)
+                    pdfViewModel.trimBitmapFlowsToWindow(keepFirst..keepLast, margin = 0)
                 }
             }
         }
