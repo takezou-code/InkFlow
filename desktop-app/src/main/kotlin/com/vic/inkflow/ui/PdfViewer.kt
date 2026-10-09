@@ -8,10 +8,15 @@ import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -26,7 +31,10 @@ import androidx.compose.material.icons.rounded.Brush
 import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.Gesture
 import androidx.compose.material.icons.rounded.Highlight
+import androidx.compose.material.icons.rounded.PanTool
 import androidx.compose.material.icons.rounded.ShapeLine
+import androidx.compose.material.icons.rounded.ZoomIn
+import androidx.compose.material.icons.rounded.ZoomOut
 import androidx.compose.material.icons.rounded.TextFields
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -49,6 +57,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -103,8 +112,6 @@ import androidx.compose.ui.focus.focusRequester
 import com.vic.inkflow.ui.theme.BrandIndigo
 import com.vic.inkflow.ui.theme.ShapeLg
 import com.vic.inkflow.ui.theme.ShapeSm
-import com.vic.inkflow.ui.theme.WorkspaceDeskDark
-import com.vic.inkflow.ui.theme.WorkspaceDeskLight
 import com.vic.inkflow.util.PageBox
 import com.vic.inkflow.util.PdfManager
 import com.vic.inkflow.util.PdfResult
@@ -190,6 +197,43 @@ private val logger = KotlinLogging.logger {}
  * It is quantised and debounced, and serialised behind a mutex, because a pinch that
  * re-rasterises per frame would queue more CPU work than it can retire.
  */
+/**
+ * One page's remote control for the parent reader.
+ *
+ * The toolbar and bottom bar live in [PdfViewer] but act on the focused page, so
+ * each page publishes its actions and mirrored states here. Plain function fields
+ * are reassigned every composition (never stale); snapshot states mirror in an
+ * effect on the page side.
+ */
+private class PageHandle {
+    var onUndo: () -> Unit = {}
+    var onRedo: () -> Unit = {}
+    var onDeleteSelection: () -> Unit = {}
+    var onSelectAll: () -> Unit = {}
+    var onClearSelection: () -> Unit = {}
+    var onCancelText: () -> Unit = {}
+    var onClearDocument: () -> Unit = {}
+    var onZoomCentered: (Float) -> Unit = {}
+    var onZoomReset: () -> Unit = {}
+    val canUndo = mutableStateOf(false)
+    val canRedo = mutableStateOf(false)
+    val selectionCount = mutableStateOf(0)
+    val typing = mutableStateOf(false)
+    val zoom = mutableStateOf(1f)
+    val pageBox = mutableStateOf<PageBox?>(null)
+}
+
+/**
+ * Continuous document reader: every page stacked in one scroll, the way
+ * mainstream notebook apps work. The wheel scrolls the document, drags draw
+ * (or scroll with the grab hand), and the toolbar always acts on the focused
+ * page — the one under the last press, or the top visible one at rest.
+ *
+ * One [PageView] per page owns its raster, ink, gestures and history; this
+ * parent owns navigation, shared tool state, export, and the chrome. Pages
+ * render on demand as the list composes them, so a 900-page document costs
+ * the visible pages, not the whole file.
+ */
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun PdfViewer(
@@ -199,47 +243,299 @@ fun PdfViewer(
     modifier: Modifier = Modifier,
     onPageCountChange: (Int) -> Unit = {},
     onPageChange: (Int) -> Unit = {},
-    /**
-     * v5 proposal outbox. When non-null, every local edit is also filed as an
-     * id-level op against the last synced version, so the next sync can push it to
-     * the tablet for arbitration. Null means local-only (the old pull-only
-     * behaviour): edits show up immediately but are never pushed and the next pull
-     * can discard them.
-     */
     proposalQueue: com.vic.inkflow.sync.ProposalQueue? = null,
-    /**
-     * Turns on the ink toolbar and lets the user draw on the page.
-     *
-     * Off by default. With a [proposalQueue] (v5) local edits are filed as
-     * proposals and pushed for tablet arbitration on the next sync; without one
-     * they live in the desktop database only and the next pull can discard them.
-     * Drawing is therefore opt-in per call site rather than something the reader
-     * discovers by accident.
-     */
     editable: Boolean = false,
-    /** Fired after a stroke is committed, so the caller can refresh counts. */
     onInkChanged: () -> Unit = {},
-    /**
-     * Bumped by the caller after every background sync pass. The ink and text
-     * loaders below are keyed on it, so synced content appears without reopening
-     * the document. Without this the canvas shows whatever was in the database
-     * when the page was opened — a sync landing mid-reading is silently invisible.
-     */
     refreshToken: Int = 0,
-    /**
-     * File name shown as a compact chip at the head of the toolbar. The top app
-     * bar that used to carry it is gone (vertical space belongs to the page),
-     * so the title rides here where the document actually is.
-     */
     documentTitle: String = ""
 ) {
-    // ── Which page ───────────────────────────────────────────────────────────
-    // Seeded from the incoming pageIndex, and reset whenever the document changes.
-    var requestedPage by remember(documentUri) { mutableIntStateOf(pageIndex.coerceAtLeast(0)) }
-    LaunchedEffect(pageIndex) {
-        if (pageIndex != requestedPage) requestedPage = pageIndex.coerceAtLeast(0)
-    }
     var pageCount by remember(documentUri) { mutableIntStateOf(0) }
+    var docError by remember(documentUri) { mutableStateOf<String?>(null) }
+    var focusedPage by remember(documentUri) { mutableIntStateOf(pageIndex.coerceAtLeast(0)) }
+    // Bumped when the whole document is wiped, so every loaded page reloads.
+    var docRefresh by remember(documentUri) { mutableIntStateOf(0) }
+
+    // Shared by every page: switching pages must not reset the tool, colour or
+    // shape, or drawing across a page boundary becomes a mode lottery.
+    var tool by remember(documentUri) { mutableStateOf(InkTool.Pen) }
+    var inkColour by remember(documentUri) { mutableIntStateOf(0xFF121826.toInt()) }
+    var shapeSubType by remember(documentUri) { mutableStateOf(com.vic.inkflow.util.ShapeType.RECT) }
+
+    // Export runs off the UI thread: a long document must not freeze the reader while
+    // PDFBox stamps every page, and the status stays visible under the toolbar.
+    val exportScope = rememberCoroutineScope()
+    var exporting by remember(documentUri) { mutableStateOf(false) }
+    var exportMessage by remember(documentUri) { mutableStateOf<String?>(null) }
+
+    val handles = remember(documentUri) { mutableMapOf<Int, PageHandle>() }
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    val focusRequester = remember { FocusRequester() }
+
+    fun focusPage(p: Int) {
+        val c = p.coerceIn(0, max(pageCount - 1, 0))
+        if (c != focusedPage) {
+            focusedPage = c
+            onPageChange(c)
+        }
+    }
+
+    fun scrollToPage(p: Int) {
+        val c = p.coerceIn(0, max(pageCount - 1, 0))
+        focusPage(c)
+        scope.launch { runCatching { listState.animateScrollToItem(c) } }
+    }
+
+    // Page count first: cheap metadata, no raster. Clamps a stale initial index
+    // instead of wedging on an error screen.
+    LaunchedEffect(documentUri) {
+        runCatching { focusRequester.requestFocus() }
+        when (val info = withContext(Dispatchers.IO) {
+            PdfManager.readPageInfo(documentUri, pageIndex.coerceAtLeast(0))
+        }) {
+            is PdfResult.Ok -> {
+                pageCount = info.value.pageCount
+                onPageCountChange(pageCount)
+                val c = pageIndex.coerceIn(0, max(pageCount - 1, 0))
+                listState.scrollToItem(c)
+                focusPage(c)
+            }
+            is PdfResult.Err -> {
+                pageCount = 0
+                docError = info.message
+                onPageCountChange(0)
+            }
+        }
+    }
+
+    // Focus follows the top visible page, settled: without the debounce every
+    // fling frame would yank the toolbar state around.
+    LaunchedEffect(listState.firstVisibleItemIndex) {
+        delay(350)
+        focusPage(listState.firstVisibleItemIndex)
+    }
+
+    /**
+     * Export the current document's annotations into a new PDF.
+     *
+     * The model size comes from the focused page (falling back to page 0 when it
+     * has not rendered yet); the save dialog runs on the UI thread because it is
+     * modal, and only the PDFBox stamping runs off-thread.
+     */
+    fun exportNow() {
+        if (exporting) return
+        val src = PdfManager.resolveFile(documentUri)
+        if (src == null) {
+            exportMessage = "找不到原始 PDF，無法匯出"
+            return
+        }
+        val base = documentTitle.substringBeforeLast('.').ifEmpty { "document" }
+        exporting = true
+        exportScope.launch {
+            val mb = handles[focusedPage]?.pageBox?.value
+                ?: withContext(Dispatchers.IO) {
+                    when (val info = PdfManager.readPageInfo(documentUri, 0)) {
+                        is PdfResult.Ok -> info.value.box
+                        is PdfResult.Err -> null
+                    }
+                }
+            if (mb == null) {
+                exporting = false
+                exportMessage = "匯出失敗：讀不到頁面尺寸"
+                return@launch
+            }
+            withContext(Dispatchers.Main) {
+                val fd = java.awt.FileDialog(null as java.awt.Frame?, "匯出 PDF", java.awt.FileDialog.SAVE)
+                fd.file = "$base-annotated.pdf"
+                fd.filenameFilter = java.io.FilenameFilter { _, name -> name.lowercase().endsWith(".pdf") }
+                fd.isVisible = true
+                if (fd.file == null) {
+                    fd.dispose()
+                    exporting = false
+                    return@withContext
+                }
+                var dest = java.io.File(fd.directory, fd.file)
+                fd.dispose()
+                if (!dest.name.lowercase().endsWith(".pdf")) {
+                    dest = java.io.File(dest.parent, dest.name + ".pdf")
+                }
+                exportMessage = null
+                runCatching {
+                    withContext(Dispatchers.IO) {
+                        com.vic.inkflow.util.PdfExporter.exportFromDatabase(
+                            databaseManager, documentUri, src, dest, mb.widthPt, mb.heightPt
+                        )
+                    }
+                }.onSuccess { pages ->
+                    exporting = false
+                    exportMessage = "已匯出 $pages 頁：${dest.absolutePath}"
+                }.onFailure { e ->
+                    logger.error(e) { "Failed to export $documentUri" }
+                    exporting = false
+                    exportMessage = "匯出失敗：${e.message ?: e::class.simpleName}"
+                }
+            }
+        }
+    }
+
+    val h = handles[focusedPage]
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .focusRequester(focusRequester)
+            .focusable()
+            .onPreviewKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                val hh = handles[focusedPage]
+                val typing = hh?.typing?.value == true
+                // Undo/redo/select-all first: these are the keys a person reaches for
+                // mid-stroke. While a note is being typed they belong to the text
+                // field, so the parent stands aside.
+                val ctrl = event.isCtrlPressed || event.isMetaPressed
+                if (ctrl) {
+                    when {
+                        event.key == Key.Z && event.isShiftPressed ->
+                            if (typing) false else { hh?.onRedo(); true }
+                        event.key == Key.Z ->
+                            if (typing) false else { hh?.onUndo(); true }
+                        event.key == Key.Y ->
+                            if (typing) false else { hh?.onRedo(); true }
+                        event.key == Key.A ->
+                            if (typing) false else { hh?.onSelectAll(); true }
+                        else -> null
+                    }?.let { return@onPreviewKeyEvent it }
+                }
+                when (event.key) {
+                    Key.PageDown, Key.DirectionDown, Key.DirectionRight -> {
+                        scrollToPage(focusedPage + 1); true
+                    }
+                    Key.PageUp, Key.DirectionUp, Key.DirectionLeft -> {
+                        scrollToPage(focusedPage - 1); true
+                    }
+                    Key.MoveHome -> {
+                        scrollToPage(0); true
+                    }
+                    Key.MoveEnd -> {
+                        scrollToPage(pageCount - 1); true
+                    }
+                    // Selection keys only when there is something selected, so
+                    // Backspace still means "delete selection" rather than
+                    // silently swallowing the key while the tool is on the pen.
+                    Key.Delete, Key.Backspace -> {
+                        if (typing || (hh?.selectionCount?.value ?: 0) == 0) false
+                        else { hh?.onDeleteSelection(); true }
+                    }
+                    // Escape is overloaded: while a note is being typed it cancels
+                    // the note, otherwise it clears the selection.
+                    Key.Escape -> {
+                        when {
+                            typing -> { hh.onCancelText(); true }
+                            (hh?.selectionCount?.value ?: 0) == 0 -> false
+                            else -> { hh?.onClearSelection(); true }
+                        }
+                    }
+                    else -> false
+                }
+            }
+    ) {
+        if (pageCount == 0) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                if (docError != null) {
+                    Text(
+                        "無法開啟 PDF：$docError",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                } else {
+                    CircularProgressIndicator()
+                }
+            }
+        } else {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(24.dp)
+            ) {
+                items(pageCount, key = { "$documentUri:$it" }) { idx ->
+                    PageView(
+                        documentUri = documentUri,
+                        pageIndex = idx,
+                        databaseManager = databaseManager,
+                        proposalQueue = proposalQueue,
+                        editable = editable,
+                        onInkChanged = onInkChanged,
+                        refreshToken = refreshToken,
+                        docRefresh = docRefresh,
+                        tool = tool,
+                        inkColour = inkColour,
+                        shapeSubType = shapeSubType,
+                        handle = handles.getOrPut(idx) { PageHandle() },
+                        onFocused = { focusPage(idx) },
+                        onDocCleared = { docRefresh++ }
+                    )
+                }
+            }
+        }
+        if (editable && pageCount > 0) {
+            InkToolbar(
+                tool = tool,
+                colour = inkColour,
+                onToolChange = { tool = it },
+                onColourChange = { inkColour = it },
+                shapeSubType = shapeSubType,
+                onShapeSubTypeChange = { shapeSubType = it },
+                canUndo = h?.canUndo?.value == true,
+                canRedo = h?.canRedo?.value == true,
+                selectionCount = h?.selectionCount?.value ?: 0,
+                onUndo = { h?.onUndo() },
+                onRedo = { h?.onRedo() },
+                onDeleteSelection = { h?.onDeleteSelection() },
+                onClear = { h?.onClearDocument() },
+                exporting = exporting,
+                onExport = { exportNow() },
+                exportStatus = exportMessage,
+                documentTitle = documentTitle,
+                modifier = Modifier.align(Alignment.TopStart)
+            )
+        }
+        if (pageCount > 0) {
+            ReaderBottomBar(
+                pageIndex = focusedPage,
+                pageCount = pageCount,
+                zoom = h?.zoom?.value ?: 1f,
+                onPrevious = { scrollToPage(focusedPage - 1) },
+                onNext = { scrollToPage(focusedPage + 1) },
+                onZoomIn = { h?.onZoomCentered(1.25f) },
+                onZoomOut = { h?.onZoomCentered(0.8f) },
+                onZoomReset = { h?.onZoomReset() },
+                modifier = Modifier.align(Alignment.BottomCenter)
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalComposeUiApi::class)
+@Composable
+private fun PageView(
+    documentUri: String,
+    pageIndex: Int,
+    databaseManager: DatabaseManager,
+    proposalQueue: com.vic.inkflow.sync.ProposalQueue? = null,
+    editable: Boolean = false,
+    onInkChanged: () -> Unit = {},
+    refreshToken: Int = 0,
+    docRefresh: Int = 0,
+    tool: InkTool = InkTool.Pen,
+    inkColour: Int = 0xFF121826.toInt(),
+    shapeSubType: com.vic.inkflow.util.ShapeType = com.vic.inkflow.util.ShapeType.RECT,
+    handle: PageHandle,
+    onFocused: () -> Unit = {},
+    onDocCleared: () -> Unit = {},
+    modifier: Modifier = Modifier
+) {
+    // Fixed page: the parent owns navigation, so the page-turn state is gone.
+    // Everything below still says `requestedPage` — one alias, zero rewrites.
+    val requestedPage = pageIndex
 
     // ── Page raster ─────────────────────────────────────────────────────────
     // Keyed on the page, so a page turn clears them: page 2's ink drawn over page 1's
@@ -250,7 +546,7 @@ fun PdfViewer(
     var loadError by remember(documentUri, requestedPage) { mutableStateOf<String?>(null) }
 
     // ── Ink ─────────────────────────────────────────────────────────────────
-    var strokes by remember(documentUri, requestedPage, refreshToken) {
+    var strokes by remember(documentUri, requestedPage, refreshToken, docRefresh) {
         mutableStateOf<List<StrokeWithPoints>>(emptyList())
     }
 
@@ -259,7 +555,7 @@ fun PdfViewer(
     // no width, and forcing it into the envelope renderer would invent geometry
     // for it. Its own list also keeps the ink fast path from re-measuring text
     // metrics on every pointer move.
-    var texts by remember(documentUri, requestedPage, refreshToken) {
+    var texts by remember(documentUri, requestedPage, refreshToken, docRefresh) {
         mutableStateOf<List<TextAnnotationEntity>>(emptyList())
     }
 
@@ -274,17 +570,6 @@ fun PdfViewer(
     /** Anchor of the in-progress note, in model units. Null when not typing. */
     var textDraftAnchor by remember { mutableStateOf<Offset?>(null) }
 
-    // ── Drawing ─────────────────────────────────────────────────────────────
-    // Kept as plain state next to `strokes` rather than in a ViewModel: the ink
-    // tool has no lifetime beyond this composable, and the durable copy always
-    // goes through the database.
-    var tool by remember { mutableStateOf(InkTool.Pen) }
-    var inkColour by remember { mutableIntStateOf(0xFF121826.toInt()) }
-    // Export runs off the UI thread: a long document must not freeze the reader while
-    // PDFBox stamps every page, and the status stays visible under the toolbar.
-    val exportScope = rememberCoroutineScope()
-    var exporting by remember(documentUri) { mutableStateOf(false) }
-    var exportMessage by remember(documentUri) { mutableStateOf<String?>(null) }
     // The stroke being drawn right now. Held separately from `strokes` so the
     // canvas can show an uncommitted stroke at pointer speed while the database
     // write happens once, on release.
@@ -300,8 +585,8 @@ fun PdfViewer(
     // ── Shapes ──────────────────────────────────────────────────────────────
     // The subtype is picked in the toolbar before the drag, the way the tablet does
     // it, so one gesture handler covers all four shapes instead of four handlers
-    // competing over the same pointer stream.
-    var shapeSubType by remember { mutableStateOf(com.vic.inkflow.util.ShapeType.RECT) }
+    // competing over the same pointer stream. It arrives as a parameter now, shared
+    // by every page in the reader.
 
     /**
      * The shape being dragged right now, in model units.
@@ -326,9 +611,9 @@ fun PdfViewer(
     // ── View transform ──────────────────────────────────────────────────────
     // Explicit states, not `by` delegates: the render pipeline reads these from a
     // coroutine, where only a stable reference to the state can be observed.
-    val zoom = remember(documentUri) { mutableFloatStateOf(1f) }
-    val pan = remember(documentUri) { mutableStateOf(Offset.Zero) }
-    val viewport = remember(documentUri) { mutableStateOf(Size.Zero) }
+    val zoom = remember(documentUri, pageIndex) { mutableFloatStateOf(1f) }
+    val pan = remember(documentUri, pageIndex) { mutableStateOf(Offset.Zero) }
+    val viewport = remember(documentUri, pageIndex) { mutableStateOf(Size.Zero) }
 
     val pageReady = pageBox != null
 
@@ -349,37 +634,20 @@ fun PdfViewer(
         zoom = zoom.floatValue
     )
 
-    // ── Metadata: page count and page geometry, without rasterising ─────────
-    // Cheap, and it must come first: the DPI to render at depends on the page size and
-    // the viewport, and on an out-of-range page it is the only thing that can report the
-    // real count, which is what lets a stale index be pulled back into range instead of
-    // wedging the viewer on an error screen.
-    LaunchedEffect(documentUri, requestedPage) {
+    // ── Metadata: this page's geometry only, without rasterising ────────────
+    // The parent loads the page count once for the whole document; each page only
+    // needs its own box, for the item aspect and the ink transform.
+    LaunchedEffect(documentUri, pageIndex) {
         when (val info = withContext(Dispatchers.IO) {
-            PdfManager.readPageInfo(documentUri, requestedPage)
+            PdfManager.readPageInfo(documentUri, pageIndex)
         }) {
             is PdfResult.Ok -> {
                 pageBox = info.value.box
                 loadError = null
-                if (pageCount != info.value.pageCount) {
-                    pageCount = info.value.pageCount
-                    onPageCountChange(info.value.pageCount)
-                }
-                info.value.clampedFrom?.let { stale ->
-                    val target = stale.coerceIn(0, info.value.pageCount - 1)
-                    logger.info { "Page ${stale + 1} does not exist; showing page ${target + 1} instead" }
-                    requestedPage = target
-                    onPageChange(target)
-                }
             }
             is PdfResult.Err -> {
                 pageBox = null
                 loadError = info.message
-                // Unconditional: the parent's count belongs to the *previous* document, and
-                // a guarded "only if it changed" call would leave it there — the viewer would
-                // look like a 40 page document that cannot be turned.
-                pageCount = 0
-                onPageCountChange(0)
             }
         }
     }
@@ -394,7 +662,7 @@ fun PdfViewer(
     // DPI would queue up to a dozen 8 MP renders whose results are all discarded. Locking
     // drops the queued ones on the floor while they are still waiting, and the loser
     // re-renders at the final zoom once the fingers stop.
-    val renderMutex = remember(documentUri) { Mutex() }
+    val renderMutex = remember(documentUri, pageIndex) { Mutex() }
     LaunchedEffect(documentUri, requestedPage, pageReady) {
         if (!pageReady) return@LaunchedEffect
         var renderedOnce = false
@@ -437,7 +705,7 @@ fun PdfViewer(
     // Keyed on refreshToken as well as the page: a background sync writes rows
     // straight into the database without touching this composable's state, so
     // without the token the canvas would keep showing whatever it loaded at open.
-    LaunchedEffect(documentUri, requestedPage, refreshToken) {
+    LaunchedEffect(documentUri, requestedPage, refreshToken, docRefresh) {
         strokes = runCatching {
             withContext(Dispatchers.IO) {
                 databaseManager.getStrokesForPage(documentUri, requestedPage)
@@ -448,7 +716,7 @@ fun PdfViewer(
     }
 
     // ── Text ────────────────────────────────────────────────────────────────
-    LaunchedEffect(documentUri, requestedPage, refreshToken) {
+    LaunchedEffect(documentUri, requestedPage, refreshToken, docRefresh) {
         texts = runCatching {
             withContext(Dispatchers.IO) {
                 databaseManager.getTextAnnotationsForPage(documentUri, requestedPage)
@@ -542,13 +810,6 @@ fun PdfViewer(
         )
     }
 
-    val lastPage = max(pageCount - 1, 0)
-    fun goToPage(page: Int) {
-        if (page !in 0..lastPage || page == requestedPage) return
-        requestedPage = page
-        onPageChange(page)
-    }
-
     /**
      * Persists a finished stroke and puts it on screen.
      *
@@ -566,7 +827,7 @@ fun PdfViewer(
     // History is per document and per viewer instance. Switching documents must
     // discard it: an undo entry referencing strokes from another document would
     // resurrect content that is not there.
-    val undoStack = remember(documentUri) { UndoStack<InkEdit>() }
+    val undoStack = remember(documentUri, pageIndex) { UndoStack<InkEdit>() }
 
     /**
      * Snapshot of a drag in progress, folded into one history entry on release.
@@ -585,12 +846,12 @@ fun PdfViewer(
     // ── Selection ────────────────────────────────────────────────────────────
     // Ids rather than the objects: the selection has to survive the list being
     // rebuilt after every edit, and identity is what the ink is keyed on anyway.
-    var selectedIds by remember(documentUri) { mutableStateOf<Set<String>>(emptySet()) }
+    var selectedIds by remember(documentUri, pageIndex) { mutableStateOf<Set<String>>(emptySet()) }
 
     // Note ids are a disjoint namespace from stroke ids, so a note and a stroke
     // can never collide in one set — which is what makes a mixed selection
     // (drag across both, delete together, undo once) fall out for free.
-    var selectedTextIds by remember(documentUri) { mutableStateOf<Set<String>>(emptySet()) }
+    var selectedTextIds by remember(documentUri, pageIndex) { mutableStateOf<Set<String>>(emptySet()) }
 
     /** Rubber-band rectangle during a selection drag, in model units. */
     var selectionRect by remember { mutableStateOf<Rect?>(null) }
@@ -841,6 +1102,45 @@ fun PdfViewer(
     }
 
     /**
+     * Wipes the whole document (all pages, ink and notes) as one undoable step
+     * on THIS page's history, then asks the parent to reload every page.
+     *
+     * Same semantics as the old toolbar Clear: the snapshot covers this page
+     * only, because undo entries live per page.
+     */
+    fun clearDocument() {
+        val doomedAll = strokes
+        val doomedAllText = texts
+        runCatching {
+            databaseManager.deleteStrokesForDocument(documentUri)
+            databaseManager.deleteTextAnnotationsForDocument(documentUri)
+        }
+            .onSuccess {
+                strokes = emptyList()
+                texts = emptyList()
+                selectedIds = emptySet()
+                selectedTextIds = emptySet()
+                undoStack.push(InkEdit.Erase(doomedAll, doomedAllText))
+                recordOps(
+                    doomedAll.map {
+                        com.vic.inkflow.sync.ProposalOp(
+                            op = com.vic.inkflow.sync.ProposalOp.DELETE_STROKE, id = it.stroke.id
+                        )
+                    } + doomedAllText.map {
+                        com.vic.inkflow.sync.ProposalOp(
+                            op = com.vic.inkflow.sync.ProposalOp.DELETE_TEXT, id = it.id
+                        )
+                    }
+                )
+                onInkChanged()
+                onDocCleared()
+            }
+            .onFailure {
+                logger.error(it) { "Failed to clear ink on ${documentUri.substringAfterLast('/')}" }
+            }
+    }
+
+    /**
      * Writes the note being typed, then clears the draft.
      *
      * A blank note is discarded rather than stored: an empty annotation has no
@@ -889,58 +1189,7 @@ fun PdfViewer(
         textDraftAnchor = null
     }
 
-    /**
-     * Export the current document's annotations into a new PDF.
-     *
-     * The save dialog runs on the UI thread because it is modal; only the PDFBox
-     * stamping runs off-thread. Resolving the source and model size happens before
-     * the dialog, so a missing body fails fast instead of after the user has picked
-     * a destination.
-     */
-    fun exportNow() {
-        if (exporting) return
-        val src = PdfManager.resolveFile(documentUri)
-        if (src == null) {
-            exportMessage = "找不到原始 PDF，無法匯出"
-            return
-        }
-        val mW = pageBox?.widthPt ?: box?.widthPt ?: 0f
-        val mH = pageBox?.heightPt ?: box?.heightPt ?: 0f
-        val base = documentUri.substringAfterLast('/').substringBeforeLast('.').ifEmpty { "document" }
-        // Native save dialog, not Swing: same reason as the import dialog — the
-        // Swing one looks a decade older than everything around it.
-        val fd = java.awt.FileDialog(null as java.awt.Frame?, "匯出 PDF", java.awt.FileDialog.SAVE)
-        fd.file = "$base-annotated.pdf"
-        fd.filenameFilter = java.io.FilenameFilter { _, name -> name.lowercase().endsWith(".pdf") }
-        fd.isVisible = true
-        if (fd.file == null) { fd.dispose(); return }
-        var dest = java.io.File(fd.directory, fd.file)
-        fd.dispose()
-        if (!dest.name.lowercase().endsWith(".pdf")) {
-            dest = java.io.File(dest.parent, dest.name + ".pdf")
-        }
-
-        exporting = true
-        exportMessage = null
-        exportScope.launch(Dispatchers.IO) {
-            runCatching {
-                com.vic.inkflow.util.PdfExporter.exportFromDatabase(
-                    databaseManager, documentUri, src, dest, mW, mH
-                )
-            }.onSuccess { pages ->
-                withContext(Dispatchers.Main) {
-                    exporting = false
-                    exportMessage = "已匯出 $pages 頁：${dest.absolutePath}"
-                }
-            }.onFailure { e ->
-                logger.error(e) { "Failed to export $documentUri" }
-                withContext(Dispatchers.Main) {
-                    exporting = false
-                    exportMessage = "匯出失敗：${e.message ?: e::class.simpleName}"
-                }
-            }
-        }
-    }
+    // (export lives in the parent reader)
 
 /**
      * Persists a shape as a two-point stroke, exactly as the tablet does.
@@ -1311,13 +1560,43 @@ fun PdfViewer(
     }
     val deleteSelectionNow by rememberUpdatedState<() -> Unit> { deleteSelection() }
 
+    // ── Parent bridge ──────────────────────────────────────────────────────
+    // The toolbar and bottom bar live in the parent reader and act on the
+    // focused page through this handle. Plain fields are (re)assigned every
+    // composition so they never go stale; snapshot states mirror in an effect.
+    handle.onUndo = { undo() }
+    handle.onRedo = { redo() }
+    handle.onDeleteSelection = { deleteSelection() }
+    handle.onSelectAll = {
+        selectedIds = strokes.map { it.stroke.id }.toSet()
+        selectedTextIds = texts.map { it.id }.toSet()
+    }
+    handle.onClearSelection = {
+        selectedIds = emptySet()
+        selectedTextIds = emptySet()
+    }
+    handle.onCancelText = { cancelText() }
+    handle.onClearDocument = { clearDocument() }
+    handle.onZoomCentered = { f -> zoomBy(f, Offset(viewportW / 2f, viewportH / 2f)) }
+    handle.onZoomReset = {
+        zoom.floatValue = 1f
+        pan.value = Offset.Zero
+    }
+    LaunchedEffect(strokes, texts, selectedIds, selectedTextIds, textDraft, pageBox, zoom.floatValue) {
+        handle.canUndo.value = undoStack.canUndo
+        handle.canRedo.value = undoStack.canRedo
+        handle.selectionCount.value = selectionCount
+        handle.typing.value = textDraft != null
+        handle.zoom.value = zoom.floatValue
+        handle.pageBox.value = pageBox
+    }
+
     // Text needs the same treatment, plus a separate one for "the user asked to
     // start writing here" — the pointer coroutine only knows about geometry.
     val commitTextNow by rememberUpdatedState<() -> Unit> { commitText() }
     val cancelTextNow by rememberUpdatedState<() -> Unit> { cancelText() }
     val commitShapeNow by rememberUpdatedState<(Offset, Offset) -> Unit> { a, b -> commitShape(a, b) }
 
-    val focusRequester = remember { FocusRequester() }
     val textFieldFocus = remember { FocusRequester() }
 
     // Notes are composables, not draw calls, so their font size has to be
@@ -1351,12 +1630,25 @@ fun PdfViewer(
         }
     }
 
-    Box(modifier = modifier.fillMaxSize().then(ReaderBackdrop(InkThemeState.darkMode))) {
+    // Each page sizes itself: full list width, aspect from its own box, times its
+    // own zoom. The canvas below measures the item, so the existing fit math
+    // keeps working unchanged.
+    BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
+        val aspect = pageBox?.let { it.heightPt / it.widthPt } ?: 1.4142f
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(maxWidth * aspect * zoom.floatValue)
+        ) {
 
         // ── Page + ink, one transformable surface ───────────────────────────
+        // Captured here (composable scope) because the draw scope below cannot
+        // read MaterialTheme.
+        val pageEdgeColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
+                .clip(RectangleShape)
                 .onSizeChanged { viewport.value = Size(it.width.toFloat(), it.height.toFloat()) }
                 .pointerInput(documentUri) {
                     // One handler for pinch + drag, so the two can never fight over the
@@ -1387,90 +1679,19 @@ fun PdfViewer(
                         // notch, in the direction the wheel turns.
                         zoomBy(if (deltaY > 0f) 1f / WHEEL_ZOOM_STEP else WHEEL_ZOOM_STEP, focal)
                         true
-                    } else {
-                        // scrollDelta is in AWT wheel units, not pixels — a mouse notch is
-                        // WHEEL_NOTCH_UNITS, so it has to be scaled to pixels here or a
-                        // single notch would fling the page across the screen. A trackpad
-                        // sends small continuous values and pans smoothly for free.
+                    } else if (mods.isShiftPressed) {
+                        // Shift + wheel pans horizontally and is consumed. A plain
+                        // wheel is deliberately NOT consumed: in the continuous
+                        // reader it belongs to the page list, which scrolls the
+                        // document — the mainstream behaviour.
                         val step = Offset(deltaX, deltaY) / WHEEL_NOTCH_UNITS * WHEEL_PAN_PX
-                        pan.value = clampPan(
-                            pan.value + if (mods.isShiftPressed) Offset(step.y, step.x) else step
-                        )
+                        pan.value = clampPan(pan.value + Offset(step.y, step.x))
                         true
-                    }
+                    } else false
                     if (handled) event.changes.forEach { it.consume() }
                 }
-                .focusRequester(focusRequester)
-                .focusable()
-                .onPreviewKeyEvent { event ->
-                    if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
-                    // Undo/redo first, and before page navigation: these are the keys a person
-                    // reaches for mid-stroke, and PageUp/PageDown are also plain arrows.
-                    // `event.isCtrlPressed` is pointer API and does not exist on a
-                    // KeyEvent — the keyboard modifiers live on the event too but under
-                    // `keyEvent.isCtrlPressed` in `androidx.compose.ui.input.key`.
-                    val ctrl = event.isCtrlPressed || event.isMetaPressed
-                    if (ctrl) {
-                        when {
-                            event.key == Key.Z && event.isShiftPressed -> { redoNow(); return@onPreviewKeyEvent true }
-                            event.key == Key.Z -> { undoNow(); return@onPreviewKeyEvent true }
-                            event.key == Key.Y -> { redoNow(); return@onPreviewKeyEvent true }
-                        }
-                    }
-                    when (event.key) {
-                        Key.PageDown, Key.DirectionRight, Key.DirectionDown -> {
-                            goToPage(requestedPage + 1); true
-                        }
-
-                        Key.PageUp, Key.DirectionLeft, Key.DirectionUp -> {
-                            goToPage(requestedPage - 1); true
-                        }
-
-                        Key.MoveHome -> {
-                            goToPage(0); true
-                        }
-
-                        Key.MoveEnd -> {
-                            goToPage(lastPage); true
-                        }
-
-                        // Selection keys only when there is something selected, so
-                        // Backspace still means "delete selection" rather than
-                        // silently swallowing the key while the tool is on the pen.
-                        Key.Delete, Key.Backspace -> {
-                            if (selectionCount == 0) false else { deleteSelectionNow(); true }
-                        }
-
-                        // Escape is overloaded: while a note is being typed it must
-                        // cancel the note, because a stray Escape should not throw
-                        // away the selection the user just made.
-                        Key.Escape -> {
-                            when {
-                                textFieldFocused -> { cancelTextNow(); true }
-                                selectionCount == 0 -> false
-                                else -> {
-                                    selectedIds = emptySet()
-                                    selectedTextIds = emptySet()
-                                    true
-                                }
-                            }
-                        }
-
-                        // Ctrl+A must work with an empty selection — requiring one
-                        // made the shortcut unreachable on its very first use.
-                        Key.A -> {
-                            if (!ctrl) {
-                                false
-                            } else {
-                                selectedIds = strokes.map { it.stroke.id }.toSet()
-                                selectedTextIds = texts.map { it.id }.toSet()
-                                true
-                            }
-                        }
-
-                        else -> false
-                    }
-                }
+                // Keyboard and focus live in the parent reader now; this canvas keeps
+                // gestures and the wheel only.
                 .pointerInput(documentUri, requestedPage, editable) {
                     // LAST in the chain on purpose: a pointerInput modifier that is
                     // further from the content receives events first, so this one
@@ -1479,8 +1700,14 @@ fun PdfViewer(
                     // transform gesture had already started panning the page, and
                     // drawing appeared to do nothing at all.
                     if (!editable) return@pointerInput
+                    // The grab hand never touches the pointer stream: unconsumed
+                    // drags fall through to the page list, which scrolls.
+                    if (tool == InkTool.Hand) return@pointerInput
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
+                        // Any press on this page makes it the focused one, so the
+                        // toolbar always acts where the user just touched.
+                        onFocused()
                         // `toModel` is the current-frame converter, not the one
                         // captured when this coroutine started — see above.
                         val start = toModel(down.position)
@@ -1637,6 +1864,16 @@ fun PdfViewer(
                             max(1, pageWidthPx.roundToInt()),
                             max(1, pageHeightPx.roundToInt())
                         )
+                    )
+                    // Hairline paper edge: with the aurora showing behind the page,
+                    // the white sheet needs one pixel of definition against a pale
+                    // sky in light mode. Constant 1px, not scaled — UI chrome,
+                    // not document content.
+                    drawRect(
+                        color = pageEdgeColor,
+                        topLeft = Offset.Zero,
+                        size = androidx.compose.ui.geometry.Size(pageWidthPx, pageHeightPx),
+                        style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1f)
                     )
                     // Ink shares the image's transform exactly: same scale, same origin, and
                     // the same page box, so pinch and drag move the two together by
@@ -1840,16 +2077,7 @@ color = Color(inkColour).copy(
             }
         }
 
-        // ── Page navigation ─────────────────────────────────────────────────
-        if (pageCount > 0) {
-            PageNavBar(
-                pageIndex = requestedPage,
-                pageCount = pageCount,
-                onPrevious = { goToPage(requestedPage - 1) },
-                onNext = { goToPage(requestedPage + 1) },
-                modifier = Modifier.align(Alignment.BottomCenter)
-            )
-        }
+        // (page navigation and toolbar live in the parent reader)
 
         // ── Ink toolbar ────────────────────────────────────────────────────
         // Only shown when [editable]. Top-start so it does not collide with the
@@ -1896,68 +2124,8 @@ color = Color(inkColour).copy(
             }
         }
 
-        if (editable && rendered != null && loadError == null) {
-            InkToolbar(
-                tool = tool,
-                colour = inkColour,
-                onToolChange = { tool = it },
-                onColourChange = { inkColour = it },
-                shapeSubType = shapeSubType,
-                onShapeSubTypeChange = { shapeSubType = it },
-                canUndo = undoStack.canUndo,
-                canRedo = undoStack.canRedo,
-                selectionCount = selectionCount,
-                onUndo = { undoNow() },
-                onRedo = { redoNow() },
-                onDeleteSelection = { deleteSelectionNow() },
-                onClear = {
-                    // Clear covers the whole document, not the page, and it wipes
-                    // notes too. It is the one destructive control with no natural
-                    // inverse, so it pushes an undo entry like everything else —
-                    // "clear" being un-undoable is how people lose work they did not
-                    // mean to lose.
-                    val doomedAll = strokes
-                    val doomedAllText = texts
-                    runCatching {
-                        databaseManager.deleteStrokesForDocument(documentUri)
-                        databaseManager.deleteTextAnnotationsForDocument(documentUri)
-                    }
-                        .onSuccess {
-                            strokes = emptyList()
-                            texts = emptyList()
-                            selectedIds = emptySet()
-                            selectedTextIds = emptySet()
-                            undoStack.push(InkEdit.Erase(doomedAll, doomedAllText))
-                            recordOps(
-                                doomedAll.map {
-                                    com.vic.inkflow.sync.ProposalOp(
-                                        op = com.vic.inkflow.sync.ProposalOp.DELETE_STROKE, id = it.stroke.id
-                                    )
-                                } + doomedAllText.map {
-                                    com.vic.inkflow.sync.ProposalOp(
-                                        op = com.vic.inkflow.sync.ProposalOp.DELETE_TEXT, id = it.id
-                                    )
-                                }
-                            )
-                            onInkChanged()
-                        }
-                        .onFailure {
-                            logger.error(it) { "Failed to clear ink on ${documentUri.substringAfterLast('/')}" }
-                        }
-                },
-                exporting = exporting,
-                onExport = { exportNow() },
-                exportStatus = exportMessage,
-                documentTitle = documentTitle,
-                modifier = Modifier.align(Alignment.TopStart)
-            )
+        // (toolbar lives in the parent reader)
         }
-    }
-
-    // Keyboard navigation needs focus. Requested once per document, so a later click
-    // into another panel is not fought over.
-    LaunchedEffect(documentUri) {
-        runCatching { focusRequester.requestFocus() }
     }
 }
 
@@ -2013,7 +2181,7 @@ private sealed interface InkEdit {
     ) : InkEdit
 }
 
-enum class InkTool { Pen, Highlighter, Eraser, Select, Text, Shape }
+enum class InkTool { Pen, Highlighter, Eraser, Select, Text, Shape, Hand }
 
 /**
  * Note font size in **model units** (PDF points), so it scales with the page exactly
@@ -2095,6 +2263,12 @@ private fun InkToolbar(
                     modifier = Modifier.widthIn(max = 180.dp).padding(end = 4.dp)
                 )
             }
+            InkToolIcon(
+                icon = Icons.Rounded.PanTool,
+                description = "抓手（拖曳捲動）",
+                selected = tool == InkTool.Hand,
+                onClick = { onToolChange(InkTool.Hand) }
+            )
             InkToolIcon(
                 icon = Icons.Rounded.Brush,
                 description = "筆",
@@ -2295,29 +2469,6 @@ private val INK_PALETTE = listOf(
 )
 
 /**
- * The reading surface.
- *
- * Deliberately **opaque**, and the one surface in this reader that is not glass.
- * Every other panel floats *above* the document, which is what makes the material
- * read as a layer; putting translucency on the page itself costs the contrast the
- * ink needs to stay legible and looks like a bug rather than a style.
- *
- * A flat `surfaceVariant` fill is replaced with a very soft vertical gradient, so
- * the area behind the paper reads as a lit surface instead of a grey slab — while
- * still being unambiguously a backdrop.
- */
-@Composable
-private fun ReaderBackdrop(isDark: Boolean): Modifier = Modifier.background(
-    // Token ramp only: surfaceVariant melts into the workspace desk colour, so
-    // the page surround belongs to the same material as the rest of the app
-    // instead of a hand-mixed grey slab.
-    Brush.verticalGradient(
-        0f to (if (isDark) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.surface),
-        1f to (if (isDark) WorkspaceDeskDark else WorkspaceDeskLight)
-    )
-)
-
-/**
  * Screen (viewport) coordinates -> model coordinates (PDF points).
  *
  * The exact inverse of `screen = (viewport - page) / 2 + pan + model * scale`,
@@ -2506,32 +2657,29 @@ private fun PointEntity.toPagePixel(scale: Float, box: PageBox): Offset =
     Offset((x - box.originX) * scale, (y - box.originY) * scale)
 
 /**
- * Bottom bar with previous/next and the page counter.
+ * Bottom bar: previous/next page, the page counter, and the focused page's zoom.
  *
- * Floats over the page, so it takes the shared glass treatment: a translucent pill
- * the document stays readable through. It was `surface` at 92% alpha, which is
- * nearly opaque and therefore just covered the page.
- *
- * Both buttons are disabled at the ends of the document instead of silently doing
- * nothing, and the counter shows the total so the position inside a 900 page document is
- * obvious without scrolling.
+ * Near-opaque like the toolbar (same floating-over-page rule), arrows disabled at
+ * the ends, and the zoom readout doubles as the reset button — one tap back to
+ * fit-to-window.
  */
 @Composable
-private fun PageNavBar(
+private fun ReaderBottomBar(
     pageIndex: Int,
     pageCount: Int,
+    zoom: Float,
     onPrevious: () -> Unit,
     onNext: () -> Unit,
+    onZoomIn: () -> Unit,
+    onZoomOut: () -> Unit,
+    onZoomReset: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val shape = ShapeLg
     val isDark = InkThemeState.darkMode
-    // Same rule as the toolbar: anything floating over the page is near-opaque,
-    // or the page text bleeds through and neither layer stays legible.
     Row(
         modifier = modifier
             .padding(16.dp)
-            .widthIn(min = 240.dp)
             .clip(shape)
             .background(
                 MaterialTheme.colorScheme.surface.copy(alpha = if (isDark) 0.88f else 0.92f),
@@ -2541,7 +2689,7 @@ private fun PageNavBar(
             .clip(shape)
             .padding(horizontal = 6.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceEvenly
+        horizontalArrangement = Arrangement.spacedBy(2.dp)
     ) {
         val contentColor = glassContentColor(isDark)
         IconButton(onClick = onPrevious, enabled = pageIndex > 0) {
@@ -2564,6 +2712,29 @@ private fun PageNavBar(
                 contentDescription = "下一頁",
                 tint = contentColor.copy(alpha = if (pageIndex < pageCount - 1) 1f else 0.35f)
             )
+        }
+        androidx.compose.material3.VerticalDivider(
+            modifier = Modifier.height(24.dp).padding(horizontal = 6.dp),
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
+        )
+        IconButton(onClick = onZoomOut) {
+            Icon(Icons.Rounded.ZoomOut, contentDescription = "縮小", tint = contentColor)
+        }
+        Box(
+            modifier = Modifier
+                .size(48.dp)
+                .clip(CircleShape)
+                .glassClickable(onClick = onZoomReset, shape = CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                "${(zoom * 100).roundToInt()}%",
+                style = MaterialTheme.typography.labelMedium,
+                color = contentColor
+            )
+        }
+        IconButton(onClick = onZoomIn) {
+            Icon(Icons.Rounded.ZoomIn, contentDescription = "放大", tint = contentColor)
         }
     }
 }
