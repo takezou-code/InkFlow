@@ -445,6 +445,10 @@ onFolderSelected = { selectedFolderId = it },
                               editable = true,
                               onInkChanged = { libraryRefresh++ },
                               proposalQueue = proposalQueue,
+                              // The same token drives the library: every sync pass and
+                              // every local edit bumps it, so the reader reloads its
+                              // page from the database instead of showing stale ink.
+                              refreshToken = libraryRefresh,
                             modifier = Modifier.weight(1f).fillMaxHeight()
                         )
                         AiAssistantPanel(

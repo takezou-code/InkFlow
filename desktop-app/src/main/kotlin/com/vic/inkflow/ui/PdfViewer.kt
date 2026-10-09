@@ -2,6 +2,7 @@ package com.vic.inkflow.ui
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -9,12 +10,22 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.rounded.Backspace
+import androidx.compose.material.icons.rounded.Brush
+import androidx.compose.material.icons.rounded.DeleteSweep
+import androidx.compose.material.icons.rounded.Gesture
+import androidx.compose.material.icons.rounded.Highlight
+import androidx.compose.material.icons.rounded.Redo
+import androidx.compose.material.icons.rounded.ShapeLine
+import androidx.compose.material.icons.rounded.TextFields
+import androidx.compose.material.icons.rounded.Undo
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -200,7 +211,14 @@ fun PdfViewer(
      */
     editable: Boolean = false,
     /** Fired after a stroke is committed, so the caller can refresh counts. */
-    onInkChanged: () -> Unit = {}
+    onInkChanged: () -> Unit = {},
+    /**
+     * Bumped by the caller after every background sync pass. The ink and text
+     * loaders below are keyed on it, so synced content appears without reopening
+     * the document. Without this the canvas shows whatever was in the database
+     * when the page was opened — a sync landing mid-reading is silently invisible.
+     */
+    refreshToken: Int = 0
 ) {
     // ── Which page ───────────────────────────────────────────────────────────
     // Seeded from the incoming pageIndex, and reset whenever the document changes.
@@ -219,7 +237,7 @@ fun PdfViewer(
     var loadError by remember(documentUri, requestedPage) { mutableStateOf<String?>(null) }
 
     // ── Ink ─────────────────────────────────────────────────────────────────
-    var strokes by remember(documentUri, requestedPage) {
+    var strokes by remember(documentUri, requestedPage, refreshToken) {
         mutableStateOf<List<StrokeWithPoints>>(emptyList())
     }
 
@@ -228,7 +246,7 @@ fun PdfViewer(
     // no width, and forcing it into the envelope renderer would invent geometry
     // for it. Its own list also keeps the ink fast path from re-measuring text
     // metrics on every pointer move.
-    var texts by remember(documentUri, requestedPage) {
+    var texts by remember(documentUri, requestedPage, refreshToken) {
         mutableStateOf<List<TextAnnotationEntity>>(emptyList())
     }
 
@@ -403,7 +421,10 @@ fun PdfViewer(
     }
 
     // ── Ink ─────────────────────────────────────────────────────────────────
-    LaunchedEffect(documentUri, requestedPage) {
+    // Keyed on refreshToken as well as the page: a background sync writes rows
+    // straight into the database without touching this composable's state, so
+    // without the token the canvas would keep showing whatever it loaded at open.
+    LaunchedEffect(documentUri, requestedPage, refreshToken) {
         strokes = runCatching {
             withContext(Dispatchers.IO) {
                 databaseManager.getStrokesForPage(documentUri, requestedPage)
@@ -414,7 +435,7 @@ fun PdfViewer(
     }
 
     // ── Text ────────────────────────────────────────────────────────────────
-    LaunchedEffect(documentUri, requestedPage) {
+    LaunchedEffect(documentUri, requestedPage, refreshToken) {
         texts = runCatching {
             withContext(Dispatchers.IO) {
                 databaseManager.getTextAnnotationsForPage(documentUri, requestedPage)
@@ -1649,11 +1670,18 @@ for (swp in strokes) {
                 // The stroke currently under the pointer. Drawn through the same
                     // transform as everything else so it cannot drift from the
                     // committed path it is about to become.
+                    //
+                    // Mapping is page pixels ((model - origin) * scale) with NO added
+                    // viewport origin: this block already runs inside
+                    // translate(originX, originY), exactly like drawStroke. Adding the
+                    // origin again is what used to throw the preview a full viewport
+                    // away from the cursor — visible as "no preview at all" whenever
+                    // the page was centred with a margin.
                     liveStroke?.takeIf { it.isNotEmpty() }?.let { pts ->
                         val screenPts = pts.map {
                             Offset(
-                                it.x * scale + (originX - b.originX * scale),
-                                it.y * scale + (originY - b.originY * scale)
+                                (it.x - b.originX) * scale,
+                                (it.y - b.originY) * scale
                             )
                         }
                         drawPath(
@@ -1675,9 +1703,12 @@ color = Color(inkColour).copy(
                       // everything else. Rendered as a primitive outline rather than
                       // through the envelope path, which is what it will be
                       // committed as — so the preview cannot differ from the result.
+                      //
+                      // Same mapping as the pen preview above: page pixels, no added
+                      // viewport origin (the translate already provides it).
                       liveShape?.let { (a, z) ->
-                          val sa = Offset(a.x * scale + (originX - b.originX * scale), a.y * scale + (originY - b.originY * scale))
-                          val sz = Offset(z.x * scale + (originX - b.originX * scale), z.y * scale + (originY - b.originY * scale))
+                          val sa = Offset((a.x - b.originX) * scale, (a.y - b.originY) * scale)
+                          val sz = Offset((z.x - b.originX) * scale, (z.y - b.originY) * scale)
                           val sw = (INK_WIDTH_PT * scale).coerceAtLeast(MIN_INK_PX)
                           val previewStyle = androidx.compose.ui.graphics.drawscope.Stroke(
                               width = sw,
@@ -1718,14 +1749,19 @@ color = Color(inkColour).copy(
                                       a.x, a.y, z.x, z.y,
                                       ShapeGeometry.arrowHeadSize(INK_WIDTH_PT)
                                   )
+                                  // The barbs come back in model coordinates, so only
+                                  // their RELATIVE vector may be added to the
+                                  // page-pixel tip. Adding the absolute model
+                                  // position instead plants the head somewhere near
+                                  // the page origin rather than at the arrow tip.
                                   drawLine(
                                       color = ink, start = sz,
-                                      end = Offset(sz.x + head.first.x * scale, sz.y + head.first.y * scale),
+                                      end = Offset(sz.x + (head.first.x - z.x) * scale, sz.y + (head.first.y - z.y) * scale),
                                       strokeWidth = sw, cap = androidx.compose.ui.graphics.StrokeCap.Round
                                   )
                                   drawLine(
                                       color = ink, start = sz,
-                                      end = Offset(sz.x + head.second.x * scale, sz.y + head.second.y * scale),
+                                      end = Offset(sz.x + (head.second.x - z.x) * scale, sz.y + (head.second.y - z.y) * scale),
                                       strokeWidth = sw, cap = androidx.compose.ui.graphics.StrokeCap.Round
                                   )
                               }
@@ -1825,11 +1861,17 @@ color = Color(inkColour).copy(
                 singleLine = false,
                 maxLines = 4,
                 shape = RoundedCornerShape(8.dp),
+                // Container follows the theme, not a hardcoded white: on a dark
+                // backdrop a white box glares, and with a dark ink colour the text
+                // inside it becomes unreadable. surfaceVariant keeps contrast with
+                // both the page and the typed ink in either mode.
                 colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = Color(0xFF6366F1),
-                    unfocusedBorderColor = Color(0xFF6366F1).copy(alpha = 0.45f),
-                    focusedContainerColor = Color.White.copy(alpha = 0.92f),
-                    unfocusedContainerColor = Color.White.copy(alpha = 0.92f)
+                    focusedBorderColor = MaterialTheme.colorScheme.primary,
+                    unfocusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.45f),
+                    focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.94f),
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.94f),
+                    focusedPlaceholderColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    unfocusedPlaceholderColor = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             )
             LaunchedEffect(draft) {
@@ -1999,55 +2041,84 @@ private fun InkToolbar(
     // Two rows rather than one long strip. With five tools, undo/redo, four swatches
     // and a destructive clear, a single row overflows on a normal window and the
     // overflow silently eats the controls the user needs most.
+    // One glass pill, icon-led like the tablet: tools, divider, undo/redo, delete.
+    // Text-only buttons read as a settings page, not a drawing tool — and every
+    // label competes for width until the row overflows on a normal window.
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Row(
             modifier = modifier
                 .padding(16.dp)
                 .glassDressing(isDark = InkThemeState.darkMode, shape = RoundedCornerShape(24.dp))
                 .clip(RoundedCornerShape(24.dp))
-                .padding(horizontal = 8.dp, vertical = 6.dp),
+                .padding(horizontal = 10.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+            horizontalArrangement = Arrangement.spacedBy(2.dp)
         ) {
-            InkToolButton(
-                label = "筆",
+            InkToolIcon(
+                icon = Icons.Rounded.Brush,
+                description = "筆",
                 selected = tool == InkTool.Pen,
                 onClick = { onToolChange(InkTool.Pen) }
             )
-            InkToolButton(
-                label = "螢光筆",
+            InkToolIcon(
+                icon = Icons.Rounded.Highlight,
+                description = "螢光筆",
                 selected = tool == InkTool.Highlighter,
                 onClick = { onToolChange(InkTool.Highlighter) }
             )
-            InkToolButton(
-                label = "橡皮擦",
+            InkToolIcon(
+                icon = Icons.Rounded.DeleteSweep,
+                description = "橡皮擦",
                 selected = tool == InkTool.Eraser,
                 onClick = { onToolChange(InkTool.Eraser) }
             )
-            InkToolButton(
-                label = if (selectionCount > 0) "選取($selectionCount)" else "選取",
+            InkToolIcon(
+                icon = Icons.Rounded.Gesture,
+                description = if (selectionCount > 0) "選取（$selectionCount）" else "選取",
                 selected = tool == InkTool.Select,
+                badgeCount = selectionCount,
                 onClick = { onToolChange(InkTool.Select) }
             )
-            InkToolButton(
-                label = "文字",
+            InkToolIcon(
+                icon = Icons.Rounded.TextFields,
+                description = "文字",
                 selected = tool == InkTool.Text,
                 onClick = { onToolChange(InkTool.Text) }
             )
-            InkToolButton(
-                label = "形狀",
+            InkToolIcon(
+                icon = Icons.Rounded.ShapeLine,
+                description = "形狀",
                 selected = tool == InkTool.Shape,
                 onClick = { onToolChange(InkTool.Shape) }
             )
-            Spacer(Modifier.width(6.dp))
-            InkToolButton(label = "復原", selected = false, enabled = canUndo, onClick = onUndo)
-            InkToolButton(label = "重做", selected = false, enabled = canRedo, onClick = onRedo)
+            androidx.compose.material3.VerticalDivider(
+                modifier = Modifier.height(24.dp).padding(horizontal = 6.dp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
+            )
+            InkToolIcon(
+                icon = Icons.Rounded.Undo,
+                description = "復原",
+                selected = false,
+                enabled = canUndo,
+                onClick = onUndo
+            )
+            InkToolIcon(
+                icon = Icons.Rounded.Redo,
+                description = "重做",
+                selected = false,
+                enabled = canRedo,
+                onClick = onRedo
+            )
             if (selectionCount > 0) {
-                Spacer(Modifier.width(6.dp))
-                // Delete lives here rather than only on the keyboard: the selection is
-                // a mode, and a control that exists only as a shortcut is a control most
+                // Delete lives here rather than only on the keyboard: the selection is a
+                // mode, and a control that exists only as a shortcut is a control most
                 // people never find.
-                InkToolButton(label = "刪除選取", selected = false, onClick = onDeleteSelection)
+                InkToolIcon(
+                    icon = Icons.Rounded.Backspace,
+                    description = "刪除選取",
+                    selected = false,
+                    onClick = onDeleteSelection
+                )
             }
         }
 
@@ -2064,10 +2135,11 @@ private fun InkToolbar(
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 com.vic.inkflow.util.ShapeType.entries.forEach { st ->
-                    InkToolButton(
-                        label = SHAPE_LABELS[st] ?: st.name,
+                    GlassOptionChip(
+                        text = SHAPE_LABELS[st] ?: st.name,
                         selected = shapeSubType == st,
-                        onClick = { onShapeSubTypeChange(st) }
+                        onClick = { onShapeSubTypeChange(st) },
+                        isDark = InkThemeState.darkMode
                     )
                 }
             }
@@ -2083,31 +2155,34 @@ private fun InkToolbar(
         ) {
             INK_PALETTE.forEach { swatch ->
                 val chosen = colour == swatch
+                // Every swatch keeps a faint ring: without it the near-black ink
+                // dot vanishes on a dark toolbar and looks like a missing colour.
                 Box(
                     modifier = Modifier
-                        .size(24.dp)
+                        .size(26.dp)
                         .clip(CircleShape)
                         .background(Color(swatch))
-                        .then(
-                            if (chosen) Modifier.glassDressing(
-                                isDark = InkThemeState.darkMode,
-                                shape = CircleShape
-                            ) else Modifier
+                        .border(
+                            width = if (chosen) 2.5.dp else 1.dp,
+                            color = if (chosen) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f),
+                            shape = CircleShape
                         )
                         .clip(CircleShape)
                         .clickable { onColourChange(swatch) }
                 )
             }
             Spacer(Modifier.width(6.dp))
-            TextButton(onClick = onExport, enabled = !exporting) {
-                Text(
-                    if (exporting) "匯出中…" else "匯出 PDF",
-                    style = MaterialTheme.typography.labelMedium
-                )
-            }
-            TextButton(onClick = onClear) {
-                Text("清除", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium)
-            }
+            GlassTextButton(
+                text = if (exporting) "匯出中…" else "匯出 PDF",
+                onClick = onExport,
+                enabled = !exporting
+            )
+            GlassTextButton(
+                text = "清除",
+                onClick = onClear,
+                color = MaterialTheme.colorScheme.error
+            )
         }
         // Export feedback lives under the toolbar rather than in a dialog: a modal
         // would interrupt reading, while a missing success message leaves the user
@@ -2124,24 +2199,49 @@ private fun InkToolbar(
     }
 }
 
+/**
+ * One icon tool button, in the tablet's language: the icon carries the meaning,
+ * the selection pill carries the state, and the tint follows the theme.
+ *
+ * Icon-only on purpose — six text labels plus undo/redo is what overflowed the old
+ * row on a normal window. The description survives for screen readers and tooltips.
+ */
 @Composable
-private fun InkToolButton(
-    label: String,
+private fun InkToolIcon(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    description: String,
     selected: Boolean,
     enabled: Boolean = true,
+    badgeCount: Int = 0,
     onClick: () -> Unit
 ) {
-    TextButton(onClick = onClick, enabled = enabled) {
-        Text(
-            label,
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-            color = when {
-                selected -> MaterialTheme.colorScheme.primary
-                !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
-                else -> MaterialTheme.colorScheme.onSurfaceVariant
-            }
+    val isDark = InkThemeState.darkMode
+    Box(
+        modifier = Modifier
+            .size(40.dp)
+            .clip(CircleShape)
+            .then(if (selected) Modifier.glassSelectionPill(CircleShape) else Modifier)
+            .glassClickable(onClick = onClick, shape = CircleShape, enabled = enabled),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            icon,
+            contentDescription = description,
+            tint = glassContentColor(isDark).copy(alpha = if (enabled) 1f else 0.35f),
+            modifier = Modifier.size(22.dp)
         )
+        // Selection count rides on the icon rather than in a label: the row stays
+        // compact and the number is visible exactly where the mode is armed.
+        if (badgeCount > 0) {
+            Text(
+                text = if (badgeCount > 99) "99+" else badgeCount.toString(),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.align(Alignment.BottomEnd)
+                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.85f), CircleShape)
+                    .padding(horizontal = 3.dp)
+            )
+        }
     }
 }
 
