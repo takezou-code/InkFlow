@@ -385,10 +385,15 @@ fun TabletEditorScreen(
         }
     )
 
-    // AI 引入管線實作見 AiImportFlow.kt（切塊→KaTeX→排版→掃空白頁→寫入→跳轉）。
+    // AI 引入管線實作見 AiImportFlow.kt（切塊→KaTeX→排版→錨定當前頁→寫入→跳轉）。
     // 薄包裝：勾選混排（文字＋公式裁圖），實作在 AiImportFlow.kt。
+    // aiPlacing：整批放置中壓住「插頁自動導航」，中間每開一頁不跳，只留最後一次跳轉。
+    var aiPlacing by remember { mutableStateOf(false) }
     fun importPickedJson(json: String) {
-        scope.importPickedJson(json, context, viewModel, pdfViewModel, repos, uri.toString(), currentPageIndex, onRequestPage, context as? android.app.Activity, aiWebView)
+        aiPlacing = true
+        scope.importPickedJson(json, context, viewModel, pdfViewModel, repos, uri.toString(), currentPageIndex, onRequestPage, context as? android.app.Activity, aiWebView,
+            latestPage = { currentPageIndex },
+            onSettled = { aiPlacing = false })
     }
     // AI 區「匯入回覆」兩段式：①進圈選模式（段落打勾）②收集打勾段落（沒勾則取最後回覆全文）
     // 按鈕常駐工具列，所以抽屜收起時也要能用：武裝時順手把抽屜滑開，
@@ -722,9 +727,14 @@ fun TabletEditorScreen(
     ) {
 
         // Auto-navigate to the newly inserted page（結構事件走單一提交點，owner=StructuralOp）
+        // AI 整批放置中只消費事件不導航（壓住中間跳），最後由 placePages 的 onRequestPage 跳一次。
         val lastInsertedPage by pdfViewModel.lastInsertedPageIndex.collectAsState()
         androidx.compose.runtime.LaunchedEffect(lastInsertedPage) {
             val idx = lastInsertedPage ?: return@LaunchedEffect
+            if (aiPlacing) {
+                pdfViewModel.consumeInsertedPageEvent()
+                return@LaunchedEffect
+            }
             if (initialPageRestored) {
                 val commit = pageOwner.commitNow(idx, PageOwner.StructuralOp, pageCount)
                 pageOwner.expectTarget(commit.page, pageCount, android.os.SystemClock.uptimeMillis())

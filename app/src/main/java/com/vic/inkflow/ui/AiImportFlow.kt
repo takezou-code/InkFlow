@@ -13,6 +13,8 @@ import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
@@ -60,6 +62,10 @@ suspend fun renderMathBlocks(
 }
 
 /** 勾選混排插入：一批勾選＝文字切分＋公式像素裁圖（Main），放置與純文字路共用。 */
+// 同文件同時只跑一批：管線含 600ms 截圖等待＋渲染，不加鎖兩批會互踩接續游標與頁碼。
+private val importMutex = Mutex()
+
+/** 勾選混排插入：一批勾選＝文字切分＋公式像素裁圖（Main），放置與純文字路共用。 */
 fun CoroutineScope.importPickedJson(
     json: String,
     context: Context,
@@ -70,16 +76,27 @@ fun CoroutineScope.importPickedJson(
     sourcePage: Int,
     onRequestPage: (Int) -> Unit,
     activity: Activity?,
-    webView: android.webkit.WebView?
+    webView: android.webkit.WebView?,
+    // 錨定頁提供者：寫入前一刻重讀已提交當前頁（呼叫方傳 { currentPageIndex }）。
+    // 使用者中途翻頁就跟著走，不寫回舊頁。
+    latestPage: () -> Int = { sourcePage },
+    // 放置結束（成功／失敗／中止皆觸發，Main 執行緒）：呼叫方用來開關導航壓制。
+    onSettled: (() -> Unit)? = null
 ) {
     if (json.isBlank()) return
     launch {
         try {
-            importPickedJsonInner(context, viewModel, pdfViewModel, repos, documentUri, sourcePage, onRequestPage, activity, webView, json)
+            importMutex.withLock {
+                importPickedJsonInner(context, viewModel, pdfViewModel, repos, documentUri, sourcePage, latestPage, onRequestPage, activity, webView, json)
+            }
         } catch (t: Throwable) {
             Log.e("InkFlowDbg", "import picked failed", t)
             try {
                 Toast.makeText(context, "插入失敗：${t.message}", Toast.LENGTH_LONG).show()
+            } catch (_: Throwable) { }
+        } finally {
+            try {
+                onSettled?.invoke()
             } catch (_: Throwable) { }
         }
     }
@@ -118,6 +135,7 @@ suspend fun importPickedJsonInner(
     repos: InkFlowRepositories,
     documentUri: String,
     sourcePage: Int,
+    latestPage: () -> Int,
     onRequestPage: (Int) -> Unit,
     activity: Activity?,
     webView: android.webkit.WebView?,
@@ -181,9 +199,14 @@ suspend fun importPickedJsonInner(
         katexFail = kf
     }
     val mathById = resolved.filterIsInstance<AiMathBlock>().associateBy { it.id }
-    // 接續前頁：sourcePage 是自家頁且有空間 → 首頁游標從 contentBottom 開始（IO 量測，null=舊路）
+    // 錨定：寫入前一刻重讀已提交當前頁（600ms 截圖等待＋渲染期間使用者可能已翻頁）。
+    // 有空位就接著寫，沒空位就在錨定頁後面開新頁；不再掃全文件空白頁（舊行為會把一批回覆打散到文件頭）。
+    val countNow = pdfViewModel.pageCount.value
+    val anchorPage = latestPage().coerceIn(0, (countNow - 1).coerceAtLeast(0))
+    if (anchorPage != sourcePage) Log.d("InkFlowDbg", "IMPORT anchor moved src=$sourcePage anchor=$anchorPage")
+    // 接續錨定頁：自家頁且有空間 → 首頁游標從 contentBottom 開始（IO 量測，null=開新頁）
     val contTop = withContext(Dispatchers.IO) {
-        resolveContinueTop(repos, pdfViewModel, documentUri, sourcePage, viewModel.modelHeight)
+        resolveContinueTop(repos, pdfViewModel, documentUri, anchorPage, viewModel.modelHeight)
     }
     val pages = withContext(Dispatchers.Default) {
         paginateAiBlocks(
@@ -200,13 +223,13 @@ suspend fun importPickedJsonInner(
         if (katexFail > 0) "${katexFail} 式渲染失敗" else ""
     ).filter { it.isNotEmpty() }
     val failNote = if (failBits.isNotEmpty()) "（" + failBits.joinToString("，") + "已退文字）" else ""
-    placePages(context, viewModel, pdfViewModel, repos, documentUri, sourcePage, onRequestPage, pages, mathById, failNote,
-        headTarget = if (contTop != null) sourcePage else null)
+    placePages(context, viewModel, pdfViewModel, repos, documentUri, anchorPage, onRequestPage, pages, mathById, failNote,
+        headTarget = if (contTop != null) anchorPage else null)
 }
 
 /**
- * 共用放置：掃空白頁 → 不夠開新頁 → 寫入（文字/圖＋TeX 存檔）→ 跳轉 → Toast。
- * importRawTextInner 與 importPickedJsonInner 共用，行為一致。
+ * 共用放置：接續錨定頁 → 不夠在錨定頁後面開新頁 → 寫入（文字/圖＋TeX 存檔）→ 跳轉 → Toast。
+ * 不掃全文件空白頁：一批回覆固定落在錨定區，不打散。
  */
 suspend fun placePages(
     context: Context,
@@ -214,15 +237,21 @@ suspend fun placePages(
     pdfViewModel: PdfViewModel,
     repos: InkFlowRepositories,
     documentUri: String,
-    sourcePage: Int,
+    anchorPage: Int,
     onRequestPage: (Int) -> Unit,
     pages: List<List<Placed>>,
     mathById: Map<String, AiMathBlock>,
     failNote: String,
-    // 接續前頁：pages[0] 直接寫回此頁（不掃空白不開新頁），其餘照舊；null=舊行為
+    // 接續錨定頁：pages[0] 直接寫回此頁（不開新頁），其餘緊貼其後開新頁；null=全部開新頁
     headTarget: Int? = null
 ) {
-    var after = sourcePage
+    val count = pdfViewModel.pageCount.value
+    if (count <= 0) {
+        Toast.makeText(context, "文件尚未載入，請稍後再試", Toast.LENGTH_SHORT).show()
+        return
+    }
+    val anchor = anchorPage.coerceIn(0, count - 1)
+    var after = anchor
     var placed = 0
     var mathCount = 0
     var firstTarget = -1
@@ -233,6 +262,14 @@ suspend fun placePages(
         pdfViewModel.prefetchPage(pageIdx)
         withTimeoutOrNull(3000) {
             pdfViewModel.getPageBitmap(pageIdx).filter { it != null }.first()
+        }
+        // 落定等待：insertImported* 是 fire-and-forget（VM 側 launch），這裡用 DB 計數確認提交，
+        // 否則 placed／log 跑在 DB 前面，連打兩批也會互相踩。
+        val wantT = page.count { it is Placed.T }
+        val wantI = page.count { it is Placed.I }
+        val (textBefore, imgBefore) = withContext(Dispatchers.IO) {
+            repos.texts.getForPageSync(documentUri, pageIdx).size to
+                repos.images.getForPageSync(documentUri, pageIdx).size
         }
         page.forEach { pl ->
             when (pl) {
@@ -267,39 +304,42 @@ suspend fun placePages(
                 }
             }
         }
+        val settled = withContext(Dispatchers.IO) {
+            withTimeoutOrNull(5000) {
+                while (true) {
+                    val t = repos.texts.getForPageSync(documentUri, pageIdx).size
+                    val im = repos.images.getForPageSync(documentUri, pageIdx).size
+                    if (t >= textBefore + wantT && im >= imgBefore + wantI) return@withTimeoutOrNull true
+                    kotlinx.coroutines.delay(100)
+                }
+                @Suppress("UNREACHABLE_CODE") false
+            } ?: false
+        }
+        if (!settled) Log.w("InkFlowDbg", "IMPORT-WRITE page=$pageIdx not settled in 5s (wantT=$wantT wantI=$wantI)")
         placed++
     }
     var rest = pages
     if (headTarget != null && rest.isNotEmpty()) {
-        writeOne(headTarget, rest[0])
+        val head = headTarget.coerceIn(0, pdfViewModel.pageCount.value - 1)
+        writeOne(head, rest[0])
         rest = rest.drop(1)
-    }
-    // 先從第 0 頁掃空白頁（DB 先篩＋點陣確認），填滿才開新頁
-    val need = rest.size
-    val blanks = withContext(Dispatchers.IO) {
-        scanBlankPages(repos, pdfViewModel, documentUri, need)
     }
     // R2 結構操作：開新頁會讓舊復原格頁號錯位，動頁前清棧。
     // 同批先寫入的匯入格一併作廢（整批匯入超出復原範圍）。
     var stacksCleared = false
-    for ((i, page) in rest.withIndex()) {
-        val pageIdx = if (i < blanks.size) {
-            blanks[i]
-        } else {
-            if (!stacksCleared) {
-                viewModel.clearUndoStacks()
-                stacksCleared = true
-            }
-            if (!insertOnePageAfter(pdfViewModel, viewModel, context, documentUri, after)) break
-            after += 1
-            after
+    for (page in rest) {
+        if (!stacksCleared) {
+            viewModel.clearUndoStacks()
+            stacksCleared = true
         }
-        writeOne(pageIdx, page)
+        if (!insertOnePageAfter(pdfViewModel, viewModel, context, documentUri, after)) break
+        after += 1
+        writeOne(after, page)
     }
     if (placed > 0) {
-        Log.d("InkFlowDbg", "CONTINUE place headTarget=$headTarget blanks=$blanks firstTarget=$firstTarget placed=$placed")
+        Log.d("InkFlowDbg", "CONTINUE place anchor=$anchor headTarget=$headTarget firstTarget=$firstTarget placed=$placed")
         onRequestPage(firstTarget)
-        Toast.makeText(context, "已插入 ${pages.sumOf { it.size }} 段（公式圖 ${mathCount}，${placed} 頁" + (if (headTarget != null) "，含接續前頁" else "") + (if (blanks.isNotEmpty()) "，含空白頁再利用" else "") + "）" + failNote, Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, "已插入 ${pages.sumOf { it.size }} 段（公式圖 ${mathCount}，${placed} 頁" + (if (headTarget != null) "，含接續當前頁" else "") + "）" + failNote, Toast.LENGTH_SHORT).show()
     } else {
         Toast.makeText(context, "開新頁失敗，請稍後再試", Toast.LENGTH_SHORT).show()
     }
@@ -373,40 +413,4 @@ suspend fun resolveContinueTop(
         Log.w("InkFlowDbg", "continue p=$sourcePage failed: $t")
         return null
     }
-}
-
-// 從第 0 頁往後掃空白頁（DB 先篩：有墨/字/圖直接跳過；DB 空的才拿點陣確認）。
-// 在 IO 執行緒呼叫；找到 need 個或掃完即停。
-suspend fun scanBlankPages(
-    repos: InkFlowRepositories,
-    pdfViewModel: PdfViewModel,
-    documentUri: String,
-    need: Int
-): List<Int> {
-    if (need <= 0) return emptyList()
-    val found = mutableListOf<Int>()
-    val count = pdfViewModel.pageCount.value
-    var checked = 0
-    var p = 0
-    while (p < count && found.size < need) {
-        checked++
-        try {
-            val strokes = repos.strokes.getStrokesForPageSync(documentUri, p)
-            val texts = repos.texts.getForPageSync(documentUri, p)
-            val images = repos.images.getForPageSync(documentUri, p)
-            val dbEmpty = strokes.isEmpty() && texts.isEmpty() && images.isEmpty()
-            if (dbEmpty) {
-                val bmp = withTimeoutOrNull(1200) {
-                    pdfViewModel.getPageBitmap(p).filterNotNull().first()
-                } ?: pdfViewModel.getPageBitmap(p).value
-                val ratio = if (bmp != null) whiteRatioOfBitmap(bmp) else 0f
-                if (isBlankPage(true, ratio)) found.add(p)
-            }
-        } catch (t: Throwable) {
-            Log.w("InkFlowDbg", "blankscan p=$p failed: $t")
-        }
-        p++
-    }
-    Log.d("InkFlowDbg", "BLANKSCAN checked=$checked need=$need used=$found")
-    return found
 }
