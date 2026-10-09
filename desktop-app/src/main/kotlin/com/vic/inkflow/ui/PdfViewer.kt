@@ -5,8 +5,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -218,7 +220,13 @@ fun PdfViewer(
      * the document. Without this the canvas shows whatever was in the database
      * when the page was opened — a sync landing mid-reading is silently invisible.
      */
-    refreshToken: Int = 0
+    refreshToken: Int = 0,
+    /**
+     * File name shown as a compact chip at the head of the toolbar. The top app
+     * bar that used to carry it is gone (vertical space belongs to the page),
+     * so the title rides here where the document actually is.
+     */
+    documentTitle: String = ""
 ) {
     // ── Which page ───────────────────────────────────────────────────────────
     // Seeded from the incoming pageIndex, and reset whenever the document changes.
@@ -1934,6 +1942,7 @@ color = Color(inkColour).copy(
                 exporting = exporting,
                 onExport = { exportNow() },
                 exportStatus = exportMessage,
+                documentTitle = documentTitle,
                 modifier = Modifier.align(Alignment.TopStart)
             )
         }
@@ -2036,24 +2045,40 @@ private fun InkToolbar(
     exporting: Boolean,
     onExport: () -> Unit,
     exportStatus: String?,
+    documentTitle: String,
     modifier: Modifier = Modifier
 ) {
-    // Two rows rather than one long strip. With five tools, undo/redo, four swatches
-    // and a destructive clear, a single row overflows on a normal window and the
-    // overflow silently eats the controls the user needs most.
-    // One glass pill, icon-led like the tablet: tools, divider, undo/redo, delete.
-    // Text-only buttons read as a settings page, not a drawing tool — and every
-    // label competes for width until the row overflows on a normal window.
+    // One pill, not three: the old stack of floating pills ate the top of the
+    // page and read as clutter. Inside, rows are separated by spacing only, and
+    // the tool row scrolls horizontally (like the tablet's center cluster)
+    // instead of overflowing off-screen on a narrow window.
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Row(
+        Column(
             modifier = modifier
-                .padding(16.dp)
+                .padding(12.dp)
                 .glassDressing(isDark = InkThemeState.darkMode, shape = RoundedCornerShape(24.dp))
                 .clip(RoundedCornerShape(24.dp))
                 .padding(horizontal = 10.dp, vertical = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+        Row(
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(2.dp)
         ) {
+            // The document title lives here now that the top app bar is gone: a
+            // compact chip that shrinks to an ellipsis instead of shoving tools
+            // off the row.
+            if (documentTitle.isNotBlank()) {
+                Text(
+                    documentTitle,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.widthIn(max = 180.dp).padding(end = 4.dp)
+                )
+            }
             InkToolIcon(
                 icon = Icons.Rounded.Brush,
                 description = "筆",
@@ -2127,10 +2152,7 @@ private fun InkToolbar(
         // that already wraps onto two rows.
         if (tool == InkTool.Shape) {
             Row(
-                modifier = Modifier.padding(bottom = 10.dp)
-                    .glassDressing(isDark = InkThemeState.darkMode, shape = RoundedCornerShape(24.dp))
-                    .clip(RoundedCornerShape(24.dp))
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                modifier = Modifier.padding(top = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
@@ -2146,10 +2168,7 @@ private fun InkToolbar(
         }
 
         Row(
-            modifier = Modifier.padding(bottom = 16.dp)
-                .glassDressing(isDark = InkThemeState.darkMode, shape = RoundedCornerShape(24.dp))
-                .clip(RoundedCornerShape(24.dp))
-                .padding(horizontal = 10.dp, vertical = 6.dp),
+            modifier = Modifier.padding(top = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
@@ -2183,6 +2202,7 @@ private fun InkToolbar(
                 onClick = onClear,
                 color = MaterialTheme.colorScheme.error
             )
+        }
         }
         // Export feedback lives under the toolbar rather than in a dialog: a modal
         // would interrupt reading, while a missing success message leaves the user
