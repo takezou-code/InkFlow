@@ -634,9 +634,9 @@ val allowSinglePan = startedBlank || fingerPanOnPaperAllowed(
             lastFastLast = last
             lastFastBest = idx
             settleJob?.cancel()
-            // 捲動中高清凍結：每次排放先舉 hold（靜止 0.5s 落定才放行開渲），
-            // 期間只預熱縮圖——不管快慢滑，高清都不在路上，清單只有落定那 5 頁。
-            pdfViewModel.holdRenders()
+            // M2 慢滑跟手清：只有快滑才凍結高清（縮圖掠過）；慢滑已組成的頁
+            // 即時渲（waiter 只看快旗），手指推到哪清到哪。落定再定序補齊 5 頁。
+            if (pdfViewModel.isScrollingFast.value) pdfViewModel.holdRenders()
             // 可視範圍預取：未露臉的鄰頁先查好，快取當初始值，第一幀就有墨
             if (first != Int.MAX_VALUE && last != Int.MIN_VALUE) {
                 viewModel.prefetchPages(first, last)
