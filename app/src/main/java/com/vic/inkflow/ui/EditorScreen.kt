@@ -54,7 +54,6 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.draganddrop.dragAndDropSource
 import androidx.compose.foundation.draganddrop.dragAndDropTarget
 import androidx.compose.foundation.gestures.animateScrollBy
-import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateCentroid
@@ -407,7 +406,8 @@ fun TabletEditorScreen(
             if (target == null || index == target) {
                 if (index == target) programmaticTarget = null
                 currentPageIndex = index
-                viewModel.setActivePage(index)
+                // 排放側已 prefetchPages(first, last)，此處不再重查（融重複預取）。
+                viewModel.setActivePage(index, prefetch = false)
             }
         }
     }
@@ -752,12 +752,14 @@ fun TabletEditorScreen(
             // 這裡用這把鎖強制單寫入者：拖曳中階段動畫不動，放手後才交給動畫。
             var isDraggingSidebar by remember { mutableStateOf(false) }
 
-            // 直向捲主列表的請求通道。拉桿的 pointerInput 是 restricted scope，
-            // 不能直接呼叫 scrollBy（suspend），用 CONFLATED Channel 丟請求再套用。
-            val scrollRequests = remember { kotlinx.coroutines.channels.Channel<Float>(kotlinx.coroutines.channels.Channel.CONFLATED) }
-            LaunchedEffect(scrollRequests) {
-                for (dy in scrollRequests) mainListState.scrollBy(dy)
-            }
+            // Scrub handle 狀態：直向拖拉桿＝絕對頁碼跳轉（Barteksc 式 scrub）。
+            // null＝沒在 scrub，拇指跟主列表走；非 null＝手指正在拖，拇指跟手指、泡泡報頁碼。
+            // 不新增任何佔位：直接住在現有 24dp 拉桿裡（回用戶「高度重疊」疑慮）。
+            var scrubPage by remember { mutableStateOf<Int?>(null) }
+            var railHpx by remember { mutableIntStateOf(0) }
+            // pageCount 閉包新鮮度：pointerInput(sidebarStage) 只在切階段時重跑，
+            // 增刪頁後 pageCount 變了閉包讀到舊值會跳錯頁，用 ref 讀新鮮值。
+            val pageCountRef = androidx.compose.runtime.rememberUpdatedState(pageCount)
 
             // 收合／展開的過渡動畫。56↔128dp 只差 198px，這段距離重量測側欄內容
             // 的成本可以接受 —— 也正是重構前你回報「手感可以」的那版行為。
@@ -1169,6 +1171,7 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                     .width(24.dp)
                     .fillMaxHeight()
                     .padding(top = toolbarH)
+                    .onSizeChanged { railHpx = it.height }
                     .pointerInput(sidebarStage) {
                         awaitEachGesture {
                             val down = awaitFirstDown()
@@ -1191,6 +1194,9 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                                 val change = event.changes.firstOrNull { it.id == down.id } ?: break
                                 if (!change.pressed) {
                                     isDraggingSidebar = false
+                                    // Scrub 收尾：泡泡熄燈、拇指交還給主列表跟隨。
+                                    // 主列表已經 scrollToItem 到位，不用再捲。
+                                    scrubPage = null
                                     when {
                                         dragged -> {
                                             // 放手＝交給狀態機決定停哪一階，再彈過去。
@@ -1240,19 +1246,74 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                                     }
                                 } else if (horizontalLock == false) {
                                     change.consume()
-                                    scrollRequests.trySend(-dy)
+                                    // Scrub：手指在軌道上的絕對位置→目標頁。
+                                    // 舊碼是相對 dy 一頁一頁推，長文件拖到手痠；
+                                    // 改絕對映射，一拖直達（頁碼泡即時報數）。
+                                    // 走程式化單一可取消 job（TOUCH_CONTRACT：手勢接管即殺，
+                                    // 見 pinchActive effect），不用舊 scrollBy 通道。
+                                    val total = pageCountRef.value
+                                    if (total > 1 && size.height > 0) {
+                                        val frac = (change.position.y / size.height.toFloat())
+                                            .coerceIn(0f, 1f)
+                                        val jump = (frac * (total - 1) + 0.5f).toInt()
+                                            .coerceIn(0, total - 1)
+                                        if (jump != scrubPage) {
+                                            scrubPage = jump
+                                            initialScrollDone = true
+                                            programmaticTarget = jump
+                                            currentPageIndex = jump
+                                            viewModel.setActivePage(jump)
+                                            programmaticScrollJob?.cancel()
+                                            programmaticScrollJob = scope.launch {
+                                                runCatching { mainListState.scrollToItem(jump) }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
                     },
-                contentAlignment = Alignment.Center
+                contentAlignment = Alignment.TopStart
             ) {
+                // 拇指：沒 scrub 跟主列表走（首可見頁比例），scrub 中跟手指。
+                // 讀 firstVisibleItemIndex 會訂閱重組——丸子 tiny，成本忽略。
+                val denom = (pageCount - 1).coerceAtLeast(1)
+                val thumbFrac = ((scrubPage ?: mainListState.firstVisibleItemIndex).toFloat() / denom)
+                    .coerceIn(0f, 1f)
+                val thumbYpx = (thumbFrac * (railHpx - with(density) { 56.dp.toPx() }).coerceAtLeast(0f))
+                    .toInt()
                 Box(
                     Modifier
+                        .offset { IntOffset(9.dp.roundToPx(), thumbYpx) }
                         .width(6.dp)
                         .height(56.dp)
                         .glassPanel(chromeHaze, isEditorDark, CircleShape)
                 )
+                // 頁碼泡：只在 scrub 中出現。軌道只寬 24dp，泡浮在外面（Box 預設不裁剪）。
+                // 平時貼軌道右（紙面上方）；GRID 軌道在螢幕最右緣，改貼左，免得飛出螢幕。
+                val sp = scrubPage
+                if (sp != null && pageCount > 0) {
+                    Box(
+                        Modifier
+                            .offset {
+                                IntOffset(
+                                    if (sidebarStage == SidebarStage.GRID) (-100).dp.roundToPx()
+                                    else 28.dp.roundToPx(),
+                                    thumbYpx - 12.dp.roundToPx()
+                                )
+                            }
+                            .width(96.dp)
+                            .glassPanel(chromeHaze, isEditorDark, ShapeMd)
+                            .padding(vertical = 6.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "${sp + 1} / $pageCount",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
             }
         }
 
