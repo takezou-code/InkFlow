@@ -41,11 +41,11 @@ import com.vic.inkflow.ui.theme.ShapeMd
 import com.vic.inkflow.ui.theme.ShapeSm
 import com.vic.inkflow.ui.theme.Motion
 import com.vic.inkflow.ui.AccentGradient
+import com.vic.inkflow.ui.chromeGlass
 import com.vic.inkflow.ui.glassClickable
 import com.vic.inkflow.ui.glassContentColor
 import com.vic.inkflow.ui.glassFieldColors
 import com.vic.inkflow.ui.glassSelectionPill
-import com.vic.inkflow.ui.fauxGlassPanel
 import androidx.compose.foundation.background
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -275,7 +275,7 @@ fun InkFlowApp() {
                     .fillMaxHeight()
                     .padding(start = 12.dp, top = 12.dp, bottom = 12.dp)
                     .width(76.dp)
-                    .fauxGlassPanel(isDark = InkThemeState.darkMode, shape = ShapeMd)
+                    .chromeGlass(isDark = InkThemeState.darkMode, shape = ShapeMd)
                     .padding(vertical = 8.dp)
             ) {
                 Spacer(Modifier.height(8.dp))
@@ -503,8 +503,7 @@ private fun SettingsView(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(ShapeXl)
-                .fauxGlassPanel(isDark = InkThemeState.darkMode, shape = ShapeXl)
+                .chromeGlass(isDark = InkThemeState.darkMode, shape = ShapeXl)
                 .padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
@@ -525,8 +524,7 @@ private fun SettingsView(
                     val selected = InkThemeState.backdropTheme == t
                     Box(
                         modifier = Modifier
-                            .clip(CircleShape)
-                            .fauxGlassPanel(
+                            .chromeGlass(
                                 isDark = InkThemeState.darkMode,
                                 shape = CircleShape,
                                 specular = !selected

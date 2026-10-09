@@ -1,5 +1,6 @@
 package com.vic.inkflow.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
@@ -8,7 +9,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.ExperimentalTextApi
 import com.vic.inkflow.ui.theme.GlassTintDark
@@ -163,6 +167,24 @@ val AccentGradient: Brush
             MaterialTheme.colorScheme.secondary
         )
     )
+
+/**
+ * The one chrome material for the whole desktop window.
+ *
+ * Near-opaque tinted surface plus the shared dressing (sheen + rim), so every
+ * floating container — toolbar, dock, cards, panels — reads at exactly the same
+ * black-glass depth. Translucent glass over busy content fails both layers, and
+ * five slightly different translucencies read as five different apps; one
+ * material, one depth, everywhere.
+ */
+@Composable
+fun Modifier.chromeGlass(isDark: Boolean, shape: Shape, specular: Boolean = true): Modifier = this
+    .clip(shape)
+    .background(
+        MaterialTheme.colorScheme.surface.copy(alpha = if (isDark) 0.88f else 0.92f),
+        shape
+    )
+    .glassDressing(isDark, shape, specular)
 
 @Composable
 fun InkFlowTheme(
