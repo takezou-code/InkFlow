@@ -377,6 +377,7 @@ private fun DocumentCard(
                 Text(
                     document.displayName,
                     style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
