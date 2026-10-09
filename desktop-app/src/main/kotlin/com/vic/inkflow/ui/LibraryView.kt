@@ -27,7 +27,6 @@ import com.vic.inkflow.data.DocumentEntity
 import com.vic.inkflow.util.LocalImport
 import com.vic.inkflow.ui.theme.ShapeMd
 import com.vic.inkflow.ui.theme.ShapeXl
-import com.vic.inkflow.ui.fauxGlassPanel
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -150,7 +149,7 @@ fun LibraryView(
                 modifier = Modifier
                     .then(
                         if (tabletOnline) Modifier.glassSelectionPill(CircleShape)
-                        else Modifier.fauxGlassPanel(InkThemeState.darkMode, CircleShape)
+                        else Modifier.chromeGlass(InkThemeState.darkMode, CircleShape)
                     )
                     .clip(CircleShape)
                     .padding(horizontal = 12.dp, vertical = 6.dp)
@@ -218,7 +217,7 @@ fun LibraryView(
             // opaque control onto the backdrop.
             Box(
                 modifier = Modifier
-                    .fauxGlassPanel(InkThemeState.darkMode, CircleShape)
+                    .chromeGlass(InkThemeState.darkMode, CircleShape)
                     .glassClickable(
                         onClick = { pickAndImport() },
                         shape = CircleShape,
@@ -285,7 +284,7 @@ private fun EmptyLibrary(query: String, onImport: () -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally,
             modifier = Modifier
                 .widthIn(max = 420.dp)
-                .fauxGlassPanel(InkThemeState.darkMode, ShapeXl)
+                .chromeGlass(InkThemeState.darkMode, ShapeXl)
                 .padding(28.dp)
         ) {
             Icon(
@@ -331,7 +330,7 @@ private fun DocumentCard(
     Box(
         modifier = Modifier
             .height(210.dp)
-            .fauxGlassPanel(InkThemeState.darkMode, ShapeMd)
+            .chromeGlass(InkThemeState.darkMode, ShapeMd)
             .glassClickable(onClick = onClick, shape = ShapeMd)
             .clip(ShapeMd)
     ) {

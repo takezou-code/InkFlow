@@ -22,8 +22,6 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ChevronLeft
-import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.automirrored.rounded.Backspace
 import androidx.compose.material.icons.automirrored.rounded.Redo
 import androidx.compose.material.icons.automirrored.rounded.Undo
@@ -495,20 +493,13 @@ fun PdfViewer(
                 onExport = { exportNow() },
                 exportStatus = exportMessage,
                 documentTitle = documentTitle,
-                modifier = Modifier.align(Alignment.TopStart)
-            )
-        }
-        if (pageCount > 0) {
-            ReaderBottomBar(
-                pageIndex = focusedPage,
+                focusedPage = focusedPage,
                 pageCount = pageCount,
                 zoom = h?.zoom?.value ?: 1f,
-                onPrevious = { scrollToPage(focusedPage - 1) },
-                onNext = { scrollToPage(focusedPage + 1) },
                 onZoomIn = { h?.onZoomCentered(1.25f) },
                 onZoomOut = { h?.onZoomCentered(0.8f) },
                 onZoomReset = { h?.onZoomReset() },
-                modifier = Modifier.align(Alignment.BottomCenter)
+                modifier = Modifier.align(Alignment.TopStart)
             )
         }
     }
@@ -1635,10 +1626,13 @@ private fun PageView(
     // keeps working unchanged.
     BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
         val aspect = pageBox?.let { it.heightPt / it.widthPt } ?: 1.4142f
+        // Zoomed-out never shrinks the item: below 1x the fit math already draws
+        // the page smaller inside a full-size item, and shrinking the item too
+        // would apply the zoom twice and strand the page in a void.
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(maxWidth * aspect * zoom.floatValue)
+                .height(maxWidth * aspect * max(zoom.floatValue, 1f))
         ) {
 
         // ── Page + ink, one transformable surface ───────────────────────────
@@ -2220,6 +2214,12 @@ private fun InkToolbar(
     onExport: () -> Unit,
     exportStatus: String?,
     documentTitle: String,
+    focusedPage: Int,
+    pageCount: Int,
+    zoom: Float,
+    onZoomIn: () -> Unit,
+    onZoomOut: () -> Unit,
+    onZoomReset: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     // One row, period: tools, history, colours, actions and AI ride a single
@@ -2235,14 +2235,7 @@ private fun InkToolbar(
         Row(
             modifier = modifier
                 .padding(12.dp)
-                .clip(pillShape)
-                .background(
-                    MaterialTheme.colorScheme.surface.copy(
-                        alpha = if (InkThemeState.darkMode) 0.88f else 0.92f
-                    ),
-                    pillShape
-                )
-                .glassDressing(isDark = InkThemeState.darkMode, shape = pillShape)
+                .chromeGlass(isDark = InkThemeState.darkMode, shape = pillShape)
                 .clip(pillShape)
                 .horizontalScroll(rememberScrollState())
                 .padding(horizontal = 10.dp, vertical = 6.dp),
@@ -2263,6 +2256,15 @@ private fun InkToolbar(
                     modifier = Modifier.widthIn(max = 180.dp).padding(end = 4.dp)
                 )
             }
+            // Page position in one glance: the bottom bar is gone, so the
+            // "where am I" signal rides the toolbar next to the title.
+            Text(
+                "${focusedPage + 1}/$pageCount",
+                style = MaterialTheme.typography.labelMedium,
+                color = glassContentColor(InkThemeState.darkMode).copy(alpha = 0.75f),
+                maxLines = 1,
+                modifier = Modifier.padding(end = 4.dp)
+            )
             InkToolIcon(
                 icon = Icons.Rounded.PanTool,
                 description = "抓手（拖曳捲動）",
@@ -2353,6 +2355,37 @@ private fun InkToolbar(
             }
         }
 
+        androidx.compose.material3.VerticalDivider(
+            modifier = Modifier.height(24.dp).padding(horizontal = 6.dp),
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
+        )
+            // Zoom lives here now, not in a second bar: one row for the whole
+            // toolchain. The readout doubles as the reset button.
+            InkToolIcon(
+                icon = Icons.Rounded.ZoomOut,
+                description = "縮小",
+                selected = false,
+                onClick = onZoomOut
+            )
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .glassClickable(onClick = onZoomReset, shape = CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    "${(zoom * 100).roundToInt()}%",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = glassContentColor(InkThemeState.darkMode)
+                )
+            }
+            InkToolIcon(
+                icon = Icons.Rounded.ZoomIn,
+                description = "放大",
+                selected = false,
+                onClick = onZoomIn
+            )
         androidx.compose.material3.VerticalDivider(
             modifier = Modifier.height(24.dp).padding(horizontal = 6.dp),
             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
@@ -2655,89 +2688,6 @@ private const val MIN_INK_PX = 0.6f
  */
 private fun PointEntity.toPagePixel(scale: Float, box: PageBox): Offset =
     Offset((x - box.originX) * scale, (y - box.originY) * scale)
-
-/**
- * Bottom bar: previous/next page, the page counter, and the focused page's zoom.
- *
- * Near-opaque like the toolbar (same floating-over-page rule), arrows disabled at
- * the ends, and the zoom readout doubles as the reset button — one tap back to
- * fit-to-window.
- */
-@Composable
-private fun ReaderBottomBar(
-    pageIndex: Int,
-    pageCount: Int,
-    zoom: Float,
-    onPrevious: () -> Unit,
-    onNext: () -> Unit,
-    onZoomIn: () -> Unit,
-    onZoomOut: () -> Unit,
-    onZoomReset: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val shape = ShapeLg
-    val isDark = InkThemeState.darkMode
-    Row(
-        modifier = modifier
-            .padding(16.dp)
-            .clip(shape)
-            .background(
-                MaterialTheme.colorScheme.surface.copy(alpha = if (isDark) 0.88f else 0.92f),
-                shape
-            )
-            .glassDressing(isDark = isDark, shape = shape)
-            .clip(shape)
-            .padding(horizontal = 6.dp, vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(2.dp)
-    ) {
-        val contentColor = glassContentColor(isDark)
-        IconButton(onClick = onPrevious, enabled = pageIndex > 0) {
-            Icon(
-                Icons.Default.ChevronLeft,
-                contentDescription = "上一頁",
-                tint = contentColor.copy(alpha = if (pageIndex > 0) 1f else 0.35f)
-            )
-        }
-        Text(
-            "第 ${pageIndex + 1} 頁 / 共 $pageCount 頁",
-            style = MaterialTheme.typography.labelLarge,
-            color = contentColor,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-        IconButton(onClick = onNext, enabled = pageIndex < pageCount - 1) {
-            Icon(
-                Icons.Default.ChevronRight,
-                contentDescription = "下一頁",
-                tint = contentColor.copy(alpha = if (pageIndex < pageCount - 1) 1f else 0.35f)
-            )
-        }
-        androidx.compose.material3.VerticalDivider(
-            modifier = Modifier.height(24.dp).padding(horizontal = 6.dp),
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
-        )
-        IconButton(onClick = onZoomOut) {
-            Icon(Icons.Rounded.ZoomOut, contentDescription = "縮小", tint = contentColor)
-        }
-        Box(
-            modifier = Modifier
-                .size(48.dp)
-                .clip(CircleShape)
-                .glassClickable(onClick = onZoomReset, shape = CircleShape),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                "${(zoom * 100).roundToInt()}%",
-                style = MaterialTheme.typography.labelMedium,
-                color = contentColor
-            )
-        }
-        IconButton(onClick = onZoomIn) {
-            Icon(Icons.Rounded.ZoomIn, contentDescription = "放大", tint = contentColor)
-        }
-    }
-}
 
 /**
  * Zoom bounds, relative to fit-to-window. `1.0` is "the whole page on screen", which is the
