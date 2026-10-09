@@ -9,7 +9,6 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.Home
@@ -39,12 +38,13 @@ import com.vic.inkflow.ui.InkThemeState
 import com.vic.inkflow.ui.LibraryView
 import com.vic.inkflow.ui.theme.ShapeXl
 import com.vic.inkflow.ui.theme.ShapeMd
+import com.vic.inkflow.ui.theme.ShapeSm
 import com.vic.inkflow.ui.theme.Motion
 import com.vic.inkflow.ui.AccentGradient
 import com.vic.inkflow.ui.glassClickable
 import com.vic.inkflow.ui.glassContentColor
+import com.vic.inkflow.ui.glassFieldColors
 import com.vic.inkflow.ui.glassSelectionPill
-import com.vic.inkflow.ui.pressableGlass
 import com.vic.inkflow.ui.fauxGlassPanel
 import androidx.compose.foundation.background
 import androidx.compose.ui.draw.clip
@@ -468,7 +468,7 @@ private fun DesktopRailItem(
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.align(Alignment.BottomEnd)
-                            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.85f), CircleShape)
+                            .background(MaterialTheme.colorScheme.surface, CircleShape)
                             .padding(horizontal = 3.dp)
                     )
                 }
@@ -525,26 +525,24 @@ private fun SettingsView(
                     val selected = InkThemeState.backdropTheme == t
                     Box(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(50))
+                            .clip(CircleShape)
                             .fauxGlassPanel(
                                 isDark = InkThemeState.darkMode,
-                                shape = RoundedCornerShape(50),
+                                shape = CircleShape,
                                 specular = !selected
                             )
                             .background(
                                 if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)
                                 else Color.Transparent
                             )
-                            // pressableGlass, not a bare clickable: it is the shared
-                            // press entry, so these chips get the same sweep and scale
-                            // as every other control in the app.
-                            .pressableGlass(
-                                isDark = InkThemeState.darkMode,
-                                shape = RoundedCornerShape(50),
+                            // glassClickable, not a bare clickable or the desktop's
+                            // simplified pressable: one press language everywhere.
+                            .glassClickable(
                                 onClick = {
                                     InkThemeState.backdropTheme = t
                                     DesktopSettings.backdropThemeName = t.name
-                                }
+                                },
+                                shape = CircleShape
                             )
                             .padding(horizontal = 14.dp, vertical = 7.dp),
                         contentAlignment = Alignment.Center
@@ -584,7 +582,8 @@ private fun SettingsView(
                     onValueChange = onPairingCodeChange,
                     singleLine = true,
                     label = { Text("配對碼") },
-                    shape = RoundedCornerShape(12.dp),
+                    shape = ShapeSm,
+                    colors = glassFieldColors(InkThemeState.darkMode),
                     modifier = Modifier.widthIn(min = 200.dp)
                 )
                 // Live validation: the tablet's code is exactly 8 digits, so a
