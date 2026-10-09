@@ -21,7 +21,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
@@ -40,13 +39,13 @@ import com.vic.inkflow.ui.theme.ShapeXl
 import com.vic.inkflow.ui.theme.ShapeMd
 import com.vic.inkflow.ui.theme.ShapeSm
 import com.vic.inkflow.ui.theme.Motion
-import com.vic.inkflow.ui.AccentGradient
 import com.vic.inkflow.ui.chromeGlass
 import com.vic.inkflow.ui.glassClickable
 import com.vic.inkflow.ui.glassContentColor
 import com.vic.inkflow.ui.glassFieldColors
 import com.vic.inkflow.ui.glassSelectionPill
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toComposeImageBitmap
@@ -279,20 +278,9 @@ fun InkFlowApp() {
                     .padding(vertical = 8.dp)
             ) {
                 Spacer(Modifier.height(8.dp))
-                Box(
-                    modifier = Modifier
-                        .size(40.dp)
-                        .background(AccentGradient, CircleShape),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        "I",
-                        style = MaterialTheme.typography.titleMedium.copy(
-                            color = androidx.compose.ui.graphics.Color.White,
-                            fontWeight = FontWeight.ExtraBold
-                        )
-                    )
-                }
+                // The real app artwork (same PNG the window icon and the EXE use),
+                // not a gradient dot with a letter: one mark everywhere.
+                BrandIcon(modifier = Modifier.size(40.dp))
                 Spacer(Modifier.height(16.dp))
                 DesktopRailItem(
                     selected = selectedDocument == null && !showSettings,
@@ -400,6 +388,14 @@ fun InkFlowApp() {
                             modifier = Modifier.fillMaxSize()
                         )
                         else -> Row(Modifier.fillMaxSize()) {
+                            // Display name from the database, not the URI: synced URIs
+                            // are opaque keys (not file paths), so chopping the URI
+                            // showed garbage in the toolbar title.
+                            val displayName = remember(doc) {
+                                runCatching { databaseManager.getDocument(doc)?.displayName }
+                                    .getOrNull()?.takeIf { it.isNotBlank() }
+                                    ?: doc.substringAfterLast('/').substringAfterLast('\\')
+                            }
                             PdfViewer(
                                 documentUri = doc,
                                 pageIndex = currentPageIndex,
@@ -416,13 +412,49 @@ fun InkFlowApp() {
                                 // every local edit bumps it, so the reader reloads its
                                 // page from the database instead of showing stale ink.
                                 refreshToken = libraryRefresh,
-                                documentTitle = doc.substringAfterLast('/').substringAfterLast('\\'),
+                                documentTitle = displayName,
                                 modifier = Modifier.fillMaxSize()
                             )
                         }
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun BrandIcon(modifier: Modifier = Modifier) {
+    // Loaded from the jar like the window icon: `desktop-app/src/main/resources`
+    // ships the same PNG the taskbar and the packaged EXE carry.
+    val painter = remember {
+        runCatching {
+            val bytes = object {}.javaClass.getResourceAsStream("/inkflow.png")?.use { it.readBytes() }
+                ?: return@runCatching null
+            val awt = javax.imageio.ImageIO.read(java.io.ByteArrayInputStream(bytes))
+                ?: return@runCatching null
+            BitmapPainter(awt.toComposeImageBitmap())
+        }.getOrNull()
+    }
+    if (painter != null) {
+        Image(
+            painter = painter,
+            contentDescription = "InkFlow",
+            modifier = modifier.clip(CircleShape)
+        )
+    } else {
+        // Artwork missing must never blank the dock: fall back to the brand tint.
+        Box(
+            modifier = modifier
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.primary),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                "I",
+                style = MaterialTheme.typography.titleMedium,
+                color = androidx.compose.ui.graphics.Color.White
+            )
         }
     }
 }
