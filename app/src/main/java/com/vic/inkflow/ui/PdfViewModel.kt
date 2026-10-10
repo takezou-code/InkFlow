@@ -63,6 +63,65 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         /** Upper bound for any rendered page bitmap dimension (ARGB_8888 => ~64 MB max). */
         private const val MAX_RENDER_DIMENSION_PX = 4096
 
+        /**
+         * 顯示渲染倍率的**下限**：低於此值連 100% 的紙都糊，而 100% 下的紙寬倍率
+         * 已經大於 2，所以這個下限只在極端小視窗（分屏）才會生效。
+         */
+        internal const val MIN_RENDER_SCALE = 2f
+
+        /**
+         * 放大時追到這個倍率為止。再往上不是更好，是 OOM：A4 在 6x 是 3570×5052
+         * px × 4 bytes ≈ 72 MB，一頁就把 LruCache（maxMemory/8）吃掉大半。
+         * 真的需要更大解析度時，正確做法是渲染分塊瓦片，不是把整頁拉大。
+         */
+        internal const val MAX_ZOOM_RENDER_SCALE = 6f
+
+        /**
+         * 單頁位元組預算。取 [Runtime] 堆的 1/12：LruCache 是 maxMemory/8，
+         * 單頁預算必須小於它，否則「渲一頁就把別頁全部擠出快取」，捲動會變成
+         * 每頁都在重渲——那比糊更糟。
+         */
+        internal fun pageBudgetBytes(maxMemoryBytes: Long): Long = (maxMemoryBytes / 12).coerceAtLeast(8L * 1024 * 1024)
+
+        /**
+         * 這一頁允許的最大倍率：同時受三件事夾住。
+         *
+         *  - [MAX_RENDER_DIMENSION_PX]：絕對上限，決定單邊像素數（GPU／點陣圖皆然）。
+         *  - 位元組預算：`w×h×4 ≤ budget`。這才是真正的 OOM 守門。
+         *  - [MAX_ZOOM_RENDER_SCALE]：見該常數註解。
+         *
+         * 三者取最小，之後夾到 [MIN_RENDER_SCALE] 以上。
+         * 純函式、無 Android 依賴，所以能直接釘單測。
+         */
+        internal fun maxScaleForPage(
+            pageWidthPt: Float,
+            pageHeightPt: Float,
+            maxMemoryBytes: Long
+        ): Float {
+            if (pageWidthPt <= 0f || pageHeightPt <= 0f) return MIN_RENDER_SCALE
+            val longest = maxOf(pageWidthPt, pageHeightPt)
+            val dimCap = (MAX_RENDER_DIMENSION_PX / longest).toDouble()
+            val pixels = pageBudgetBytes(maxMemoryBytes) / 4.0
+            val budgetScale = kotlin.math.sqrt(pixels / (pageWidthPt.toDouble() * pageHeightPt.toDouble()))
+            return minOf(dimCap, budgetScale, MAX_ZOOM_RENDER_SCALE.toDouble())
+                .toFloat()
+                .coerceAtLeast(MIN_RENDER_SCALE)
+        }
+
+        /**
+         * 紙寬（已含縮放）→ 該頁需要的顯示倍率，夾到可行區間。
+         *
+         * 這裡的 `paperWidthPx` 必須是**紙寬**而不是視窗寬：縮放後紙比視窗寬，
+         * 用視窗寬算會得到一個永遠不變的倍率，放大時 PDF 就只能被拉大而變糊
+         * （墨是向量重畫所以不糊——於是同一頁上兩層清晰度打架）。
+         */
+        internal fun resolveRenderScale(paperWidthPx: Float, pageWidthPt: Float, maxScale: Float): Float {
+            if (paperWidthPx <= 0f || pageWidthPt <= 0f) return MIN_RENDER_SCALE
+            val ideal = paperWidthPx / pageWidthPt
+            val hi = maxOf(MIN_RENDER_SCALE, maxScale)
+            return ideal.coerceIn(MIN_RENDER_SCALE, hi)
+        }
+
         internal fun remapCurrentPageAfterDeletes(
             currentPageIndex: Int,
             deletedIndices: List<Int>,
@@ -313,34 +372,118 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun bumpPageSizeVersion() { _pageSizeVersion.value += 1 }
 
-    // 顯示用渲染倍率（密度感知，由 Workspace 按可視寬設定；變更即整批失效重渲）。
-    // renderEpoch 供 UI 纳入 remember key，可视页自動重取。
-    var displayRenderScale = 2f
-        private set
+    /**
+     * v6：縮放感知的**分級**渲染計畫。
+     *
+     * ## 為什麼要分兩級
+     *
+     * 直覺做法是「倍率直接乘 docZoom」，但那是 OOM：A4 在 docZoom=4 要渲成
+     * 6400×9060 px × 4 bytes ≈ 221 MB，一頁就爆。而且記憶體吃光之後使用者看到的
+     * 不是「清晰」，是**捲動時每頁都在重渲**——比糊更糟。
+     *
+     * 所以：只有**可見頁**吃滿倍率，窗外頁維持低清，捲過去時才升級。
+     * 使用者看得到的永遠是清楚的，看不到的省下來。這也是主流 PDF 閱讀器的做法。
+     *
+     * ## 兩個倍率各是什麼
+     *
+     *  - [loRenderScale]：窗外頁用。**等於舊的 `setDisplayRenderScale` 語義**
+     *    （視窗寬／頁寬，夾 2..3）——舊行為原封不動保留，所以沒縮放時行為完全一致，
+     *    這條改動對 100% 閱讀是零風險的。
+     *  - [hiRenderScale]：可見頁用。理想倍率是**紙寬**／頁寬（紙寬含 docZoom），
+     *    再用 [maxScaleForPage] 夾到記憶體容得下的上限。
+     */
+    @Volatile private var loRenderScale = MIN_RENDER_SCALE
+    @Volatile private var hiRenderScale = MIN_RENDER_SCALE
+
+    /** 吃滿倍率的頁範圍；其餘用 [loRenderScale]。空 = 全部低清。 */
+    @Volatile private var hiTierRange: IntRange = IntRange.EMPTY
+
+    // 已套用的計畫，用來算出「哪幾頁的**有效倍率**真的變了」——只有那些頁需要重渲。
+    private var appliedHiScale = -1f
+    private var appliedLoScale = -1f
+    private var appliedRange: IntRange = IntRange.EMPTY
+
+    /** renderEpoch 供 UI 納入 remember key。縮放**不**再推它：那會強制所有可見頁斷訂閱重取。 */
     private val _renderEpoch = MutableStateFlow(0)
     val renderEpoch: StateFlow<Int> = _renderEpoch.asStateFlow()
 
+    /**
+     * 舊入口保留給未接上縮放的呼叫者（等同「紙寬＝視窗寬」的退化情形）。
+     * 新程式請用 [setRenderPlan] + [setVisiblePageRange]。
+     */
     fun setDisplayRenderScale(scale: Float) {
-        val s = scale.coerceIn(2f, 3f)
-        if (s == displayRenderScale) return
-        android.util.Log.d("InkFlowDbg", "renderScale $displayRenderScale -> $s")
-        displayRenderScale = s
-        bitmapCache.evictAll()
-        // Fix2c: 不再把 flow 置 null（那會讓可見頁同時變透明、露出黑紙底）。
-        // 舊圖繼續頂著顯示（倍率略差但可見），新圖在底下重渲、好了自動換上（Crossfade 接住）。
-        // P1 漸進：只重渲有人在看的頁；無訂閱的置空（縮圖頂著，滑回來 remember 重跑自動補渲）。
+        val s = scale.coerceIn(MIN_RENDER_SCALE, 3f)
+        loRenderScale = s
+        applyRenderPlan()
+    }
+
+    /**
+     * 縮放落定後由 Workspace 呼叫：依**紙寬**（已含 docZoom）決定可見頁倍率。
+     *
+     * @param paperWidthPx 紙的可視寬 px。必須是視窗寬 × max(docZoom, 1)，不是視窗寬。
+     * @param pageWidthPt 頁寬（PDF pt）。
+     */
+    fun setRenderPlan(paperWidthPx: Float, pageWidthPt: Float) {
+        val maxScale = maxScaleForPage(
+            pageWidthPt = pageWidthPt,
+            pageHeightPt = pageWidthPt * 1.4142f, // A4 直式近似即可：只當預算守門，不是版面依據
+            maxMemoryBytes = Runtime.getRuntime().maxMemory()
+        )
+        loRenderScale = (paperWidthPx / pageWidthPt).coerceIn(MIN_RENDER_SCALE, 3f)
+        hiRenderScale = resolveRenderScale(paperWidthPx, pageWidthPt, maxScale)
+        android.util.Log.d(
+            "InkFlowDbg",
+            "renderPlan paper=${paperWidthPx.toInt()}px lo=$loRenderScale hi=$hiRenderScale max=$maxScale range=$hiTierRange"
+        )
+        applyRenderPlan()
+    }
+
+    /**
+     * 可見頁範圍變更。捲動時呼叫（不重渲任何東西本身）。
+     *
+     * 範圍變了只是「哪些頁吃滿倍率」變了；真正要重渲的頁由 [applyRenderPlan] 判定。
+     */
+    fun setVisiblePageRange(range: IntRange) {
+        if (range == hiTierRange) return
+        hiTierRange = range
+        applyRenderPlan()
+    }
+
+    /** 這一頁該用哪個倍率：可見窗內吃滿，窗外低清。 */
+    private fun scaleForPage(pageIndex: Int): Float =
+        if (pageIndex in hiTierRange) hiRenderScale else loRenderScale
+
+    /**
+     * 套用計畫：只重渲「有效倍率真的變了」的頁。
+     *
+     * 兩個關鍵決定：
+     *
+     *  1. **移除快取項，但不清 flow 的值。** `renderPage` 開頭會查快取，舊圖還在
+     *     就會直接返回、永遠不重渲——所以必須 `bitmapCache.remove`。但 flow 仍持有
+     *     那張圖的參考，它繼續顯示，新圖在底下渲好再換上。這就是「不閃白」的來源：
+     *     舊的 `evictAll()` 加上置 null，會讓整份文件在每次縮放時白一下。
+     *  2. **只對有效倍率變了的頁動作。** 倍率沒變就重渲等於白燒 IO，
+     *     而拖曳／旋轉時倍率常是來回抖動的，這種抖動必須是零成本。
+     */
+    private fun applyRenderPlan() {
+        val hi = hiRenderScale
+        val lo = loRenderScale
+        val range = hiTierRange
+        if (hi == appliedHiScale && lo == appliedLoScale && range == appliedRange) return
+        val prevHi = appliedHiScale
+        val prevLo = appliedLoScale
+        val prevRange = appliedRange
+        appliedHiScale = hi
+        appliedLoScale = lo
+        appliedRange = range
+
         bitmapFlowCache.forEach { (index, flow) ->
-            if (flow.subscriptionCount.value > 0) {
-                if (flow.value != null) {
-                    renderScope.launch {
-                        renderPage(index, highQuality = true, ticket = scrollGen)?.let { flow.value = it }
-                    }
-                }
-            } else {
-                flow.value = null
-            }
+            val want = if (index in range) hi else lo
+            val had = if (index in prevRange) prevHi else prevLo
+            if (want == had) return@forEach
+            bitmapCache.remove(index)
+            if (flow.subscriptionCount.value > 0) launchBitmapRender(flow, index)
         }
-        _renderEpoch.value += 1
     }
 
     private fun invalidateRenderedFlowsInRange(range: IntRange) {
@@ -1318,7 +1461,9 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                 pdfRenderer?.let { renderer ->
                     try {
                         val page = renderer.openPage(pageIndex)
-                        val scale = if (highQuality) displayRenderScale else 0.4f
+                        // v6：可見頁吃滿倍率、窗外頁低清（見 setRenderPlan）。
+                        // 這裡是唯一決定「這一頁畫多大」的地方。
+                        val scale = if (highQuality) scaleForPage(pageIndex) else 0.4f
                         // For thumbnails, cap width at 240 px to keep memory reasonable
                         val rawW = (page.width * scale).toInt()
                         val rawH = (page.height * scale).toInt()

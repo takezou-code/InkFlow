@@ -158,17 +158,22 @@ class ProposalArbiterTest {
 
     @Test
     fun aVersionTieBreakIsSymmetricAndOrdered() {
-        // The two properties that make convergence possible: the winner is the
-        // same whichever side asks, and asking twice gives the same answer.
+        // 收斂靠兩個性質：任一對恰好一個贏家（或兩者相同時都不「贏」），
+        // 以及同一組輸入問兩次答案一樣。
+        //
+        // 注意 a == b 且 nonce 也相同時兩邊都回 false：內容一模一樣，本來就沒有
+        // 「誰贏」這件事——把它算成其中一方贏只會讓下一輪同步以為有衝突。
         for (a in 1..5) for (b in 1..5) {
-            assertEquals(
-                ProposalArbiter.incomingWins(a, 0, b, 0),
-                !ProposalArbiter.incomingWins(b, 0, a, 0) || a == b,
-                "a=$a b=$b must not both win"
-            )
-            assertEquals(
-                ProposalArbiter.incomingWins(a, 7, b, 7),
-                ProposalArbiter.incomingWins(a, 7, b, 7)
+            val ab = ProposalArbiter.incomingWins(a, 0, b, 0)
+            val ba = ProposalArbiter.incomingWins(b, 0, a, 0)
+            if (a == b) {
+                assertTrue("a=$a b=$b 內容相同時不該有人贏", !ab && !ba)
+            } else {
+                assertTrue("a=$a b=$b 必須剛好一個贏家（ab=$ab ba=$ba）", ab xor ba)
+            }
+            // 冪等：同一組參數問兩次答案相同。
+            assertTrue(
+                ProposalArbiter.incomingWins(a, 7, b, 7) == ProposalArbiter.incomingWins(a, 7, b, 7)
             )
         }
     }

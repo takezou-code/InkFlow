@@ -22,8 +22,19 @@ import kotlin.math.sin
 // 文字/圖片/套索框的 canvas-space 命中矩形、旋轉、選取框幾何。純函數。
 
 /**
+ * 觸控墊片（px）：字尾多給這麼多，讓細瘦的標籤（例如「1」「→」）不會因為
+ * 字形實際沒有填滿 em 框而點不到。
+ */
+internal const val TEXT_HIT_PAD_PX = 10f
+
+/**
  * Returns the bounding rect of [ann] in canvas-pixel space.
  * [fontSizeDelta] is an in-flight resize delta in model units (applied during drag).
+ *
+ * 寬度走 [measureTextWidth]（全形感知），**不是** `字數 × 0.65`：後者是這裡曾經的寫法，
+ * 而 [SelectionGeometry] 的註解已經點名它是錯的——中文字會比實際窄三分之一，
+ * 結果是「標籤看得見、點不到右半邊」。同一份寬度公式有兩個版本時，使用者一定會
+ * 遇到比較差的那個；所以這裡只保留一個真相來源。
  */
 internal fun textAnnotationHitRect(
     ann: TextAnnotationEntity, sx: Float, sy: Float, fontSizeDelta: Float = 0f
@@ -33,11 +44,17 @@ internal fun textAnnotationHitRect(
     val effectiveFontPx = (ann.fontSize + fontSizeDelta).coerceAtLeast(4f) * sy
     // Multiline bounds: modelY is the first-line baseline; each extra line adds one line-height.
     val lines           = ann.text.split("\n")
-    val maxLineLen      = lines.maxOfOrNull { it.length } ?: 0
-    // Approximate text width; drawText baseline is at (canvasX, canvasY)
-    val textWidth       = maxLineLen * effectiveFontPx * 0.65f + 8f
+    val textWidth       = lines.maxOfOrNull { measureTextWidth(it, effectiveFontPx) } ?: 0f
     val textHeight      = effectiveFontPx + (lines.size - 1) * effectiveFontPx * 1.2f
-    return Rect(canvasX - 4f, canvasY - effectiveFontPx - 4f, canvasX + textWidth, canvasY - effectiveFontPx + textHeight + 4f)
+    // 四邊同一個墊片：以前左 4 右 8 是不對稱且沒寫下來的原因，現在明示。
+    // 對稱的好處是命中框與選取框的外觀跟觸控目標是同一個東西，不會出現
+    // 「框畫在這裡、但手指得按旁邊才選得到」。
+    return Rect(
+        canvasX - TEXT_HIT_PAD_PX,
+        canvasY - effectiveFontPx - TEXT_HIT_PAD_PX,
+        canvasX + textWidth + TEXT_HIT_PAD_PX,
+        canvasY - effectiveFontPx + textHeight + TEXT_HIT_PAD_PX
+    )
 }
 
 /** Returns the resize-handle hit rect anchored to the bottom-right of [textRect], centered on that corner. */
