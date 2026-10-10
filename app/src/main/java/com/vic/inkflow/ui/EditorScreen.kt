@@ -418,9 +418,14 @@ fun TabletEditorScreen(
     // 按鈕常駐工具列，所以抽屜收起時也要能用：武裝時順手把抽屜滑開，
     // 否則使用者看不到打勾框，等於按了沒反應。
     fun toggleAiImport() {
-        // ChatGPT 的圈選/抓取還沒移植（Phase 2）。寧可明講，不要按下去像壞掉。
-        if (aiProvider != AiProvider.GEMINI) {
-            android.widget.Toast.makeText(context, "${aiProvider.label} 匯入還沒接上，請用 Gemini", android.widget.Toast.LENGTH_SHORT).show()
+        // S2：能力檢查讀 capabilities，不再寫 `if (aiProvider != GEMINI)`。
+        // 換 provider 時這裡不用動，開啟條件由 AiProvider 自己宣告。
+        if (!aiProvider.capabilities.importReply) {
+            android.widget.Toast.makeText(
+                context,
+                "${aiProvider.label} 還沒支援匯入回覆",
+                android.widget.Toast.LENGTH_SHORT
+            ).show()
             return
         }
         if (!aiPickMode) {
@@ -438,9 +443,13 @@ fun TabletEditorScreen(
     // （與套索快捷列同一提示詞常數，差別只在這裡 autoSend=false）
     fun sendPageToAi() {
         if (isSendingPage) return
-        // 同上：ChatGPT 還沒接自動貼圖＋填詞，先講清楚。
-        if (aiProvider != AiProvider.GEMINI) {
-            android.widget.Toast.makeText(context, "${aiProvider.label} 自動送圖還沒接上，請用 Gemini", android.widget.Toast.LENGTH_SHORT).show()
+        // S2：同上，讀 capabilities。
+        if (!aiProvider.capabilities.sendImage) {
+            android.widget.Toast.makeText(
+                context,
+                "${aiProvider.label} 還沒支援自動送圖",
+                android.widget.Toast.LENGTH_SHORT
+            ).show()
             return
         }
         isSendingPage = true

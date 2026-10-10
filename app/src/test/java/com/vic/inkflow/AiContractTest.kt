@@ -119,6 +119,26 @@ class AiContractTest {
     }
 
     @Test
+    fun `S2 Gemini 宣告全部能力且行為不可退化`() {
+        // Gemini 是既有、已驗收的功能。三項能力必須全開，
+        // 否則 S2 的守衛會把原本能用的按鈕擋掉。
+        val gemini = AiProvider.GEMINI.capabilities
+        assertTrue("Gemini 必須能送圖", gemini.sendImage)
+        assertTrue("Gemini 必須能匯入", gemini.importReply)
+        assertTrue("Gemini 必須能做數學裁圖", gemini.mathCrop)
+    }
+
+    @Test
+    fun `S2 未移植的 provider 不得宣稱任何能力`() {
+        // ChatGPT 在 S3 實機驗證前，capabilities 必須全關。
+        // 「用沒接的功能看起來可用」比明講沒接更糟，所以這條要釘死。
+        val chatgpt = AiProvider.CHATGPT.capabilities
+        assertFalse(chatgpt.sendImage)
+        assertFalse(chatgpt.importReply)
+        assertFalse(chatgpt.mathCrop)
+    }
+
+    @Test
     fun `outcome 失敗必須帶使用者提示`() {
         val bad = AiOutcome.fail("NO_CHAT_INPUT_FOUND", "找不到輸入框")
         assertFalse(bad.ok)
