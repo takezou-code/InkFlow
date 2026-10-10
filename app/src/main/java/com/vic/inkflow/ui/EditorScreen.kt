@@ -290,9 +290,9 @@ fun TabletEditorScreen(
 
     var showAiPanel by rememberSaveable { mutableStateOf(false) }
     var aiPanelWeight by rememberSaveable { mutableFloatStateOf(0.4f) }
-    var aiFileUri by remember { mutableStateOf<android.net.Uri?>(null) }
-    var aiPrompt by remember { mutableStateOf<String?>(null) }
-    var aiAutoSend by remember { mutableStateOf(true) }
+    // L0 意圖層：兩個入口（整頁鈕／圈選快捷列）都只產生一個 AiRequest，
+    // 不再各自維護 fileUri／prompt／autoSend 三個隱性變數。
+    var aiRequest by remember { mutableStateOf<AiRequest?>(null) }
     var isSendingPage by remember { mutableStateOf(false) }
     // 抽屜：面板寬度依內容區實寬算（不再用螢幕寬）、滑動進度、WebView 是否活著
     var contentW by remember { mutableIntStateOf(0) }
@@ -312,9 +312,8 @@ fun TabletEditorScreen(
         val next = aiProvider.other
         aiProvider = next
         prefs.edit().putString(KEY_AI_PROVIDER, next.name).apply()
-        // 換站＝換對話。清掉待送檔案/提示詞/圈選武裝，避免舊站的東西跨站重複注入。
-        aiFileUri = null
-        aiPrompt = null
+        // 換站＝換對話。清掉待送請求/圈選武裝，避免舊站的東西跨站重複注入。
+        aiRequest = null
         aiPickMode = false
         aiPickEnterId = 0
         aiPickCollectId = 0
@@ -454,11 +453,15 @@ fun TabletEditorScreen(
                 val file = viewModel.capturePageToShareFile(context, pageIdx, bmp)
                 android.util.Log.d("InkFlowDbg", "PAGESHOT send p=$pageIdx bmpNull=${bmp == null} bytes=${file?.length() ?: -1}")
                 if (file != null) {
-                    aiFileUri = androidx.core.content.FileProvider.getUriForFile(
-                        context, "${context.packageName}.fileprovider", file
+                    aiRequest = AiRequest(
+                        action = AiAction.SEND_PROMPT,
+                        image = androidx.core.content.FileProvider.getUriForFile(
+                            context, "${context.packageName}.fileprovider", file
+                        ),
+                        prompt = AiQuickPrompt.EXPLAIN,
+                        // 整頁鈕：圖貼上＋填詞即停，不自動送出（套索快捷列才自動送）
+                        autoSend = false
                     )
-                    aiPrompt = AiQuickPrompt.EXPLAIN
-                    aiAutoSend = false // 整頁鈕：圖貼上＋填詞即停，不自動送出（套索快捷列才自動送）
                     showAiPanel = true
                 } else {
                     android.widget.Toast.makeText(context, "整頁截圖失敗，請稍後再試", android.widget.Toast.LENGTH_SHORT).show()
@@ -930,9 +933,13 @@ fun TabletEditorScreen(
                         pageAspectRatio = pageAspectRatio,
                         documentUri = uri.toString(),
                         onAiFileReady = { fileUri, prompt ->
-                            aiFileUri = fileUri
-                            aiPrompt = prompt
-                            aiAutoSend = true
+                            // 圈選快捷列：和整頁鈕走同一條 AiRequest 通道，差別只在 autoSend。
+                            aiRequest = AiRequest(
+                                action = AiAction.SEND_PROMPT,
+                                image = fileUri,
+                                prompt = prompt,
+                                autoSend = true
+                            )
                             showAiPanel = true
                         },
                         hazeState = editorHaze,
@@ -1093,9 +1100,9 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                         .glassPanel(chromeHaze, isEditorDark, RoundedCornerShape(26.dp))
                 ) {
                     AiWebPanel(
-                        fileUri = aiFileUri,
-                        prompt = aiPrompt,
-                        onPromptConsumed = { aiPrompt = null },
+                        request = aiRequest,
+                        // 提示詞已投遞就清掉，避免重組時重複注入同一段字。
+                        onPromptConsumed = { aiRequest = aiRequest?.copy(prompt = null) },
                         pickEnterId = aiPickEnterId,
                         pickCollectId = aiPickCollectId,
                         webLight = !isEditorDark,
@@ -1111,14 +1118,11 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                             }
                         },
                         onWebView = { aiWebView = it },
-                        autoSend = aiAutoSend,
                         active = aiPanelLive,
                         modifier = Modifier.padding(5.dp),
                         onClose = {
                             showAiPanel = false
-                            aiFileUri = null
-                            aiPrompt = null
-                            aiAutoSend = true
+                            aiRequest = null
                             aiPickMode = false
                         }
                     )
