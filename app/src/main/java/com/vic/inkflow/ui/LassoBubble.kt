@@ -49,6 +49,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -157,6 +159,21 @@ internal fun bubbleTargetOffset(
     )
 }
 
+// 提取等待門：insertBlankPage 是背景非同步（先寫檔、再移 DB、最後才刷新 pageCount），
+// 立刻寫圖會跑在 PageOps.shift 之前、新圖被 +1 擠到錯頁。故等 pageCount+1 落定再寫
+//（與 AiImportFlow.insertOnePageAfter 同模式；DB 移位發生在 pageCount 刷新之前）。
+internal suspend fun awaitPageInserted(
+    pageCount: StateFlow<Int>,
+    before: Int,
+    timeoutMs: Long = 30_000
+): Boolean {
+    if (pageCount.value == before + 1) return true
+    return withTimeoutOrNull(timeoutMs) {
+        pageCount.filter { it == before + 1 }.first()
+        true
+    } ?: false
+}
+
 // 圈選送 AI 共用管線：擷取套索區 → 分享檔 → FileProvider Uri → 交給 AI 面板（附可選快捷 prompt）。
 internal fun sendRegionToAi(
     scope: CoroutineScope,
@@ -260,6 +277,14 @@ internal fun LassoBubble(
                         enabled = !isExtracting && hasRegionSnapshot,
                         onClick = {
                             if (isExtracting || !hasRegionSnapshot) return@SelectionBubbleAction
+                            // 插頁同一時間只接受一頁（進行中直接丟棄）：先擋，避免開頁被丟棄後圖還寫到舊頁。
+                            if (pdfViewModel.isPageOperationInProgress.value) {
+                                android.widget.Toast.makeText(
+                                    context, "頁面操作進行中，請稍後再試",
+                                    android.widget.Toast.LENGTH_SHORT
+                                ).show()
+                                return@SelectionBubbleAction
+                            }
                             onExtractingChange(true)
                             scope.launch {
                                 try {
@@ -274,11 +299,23 @@ internal fun LassoBubble(
                                     val newPageIndex = sourcePageIndex + 1
                                     // R2：插頁是結構操作，先清棧（後面頁號全移位，舊復原格會錯位）。
                                     viewModel.clearUndoStacks()
+                                    val countBefore = pdfViewModel.pageCount.value
                                     pdfViewModel.insertBlankPage(
                                         context, documentUri, sourcePageIndex,
                                         pageWidthPt = viewModel.modelWidth,
                                         pageHeightPt = viewModel.modelHeight
                                     )
+
+                                    // 錯頁根因：insertBlankPage 回傳時 DB 移位還沒跑，
+                                    // 此時寫圖會被後到的 shiftPageIndicesUp(+1) 擠到下一頁。
+                                    // 等 pageCount+1 落定（DB 移位在前、刷新在後）再寫圖。
+                                    if (!awaitPageInserted(pdfViewModel.pageCount, countBefore)) {
+                                        android.widget.Toast.makeText(
+                                            context, "開新頁失敗，請稍後再試",
+                                            android.widget.Toast.LENGTH_SHORT
+                                        ).show()
+                                        return@launch
+                                    }
 
                                     val ok = viewModel.extractRegionToNewPage(
                                         context = context,
