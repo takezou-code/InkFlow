@@ -119,7 +119,10 @@ class DatabaseManager(private val dbPath: String) {
                     boundsRight REAL NOT NULL,
                     boundsBottom REAL NOT NULL,
                     isHighlighter INTEGER NOT NULL,
-                    shapeType TEXT
+                    shapeType TEXT,
+                    version INTEGER NOT NULL DEFAULT 1,
+                    versionNonce INTEGER NOT NULL DEFAULT 0,
+                    deletedAt INTEGER
                 )
             """)
 
@@ -180,7 +183,10 @@ class DatabaseManager(private val dbPath: String) {
                     modelY REAL NOT NULL,
                     fontSize REAL NOT NULL DEFAULT 16,
                     colorArgb INTEGER NOT NULL,
-                    isStamp INTEGER NOT NULL DEFAULT 0
+                    isStamp INTEGER NOT NULL DEFAULT 0,
+                    version INTEGER NOT NULL DEFAULT 1,
+                    versionNonce INTEGER NOT NULL DEFAULT 0,
+                    deletedAt INTEGER
                 )
             """)
 
@@ -235,6 +241,7 @@ class DatabaseManager(private val dbPath: String) {
      * v2 = adds `strokes.docY` and the `sync_meta` / `sync_docs` tables.
      * v3 = adds `text_annotations`.
      * v4 = adds `sync_proposals` / `sync_oplog` (the v5 proposal outbox).
+     * v5 = adds the v6 merge columns (`version` / `versionNonce` / `deletedAt`).
      *
      * Additive only — the desktop is a read-only mirror, so there is nothing to
      * rewrite, and a column that the tablet sends as NULL stays NULL rather than
@@ -278,6 +285,32 @@ class DatabaseManager(private val dbPath: String) {
             }
         }
 
+        if (version < 5) {
+            // v6 merge columns (SYNC_PROTOCOL.md §15.1): per-object version +
+            // nonce + delete tombstone, mirroring the tablet's schema exactly.
+            // Additive, and each column is added only when missing so a re-run is
+            // safe — the same idempotence rule as the v26 Android migration.
+            // Never backfilled: a fabricated higher version would make old rows
+            // look newer than the tablet's, which is the one direction that
+            // silently overwrites. Default 1/0 is the honest "untouched" value.
+            for (table in listOf("strokes", "text_annotations")) {
+                if (!tableExists(stmt, table)) {
+                    logger.warn { "Schema v4 -> v5: $table missing after init" }
+                    continue
+                }
+                if (!columnExists(stmt, table, "version")) {
+                    stmt.execute("ALTER TABLE $table ADD COLUMN version INTEGER NOT NULL DEFAULT 1")
+                }
+                if (!columnExists(stmt, table, "versionNonce")) {
+                    stmt.execute("ALTER TABLE $table ADD COLUMN versionNonce INTEGER NOT NULL DEFAULT 0")
+                }
+                if (!columnExists(stmt, table, "deletedAt")) {
+                    stmt.execute("ALTER TABLE $table ADD COLUMN deletedAt INTEGER")
+                }
+            }
+            logger.info { "Schema v4 -> v5: merge columns added" }
+        }
+
         // sync_meta / sync_docs are created by initializeDatabase()'s CREATE TABLE IF NOT
         // EXISTS statements, so nothing to do here for them.
 
@@ -304,8 +337,16 @@ class DatabaseManager(private val dbPath: String) {
         return found
     }
 
-    private companion object {
-        const val SCHEMA_VERSION = 4
+    companion object {
+        const val SCHEMA_VERSION = 5
+
+        /**
+         * Exposed for tests only: `TextAnnotationDbTest` asserts that a legacy
+         * database lands on the current version. It must not hard-code the number —
+         * a test that pins "4" fails the next time a column is added, which reads as
+         * a migration bug and buries the real one.
+         */
+        const val CURRENT_SCHEMA_VERSION = SCHEMA_VERSION
     }
 
     // ─── Sync bookkeeping (v3) ──────────────────────────────────────────────
@@ -792,28 +833,60 @@ class DatabaseManager(private val dbPath: String) {
 
     // ─── Stroke operations ───────────────────────────────────────────────────
 
+    /**
+     * 寫入一筆筆跡，處理 v6 的版本序號（§15.1）。
+     *
+     * 版本策略分兩種寫入，**這是本函式唯一存在的理由**：
+     *  - **pull（同步拉取）**：傳進來的 entity 已帶平板的版本，必須**原樣保存**。
+     *    在這裡 +1 會讓桌面對「平板剛寫的東西」永遠自稱更新，下一次推提案就變成
+     *    「桌面比較新」而蓋回去——正好把同步做反。
+     *  - **本地編輯**：entity 帶的是讀取時的版本，必須 +1，否則兩端對「我改了」的
+     *    判斷會停在同一個數字，仲裁變成擲硬幣。
+     *
+     * 兩者的區分不需要額外參數：pull 傳來的 `version` 必然 **大於或等於** DB 現有值
+     * （平板是單調的權威），本地編輯則是拿記憶體裡那個**舊值**回寫。所以取
+     * `max(incoming, dbExisting)` 後，若等於 dbExisting 說明是本地重寫（+1），
+     * 否則是 pull（照抄）。全新 id 一律從 incoming 起步。
+     */
     fun saveStroke(stroke: StrokeEntity, points: List<PointEntity>) = synchronized(dbLock) {
         connection?.autoCommit = false
         try {
-            connection?.prepareStatement("""
-                INSERT OR REPLACE INTO strokes
-                (id, documentUri, pageIndex, docY, color, strokeWidth, boundsLeft, boundsTop, boundsRight, boundsBottom, isHighlighter, shapeType)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """)?.use { stmt ->
+            val existing = connection?.prepareStatement("SELECT version FROM strokes WHERE id = ?")?.use { stmt ->
                 stmt.setString(1, stroke.id)
-                stmt.setString(2, stroke.documentUri)
-                stmt.setInt(3, stroke.pageIndex)
-                if (stroke.docY == null) stmt.setNull(4, java.sql.Types.REAL) else stmt.setFloat(4, stroke.docY)
-                stmt.setInt(5, stroke.color)
-                stmt.setFloat(6, stroke.strokeWidth)
-                stmt.setFloat(7, stroke.boundsLeft)
-                stmt.setFloat(8, stroke.boundsTop)
-                stmt.setFloat(9, stroke.boundsRight)
-                stmt.setFloat(10, stroke.boundsBottom)
-                stmt.setInt(11, if (stroke.isHighlighter) 1 else 0)
-                stmt.setString(12, stroke.shapeType)
-                stmt.executeUpdate()
+                stmt.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else null }
             }
+            val nextVersion = when {
+                existing == null -> stroke.version                        // 全新
+                stroke.version >= existing -> stroke.version               // pull：照抄平板的值
+                else -> existing + 1                                       // 本地編輯：前進
+            }
+            // nonce 同理必須照抄：它是一半的決定性排序，pull 時換掉等於對內容
+            // 動了手。那兩者一起變動會讓「兩端對同一份內容算出不同版本」，
+            // 下一輪就會被誤判成衝突。只有本地編輯才重擲。
+            val isPull = existing == null || stroke.version >= existing
+            val nextNonce = if (isPull) stroke.versionNonce else java.security.SecureRandom().nextInt()
+            connection?.prepareStatement("""
+                        INSERT OR REPLACE INTO strokes
+                        (id, documentUri, pageIndex, docY, color, strokeWidth, boundsLeft, boundsTop, boundsRight, boundsBottom, isHighlighter, shapeType, version, versionNonce, deletedAt)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """)?.use { ins ->
+                        ins.setString(1, stroke.id)
+                        ins.setString(2, stroke.documentUri)
+                        ins.setInt(3, stroke.pageIndex)
+                        if (stroke.docY == null) ins.setNull(4, java.sql.Types.REAL) else ins.setFloat(4, stroke.docY)
+                        ins.setInt(5, stroke.color)
+                        ins.setFloat(6, stroke.strokeWidth)
+                        ins.setFloat(7, stroke.boundsLeft)
+                        ins.setFloat(8, stroke.boundsTop)
+                        ins.setFloat(9, stroke.boundsRight)
+                        ins.setFloat(10, stroke.boundsBottom)
+                        ins.setInt(11, if (stroke.isHighlighter) 1 else 0)
+                        ins.setString(12, stroke.shapeType)
+                        ins.setInt(13, nextVersion)
+                        ins.setInt(14, nextNonce)
+                        if (stroke.deletedAt == null) ins.setNull(15, java.sql.Types.BIGINT) else ins.setLong(15, stroke.deletedAt!!)
+                        ins.executeUpdate()
+                    }
 
             connection?.prepareStatement("DELETE FROM points WHERE strokeId = ?")?.use { stmt ->
                 stmt.setString(1, stroke.id)
@@ -946,11 +1019,23 @@ class DatabaseManager(private val dbPath: String) {
      * and a new id would read as "deleted here, added there" on the next sync.
      */
     fun saveTextAnnotation(annotation: TextAnnotationEntity) = synchronized(dbLock) {
+        // v6 §15.1: 與 saveStroke 同一套 pull/本地 區分（見該函式註解）。
+        val existing = connection?.prepareStatement("SELECT version FROM text_annotations WHERE id = ?")?.use { stmt ->
+            stmt.setString(1, annotation.id)
+            stmt.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else null }
+        }
+        val nextVersion = when {
+            existing == null -> annotation.version
+            annotation.version >= existing -> annotation.version
+            else -> existing + 1
+        }
+        val isPull = existing == null || annotation.version >= existing
+        val nextNonce = if (isPull) annotation.versionNonce else java.security.SecureRandom().nextInt()
         connection?.prepareStatement(
             """
             INSERT INTO text_annotations
-                (id, documentUri, pageIndex, docY, text, modelX, modelY, fontSize, colorArgb, isStamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, documentUri, pageIndex, docY, text, modelX, modelY, fontSize, colorArgb, isStamp, version, versionNonce, deletedAt)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 documentUri = excluded.documentUri,
                 pageIndex = excluded.pageIndex,
@@ -960,7 +1045,10 @@ class DatabaseManager(private val dbPath: String) {
                 modelY = excluded.modelY,
                 fontSize = excluded.fontSize,
                 colorArgb = excluded.colorArgb,
-                isStamp = excluded.isStamp
+                isStamp = excluded.isStamp,
+                version = excluded.version,
+                versionNonce = excluded.versionNonce,
+                deletedAt = excluded.deletedAt
             """.trimIndent()
         )?.use { stmt ->
             stmt.setString(1, annotation.id)
@@ -973,6 +1061,9 @@ class DatabaseManager(private val dbPath: String) {
             stmt.setFloat(8, annotation.fontSize)
             stmt.setInt(9, annotation.colorArgb)
             stmt.setBoolean(10, annotation.isStamp)
+            stmt.setInt(11, nextVersion)
+            stmt.setInt(12, nextNonce)
+            if (annotation.deletedAt == null) stmt.setNull(13, java.sql.Types.BIGINT) else stmt.setLong(13, annotation.deletedAt!!)
             stmt.executeUpdate()
         }
         Unit
@@ -1068,7 +1159,11 @@ class DatabaseManager(private val dbPath: String) {
                             modelY = rs.getFloat("modelY"),
                             fontSize = rs.getFloat("fontSize"),
                             colorArgb = rs.getInt("colorArgb"),
-                            isStamp = rs.getBoolean("isStamp")
+                            isStamp = rs.getBoolean("isStamp"),
+                            // v6: see queryStrokes — the base version must survive a load.
+                            version = rs.getInt("version"),
+                            versionNonce = rs.getInt("versionNonce"),
+                            deletedAt = rs.getObject("deletedAt")?.let { (it as Number).toLong() }
                         )
                     )
                 }
@@ -1100,7 +1195,14 @@ class DatabaseManager(private val dbPath: String) {
                         boundsRight = rs.getFloat("boundsRight"),
                         boundsBottom = rs.getFloat("boundsBottom"),
                         isHighlighter = rs.getBoolean("isHighlighter"),
-                        shapeType = rs.getString("shapeType")
+                        shapeType = rs.getString("shapeType"),
+                        // v6: the merge columns travel back out too. A caller that
+                        // builds an op from a loaded entity MUST see the version it
+                        // is actually editing against — otherwise every op claims
+                        // base 1 and arbitration decides nothing.
+                        version = rs.getInt("version"),
+                        versionNonce = rs.getInt("versionNonce"),
+                        deletedAt = rs.getObject("deletedAt")?.let { (it as Number).toLong() }
                     )
                     strokes.add(StrokeWithPoints(stroke, getPointsForStroke(stroke.id)))
                 }

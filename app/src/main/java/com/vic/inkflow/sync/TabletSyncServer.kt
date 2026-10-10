@@ -7,6 +7,7 @@ import android.os.SystemClock
 import android.util.Log
 import com.google.gson.Gson
 import com.vic.inkflow.data.DocumentEntity
+import com.vic.inkflow.data.MergeVersion
 import com.vic.inkflow.data.StrokeWithPoints
 import com.vic.inkflow.data.TextAnnotationEntity
 import com.vic.inkflow.data.repository.InkFlowRepositories
@@ -30,6 +31,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.DataInputStream
+import java.util.UUID
 import java.io.DataOutputStream
 import java.io.File
 import java.io.IOException
@@ -379,14 +381,22 @@ class TabletSyncServer(
 
         val instance = SyncIdentity.instanceId(appContext)
         val current = currentDocVersion(doc)
+
+        // v6 §15.2：逐 op 的物件版本（一次查完，不是每 op 一次）。
+        // 桌面端送來的是「它改這筆時看到的版本」，平板這裡是現況版本。
+        val live = loadOpStates(doc.uri, p.ops)
+        val kinds = p.ops.mapNotNull { op -> opIdOf(op)?.let { it to kindOf(op) } }.toMap()
+
         // 決策是純函數（見 ProposalArbiter）：這裡只負責執行，不重新發明規則。
         // 規則若有兩份實現，遲早各改各的，然後在某個深夜以資料損毀的方式分叉。
-        when (val decision = ProposalArbiter.decide(
+        when (val decision = ProposalArbiter.decideOps(
             currentVersion = current,
             currentInstance = instance,
             baseVersion = p.baseDocVersion,
             baseInstance = p.baseInstanceId,
-            opIds = p.ops.mapNotNull { it.id ?: strokeIdOf(it) }
+            opIds = p.ops.mapNotNull { opIdOf(it) },
+            opStates = live,
+            kinds = kinds
         )) {
             is ProposalArbiter.Decision.Reject -> {
                 return reject(p, decision.message).also { recentProposals[p.proposalId] = it }
@@ -401,6 +411,9 @@ class TabletSyncServer(
                 ).also { recentProposals[p.proposalId] = it }
             }
             ProposalArbiter.Decision.Accept -> Unit
+            is ProposalArbiter.Decision.Merge -> {
+                return applyMergedProposal(p, doc, decision, live)
+            }
         }
 
         if (p.ops.isEmpty()) {
@@ -417,12 +430,98 @@ class TabletSyncServer(
 
         // 快取跟著寫入走，否則下一輪 manifest 會用舊筆數算出舊版本，
         // 把剛接受的提案判成「又變了」而讓桌面白拉一次。
-        val strokes = repos.strokes.getAllStrokesForDocument(doc.uri)
-        val texts = repos.texts.getAllForDocument(doc.uri)
-        strokeCounts.record(doc.uri, strokes.size)
-        textCounts.record(doc.uri, texts.size)
+        refreshCounts(doc.uri)
         val winner = currentDocVersion(doc)
         return accept(p, winner).also { recentProposals[p.proposalId] = it }
+    }
+
+    /**
+     * v6 §15.2／§15.3：部分接受，衝突的那幾筆**留副本**而不是丟掉。
+     *
+     * 這是整個「兩邊都不丟」的落點：
+     *  - 非衝突 op 照常套用（同一次事務，與 v5 的原子性要求相同）。
+     *  - 衝突 op 是**同一個 id 兩端都改過**——平板的版本比較新（規則在
+     *    [ProposalArbiter]），所以平板那份為主；桌面的改動另存成新 id、同一頁、
+     *    同一座標的副本，使用者看得見兩條、自己決定刪哪條。
+     *  - 副本是新物件，`version = 1`，所以它下一次被改寫時不會蓋掉任何東西。
+     *
+     * 留副本而不是「平板贏就完事」，抄的是 Automerge 的 `getConflicts`（loser 不刪，
+     * 只是不顯示）與 Obsidian 的「另存衝突檔」。**靜默丟掉使用者的筆是這個專案
+     * 最不能接受的失敗模式**，所以衝突必然留下可見的痕跡。
+     */
+    private suspend fun applyMergedProposal(
+        p: ProposalSubmitPayload,
+        doc: DocumentEntity,
+        decision: ProposalArbiter.Decision.Merge,
+        live: List<ProposalArbiter.OpState>
+    ): ProposalStatusPayload {
+        val liveById = live.associateBy { it.id }
+        val copies = mutableListOf<String>()
+        var applied = 0
+        Log.d(TAG, "Merged proposal ${p.proposalId}: ${decision.acceptIds.size} accepted, ${decision.conflictIds.size} conflicted, ${liveById.size} version rows")
+
+        val conflictIds = decision.conflictIds
+        val acceptedOps = p.ops.filter { op -> opIdOf(op) !in conflictIds }
+        val conflictOps = p.ops.filter { op -> opIdOf(op) in conflictIds }
+
+        // 先校驗全部（跨文件 op 必須拒絕，不能只套一半）。
+        val decodedAccepted = acceptedOps.map { decodeOp(p.documentUri, it) }
+        val decodedConflicted = conflictOps.map { decodeOp(p.documentUri, it) }
+
+        repos.transaction {
+            decodedAccepted.forEach { applyOp(it) }
+            applied = decodedAccepted.size
+            decodedConflicted.forEach { op ->
+                repos.keepConflictCopy(op)?.let { copies.add(it) }
+            }
+        }
+
+        refreshCounts(doc.uri)
+        val winner = currentDocVersion(doc)
+        // 狀態一律回 accepted：衝突已經用副本解決了，不是「駁回待重試」。
+        // 回 conflict_stale 會讓桌面把那幾筆丟掉——正是我們要避免的結果。
+        return ProposalStatusPayload(
+            proposalId = p.proposalId,
+            status = ProposalStatusPayload.ACCEPTED,
+            winnerDocVersion = winner,
+            conflictIds = emptyList(),
+            conflictCopies = copies,
+            message = if (copies.isEmpty()) null else "merged; $applied applied, ${copies.size} kept as conflict copies"
+        ).also { recentProposals[p.proposalId] = it }
+    }
+
+    /** 把一個衝突 op 另存成副本，回傳新 id。刪除類 op 沒有內容可留（見 §15.3）。 */
+    private suspend fun InkFlowRepositories.keepConflictCopy(op: DecodedOp): String? = when (op) {
+        is DecodedOp.UpsertStroke -> {
+            val copy = op.swp.stroke.copy(
+                id = UUID.randomUUID().toString(),
+                // 新物件從 version 1 起步：它從來沒有被任何人仲裁過，
+                // 而帶著舊的高版本號會讓它第一次被別人改時就被判定為「對方比較新」。
+                version = 1,
+                versionNonce = MergeVersion.nextNonce(),
+                deletedAt = null
+            )
+            strokes.insertStroke(copy)
+            strokes.deletePointsForStroke(copy.id)
+            strokes.insertPoints(op.swp.points.map { it.copy(strokeId = copy.id) })
+            copy.id
+        }
+        is DecodedOp.UpsertText -> {
+            val copy = op.text.copy(
+                id = UUID.randomUUID().toString(),
+                version = 1,
+                versionNonce = MergeVersion.nextNonce(),
+                deletedAt = null
+            )
+            texts.insert(copy)
+            copy.id
+        }
+        // 刪除衝突（一方刪、一方改）：修改勝，刪除不執行。
+        // 沒有副本可留——留一個空物件等於憑空造一筆使用者沒畫過的東西。
+        // 使用者刪掉別人剛改的那筆，本來就該由刪除勝；反過來別人刪掉你剛畫的，
+        // 你的線會以平板現況繼續存在。
+        is DecodedOp.DeleteStroke -> null
+        is DecodedOp.DeleteText -> null
     }
 
     private fun reject(p: ProposalSubmitPayload, message: String) = ProposalStatusPayload(
@@ -444,9 +543,74 @@ class TabletSyncServer(
         val present = file?.exists() == true
         val sha = if (present) digests.sha256Hex(file!!) else null
         val size = file?.length()
-        val strokes = repos.strokes.getAllStrokesForDocument(doc.uri).size
-        val texts = repos.texts.getAllForDocument(doc.uri).size
+        // 只數活著的（墓碑不算筆數，否則刪除後版本不會變）。
+        val strokes = repos.strokes.countLiveStrokes(doc.uri)
+        val texts = repos.texts.countLiveTexts(doc.uri)
         return SyncIdentity.docVersion(instance, doc.uri, strokes, sha, size, texts)
+    }
+
+    /**
+     * 湊齊提案裡每個 op 的 incoming/現況版本，供逐 op 仲裁（§15.2）。
+     *
+     * 一次查兩張表的版本表（不是每 op 一次）：提案可以帶幾百個 op，逐查會讓每份文件
+     * 的仲裁成本變成 O(ops) 次 IO。
+     *
+     * **base 從哪裡來有講究**：upsert op 的 payload 本身帶著桌面當時的
+     * `version`/`versionNonce`（實體有這兩欄），不用額外傳。delete op 沒有 payload，
+     * base 只能由桌面顯式送出（`ProposalOp.baseVersion`）。任一 op 兩者都缺 → 回
+     * null → `decideOps` 退回 v5 整筆語義，寧可保守不可猜。
+     */
+    private suspend fun loadOpStates(uri: String, ops: List<ProposalOp>): List<ProposalArbiter.OpState> {
+        val ids = ops.mapNotNull { opIdOf(it) }
+        if (ids.isEmpty()) return emptyList()
+        val strokeVersions = repos.strokes.getStrokeVersions(uri).associateBy { it.id }
+        val textVersions = repos.texts.getTextVersions(uri).associateBy { it.id }
+
+        return ops.mapNotNull { op ->
+            val id = opIdOf(op) ?: return@mapNotNull null
+            val local = strokeVersions[id] ?: textVersions[id]
+            val incoming = incomingVersionOf(op) ?: return@mapNotNull null
+            ProposalArbiter.OpState(
+                id = id,
+                incomingVersion = incoming.first,
+                incomingNonce = incoming.second,
+                currentVersion = local?.version,
+                currentNonce = local?.versionNonce ?: 0,
+                baseVersion = op.baseVersion,
+                currentDeleted = isTombstoned(id)
+            )
+        }
+    }
+
+    /** 查一筆是不是墓碑（§15.4）；刪除仲裁需要這個語意。 */
+    private suspend fun isTombstoned(id: String): Boolean =
+        repos.strokes.getStrokeVersion(id)?.deletedAt != null ||
+            repos.texts.getTextVersion(id)?.deletedAt != null
+
+    private suspend fun refreshCounts(uri: String) {
+        strokeCounts.record(uri, repos.strokes.countLiveStrokes(uri))
+        textCounts.record(uri, repos.texts.countLiveTexts(uri))
+    }
+
+    private fun opIdOf(op: ProposalOp): String? = op.id ?: strokeIdOf(op)
+
+    /** 每種 op 的「提案帶來的版本」：upsert 取 payload 內的版本，delete 取 baseVersion。 */
+    private fun incomingVersionOf(op: ProposalOp): Pair<Int, Int>? = when (op.op) {
+        ProposalOp.UPSERT_STROKE -> {
+            val swp = gson.fromJson(gson.toJson(op.stroke), StrokeWithPoints::class.java)
+            swp?.stroke?.let { it.version to it.versionNonce }
+        }
+        ProposalOp.UPSERT_TEXT -> {
+            gson.fromJson(gson.toJson(op.text), TextAnnotationEntity::class.java)
+                ?.let { it.version to it.versionNonce }
+        }
+        ProposalOp.DELETE_STROKE, ProposalOp.DELETE_TEXT -> op.baseVersion?.let { it to (op.baseNonce ?: 0) }
+        else -> null
+    }
+
+    private fun kindOf(op: ProposalOp): ProposalArbiter.OpKind = when (op.op) {
+        ProposalOp.DELETE_STROKE, ProposalOp.DELETE_TEXT -> ProposalArbiter.OpKind.DELETE
+        else -> ProposalArbiter.OpKind.UPSERT
     }
 
     /** 解碼一個 op，並確認它操作的是提案聲稱的那份文件。 */
@@ -492,20 +656,30 @@ class TabletSyncServer(
      *
      * upsert 靠 DAO 的 REPLACE 語義：同 id 存在即覆寫，不存在即插入，所以重送天然
      * 冪等。筆跡要先清舊點再插新點，否則改過的筆會同時留著新舊兩套點。
+     *
+     * v6 §15.4：刪除寫墓碑而非物理刪除。物理刪除會讓對端無法分辨「你刪了它」與
+     * 「它本來不存在」，兩端會往不同方向收斂；墓碑讓刪除可被比對、可被覆蓋
+     * （對端改過就復活）。
+     *
+     * upsert 遇到墓碑物件時清掉 `deletedAt`（＝修改勝）：使用者刪掉的東西被別人
+     * 改過時，讓修改回來是合理的；反過來使用者刪了別人剛改的，則走 DeleteStroke
+     * 分支寫墓碑，修改被蓋掉。方向由「誰的 op 最後被仲裁」決定，這裡只管執行。
      */
     private suspend fun InkFlowRepositories.applyOp(op: DecodedOp) {
         when (op) {
             is DecodedOp.UpsertStroke -> {
-                strokes.insertStroke(op.swp.stroke)
-                strokes.deletePointsForStroke(op.swp.stroke.id)
-                strokes.insertPoints(op.swp.points)
+                val revived = op.swp.stroke.copy(deletedAt = null)
+                strokes.insertStroke(revived)
+                strokes.deletePointsForStroke(revived.id)
+                strokes.insertPoints(op.swp.points.map { it.copy(strokeId = revived.id) })
             }
             is DecodedOp.DeleteStroke -> {
+                // 物理刪點（points 有 CASCADE，但保險起見先清），筆留墓碑。
                 strokes.deletePointsForStroke(op.id)
-                strokes.deleteStrokesByIds(listOf(op.id))
+                strokes.tombstoneStrokes(listOf(op.id))
             }
-            is DecodedOp.UpsertText -> texts.insert(op.text)
-            is DecodedOp.DeleteText -> texts.deleteById(op.id)
+            is DecodedOp.UpsertText -> texts.insert(op.text.copy(deletedAt = null))
+            is DecodedOp.DeleteText -> texts.tombstoneTexts(listOf(op.id))
         }
     }
 

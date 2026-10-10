@@ -1014,6 +1014,48 @@ private fun PageView(
     }
 
     /**
+     * v6 §15.2: the four op builders, each stamping the object's CURRENT version as
+     * the base the tablet will compare against.
+     *
+     * The base is the version the desktop had when it made the edit. For an upsert
+     * that lives in the payload anyway; for a delete there is no payload, so the op
+     * field is the only place it can go — which is why these exist instead of a
+     * caller remembering to add it (23 call sites used to build ops by hand, and one
+     * forgotten `baseVersion` is one unarbitrable op, i.e. one silent overwrite).
+     */
+fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
+        com.vic.inkflow.sync.ProposalOp(
+            op = com.vic.inkflow.sync.ProposalOp.UPSERT_STROKE,
+            stroke = swp,
+            baseVersion = swp.stroke.version,
+            baseNonce = swp.stroke.versionNonce
+        )
+
+    fun upsertTextOp(t: com.vic.inkflow.data.TextAnnotationEntity) =
+        com.vic.inkflow.sync.ProposalOp(
+            op = com.vic.inkflow.sync.ProposalOp.UPSERT_TEXT,
+            text = t,
+            baseVersion = t.version,
+            baseNonce = t.versionNonce
+        )
+
+    fun deleteStrokeOp(s: com.vic.inkflow.data.StrokeEntity) =
+        com.vic.inkflow.sync.ProposalOp(
+            op = com.vic.inkflow.sync.ProposalOp.DELETE_STROKE,
+            id = s.id,
+            baseVersion = s.version,
+            baseNonce = s.versionNonce
+        )
+
+    fun deleteTextOp(t: com.vic.inkflow.data.TextAnnotationEntity) =
+        com.vic.inkflow.sync.ProposalOp(
+            op = com.vic.inkflow.sync.ProposalOp.DELETE_TEXT,
+            id = t.id,
+            baseVersion = t.version,
+            baseNonce = t.versionNonce
+        )
+
+    /**
      * Files local edits into the v5 proposal queue.
      *
      * Called next to every undo push, on success only — the queue mirrors what is
@@ -1057,13 +1099,9 @@ private fun PageView(
         // upserts (one per object, not per frame) is what makes a drag one proposal.
         recordOps(
             strokes.filter { it.stroke.id in selectedIds }.map {
-                com.vic.inkflow.sync.ProposalOp(
-                    op = com.vic.inkflow.sync.ProposalOp.UPSERT_STROKE, stroke = it
-                )
+                upsertStrokeOp(it)
             } + texts.filter { it.id in selectedTextIds }.map {
-                com.vic.inkflow.sync.ProposalOp(
-                    op = com.vic.inkflow.sync.ProposalOp.UPSERT_TEXT, text = it
-                )
+                upsertTextOp(it)
             }
         )
     }
@@ -1090,13 +1128,9 @@ private fun PageView(
             undoStack.push(InkEdit.Erase(doomed, doomedText))
             recordOps(
                 doomed.map {
-                    com.vic.inkflow.sync.ProposalOp(
-                        op = com.vic.inkflow.sync.ProposalOp.DELETE_STROKE, id = it.stroke.id
-                    )
+                    deleteStrokeOp(it.stroke)
                 } + doomedText.map {
-                    com.vic.inkflow.sync.ProposalOp(
-                        op = com.vic.inkflow.sync.ProposalOp.DELETE_TEXT, id = it.id
-                    )
+                    deleteTextOp(it)
                 }
             )
             onInkChanged()
@@ -1127,13 +1161,9 @@ private fun PageView(
                 undoStack.push(InkEdit.Erase(doomedAll, doomedAllText))
                 recordOps(
                     doomedAll.map {
-                        com.vic.inkflow.sync.ProposalOp(
-                            op = com.vic.inkflow.sync.ProposalOp.DELETE_STROKE, id = it.stroke.id
-                        )
+                        deleteStrokeOp(it.stroke)
                     } + doomedAllText.map {
-                        com.vic.inkflow.sync.ProposalOp(
-                            op = com.vic.inkflow.sync.ProposalOp.DELETE_TEXT, id = it.id
-                        )
+                        deleteTextOp(it)
                     }
                 )
                 onInkChanged()
@@ -1176,9 +1206,7 @@ private fun PageView(
                 undoStack.push(InkEdit.AddText(note))
                 recordOps(
                     listOf(
-                        com.vic.inkflow.sync.ProposalOp(
-                            op = com.vic.inkflow.sync.ProposalOp.UPSERT_TEXT, text = note
-                        )
+                        upsertTextOp(note)
                     )
                 )
                 onInkChanged()
@@ -1234,9 +1262,7 @@ private fun PageView(
                 undoStack.push(InkEdit.Add(saved))
                 recordOps(
                     listOf(
-                        com.vic.inkflow.sync.ProposalOp(
-                            op = com.vic.inkflow.sync.ProposalOp.UPSERT_STROKE, stroke = saved
-                        )
+                        upsertStrokeOp(saved)
                     )
                 )
                 onInkChanged()
@@ -1281,9 +1307,7 @@ private fun PageView(
                 undoStack.push(InkEdit.Add(saved))
                 recordOps(
                     listOf(
-                        com.vic.inkflow.sync.ProposalOp(
-                            op = com.vic.inkflow.sync.ProposalOp.UPSERT_STROKE, stroke = saved
-                        )
+                        upsertStrokeOp(saved)
                     )
                 )
                 onInkChanged()
@@ -1327,13 +1351,9 @@ private fun PageView(
                 undoStack.push(InkEdit.Erase(hit, hitText))
                 recordOps(
                     hit.map {
-                        com.vic.inkflow.sync.ProposalOp(
-                            op = com.vic.inkflow.sync.ProposalOp.DELETE_STROKE, id = it.stroke.id
-                        )
+                        deleteStrokeOp(it.stroke)
                     } + hitText.map {
-                        com.vic.inkflow.sync.ProposalOp(
-                            op = com.vic.inkflow.sync.ProposalOp.DELETE_TEXT, id = it.id
-                        )
+                        deleteTextOp(it)
                     }
                 )
                 onInkChanged()
@@ -1355,9 +1375,7 @@ private fun PageView(
                 // would end up with a ghost the desktop does not have.
                 recordOps(
                     listOf(
-                        com.vic.inkflow.sync.ProposalOp(
-                            op = com.vic.inkflow.sync.ProposalOp.DELETE_STROKE, id = e.stroke.stroke.id
-                        )
+                        deleteStrokeOp(e.stroke.stroke)
                     )
                 )
                 onInkChanged()
@@ -1375,13 +1393,9 @@ private fun PageView(
                 texts = texts + e.texts
                 recordOps(
                     e.strokes.map {
-                        com.vic.inkflow.sync.ProposalOp(
-                            op = com.vic.inkflow.sync.ProposalOp.UPSERT_STROKE, stroke = it
-                        )
+                        upsertStrokeOp(it)
                     } + e.texts.map {
-                        com.vic.inkflow.sync.ProposalOp(
-                            op = com.vic.inkflow.sync.ProposalOp.UPSERT_TEXT, text = it
-                        )
+                        upsertTextOp(it)
                     }
                 )
                 onInkChanged()
@@ -1396,9 +1410,7 @@ private fun PageView(
                 texts = texts.filterNot { it.id == e.note.id }
                 recordOps(
                     listOf(
-                        com.vic.inkflow.sync.ProposalOp(
-                            op = com.vic.inkflow.sync.ProposalOp.DELETE_TEXT, id = e.note.id
-                        )
+                        deleteTextOp(e.note)
                     )
                 )
                 onInkChanged()
@@ -1423,13 +1435,9 @@ private fun PageView(
                 texts = texts.map { t -> e.texts.firstOrNull { it.id == t.id } ?: t }
                 recordOps(
                     e.originals.map {
-                        com.vic.inkflow.sync.ProposalOp(
-                            op = com.vic.inkflow.sync.ProposalOp.UPSERT_STROKE, stroke = it
-                        )
+                        upsertStrokeOp(it)
                     } + e.texts.map {
-                        com.vic.inkflow.sync.ProposalOp(
-                            op = com.vic.inkflow.sync.ProposalOp.UPSERT_TEXT, text = it
-                        )
+                        upsertTextOp(it)
                     }
                 )
                 onInkChanged()
@@ -1449,9 +1457,7 @@ private fun PageView(
                 strokes = strokes + e.stroke
                 recordOps(
                     listOf(
-                        com.vic.inkflow.sync.ProposalOp(
-                            op = com.vic.inkflow.sync.ProposalOp.UPSERT_STROKE, stroke = e.stroke
-                        )
+                        upsertStrokeOp(e.stroke)
                     )
                 )
                 onInkChanged()
@@ -1468,13 +1474,9 @@ private fun PageView(
                 texts = texts - e.texts.toSet()
                 recordOps(
                     e.strokes.map {
-                        com.vic.inkflow.sync.ProposalOp(
-                            op = com.vic.inkflow.sync.ProposalOp.DELETE_STROKE, id = it.stroke.id
-                        )
+                        deleteStrokeOp(it.stroke)
                     } + e.texts.map {
-                        com.vic.inkflow.sync.ProposalOp(
-                            op = com.vic.inkflow.sync.ProposalOp.DELETE_TEXT, id = it.id
-                        )
+                        deleteTextOp(it)
                     }
                 )
                 onInkChanged()
@@ -1489,9 +1491,7 @@ private fun PageView(
                 texts = texts + e.note
                 recordOps(
                     listOf(
-                        com.vic.inkflow.sync.ProposalOp(
-                            op = com.vic.inkflow.sync.ProposalOp.UPSERT_TEXT, text = e.note
-                        )
+                        upsertTextOp(e.note)
                     )
                 )
                 onInkChanged()
@@ -1519,14 +1519,9 @@ private fun PageView(
                 }
                 recordOps(
                     fwd.map {
-                        com.vic.inkflow.sync.ProposalOp(
-                            op = com.vic.inkflow.sync.ProposalOp.UPSERT_STROKE, stroke = it
-                        )
+                        upsertStrokeOp(it)
                     } + e.texts.map {
-                        com.vic.inkflow.sync.ProposalOp(
-                            op = com.vic.inkflow.sync.ProposalOp.UPSERT_TEXT,
-                            text = it.copy(modelX = it.modelX + e.dx, modelY = it.modelY + e.dy)
-                        )
+                        upsertTextOp(it.copy(modelX = it.modelX + e.dx, modelY = it.modelY + e.dy))
                     }
                 )
                 onInkChanged()

@@ -27,7 +27,16 @@ data class StrokeEntity(
     val boundsRight: Float = 0f,
     val boundsBottom: Float = 0f,
     val isHighlighter: Boolean = false,
-    val shapeType: String? = null
+    val shapeType: String? = null,
+    // ── v6 merge columns (SYNC_PROTOCOL.md §15.1) ─────────────────────────
+    // Field-for-field with the tablet so the same row travels without
+    // translation. `version` is a counter, NOT a clock: the two devices' clocks
+    // are not synchronised, and a merge rule that needs them to agree is a
+    // merge rule that silently overwrites. `versionNonce` breaks exact ties
+    // deterministically (smaller wins); `deletedAt` is a tombstone, null = live.
+    val version: Int = 1,
+    val versionNonce: Int = 0,
+    val deletedAt: Long? = null
 )
 
 /**

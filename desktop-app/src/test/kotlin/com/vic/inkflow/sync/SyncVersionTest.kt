@@ -38,7 +38,7 @@ class SyncVersionTest {
             proposalId = "p1", documentUri = "file:///a.pdf",
             baseDocVersion = "v9", baseInstanceId = "inst-a", actorDeviceId = "pc-1",
             ops = listOf(
-                ProposalOp(ProposalOp.DELETE_STROKE, id = "s1"),
+                ProposalOp(ProposalOp.DELETE_STROKE, id = "s1", baseVersion = 7, baseNonce = 42),
                 ProposalOp(ProposalOp.UPSERT_TEXT, text = mapOf("id" to "n1"))
             )
         )
@@ -48,6 +48,8 @@ class SyncVersionTest {
         assertEquals(2, back.ops.size)
         assertEquals(ProposalOp.DELETE_STROKE, back.ops[0].op)
         assertEquals("s1", back.ops[0].id)
+        assertEquals(7, back.ops[0].baseVersion, "the delete base must survive the round trip")
+        assertEquals(42, back.ops[0].baseNonce)
     }
 
     @Test

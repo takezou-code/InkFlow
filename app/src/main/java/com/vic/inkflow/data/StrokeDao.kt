@@ -98,4 +98,40 @@ interface StrokeDao {
     /** 不變式抽查：回填公式不合的列數（容差 0.01 防浮點噪聲；>0 即壞）。 */
     @Query("SELECT COUNT(*) FROM strokes WHERE documentUri = :documentUri AND ABS(docY - (pageIndex * :stride + boundsTop)) > 0.01")
     suspend fun countStrokeDocMismatch(documentUri: String, stride: Float): Int
+
+    // ── v6 併發合併（§15.1）──────────────────────────────────────────────
+
+    /**
+     * 本機改寫時把版本序號前進一格並換 nonce（§15.1）。
+     *
+     * 為什麼是 `UPDATE` 而不是改掉傳進來的 entity：entity 帶的是讀取時的舊 version，
+     * 在它上面 +1 需要「讀改寫」兩步，中間若被同步交易插入就會算錯版本——而錯的版本
+     * 會讓對端以為這份內容比較舊，是最難查的一類 bug。讓 SQLite 在寫入的同一個敘述裡
+     * 讀自己的舊值，序號就永遠是「當下真正的舊值 +1」。
+     *
+     * `versionNonce` 用隨機數而非遞增：它的用途是「同版本兩端各改一次」的決定性
+     * tiebreak，必須不可預測（同樣的輸入才會兩端都取小者就贏）。
+     */
+    @Query("UPDATE strokes SET version = version + 1, versionNonce = :nonce WHERE id = :id")
+    suspend fun bumpStrokeVersion(id: String, nonce: Int): Int
+
+    /** 單筆的 (version, nonce, deletedAt)，供提案仲裁比對（§15.2）。 */
+    @Query("SELECT id AS id, version AS version, versionNonce AS versionNonce, deletedAt AS deletedAt FROM strokes WHERE id = :id")
+    suspend fun getStrokeVersion(id: String): StrokeVersionRow?
+
+    /** 活著（非墓碑）的筆數：docVersion／page_counts 都要用這裡的語意。 */
+    @Query("SELECT COUNT(*) FROM strokes WHERE documentUri = :documentUri AND deletedAt IS NULL")
+    suspend fun countLiveStrokes(documentUri: String): Int
+
+    /** 整份文件的 (id, version, nonce)：一次查完 N 個物件的版本，供逐 op 仲裁。 */
+    @Query("SELECT id AS id, version AS version, versionNonce AS versionNonce FROM strokes WHERE documentUri = :documentUri")
+    suspend fun getStrokeVersions(documentUri: String): List<StrokeVersionRow>
+
+    /** 刪除＝寫墓碑（§15.4）。回傳受影響列數，0 = 這筆不存在或已是墓碑。 */
+    @Query("UPDATE strokes SET deletedAt = :at, version = version + 1, versionNonce = :nonce WHERE id IN (:strokeIds) AND deletedAt IS NULL")
+    suspend fun tombstoneStrokes(strokeIds: List<String>, at: Long, nonce: Int): Int
+
+    /** 復活墓碑（§15.4「修改勝」）：對端改過的東西，不該因為一次刪除就憑空消失。 */
+    @Query("UPDATE strokes SET deletedAt = NULL WHERE id IN (:strokeIds) AND deletedAt IS NOT NULL")
+    suspend fun reviveStrokes(strokeIds: List<String>): Int
 }
