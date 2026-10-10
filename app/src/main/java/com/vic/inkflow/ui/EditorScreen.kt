@@ -62,6 +62,7 @@ import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -105,6 +106,8 @@ import androidx.compose.material.icons.filled.Article
 import androidx.compose.material.icons.filled.BackHand
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ChatBubble
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
@@ -292,6 +295,8 @@ fun TabletEditorScreen(
     var aiPanelWeight by rememberSaveable { mutableFloatStateOf(0.4f) }
     // L0 意圖層：兩個入口（整頁鈕／圈選快捷列）都只產生一個 AiRequest，
     // 不再各自維護 fileUri／prompt／autoSend 三個隱性變數。
+    // seq 給每個請求一個遞增序號：去重靠序號，不靠內容推導（內容會在投遞後被清掉）。
+    var aiRequestSeq by remember { mutableLongStateOf(0L) }
     var aiRequest by remember { mutableStateOf<AiRequest?>(null) }
     var isSendingPage by remember { mutableStateOf(false) }
     // 抽屜：面板寬度依內容區實寬算（不再用螢幕寬）、滑動進度、WebView 是否活著
@@ -463,6 +468,7 @@ fun TabletEditorScreen(
                 android.util.Log.d("InkFlowDbg", "PAGESHOT send p=$pageIdx bmpNull=${bmp == null} bytes=${file?.length() ?: -1}")
                 if (file != null) {
                     aiRequest = AiRequest(
+                        id = ++aiRequestSeq,
                         action = AiAction.SEND_PROMPT,
                         image = androidx.core.content.FileProvider.getUriForFile(
                             context, "${context.packageName}.fileprovider", file
@@ -944,6 +950,7 @@ fun TabletEditorScreen(
                         onAiFileReady = { fileUri, prompt ->
                             // 圈選快捷列：和整頁鈕走同一條 AiRequest 通道，差別只在 autoSend。
                             aiRequest = AiRequest(
+                                id = ++aiRequestSeq,
                                 action = AiAction.SEND_PROMPT,
                                 image = fileUri,
                                 prompt = prompt,
@@ -1173,6 +1180,36 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                                     .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f))
                             )
                         }
+                    }
+                    // AI 來源切換：原本掛在工具列（多一顆 32dp），改放在把手正上方。
+                    // 24dp 方形玻璃鈕壓在把手 Drag 手勢區之上——按鈕自己 consume，
+                    // 不會被把手的橫拖吃掉（外層先 hit 到鈕才輪到把手）。
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            .padding(end = 2.dp)
+                            .size(24.dp)
+                            .clip(CircleShape)
+                            .pressableGlass(
+                                interactionSource = androidx.compose.runtime.remember {
+                                    androidx.compose.foundation.interaction.MutableInteractionSource()
+                                }
+                            )
+                            .pointerInput(Unit) {
+                                detectTapGestures { switchAiProvider() }
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = if (aiProvider == AiProvider.CHATGPT) {
+                                Icons.Outlined.AutoAwesome
+                            } else {
+                                Icons.Filled.ChatBubble
+                            },
+                            contentDescription = "切換 AI 到 ${aiProvider.other.label}",
+                            modifier = Modifier.size(14.dp),
+                            tint = glassContentColor(isEditorDark)
+                        )
                     }
                 }
             }
@@ -1433,7 +1470,6 @@ onToggleAiPanel = { showAiPanel = !showAiPanel },
     onToggleAiImport = { toggleAiImport() },
     isAiImportArmed = aiPickMode,
     aiProvider = aiProvider,
-    onSwitchAiProvider = { switchAiProvider() },
                 isAiPanelOpen = showAiPanel,
                 isSendingPage = isSendingPage,
                 isPowerSaver = isPowerSaver,
