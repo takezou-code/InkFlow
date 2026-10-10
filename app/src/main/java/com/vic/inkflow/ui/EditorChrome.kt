@@ -619,13 +619,24 @@ fun TabletEditorTopBar(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
-                    IconButton(onClick = onToggleAiPanel, modifier = Modifier.size(toolButtonSize)) {
-                        Icon(
-                            painter = painterResource(id = R.drawable.ic_gemini),
-                            contentDescription = "Toggle AI Panel",
-                            tint = if (isAiPanelOpen) MaterialTheme.colorScheme.primary
-                            else glassContentColor(isDarkTheme)
-                        )
+                    // 圖示反映「現在用的是哪個 AI」，不再永遠是 Gemini 的星星——
+    // 否則切到 ChatGPT 後，這顆星會繼續冒充它。
+    IconButton(onClick = onToggleAiPanel, modifier = Modifier.size(toolButtonSize)) {
+                        if (aiProvider == AiProvider.GEMINI) {
+                            Icon(
+                                painter = painterResource(id = R.drawable.ic_gemini),
+                                contentDescription = "關閉 AI 面板（${aiProvider.label}）",
+                                tint = if (isAiPanelOpen) MaterialTheme.colorScheme.primary
+                                else glassContentColor(isDarkTheme)
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Filled.ChatBubble,
+                                contentDescription = "關閉 AI 面板（${aiProvider.label}）",
+                                tint = if (isAiPanelOpen) MaterialTheme.colorScheme.primary
+                                else glassContentColor(isDarkTheme)
+                            )
+                        }
                     }
                     EditorIconButton(
                         onClick = { if (!isSendingPage) onSendPageToAi() },

@@ -20,10 +20,37 @@ import android.net.Uri
  *
  * host 是 onPageFinished 的閘門：換 host 卻沒同步換這裡，整套注入會靜默失效，
  * 所以每個 provider 的 URL／host 綁在同一個 enum，避免再次分家。
+ *
+ * [capabilities] 說明這個站**現在真的能做什麼**。按鈕的啟用與提示一律讀它，
+ * 不要在呼叫端寫 `if (provider != GEMINI)` 這種守衛——那會隨 provider 增加而爆炸，
+ * 而且新 provider 沒被加進那些 if 就會靜默失效。
  */
-enum class AiProvider(val label: String, val startUrl: String, val host: String) {
-    GEMINI("Gemini", "https://gemini.google.com/app", "gemini.google.com"),
-    CHATGPT("ChatGPT", "https://chatgpt.com/", "chatgpt.com");
+enum class AiProvider(
+    val label: String,
+    val startUrl: String,
+    val host: String,
+    val capabilities: AiCapabilities
+) {
+    /** Gemini：貼圖、匯入、數學裁圖全部已接上（既有功能，行為不可變）。 */
+    GEMINI(
+        "Gemini",
+        "https://gemini.google.com/app",
+        "gemini.google.com",
+        AiCapabilities(sendImage = true, importReply = true, mathCrop = true)
+    ),
+
+    /**
+     * ChatGPT：Phase 0 實測頁面可開、可登入、可對話（沒被 Cloudflare 擋）。
+     * 但自動化注入尚未移植，所以 capabilities **全部預設關閉**——
+     * 用沒接的功能看起來可用，比明講沒接更糟。
+     * S3 會逐項翻開，每翻一項都必須先有實機驗證。
+     */
+    CHATGPT(
+        "ChatGPT",
+        "https://chatgpt.com/",
+        "chatgpt.com",
+        AiCapabilities()
+    );
 
     val other: AiProvider get() = if (this == GEMINI) CHATGPT else GEMINI
 }

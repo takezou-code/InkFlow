@@ -318,18 +318,70 @@ fun AiWebPanel(
             e.printStackTrace()
         }
     }
-    
-// AI 面板主題跟 App 深淺色（自適應 invert，見 buildThemeJs）。
-    // 追蹤 app=<light|dark> page=<light|dark> invert=<bool>：實機對帳用，
-    // 主題寫反時先看這行（page 是頁面自認的深淺，不是猜的）
-    androidx.compose.runtime.LaunchedEffect(webLight) {
+
+    // ── S2：以下三個是 provider 無關的「單一處理點」──────────────────────────
+    // 新增 provider 時，這裡**不用改**，因為差異已全部收斂到 capabilities。
+
+    /**
+     * 主題套用。**唯一**套主題的地方（原本 onPageFinished 的兩個分支各有一份）。
+     * 不能只靠 LaunchedEffect(webLight)：那條在首次組合時 webView 還沒建立（null），
+     * webLight 若改成常數推導值就永遠套不到，深色模式下網頁會一直是白的。
+     */
+    fun applyTheme(target: android.webkit.WebView?, tag: String) {
         try {
-            webView?.evaluateJavascript(buildThemeJs(currentWebLight.value)) { v ->
-                android.util.Log.d("InkFlowDbg", "AI theme(change): $v")
+            target?.evaluateJavascript(buildThemeJs(currentWebLight.value)) { v ->
+                android.util.Log.d("InkFlowDbg", "AI theme($tag): $v")
             }
         } catch (e: Exception) {
-            android.util.Log.e("AiWebPanel", "theme apply on change failed", e)
+            android.util.Log.e("AiWebPanel", "theme apply failed ($tag)", e)
         }
+    }
+
+    /**
+     * DOM 探針（臨時診斷，S3 定完 selector 就要整段刪掉）。
+     * 每個 URL 只探一次：onPageFinished 早於 SPA 渲染，所以即刻探一次當基線，
+     * 延遲 4 秒再探一次抓 hydration 後的真實 DOM。
+     */
+    fun probeOnce(target: android.webkit.WebView?, finishedUrl: String) {
+        if (uploadState.lastProbeUrl == finishedUrl) return
+        uploadState.lastProbeUrl = finishedUrl
+        scheduleProbe(target, "load", 0L)
+        scheduleProbe(target, "hydrated", 4000L)
+    }
+
+    /**
+     * 請求投遞。**唯一**貼圖＋填詞的地方（原本 onPageFinished 與 update 各一份）。
+     *
+     * 依 [AiCapabilities.sendImage] 決定要不要貼圖：ChatGPT 尚未移植注入鏈，
+     * capabilities 是 false，所以只填詞不貼圖——不會貼到一半失敗留下半張圖。
+     */
+    fun deliverPendingRequest(target: android.webkit.WebView?, attempts: Int, tag: String) {
+        if (!notYetHandled(request)) return
+        val req = request ?: return
+        val provider = currentProvider.value
+        val uri = req.image
+        if (uri != null && provider.capabilities.sendImage) {
+            try {
+                val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                if (bytes != null) {
+                    val base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+                    target?.evaluateJavascript(buildImagePasteJs(base64, attempts), null)
+                    android.util.Log.d("InkFlowDbg", "UPLOAD paste dispatched ($tag) b64len=${base64.length}")
+                } else {
+                    android.util.Log.d("InkFlowDbg", "UPLOAD read failed ($tag)")
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("InkFlowDbg", "UPLOAD $tag failed", e)
+                toastUploadError(e.message)
+            }
+        }
+        injectPromptIfNeeded(target, req)
+    }
+    
+// AI 面板主題跟 App 深淺色變更時即時重套（自適應 invert，見 buildThemeJs）。
+    // 與 applyTheme() 共用同一支腳本與同一組 log，這裡只是換呼叫點。
+    androidx.compose.runtime.LaunchedEffect(webLight) {
+        applyTheme(webView, "change")
     }
 
     // M2b-2：拉桿「引入」鈕兩段式 — ①進圈選模式（段落打勾）②收集打勾段落（無勾選則取最後回覆全文）。
@@ -420,7 +472,11 @@ fun AiWebPanel(
                                     result == "PROMPT_NO_INPUT_FOUND" || result == "PROMPT_NO_INPUT" ||
                                     result == "PROMPT_SEND_NOT_READY"
                                 ) {
-                                    val msg = if (result.startsWith("PROMPT")) "提示詞填入失敗（$result）" else "圖片貼上失敗（$result），請確認已登入 Gemini"
+                                    val msg = if (result.startsWith("PROMPT")) {
+                                        "提示詞填入失敗（$result）"
+                                    } else {
+                                        "圖片貼上失敗（$result），請確認已登入 ${currentProvider.value.label}"
+                                    }
                                     android.os.Handler(android.os.Looper.getMainLooper()).post {
                                         try {
                                             android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
@@ -462,90 +518,29 @@ fun AiWebPanel(
                             return false
                         }
 
-                        override fun onPageFinished(view: android.webkit.WebView?, url: String?) {
+override fun onPageFinished(view: android.webkit.WebView?, url: String?) {
                             super.onPageFinished(view, url)
+                            // S2：原本這裡是 if (CHATGPT) {...} else if (GEMINI) {...} 兩條分支，
+                            // 主題套用甚至整段複製兩份。現在收斂成單一路徑，
+                            // provider 差異只表現在 capabilities 上。
                             val finishedUrl = url.orEmpty()
-                            val activeProvider = currentProvider.value
-                            val isProbeHost = finishedUrl.contains(activeProvider.host)
-                            if (activeProvider == AiProvider.CHATGPT && isProbeHost) {
-                                // ChatGPT 分支目前只做主題＋取证，不跑 Gemini 注入鏈。
-                                try {
-                                    view?.evaluateJavascript(buildThemeJs(currentWebLight.value)) { v ->
-                                        android.util.Log.d("InkFlowDbg", "AI theme(chatgpt-load): $v")
-                                    }
-                                } catch (e: Exception) {
-                                    android.util.Log.e("AiWebPanel", "theme apply on chatgpt load failed", e)
-                                }
-                                if (uploadState.lastProbeUrl != finishedUrl) {
-                                    uploadState.lastProbeUrl = finishedUrl
-                                    // onPageFinished 早於 React SPA 渲染（實測一進頁面全 0），
-                                    // 所以即刻探一次當基線，再延遲補一發抓 hydration 後的真實 DOM。
-                                    scheduleProbe(view, "load", 0L)
-                                    scheduleProbe(view, "hydrated", 4000L)
-                                }
-                            } else if (activeProvider == AiProvider.GEMINI && finishedUrl.contains("gemini.google.com")) {
-                                uploadState.isPageLoaded = true
-                                // 主題跟 App 深淺色：載入完成就套一次。
-                                // 不能只靠 LaunchedEffect(webLight)——那條在首次組合時 webView
-                                // 還沒建立（null），webLight 若改成常數推導值就永遠套不到，
-                                // 深色模式下 Gemini 網頁會一直是白的。
-                                try {
-                                    view?.evaluateJavascript(buildThemeJs(currentWebLight.value)) { v ->
-                                        android.util.Log.d("InkFlowDbg", "AI theme(load): $v")
-                                    }
-                                } catch (e: Exception) {
-                                    android.util.Log.e("AiWebPanel", "theme apply on load failed", e)
-                                }
-                                // S0：首次載入完成就投遞掛著的請求（整頁鈕在切好頁面時已塞好 request）。
-                                if (notYetHandled(request)) {
-                                    val req = request!!
-                                    val uri = req.image
-                                    if (uri != null) {
-                                        try {
-                                            val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                                            if (bytes != null) {
-                                                val base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
-                                                view?.evaluateJavascript(buildImagePasteJs(base64, UPLOAD_ATTEMPTS_LOAD), null)
-                                                android.util.Log.d("InkFlowDbg", "UPLOAD paste dispatched (first load) b64len=${base64.length}")
-                                            } else {
-                                                android.util.Log.d("InkFlowDbg", "UPLOAD read failed (first load)")
-                                            }
-                                        } catch (e: Exception) {
-                                            android.util.Log.e("InkFlowDbg", "UPLOAD first-load failed", e)
-                                            toastUploadError(e.message)
-                                        }
-                                    }
-                                    injectPromptIfNeeded(view, req)
-                                }
-                            }
+                            val provider = currentProvider.value
+                            if (!finishedUrl.contains(provider.host)) return
+
+                            uploadState.isPageLoaded = true
+                            applyTheme(view, "load")
+                            probeOnce(view, finishedUrl)
+                            deliverPendingRequest(view, UPLOAD_ATTEMPTS_LOAD, "load")
                         }
                     }
 
                     loadUrl(provider.startUrl)
                 }
             },
-            update = { view ->
-                // S0：頁面已就緒且有新請求 → 投遞（貼圖＋填詞）。
-                // 去重判斷集中在 notYetHandled()，這裡不再各自寫比較邏輯。
-                if (uploadState.isPageLoaded && notYetHandled(request)) {
-                    val req = request!!
-                    val uri = req.image
-                    if (uri != null) {
-                        try {
-                            val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                            if (bytes != null) {
-                                val base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
-                                view.evaluateJavascript(buildImagePasteJs(base64, UPLOAD_ATTEMPTS_UPDATE), null)
-                                android.util.Log.d("InkFlowDbg", "UPLOAD paste dispatched (update) b64len=${base64.length}")
-                            } else {
-                                android.util.Log.d("InkFlowDbg", "UPLOAD read failed (update)")
-                            }
-                        } catch (e: Exception) {
-                            android.util.Log.e("InkFlowDbg", "UPLOAD update failed", e)
-                            toastUploadError(e.message)
-                        }
-                    }
-injectPromptIfNeeded(view, req)
+update = { view ->
+                // S2：與 onPageFinished 走同一個投遞點，provider 差異不再分兩條路。
+                if (uploadState.isPageLoaded) {
+                    deliverPendingRequest(view, UPLOAD_ATTEMPTS_UPDATE, "update")
                 }
             },
             modifier = androidx.compose.ui.Modifier.fillMaxSize()
