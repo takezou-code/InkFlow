@@ -41,15 +41,16 @@ enum class AiProvider(
 
     /**
      * ChatGPT：Phase 0 實測頁面可開、可登入、可對話（沒被 Cloudflare 擋）。
-     * 但自動化注入尚未移植，所以 capabilities **全部預設關閉**——
-     * 用沒接的功能看起來可用，比明講沒接更糟。
-     * S3 會逐項翻開，每翻一項都必須先有實機驗證。
+     *
+     * S3 起開啟 [sendImage]（整頁／圈選送圖），但**匯入仍未接上**——
+     * 匯入要等 reply selector 定案，且必須等停止鈕消失才收（虛擬滾動，長對話只有畫面上的在 DOM）。
+     * 每開一項都必須先有實機驗證；沒驗證就翻 flag 等於對使用者說謊。
      */
     CHATGPT(
         "ChatGPT",
         "https://chatgpt.com/",
         "chatgpt.com",
-        AiCapabilities()
+        AiCapabilities(sendImage = true, importReply = false, mathCrop = false)
     );
 
     val other: AiProvider get() = if (this == GEMINI) CHATGPT else GEMINI
@@ -57,6 +58,30 @@ enum class AiProvider(
 
 /** AI 來源持久化 key（與 AppNav 的 theme_mode／power_saver 共用同一份 prefs）。 */
 const val KEY_AI_PROVIDER = "ai_provider"
+
+/**
+ * 產生填詞腳本。**這是面板與 driver 之間唯一的注入分歧點。**
+ *
+ * S3：以前這個 `buildPromptSendJs` 是 AiWebPanel 裡一整支 Gemini 專屬函式；
+ * 現在由 provider 自己決定，避免面板裡長出 if/else provider 分支。
+ */
+fun AiProvider.promptSendJs(promptQuoted: String, send: Boolean): String = when (this) {
+    AiProvider.GEMINI -> AiGeminiDriver.promptSendJs(promptQuoted, send)
+    AiProvider.CHATGPT -> AiChatGptDriver.promptSendJs(promptQuoted, send)
+}
+
+/** DOM 探針腳本（臨時診斷，S3 定完 selector 即刪）。 */
+fun AiProvider.domProbeJs(): String = when (this) {
+    AiProvider.GEMINI -> buildDomProbeJs()
+    AiProvider.CHATGPT -> AiChatGptDriver.domProbeJs()
+}
+
+/** 貼圖要瞄準的輸入框 selector——provider 專屬的部分就這一個字串。 */
+internal val AiProvider.imagePasteInputSelector: String
+    get() = when (this) {
+        AiProvider.GEMINI -> "rich-textarea, div[role=\"textbox\"][contenteditable=\"true\"]"
+        AiProvider.CHATGPT -> AiChatGptDriver.IMAGE_PASTE_INPUT_SELECTOR
+    }
 
 /** 這次請求要做什麼。 */
 enum class AiAction {

@@ -5,6 +5,9 @@ import com.vic.inkflow.ui.AiCapabilities
 import com.vic.inkflow.ui.AiOutcome
 import com.vic.inkflow.ui.AiProvider
 import com.vic.inkflow.ui.AiRequest
+import com.vic.inkflow.ui.domProbeJs
+import com.vic.inkflow.ui.imagePasteInputSelector
+import com.vic.inkflow.ui.promptSendJs
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -129,13 +132,38 @@ class AiContractTest {
     }
 
     @Test
-    fun `S2 未移植的 provider 不得宣稱任何能力`() {
-        // ChatGPT 在 S3 實機驗證前，capabilities 必須全關。
-        // 「用沒接的功能看起來可用」比明講沒接更糟，所以這條要釘死。
+    fun `S3 ChatGPT 只開啟已實作的送圖，匯入仍關閉`() {
+        // S3 交付截圖送 AI；匯入（圈選＋抓回覆）還沒做，必須保持關閉。
         val chatgpt = AiProvider.CHATGPT.capabilities
-        assertFalse(chatgpt.sendImage)
-        assertFalse(chatgpt.importReply)
-        assertFalse(chatgpt.mathCrop)
+        assertTrue("S3 已實作截圖送 AI", chatgpt.sendImage)
+        assertFalse("匯入尚未移植，不得宣稱可用", chatgpt.importReply)
+        assertFalse("數學裁圖尚未驗證，不得宣稱可用", chatgpt.mathCrop)
+    }
+
+    @Test
+    fun `S3 每個 provider 都給得出自己的注入腳本`() {
+        // 面板不得再有 provider 分支，注入分歧只存在於 driver。
+        val gemini = AiProvider.GEMINI.promptSendJs("\"hi\"", true)
+        val chatgpt = AiProvider.CHATGPT.promptSendJs("\"hi\"", true)
+        assertTrue("Gemini 仍走 rich-textarea", gemini.contains("rich-textarea"))
+        assertTrue("ChatGPT 走 ProseMirror 的 prompt-textarea", chatgpt.contains("#prompt-textarea"))
+        assertFalse("兩者不可共用同一份腳本", gemini == chatgpt)
+    }
+
+    @Test
+    fun `S3 ChatGPT 探針必須穿 shadow 並回報候選命中數`() {
+        // 上次探針量到全 0 就是沒穿 shadow 的後果；這條釘死避免再退回去。
+        val probe = AiProvider.CHATGPT.domProbeJs()
+        assertTrue("探針必須穿 shadowRoot", probe.contains("shadowRoot"))
+        assertTrue("探針必須檢查 iframe 可達性", probe.contains("iframe"))
+        assertTrue("探針必須回報候選清單", probe.contains("hit="))
+    }
+
+    @Test
+    fun `S3 兩個 provider 的貼圖輸入框 selector 各不相同`() {
+        // selector 綁在 driver，不該再散落在面板裡。
+        assertTrue(AiProvider.GEMINI.imagePasteInputSelector.contains("rich-textarea"))
+        assertTrue(AiProvider.CHATGPT.imagePasteInputSelector.contains("#prompt-textarea"))
     }
 
     @Test
