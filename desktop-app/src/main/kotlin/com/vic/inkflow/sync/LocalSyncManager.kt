@@ -7,6 +7,7 @@ import com.vic.inkflow.data.DocumentEntity
 import com.vic.inkflow.data.StrokeWithPoints
 import com.vic.inkflow.data.TextAnnotationEntity
 import com.vic.inkflow.data.FolderEntity
+import com.vic.inkflow.util.LocalImport
 import mu.KotlinLogging
 import java.io.DataInputStream
 import java.io.DataOutputStream
@@ -916,6 +917,43 @@ class LocalSyncManager(
         val mirrored = mirrorFileFor(path)
         return if (mirrored.exists()) mirrored else File(path)
     }
+
+    /**
+     * v6：**可對外服務**的路徑。與 [resolveLocalFile] 的差別是這道有閘。
+     *
+     * ## 為什麼需要
+     *
+     * `file_meta` / `file_data` 會把 client 傳來的 `documentUri` 當路徑用，而
+     * `resolveLocalFile` 的 fallback 是任意絕對路徑。於是一個通過 handshake 的
+     * client 只要送 `file:///C:/Users/<user>/.ssh/id_rsa`，就會拿到它的內容。
+     *
+     * 認證只有 8 位數配對碼、明文走區網，所以「已認證」幾乎等於「同一個 WiFi 上
+     * 的人」。讀到任意檔案這件事不能靠它擋住——平板端本來就有
+     * `requireServableFile` 擋這件事，桌面端之前漏了。
+     *
+     * ## 規則
+     *
+     * 只准服務兩種檔案：
+     *  1. 鏡像目錄（`~/.inkflow/documents`）裡的——那是同步下載的東西，本來就該給。
+     *  2. 桌面 `documents` 表裡有登錄的——使用者自己匯入的本機檔案，開啟它需要
+     *     讀得到，但也不該讓 client 拿著任意路徑來探。
+     *
+     * 其餘一律拒絕。**不能**簡化成「只准鏡像目錄」：那會讓使用者匯入的
+     * `C:\Users\...\lecture.pdf` 開不起來。
+     */
+    private fun resolveServableFile(rawUri: String): File {
+        val path = rawUri.removePrefix("file://")
+        val mirrored = mirrorFileFor(path)
+        if (LocalImport.isInsideDir(documentsDir, mirrored)) return mirrored
+        val direct = File(path)
+        if (LocalImport.isInsideDir(documentsDir, direct)) return direct
+        // 本機匯入的文件：用 documents 表當白名單，而不是「檔案存在就算」——
+        // 後者等於任何路徑都可服務，正是這道閘要擋的洞。
+        if (databaseManager.getDocument(LocalImport.toDocumentUri(direct.absolutePath)) != null) {
+            return direct
+        }
+        throw IllegalArgumentException("refusing to serve a path outside the synced documents")
+    }
     /**
      * v3 handshake. Returns the tablet's `instanceId` (null if it is a v2 peer),
      * and refuses to continue when the peer speaks a protocol we cannot satisfy.
@@ -1283,11 +1321,12 @@ class LocalSyncManager(
 
                 SyncRequest.TYPE_FILE_META -> {
                     val uri = req.documentUri ?: throw IllegalArgumentException("missing documentUri")
-                    val file = uri.removePrefix("file://").takeIf { it.isNotBlank() }?.let { resolveLocalFile(it) }
-                    val present = file?.exists() == true
+                    // v6: 經過路徑閘，否則 client 能讀桌面任意檔案（見 resolveServableFile）。
+                    val file = resolveServableFile(uri)
+                    val present = file.exists()
                     respondJson(
                         out, req.type,
-                        FileMetaPayload(present, if (present) file!!.length() else 0, if (present) SyncWire.sha256Hex(file!!) else null)
+                        FileMetaPayload(present, if (present) file.length() else 0, if (present) SyncWire.sha256Hex(file) else null)
                     )
                 }
 
@@ -1295,7 +1334,9 @@ class LocalSyncManager(
                     val uri = req.documentUri ?: throw IllegalArgumentException("missing documentUri")
                     val offset = req.offset ?: 0L
                     val limit = req.limit ?: (1 shl 20)
-                    val file = resolveLocalFile(uri.removePrefix("file://"))
+                    // 同上：必須經過閘。不能因為「檔案不存在就回空 frame」而讓未授權
+                    // 路徑靜靜地走過——不存在與未授權是兩件事，後者要被拒絕。
+                    val file = resolveServableFile(uri)
                     if (!file.exists()) {
                         SyncWire.writeFrame(out, ByteArray(0))
                     } else {
