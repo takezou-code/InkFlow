@@ -228,26 +228,10 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/**
- * AI 來源。開關放在工具列（EditorChrome），面板本身只是被動的 view。
- *
- * host 是 onPageFinished 的閘門：換 host 卻沒同步換這裡，整套注入會靜默失效，
- * 所以兩個 provider 的 URL／host 綁在同一個 enum，避免再次分家。
- */
-enum class AiProvider(val label: String, val startUrl: String, val host: String) {
-    GEMINI("Gemini", "https://gemini.google.com/app", "gemini.google.com"),
-    CHATGPT("ChatGPT", "https://chatgpt.com/", "chatgpt.com");
-
-    val other: AiProvider get() = if (this == GEMINI) CHATGPT else GEMINI
-}
-
-/** AI 來源持久化 key（與 AppNav 的 theme_mode／power_saver 共用同一份 prefs）。 */
-const val KEY_AI_PROVIDER = "ai_provider"
-
 @androidx.compose.runtime.Composable
 fun AiWebPanel(
-    fileUri: android.net.Uri?,
-    prompt: String?,
+    // L1 契約：一個請求物件取代過去三個各自為政的隱性變數（fileUri／prompt／autoSend）。
+    request: AiRequest?,
     onPromptConsumed: () -> Unit,
     pickEnterId: Int = 0,
     pickCollectId: Int = 0,
@@ -255,8 +239,6 @@ fun AiWebPanel(
     onWebView: (android.webkit.WebView?) -> Unit = {},
     webLight: Boolean = true,
     onClose: () -> Unit,
-    // 整頁送 AI 用 false：圖貼上＋提示詞填入即停，不自動送出（lasso 路徑預設 true 不變）
-    autoSend: Boolean = true,
     // 由工具列切換帶進來；面板不持有也不持久化，避免兩處狀態打架。
     provider: AiProvider = AiProvider.GEMINI,
     // 抽屜收起來＝false：WebView 熄燈（onPause）省電，但**物件與網頁狀態全留著**，
@@ -266,20 +248,40 @@ fun AiWebPanel(
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var webView by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<android.webkit.WebView?>(null) }
-    val currentFileUri = androidx.compose.runtime.rememberUpdatedState(fileUri)
-    val currentPrompt = androidx.compose.runtime.rememberUpdatedState(prompt)
+    val currentRequest = androidx.compose.runtime.rememberUpdatedState(request)
     val promptConsumedCallback = androidx.compose.runtime.rememberUpdatedState(onPromptConsumed)
     val pickedCallback = androidx.compose.runtime.rememberUpdatedState(onPickedJson)
     val webViewCallback = androidx.compose.runtime.rememberUpdatedState(onWebView)
     val currentWebLight = androidx.compose.runtime.rememberUpdatedState(webLight)
-    val currentAutoSend = androidx.compose.runtime.rememberUpdatedState(autoSend)
     val currentProvider = androidx.compose.runtime.rememberUpdatedState(provider)
     val uploadState = androidx.compose.runtime.remember {
         object {
-            var lastProcessedUri: android.net.Uri? = null
+            // 舊版是 lastProcessedUri（只比對 Uri）。改用請求的去重鍵，
+            // 因為同一張圖可能配不同提示詞（整頁=解釋／圈選=總結）。
+            var lastHandledKey: String? = null
             var isPageLoaded: Boolean = false
             var lastProbeUrl: String? = null
         }
+    }
+
+    /**
+     * 這次請求是否還沒被投遞過。
+     * 舊邏輯是 `fileUri != uploadState.lastProcessedUri`，語意寫死在呼叫點，
+     * 換 provider 時很容易漏掉其中一個比較；集中成一個方法後只有這裡能改。
+     */
+    fun notYetHandled(req: AiRequest?): Boolean {
+        if (req == null || req.isEmpty) return false
+        val key = req.dedupeKey()
+        if (uploadState.lastHandledKey == key) return false
+        uploadState.lastHandledKey = key
+        return true
+    }
+
+    /** 送圖失敗的唯一出口，避免兩處各寫一份 Toast。 */
+    fun toastUploadError(message: String?) {
+        try {
+            android.widget.Toast.makeText(context, "送圖失敗：$message", android.widget.Toast.LENGTH_LONG).show()
+        } catch (_: Throwable) { }
     }
 
     // Phase 1 取證用 DOM 探針。刻意做成可延遲、可重複呼叫：
@@ -306,10 +308,11 @@ fun AiWebPanel(
     }
 
     // 快捷指令 prompt：圖貼上後另一下 JS 輪詢輸入框、填字自動送出（與貼圖腳本並行，內部延遲等圖先附著）。
-    fun injectPromptIfNeeded(target: android.webkit.WebView?, uri: android.net.Uri) {
-        val p = currentPrompt.value ?: return
+    // 純文字請求（沒圖）也要能走這條，所以 image 不再是必要參數。
+    fun injectPromptIfNeeded(target: android.webkit.WebView?, req: AiRequest) {
+        val p = req.prompt ?: return
         try {
-            target?.evaluateJavascript(buildPromptSendJs(org.json.JSONObject.quote(p), currentAutoSend.value), null)
+            target?.evaluateJavascript(buildPromptSendJs(org.json.JSONObject.quote(p), req.autoSend), null)
             promptConsumedCallback.value()
         } catch (e: Exception) {
             e.printStackTrace()
@@ -442,8 +445,11 @@ fun AiWebPanel(
                             filePathCallback: android.webkit.ValueCallback<Array<android.net.Uri>>?,
                             fileChooserParams: FileChooserParams?
                         ): Boolean {
-                            if (currentFileUri.value != null) {
-                                filePathCallback?.onReceiveValue(arrayOf(currentFileUri.value!!))
+                            // 貼圖退路：頁面自己點了 input[type=file] 時，由我們遞上請求裡的圖。
+                            // 這條完全 provider-agnostic（沒有任何 AI 專屬 selector）。
+                            val pendingImage = currentRequest.value?.image
+                            if (pendingImage != null) {
+                                filePathCallback?.onReceiveValue(arrayOf(pendingImage))
                                 return true
                             }
                             return super.onShowFileChooser(webView, filePathCallback, fileChooserParams)
@@ -490,110 +496,26 @@ fun AiWebPanel(
                                 } catch (e: Exception) {
                                     android.util.Log.e("AiWebPanel", "theme apply on load failed", e)
                                 }
-                                val uri = currentFileUri.value
-                                // 第一次載入完成時觸發，如果從未被處理過。
-                                if (uri != null && uri != uploadState.lastProcessedUri) {
-                                    uploadState.lastProcessedUri = uri
-                                        // Build enhanced paste-and-fallback JS by encoding the image to Base64
+                                // S0：首次載入完成就投遞掛著的請求（整頁鈕在切好頁面時已塞好 request）。
+                                if (notYetHandled(request)) {
+                                    val req = request!!
+                                    val uri = req.image
+                                    if (uri != null) {
                                         try {
                                             val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                                             if (bytes != null) {
                                                 val base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
-                                                val js = """
-                                                    (function() {
-                                                        function simulateImagePaste(target, base64Data) {
-                                                            try {
-                                                                const byteCharacters = atob(base64Data);
-                                                                const byteNumbers = new Array(byteCharacters.length);
-                                                                for (let i = 0; i < byteCharacters.length; i++) {
-                                                                    byteNumbers[i] = byteCharacters.charCodeAt(i);
-                                                                }
-                                                                const byteArray = new Uint8Array(byteNumbers);
-                                                                const blob = new Blob([byteArray], { type: 'image/png' });
-                                                                const uniqueName = "inkflow_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8) + ".png"; const file = new File([blob], uniqueName, { type: 'image/png' });
-
-                                                                const dataTransfer = new DataTransfer();
-                                                                dataTransfer.items.add(file);
-
-                                                                const pasteEvent = new ClipboardEvent('paste', {
-                                                                    clipboardData: dataTransfer,
-                                                                    bubbles: true,
-                                                                    cancelable: true
-                                                                });
-
-                                                                target.focus();
-                                                                const dispatched = target.dispatchEvent(pasteEvent);
-                                                                try { if (window.AndroidBridge && AndroidBridge.onPasteResult) AndroidBridge.onPasteResult(dispatched ? 'PASTE_DISPATCHED' : 'PASTE_DISPATCH_FAILED'); } catch(e){}
-                                                                return dispatched;
-                                                            } catch (e) {
-                                                                console.error('Paste simulation failed:', e);
-                                                                try { if (window.AndroidBridge && AndroidBridge.onPasteResult) AndroidBridge.onPasteResult('PASTE_EXCEPTION'); } catch(e){}
-                                                                return false;
-                                                            }
-                                                        }
-
-                                                        function tryFileInputClick() {
-                                                            var input = document.querySelector('input[type="file"]');
-                                                            if (input) {
-                                                                input.click();
-                                                                try { if (window.AndroidBridge && AndroidBridge.onPasteResult) AndroidBridge.onPasteResult('FILE_INPUT_CLICKED'); } catch(e){}
-                                                                return true;
-                                                            }
-                                                            return false;
-                                                        }
-
-                                                        function tryUploadButtonClick() {
-                                                            var selectors = [
-                                                                'button[aria-label*="Upload"]',
-                                                                'button[aria-label*="upload"]',
-                                                                'button[aria-label*="Add"]',
-                                                                'button[aria-label*="＋"]',
-                                                                '.upload-button',
-                                                                '.icon-button'
-                                                            ];
-                                                            for (var i = 0; i < selectors.length; i++) {
-                                                                var btn = document.querySelector(selectors[i]);
-                                                                if (btn) {
-                                                                    btn.click();
-                                                                    try { if (window.AndroidBridge && AndroidBridge.onPasteResult) AndroidBridge.onPasteResult('UPLOAD_BUTTON_CLICKED'); } catch(e){}
-                                                                    return true;
-                                                                }
-                                                            }
-                                                            return false;
-                                                        }
-
-                                                        var attempts = 0;
-                                                        var interval = setInterval(function() {
-                                                            var chatInput = document.querySelector('rich-textarea, div[role="textbox"][contenteditable="true"]');
-                                                            if (chatInput) {
-                                                                clearInterval(interval);
-                                                                var ok = simulateImagePaste(chatInput, "$base64");
-                                                                if (!ok) {
-                                                                    // try fallback strategies
-                                                                    if (!tryFileInputClick()) {
-                                                                        tryUploadButtonClick();
-                                                                    }
-                                                                }
-                                                            } else {
-                                                                attempts++;
-                                                                if (attempts >= 20) {
-                                                                    clearInterval(interval);
-                                                                    try { if (window.AndroidBridge && AndroidBridge.onPasteResult) AndroidBridge.onPasteResult('NO_CHAT_INPUT_FOUND'); } catch(e){}
-                                                                }
-                                                            }
-                                                        }, 500);
-                                                    })();
-                                                """.trimIndent()
-                                                view?.evaluateJavascript(js, null)
+                                                view?.evaluateJavascript(buildImagePasteJs(base64, UPLOAD_ATTEMPTS_LOAD), null)
                                                 android.util.Log.d("InkFlowDbg", "UPLOAD paste dispatched (first load) b64len=${base64.length}")
-                                                injectPromptIfNeeded(view, uri)
+                                            } else {
+                                                android.util.Log.d("InkFlowDbg", "UPLOAD read failed (first load)")
                                             }
                                         } catch (e: Exception) {
                                             android.util.Log.e("InkFlowDbg", "UPLOAD first-load failed", e)
-                                            try {
-                                                android.widget.Toast.makeText(context, "送圖失敗：${e.message}", android.widget.Toast.LENGTH_LONG).show()
-                                            } catch (_: Throwable) { }
+                                            toastUploadError(e.message)
                                         }
+                                    }
+                                    injectPromptIfNeeded(view, req)
                                 }
                             }
                         }
@@ -603,108 +525,27 @@ fun AiWebPanel(
                 }
             },
             update = { view ->
-                // 當外部 fileUri 更新(如使用者再次點擊 AI 解析)時，若這沒被處理過，就直接對已開啟的網頁下指令。
-                if (uploadState.isPageLoaded && fileUri != null && fileUri != uploadState.lastProcessedUri) {
-                    uploadState.lastProcessedUri = fileUri
-                    try {
-                        val bytes = context.contentResolver.openInputStream(fileUri)?.use { it.readBytes() }
-                        if (bytes != null) {
-                            val base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
-                            val js = """
-                                (function() {
-                                    // same paste-and-fallback script as onPageFinished
-                                    function simulateImagePaste(target, base64Data) {
-                                        try {
-                                            const byteCharacters = atob(base64Data);
-                                            const byteNumbers = new Array(byteCharacters.length);
-                                            for (let i = 0; i < byteCharacters.length; i++) {
-                                                byteNumbers[i] = byteCharacters.charCodeAt(i);
-                                            }
-                                            const byteArray = new Uint8Array(byteNumbers);
-                                            const blob = new Blob([byteArray], { type: 'image/png' });
-                                            const uniqueName = "inkflow_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8) + ".png"; const file = new File([blob], uniqueName, { type: 'image/png' });
-
-                                            const dataTransfer = new DataTransfer();
-                                            dataTransfer.items.add(file);
-
-                                            const pasteEvent = new ClipboardEvent('paste', {
-                                                clipboardData: dataTransfer,
-                                                bubbles: true,
-                                                cancelable: true
-                                            });
-
-                                            target.focus();
-                                            const dispatched = target.dispatchEvent(pasteEvent);
-                                            try { if (window.AndroidBridge && AndroidBridge.onPasteResult) AndroidBridge.onPasteResult(dispatched ? 'PASTE_DISPATCHED' : 'PASTE_DISPATCH_FAILED'); } catch(e){}
-                                            return dispatched;
-                                        } catch (e) {
-                                            console.error('Paste simulation failed:', e);
-                                            try { if (window.AndroidBridge && AndroidBridge.onPasteResult) AndroidBridge.onPasteResult('PASTE_EXCEPTION'); } catch(e){}
-                                            return false;
-                                        }
-                                    }
-
-                                    function tryFileInputClick() {
-                                        var input = document.querySelector('input[type="file"]');
-                                        if (input) {
-                                            input.click();
-                                            try { if (window.AndroidBridge && AndroidBridge.onPasteResult) AndroidBridge.onPasteResult('FILE_INPUT_CLICKED'); } catch(e){}
-                                            return true;
-                                        }
-                                        return false;
-                                    }
-
-                                    function tryUploadButtonClick() {
-                                        var selectors = [
-                                            'button[aria-label*="Upload"]',
-                                            'button[aria-label*="upload"]',
-                                            'button[aria-label*="Add"]',
-                                            'button[aria-label*="＋"]',
-                                            '.upload-button',
-                                            '.icon-button'
-                                        ];
-                                        for (var i = 0; i < selectors.length; i++) {
-                                            var btn = document.querySelector(selectors[i]);
-                                            if (btn) {
-                                                btn.click();
-                                                try { if (window.AndroidBridge && AndroidBridge.onPasteResult) AndroidBridge.onPasteResult('UPLOAD_BUTTON_CLICKED'); } catch(e){}
-                                                return true;
-                                            }
-                                        }
-                                        return false;
-                                    }
-
-                                    var attempts = 0;
-                                    var interval = setInterval(function() {
-                                        var chatInput = document.querySelector('rich-textarea, div[role="textbox"][contenteditable="true"]');
-                                        if (chatInput) {
-                                            clearInterval(interval);
-                                            var ok = simulateImagePaste(chatInput, "$base64");
-                                            if (!ok) {
-                                                if (!tryFileInputClick()) {
-                                                    tryUploadButtonClick();
-                                                }
-                                            }
-                                        } else {
-                                            attempts++;
-                                            if (attempts >= 10) {
-                                                clearInterval(interval);
-                                                try { if (window.AndroidBridge && AndroidBridge.onPasteResult) AndroidBridge.onPasteResult('NO_CHAT_INPUT_FOUND'); } catch(e){}
-                                            }
-                                        }
-                                    }, 500);
-                                })();
-                            """.trimIndent()
-                            view.evaluateJavascript(js, null)
-                            android.util.Log.d("InkFlowDbg", "UPLOAD paste dispatched (update) b64len=${base64.length}")
-                            injectPromptIfNeeded(view, fileUri)
-                        }
-                    } catch (e: Exception) {
-                        android.util.Log.e("InkFlowDbg", "UPLOAD update failed", e)
+                // S0：頁面已就緒且有新請求 → 投遞（貼圖＋填詞）。
+                // 去重判斷集中在 notYetHandled()，這裡不再各自寫比較邏輯。
+                if (uploadState.isPageLoaded && notYetHandled(request)) {
+                    val req = request!!
+                    val uri = req.image
+                    if (uri != null) {
                         try {
-                            android.widget.Toast.makeText(context, "送圖失敗：${e.message}", android.widget.Toast.LENGTH_LONG).show()
-                        } catch (_: Throwable) { }
+                            val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                            if (bytes != null) {
+                                val base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+                                view.evaluateJavascript(buildImagePasteJs(base64, UPLOAD_ATTEMPTS_UPDATE), null)
+                                android.util.Log.d("InkFlowDbg", "UPLOAD paste dispatched (update) b64len=${base64.length}")
+                            } else {
+                                android.util.Log.d("InkFlowDbg", "UPLOAD read failed (update)")
+                            }
+                        } catch (e: Exception) {
+                            android.util.Log.e("InkFlowDbg", "UPLOAD update failed", e)
+                            toastUploadError(e.message)
+                        }
                     }
+injectPromptIfNeeded(view, req)
                 }
             },
             modifier = androidx.compose.ui.Modifier.fillMaxSize()
@@ -1174,6 +1015,111 @@ private fun buildDomProbeJs(): String {
                 + ' fileInput=' + count('input[type="file"]')
                 + ' roles=' + JSON.stringify(roles)
                 + ' promptSample=' + sample('#prompt-textarea', 80);
+        })();
+    """.trimIndent()
+}
+
+/** 貼圖重試次數：首次載入給較寬的耐心（使用者可能正在登入），後續更新快一些。 */
+private const val UPLOAD_ATTEMPTS_LOAD = 20
+private const val UPLOAD_ATTEMPTS_UPDATE = 10
+
+/**
+ * 貼上圖片時要瞄准的輸入框。**這是 Gemini 專屬**，S2 會隨 provider 收到 driver 裡。
+ * 退路（input[type=file]）則與 provider 無關。
+ */
+private const val IMAGE_PASTE_INPUT_SELECTOR = "rich-textarea, div[role=\"textbox\"][contenteditable=\"true\"]"
+
+/**
+ * 貼圖腳本（S1：**原本整段複製兩份**，`onPageFinished` 一份、`update` 一份，
+ * 逐字相同只差重試次數——兩份會各自腐爛，是「加更多 AI」最先爆的地方，故合成一份）。
+ *
+ * 策略不變：先試模擬貼上，失敗退回 file input（provider 無關），再退回上傳鈕。
+ * [inputCandidates] 是唯一該隨 provider 變的參數，目前仍是 Gemini 的 rich-textarea。
+ */
+private fun buildImagePasteJs(base64: String, attempts: Int): String {
+    return """
+        (function() {
+            function simulateImagePaste(target, base64Data) {
+                try {
+                    const byteCharacters = atob(base64Data);
+                    const byteNumbers = new Array(byteCharacters.length);
+                    for (let i = 0; i < byteCharacters.length; i++) {
+                        byteNumbers[i] = byteCharacters.charCodeAt(i);
+                    }
+                    const byteArray = new Uint8Array(byteNumbers);
+                    const blob = new Blob([byteArray], { type: 'image/png' });
+                    const uniqueName = "inkflow_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8) + ".png";
+                    const file = new File([blob], uniqueName, { type: 'image/png' });
+
+                    const dataTransfer = new DataTransfer();
+                    dataTransfer.items.add(file);
+
+                    const pasteEvent = new ClipboardEvent('paste', {
+                        clipboardData: dataTransfer,
+                        bubbles: true,
+                        cancelable: true
+                    });
+
+                    target.focus();
+                    const dispatched = target.dispatchEvent(pasteEvent);
+                    try { if (window.AndroidBridge && AndroidBridge.onPasteResult) AndroidBridge.onPasteResult(dispatched ? 'PASTE_DISPATCHED' : 'PASTE_DISPATCH_FAILED'); } catch(e){}
+                    return dispatched;
+                } catch (e) {
+                    console.error('Paste simulation failed:', e);
+                    try { if (window.AndroidBridge && AndroidBridge.onPasteResult) AndroidBridge.onPasteResult('PASTE_EXCEPTION'); } catch(e){}
+                    return false;
+                }
+            }
+
+            function tryFileInputClick() {
+                var input = document.querySelector('input[type="file"]');
+                if (input) {
+                    input.click();
+                    try { if (window.AndroidBridge && AndroidBridge.onPasteResult) AndroidBridge.onPasteResult('FILE_INPUT_CLICKED'); } catch(e){}
+                    return true;
+                }
+                return false;
+            }
+
+            function tryUploadButtonClick() {
+                var selectors = [
+                    'button[aria-label*="Upload"]',
+                    'button[aria-label*="upload"]',
+                    'button[aria-label*="Add"]',
+                    'button[aria-label*="＋"]',
+                    '.upload-button',
+                    '.icon-button'
+                    ];
+                for (var i = 0; i < selectors.length; i++) {
+                    var btn = document.querySelector(selectors[i]);
+                    if (btn) {
+                        btn.click();
+                        try { if (window.AndroidBridge && AndroidBridge.onPasteResult) AndroidBridge.onPasteResult('UPLOAD_BUTTON_CLICKED'); } catch(e){}
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            var attempts = 0;
+            var interval = setInterval(function() {
+                var chatInput = document.querySelector('${IMAGE_PASTE_INPUT_SELECTOR}');
+                if (chatInput) {
+                    clearInterval(interval);
+                    var ok = simulateImagePaste(chatInput, "$base64");
+                    if (!ok) {
+                        if (!tryFileInputClick()) {
+                            tryUploadButtonClick();
+                        }
+                    }
+                } else {
+                    attempts++;
+                    if (attempts >= $attempts) {
+                        clearInterval(interval);
+                        try { if (window.AndroidBridge && AndroidBridge.onPasteResult) AndroidBridge.onPasteResult('NO_CHAT_INPUT_FOUND'); } catch(e){}
+                    }
+                }
+            }, 500);
         })();
     """.trimIndent()
 }
