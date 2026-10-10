@@ -82,7 +82,7 @@ class SyncEndToEndTest {
                 val result2 = mgr.syncWithTablet(device)
                 assertEquals(0, result2.documentsUpdated, "unchanged content must not be re-pulled")
                 assertEquals(0, result2.filesTransferred, "identical file must not be re-downloaded")
-                assertEquals(1, result2.conflictsSkipped)
+                assertEquals(1, result2.unchangedSkipped)
 
                 mgr.stopListening()
             }

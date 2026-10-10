@@ -327,7 +327,7 @@ pass 編號持久化在 `sync_meta.passCounter`——**不能放在記憶體**�
 
 ---
 
-## 11. v6 規劃（尚未實作，Android 端不必等待）
+## 11. 傳輸層遠期規劃（與協定版本號無關，尚未實作）
 
 1. **`NsdManager` 取代 UDP 廣播**。`255.255.255.255` 不會穿過路由器；客用網路、
    IoT VLAN、mesh WiFi 的 client isolation 會直接讓它失效。更關鍵的是
@@ -428,4 +428,102 @@ pass 編號持久化在 `sync_meta.passCounter`——**不能放在記憶體**�
 | **v3** | **`instanceId` 世代偵測、`docVersion` 內容雜湊取代時間戳、刪除傳播（含寬限期）、PSK 認證、`strokes.docY`、兩端 schema 解耦、單執行緒 DB** |
 | **v4** | **文字註解隨 `document_detail` 傳輸、`docVersion` 加入 `textCount`、`SyncResult.textsPulled`。⚠️ 兩端都必須升版：舊平板會把新增欄位當不存在、雜湊算在另一組欄位上，導致每份文件每輪都被判成有變更** |
 | **v5** | **雙向提案：桌面 `sync_oplog` 按物件 id 記錄本地修改，`proposal_submit` 帶 `baseDocVersion` 送平板仲裁（接受／整筆駁回，不合併），`proposal_status` 可查詢；桌面 schema v4 新增 `sync_proposals`／`sync_oplog`；`SyncResult.proposalsAccepted/proposalConflicts`。⚠️ 兩端都必須升版，否則桌面只會排永遠沒人讀的提案** |
-| v6（規劃） | `NsdManager`、HTTP/1.1、事件驅動同步、增量筆跡 delta |
+| **v6** | **合併取代駁回：per-object `version`＋`versionNonce`（Excalidraw 制）、逐 op 仲裁、衝突副本保留、tombstone 刪除、提案涵蓋建檔／刪檔／換檔。見 §15。⚠️ 兩端都必須升版：v5 平板把逐 op 回應當未知欄位忽略、v6 桌面把 v5 整筆駁回當全部衝突，語義各自封閉，不會半合併** |
+
+## 15. v6：合併（兩邊都不丟）
+
+設計參考見 §15.6。核心只有一句：**版本比較的粒度從「整份文件」降到「單一物件」，
+丟棄的粒度跟著降；同一個物件兩邊都動，才留副本，絕不靜默丟。**
+
+### 15.1 per-object 版本（Excalidraw 制）
+
+`strokes`／`text_annotations` 各加三欄（migration 只加不改舊、冪等）：
+
+- `version INTEGER NOT NULL DEFAULT 1`：每次 save 該物件就 +1。計數器，不用時鐘
+  （兩台機器時鐘不同步，lamport 在這裡等於本地計數器＋傳輸即同步）。
+- `versionNonce INTEGER NOT NULL DEFAULT 0`：每次 save 重擲隨機數。version 打平時
+  的 tiebreak（nonce 小者贏），保證兩端算出同一個贏家。
+- `deletedAt INTEGER`：tombstone，見 §15.3。NULL＝活著。
+
+舊資料全部視為 version=1、nonce=0——第一次 save 即長出版本，不需回填腳本。
+
+為什麼不用 Yjs／Automerge 那套：我們的資料本來就是「一堆有全域唯一 id 的物件」，
+不需要向量時鐘那種為「無 id 文本」設計的機制；`version`＋`nonce` 兩欄加一個
+`reconcile()` 純函數就是 Excalidraw 跑了五年的做法（`reconcile.ts`：id 對齊、
+version 大者贏、打平比 nonce）。
+
+### 15.2 逐 op 仲裁（取代整筆駁回）
+
+`ProposalArbiter.decide` 的第二條規則改掉：版本不同不再整筆 `ConflictStale`，
+而是**逐 op 比對物件版本**：
+
+- op 目標的 `(version, nonce)` == 平板現況 → 接受並套用。
+- 不同 → 這個 op 衝突，**其餘 op 照樣套用**。
+- 整筆裡沒有一個接受 → 才回 `conflict_stale`（語義不變，只是門檻變細）。
+
+回應沿用 `ProposalStatusPayload`，`conflictIds` 從「全部」變成「真的撞到的」；
+桌面 `ProposalQueue` 只丟 `conflictIds` 命中的 seq，其餘保留、base 前進到
+`winnerDocVersion`。v5 平板回的本來就是全部 id——所以**桌面先改，行為與今天
+完全一致**；v6 平板上線那天，不用再動桌面。
+
+### 15.3 衝突副本（同物件兩邊都動，兩條都留）
+
+逐 op 仲裁後唯一還會丟資料的情況：同一個 id 兩邊都改（例如兩邊各拖同一筆線）。
+做法抄 Automerge 的 `conflicts` 物件和 Obsidian 的「衝突檔」，落地成手寫場景的形狀：
+
+- 平板那份為主（平板是顯示真相來源，不動它的座標）。
+- 桌面那份**另存成一筆新線**：新 id、`version=1`、座標與桌面送來的一致（視覺上
+  疊在同一位置），`conflictOf` 指向原 id。
+- 使用者看得到兩條，自己動手刪掉不想要的那條；刪掉就沒了，不自動消失。
+- `conflictCopies: List<String>`（新 id 清單）跟著狀態回應回桌面，桌面把送出的
+  seq 消費掉、base 前進——**出隊成功，不算衝突。**
+
+不同 id 的併發（不同頁、不同筆）本來就各自保留，不需要副本。
+
+### 15.4 刪除是 tombstone
+
+刪除不再物理消失，改寫 `deletedAt`（毫秒時間戳）：
+
+- 刪除 vs 沒動過 → 刪除勝（tombstone 照常傳播，manifest 缺席規則不變）。
+- 刪除 vs 對方改過（version 比 tombstone 的 base 新）→ **修改勝**，tombstone 撤銷。
+  你刪掉的東西被別人改過，不該憑空消失；反過來你刪了別人剛改的，就該刪掉。
+- tombstone 保留 30 天才 GC；`sync_tombstones` 隨 manifest 傳，裝置重灌也不會
+  把刪掉的東西「復活」回來（Yjs 的刪除就是同一招：delete flag，不記 who/when）。
+
+### 15.5 提案涵蓋整個書庫
+
+op 種類從四種（upsert/delete × stroke/text）擴到文件級：
+
+- `create_document`（帶檔案本體走 `file_data` 分塊＋offset 續傳，中斷續傳，
+  不再 300MB 重拉）、`delete_document`、`replace_file`、`rename`、`folder_ops`。
+- 文件級 op 走同一個 `proposalId` 冪等鍵，重送不重建。
+- 現在桌面建檔／刪檔／換 PDF 永遠到不了平板——v6 做完書庫才是真的雙向。
+
+### 15.6 衝突要看得見（抄 Obsidian 的 Sync log）
+
+- 文件庫對有「未送出提案／衝突副本」的文件掛標記，點進去看得到兩邊各是什麼。
+- 同步紀錄頁：什麼時候、哪個文件、合併了什麼、丟了什麼（v6 的丟棄只發生在
+  tombstone GC 與使用者手刪，兩者都有紀錄）。
+- 現在的衝突通知只活在記憶體裡，重開 App 就消失——v6 的通知進 `sync_notices`
+  持久化，看過才算看過。
+
+### 15.7 設計參考（出處）
+
+- Excalidraw `reconcile.ts`：逐 element `version` 比較＋`versionNonce` tiebreak，
+  不同 element 各自保留。我們 §15.1／15.2 的直接模板。
+- Automerge conflicts 文件：同 key 併發寫只顯示一個贏家，但 loser 全進
+  `getConflicts()`，下一次賦值才算解決。我們 §15.3 的語義模板。
+- Yjs INTERNALS.md：刪除是 flag（state-based），不記 who/when；GC 另行處理。
+  我們 §15.4 的模板。
+- Obsidian Sync 官方文件：Markdown 用 diff-match-patch 合併、其餘檔用
+  last-modified-wins、1.9.7 起可選「另存衝突檔」＋Sync log 頁。我們「絕不靜默丟」
+  與 §15.6（衝突看得見）的政策模板。
+- Obsidian bridge（N2O）做法：不重疊自動合併、重疊才彈窗三方（base/ours/theirs）
+  手動選。我們文件級衝突 UI 的模板。
+
+### 15.8 不做的（避免過度工程）
+
+- 不引入 Yjs／Automerge 函式庫（Kotlin 成熟度不夠，且我們不需要向量時鐘）。
+- 不做 Google Docs／Figma 式中央 OT 伺服器（兩台裝置對等，不需要 sequencer）。
+- 不用牆鐘做仲裁（時鐘不同步；version 計數器＋nonce 已足夠決定性）。
+| v6（已實作，見 §15） | per-object `version`＋`versionNonce`、逐 op 仲裁、衝突副本、tombstone、文件級提案 |

@@ -38,7 +38,13 @@ data class SyncResult(
     val documentsUpdated: Int = 0,
     val strokesPulled: Int = 0,
     val filesTransferred: Int = 0,
-    val conflictsSkipped: Int = 0,
+    /**
+     * Documents whose content hash matched: nothing to transfer beyond making
+     * sure the file body exists. (Previously misnamed `conflictsSkipped` and
+     * shown in the UI as "衝突保留" — it never counted conflicts; the real
+     * conflict count is [proposalConflicts].)
+     */
+    val unchangedSkipped: Int = 0,
     val generationWiped: Boolean = false,
     val orphansRemoved: Int = 0,
     /** v4: text annotations received. Reported separately from strokes because
@@ -456,7 +462,7 @@ class LocalSyncManager(
         documentsUpdated = a.documentsUpdated + b.documentsUpdated,
         strokesPulled = a.strokesPulled + b.strokesPulled,
         filesTransferred = a.filesTransferred + b.filesTransferred,
-        conflictsSkipped = a.conflictsSkipped + b.conflictsSkipped,
+        unchangedSkipped = a.unchangedSkipped + b.unchangedSkipped,
         generationWiped = a.generationWiped || b.generationWiped,
         orphansRemoved = a.orphansRemoved + b.orphansRemoved,
         textsPulled = a.textsPulled + b.textsPulled,
@@ -647,7 +653,7 @@ class LocalSyncManager(
             documentsUpdated = updated,
             strokesPulled = strokes,
             filesTransferred = files,
-            conflictsSkipped = skipped,
+            unchangedSkipped = skipped,
             generationWiped = wiped,
             orphansRemoved = orphans,
             textsPulled = texts,
@@ -741,12 +747,22 @@ class LocalSyncManager(
                 PushOutcome.SENT_ACCEPTED
             }
             else -> {
-                // conflict_stale (lost a race after the manifest), rejected (the tablet
-                // refused, e.g. generation changed), or unknown: the ops describe a dead
-                // base either way, so keeping them only retries a known failure.
+                // v6 §15.2: resolve per op, not per proposal. Against a v5 tablet
+                // `conflictIds` is always the whole send, so this lands on the
+                // exact old path (whole-queue drop); a v6 tablet names only the
+                // ids that truly collided and the rest travel on.
                 val reason = status.message ?: status.status
-                queue.onConflict(entry.uri, pending.ops.size, reason)
-                logger.info { "Proposal ${pending.proposalId} for ${entry.uri} not applied: $reason" }
+                val winner = status.winnerDocVersion ?: remoteVersion
+                val resolution = queue.resolveSend(
+                    entry.uri, pending.ops, status.conflictIds.toSet(),
+                    winner, instanceId ?: "", reason
+                )
+                if (resolution.dropped > 0) {
+                    logger.info { "Proposal ${pending.proposalId} for ${entry.uri}: ${resolution.dropped} dropped, ${resolution.accepted} accepted, ${resolution.retained} retained ($reason)" }
+                }
+                if (instanceId != null && resolution.retained == 0 && resolution.accepted > 0) {
+                    databaseManager.setDocVersion(instanceId, entry.uri, winner, pass)
+                }
                 PushOutcome.CONFLICT
             }
         }
