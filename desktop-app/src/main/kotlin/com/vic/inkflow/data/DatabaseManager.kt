@@ -683,6 +683,22 @@ class DatabaseManager(private val dbPath: String) {
         }
     }
 
+    /**
+     * Delete exactly [seqs] — the v6 partial-conflict path. The conflicted ops'
+     * siblings (accepted, or recorded while the send was in flight) survive.
+     */
+    fun deleteOpsBySeqs(documentUri: String, seqs: Collection<Long>) {
+        if (seqs.isEmpty()) return
+        val placeholders = seqs.joinToString(",") { "?" }
+        connection?.prepareStatement(
+            "DELETE FROM sync_oplog WHERE documentUri = ? AND seq IN ($placeholders)"
+        )?.use { stmt ->
+            stmt.setString(1, documentUri)
+            seqs.forEachIndexed { i, seq -> stmt.setLong(i + 2, seq) }
+            stmt.executeUpdate()
+        }
+    }
+
     fun deleteAllOps(documentUri: String) {
         connection?.prepareStatement("DELETE FROM sync_oplog WHERE documentUri = ?")?.use { stmt ->
             stmt.setString(1, documentUri)

@@ -154,6 +154,75 @@ class ProposalQueue(
         notices.add("「${shortUri(documentUri)}」有 $opCount 筆桌面修改未能送出（$reason）")
     }
 
+    /** Outcome of [resolveSend], for the sync summary. */
+    data class SendResolution(val accepted: Int, val dropped: Int, val retained: Int)
+
+    /**
+     * Resolve one send against a non-accept status (v6 §15.2).
+     *
+     * - Every sent op named in [conflictIds] (or unparseable — a corrupt op must
+     *   not poison every future pass) is dropped loudly.
+     * - Sent ops NOT named were applied by the tablet: consumed, base advances to
+     *   [winnerVersion] so the survivors (recorded while the send was in flight)
+     *   travel on the next pass instead of dying as "known stale".
+     * - When the conflict covers the whole send this collapses to [onConflict]:
+     *   that is exactly what a v5 tablet always returns, so this method is
+     *   behavior-identical today and merge-ready the day the tablet goes v6.
+     */
+    fun resolveSend(
+        documentUri: String,
+        sentOps: List<Pair<Long, String>>,
+        conflictIds: Set<String>,
+        winnerVersion: String,
+        winnerInstance: String,
+        reason: String
+    ): SendResolution = synchronized(lock) {
+        val hitSeqs = sentOps
+            .filter { (_, json) -> opId(json)?.let { it in conflictIds } ?: true }
+            .map { (seq, _) -> seq }
+            .toSet()
+        if (hitSeqs.size == sentOps.size) {
+            // Whole-send failure: exactly today's path (count = the send, like
+            // onConflict has always reported it — not a new counting rule).
+            onConflict(documentUri, sentOps.size, reason)
+            return SendResolution(accepted = 0, dropped = sentOps.size, retained = 0)
+        }
+        val acceptedSeqs = sentOps.map { (seq, _) -> seq }.filter { it !in hitSeqs }
+        db.deleteOpsBySeqs(documentUri, hitSeqs + acceptedSeqs)
+        if (hitSeqs.isNotEmpty()) {
+            notices.add("「${shortUri(documentUri)}」有 ${hitSeqs.size} 筆桌面修改未能送出（$reason）")
+            logger.info { "Dropped ${hitSeqs.size} conflicted ops for $documentUri" }
+        }
+        val remaining = db.countOps(documentUri)
+        if (remaining == 0) {
+            db.deleteProposalRow(documentUri)
+        } else {
+            val row = db.getProposalRow(documentUri)
+            if (row != null) {
+                db.upsertProposalRow(row.copy(baseDocVersion = winnerVersion, baseInstanceId = winnerInstance))
+            }
+        }
+        return SendResolution(accepted = acceptedSeqs.size, dropped = hitSeqs.size, retained = remaining)
+    }
+
+    /**
+     * The object id one queued op touches. Deletes carry it top-level; upserts
+     * carry the full object, so the id is one level down (`stroke.stroke.id`,
+     * `text.id`). Unknown shapes resolve to null; [resolveSend] treats those as
+     * conflicted rather than letting one corrupt row poison every future pass.
+     */
+    internal fun opId(opJson: String): String? = try {
+        val obj = gson.fromJson(opJson, com.google.gson.JsonObject::class.java) ?: return null
+        obj.get("id")?.takeUnless { it.isJsonNull }?.asString
+            ?: obj.getAsJsonObject("stroke")?.getAsJsonObject("stroke")?.get("id")
+                ?.takeUnless { it.isJsonNull }?.asString
+            ?: obj.getAsJsonObject("text")?.get("id")
+                ?.takeUnless { it.isJsonNull }?.asString
+    } catch (e: Exception) {
+        logger.warn(e) { "Unparseable queued op; keeping it" }
+        null
+    }
+
     /** Human-readable conflict/overflow notes since the last drain. Empties the list. */
     fun drainNotices(): List<String> = synchronized(lock) {
         val out = notices.toList()

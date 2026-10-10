@@ -231,4 +231,102 @@ class ProposalQueueTest {
             db.disconnect()
         }
     }
+
+    // ─── v6 resolveSend: per-op resolution, not per-proposal ───────────────
+
+    @Test
+    fun `resolveSend with a whole-send conflict is exactly onConflict`() {
+        // What a v5 tablet always returns: every sent id named. The outbox must
+        // end in the identical state as the old whole-queue drop — row gone,
+        // everything (including in-flight) deleted, one loud notice.
+        val db = newDb()
+        try {
+            seedBase(db, "file:///a.pdf", "v1")
+            val q = ProposalQueue(db)
+            q.record("file:///a.pdf", ProposalOp(ProposalOp.DELETE_STROKE, id = "s1"))
+            q.record("file:///a.pdf", ProposalOp(ProposalOp.DELETE_STROKE, id = "s2"))
+            val sent = q.takeForSend("file:///a.pdf")!!
+
+            val r = q.resolveSend("file:///a.pdf", sent.ops, setOf("s1", "s2"), "v2", "inst-1", "stale")
+
+            assertEquals(ProposalQueue.SendResolution(accepted = 0, dropped = 2, retained = 0), r)
+            assertEquals(0, q.pendingOpCount())
+            assertTrue(q.pendingDocuments().isEmpty())
+            assertEquals(1, q.drainNotices().size)
+        } finally {
+            db.disconnect()
+        }
+    }
+
+    @Test
+    fun `resolveSend with a partial conflict keeps the rest and advances the base`() {
+        // The v6 shape: only s2 truly collided. s1/s3 were applied — consumed,
+        // not resent — and the two ops recorded while the send was in flight
+        // stay queued under the winner base for the next pass.
+        val db = newDb()
+        try {
+            seedBase(db, "file:///a.pdf", "v1")
+            val q = ProposalQueue(db)
+            q.record("file:///a.pdf", ProposalOp(ProposalOp.DELETE_STROKE, id = "s1"))
+            q.record("file:///a.pdf", ProposalOp(ProposalOp.DELETE_STROKE, id = "s2"))
+            q.record("file:///a.pdf", ProposalOp(ProposalOp.DELETE_STROKE, id = "s3"))
+            val sent = q.takeForSend("file:///a.pdf")!!
+            q.record("file:///a.pdf", ProposalOp(ProposalOp.DELETE_STROKE, id = "s4"))
+            q.record("file:///a.pdf", ProposalOp(ProposalOp.DELETE_STROKE, id = "s5"))
+
+            val r = q.resolveSend("file:///a.pdf", sent.ops, setOf("s2"), "v2", "inst-1", "stale")
+
+            assertEquals(ProposalQueue.SendResolution(accepted = 2, dropped = 1, retained = 2), r)
+            assertEquals(listOf("file:///a.pdf"), q.pendingDocuments())
+            val next = q.takeForSend("file:///a.pdf")!!
+            assertEquals("v2", next.baseDocVersion, "survivors travel under the winner base")
+            assertEquals(2, next.ops.size)
+            val notes = q.drainNotices()
+            assertEquals(1, notes.size)
+            assertTrue(notes.single().contains("1 筆"), "got: ${notes.single()}")
+        } finally {
+            db.disconnect()
+        }
+    }
+
+    @Test
+    fun `resolveSend drops an unparseable op instead of retrying it forever`() {
+        // A corrupt row must not poison every future pass: unidentified ops
+        // count as conflicted, so the queue drains instead of looping.
+        val db = newDb()
+        try {
+            seedBase(db, "file:///a.pdf", "v1")
+            val q = ProposalQueue(db)
+            q.record("file:///a.pdf", ProposalOp(ProposalOp.DELETE_STROKE, id = "s1"))
+            db.appendOp("file:///a.pdf", "{corrupt")
+            val sent = q.takeForSend("file:///a.pdf")!!
+            assertEquals(2, sent.ops.size)
+
+            val r = q.resolveSend("file:///a.pdf", sent.ops, setOf("s1"), "v2", "inst-1", "stale")
+
+            assertEquals(0, r.accepted)
+            assertEquals(2, r.dropped)
+            assertEquals(0, q.pendingOpCount())
+        } finally {
+            db.disconnect()
+        }
+    }
+
+    @Test
+    fun `opId reads nested stroke and text ids`() {
+        val db = newDb()
+        try {
+            val q = ProposalQueue(db)
+            val gson = com.google.gson.Gson()
+            val strokeOp = gson.toJson(ProposalOp(ProposalOp.UPSERT_STROKE, stroke = mapOf("stroke" to mapOf("id" to "s9"))))
+            val textOp = gson.toJson(ProposalOp(ProposalOp.UPSERT_TEXT, text = mapOf("id" to "t3")))
+            val deleteOp = gson.toJson(ProposalOp(ProposalOp.DELETE_TEXT, id = "t4"))
+            assertEquals("s9", q.opId(strokeOp))
+            assertEquals("t3", q.opId(textOp))
+            assertEquals("t4", q.opId(deleteOp))
+            assertNull(q.opId("{corrupt"))
+        } finally {
+            db.disconnect()
+        }
+    }
 }
