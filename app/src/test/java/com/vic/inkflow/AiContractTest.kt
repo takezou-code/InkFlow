@@ -29,69 +29,47 @@ import org.junit.Test
  */
 class AiContractTest {
 
-    private fun key(
-        action: AiAction = AiAction.SEND_PROMPT,
-        imageId: String? = null,
-        prompt: String? = null,
-        autoSend: Boolean = true
-    ) = AiRequest.dedupeKey(action, imageId, prompt, autoSend)
+    private fun key(id: Long, action: AiAction = AiAction.SEND_PROMPT) =
+        AiRequest.dedupeKey(id, action)
 
     @Test
     fun `空請求不算數`() {
-        assertTrue(AiRequest(AiAction.SEND_PROMPT).isEmpty)
-        assertFalse(AiRequest(AiAction.SEND_PROMPT, prompt = "解釋").isEmpty)
+        assertTrue(AiRequest(0L, AiAction.SEND_PROMPT).isEmpty)
+        assertFalse(AiRequest(0L, AiAction.SEND_PROMPT, prompt = "解釋").isEmpty)
     }
 
     @Test
-    fun `完全相同的請求去重鍵相同`() {
-        assertEquals(
-            key(imageId = "content://x/1", prompt = "解釋", autoSend = false),
-            key(imageId = "content://x/1", prompt = "解釋", autoSend = false)
-        )
+    fun `同一序號的請求去重鍵相同`() {
+        assertEquals(key(1L), key(1L))
     }
 
     @Test
-    fun `同一張圖不同提示詞是不同的請求`() {
-        // 這是最容易退化的一條：舊版只比對 Uri，整頁(解釋)與圈選(總結)
-        // 若剛好同一張 Uri 會被當成同一個而漏送。
-        assertNotEquals(
-            key(imageId = "content://x/1", prompt = "解釋", autoSend = false),
-            key(imageId = "content://x/1", prompt = "總結", autoSend = true)
-        )
-    }
-
-    @Test
-    fun `autoSend 不同視為不同請求`() {
-        // 整頁鈕只填不送、圈選自動送，同一張圖語意不同。
-        assertNotEquals(
-            key(imageId = "content://x/1", prompt = "解釋", autoSend = false),
-            key(imageId = "content://x/1", prompt = "解釋", autoSend = true)
-        )
+    fun `不同序號就是不同請求`() {
+        // 同一張圖連續送兩次（圈選同一區域再送）必須送得出去，所以不能只靠圖判斷。
+        assertNotEquals(key(1L), key(2L))
     }
 
     @Test
     fun `action 不同視為不同請求`() {
-        assertNotEquals(
-            key(action = AiAction.SEND_PROMPT, imageId = "content://x/1"),
-            key(action = AiAction.IMPORT_REPLY)
-        )
+        assertNotEquals(key(1L, AiAction.SEND_PROMPT), key(1L, AiAction.IMPORT_REPLY))
     }
 
     @Test
-    fun `不同圖是不同請求`() {
-        assertNotEquals(
-            key(imageId = "content://x/1", prompt = "解釋"),
-            key(imageId = "content://x/2", prompt = "解釋")
-        )
+    fun `PROMPT 消費後投遞識別碼不變（雙份貼圖回歸測試）`() {
+        // 這是實機踩到的 bug：貼完圖後 onPromptConsumed 把 prompt 清成 null，
+        // 若去重鍵含 prompt，下一輪重組就會再貼一次 → 使用者看到兩張一樣的圖。
+        // copy() 必須保留 id，投遞識別碼才不會變。
+        val before = AiRequest(7L, AiAction.SEND_PROMPT, image = null, prompt = "解釋", autoSend = false)
+        val after = before.copy(prompt = null)
+        assertEquals(before.dedupeKey(), after.dedupeKey())
+        assertNull(after.prompt)
     }
 
     @Test
-    fun `prompt 消費後鍵會改變`() {
-        // onPromptConsumed 會把 prompt 清成 null。釘住「圖還在、字已送」這個中間狀態，
-        // 讓面板不會把同一段字重複注入。
-        val before = key(imageId = "content://x/1", prompt = "解釋", autoSend = false)
-        val after = key(imageId = "content://x/1", prompt = null, autoSend = false)
-        assertNotEquals(before, after)
+    fun `prompt 與 autoSend 改變不影響投遞識別碼`() {
+        val base = AiRequest(9L, AiAction.SEND_PROMPT, prompt = "解釋", autoSend = false)
+        assertEquals(base.dedupeKey(), base.copy(prompt = "總結").dedupeKey())
+        assertEquals(base.dedupeKey(), base.copy(autoSend = true).dedupeKey())
     }
 
     @Test

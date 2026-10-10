@@ -145,6 +145,7 @@ import androidx.compose.material.icons.outlined.TouchApp
 import androidx.compose.material.icons.outlined.BackHand
 import androidx.compose.material.icons.outlined.Spa
 import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Psychology
 import androidx.compose.material.icons.rounded.Brush
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Gesture
@@ -264,7 +265,6 @@ fun TabletEditorTopBar(
     isAiPanelOpen: Boolean = false,
     isSendingPage: Boolean = false,
     aiProvider: AiProvider = AiProvider.GEMINI,
-    onSwitchAiProvider: () -> Unit = {},
     isPowerSaver: Boolean = false,
     onTogglePowerSaver: () -> Unit = {},
     /**
@@ -619,24 +619,14 @@ fun TabletEditorTopBar(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
-                    // 圖示反映「現在用的是哪個 AI」，不再永遠是 Gemini 的星星——
-    // 否則切到 ChatGPT 後，這顆星會繼續冒充它。
-    IconButton(onClick = onToggleAiPanel, modifier = Modifier.size(toolButtonSize)) {
-                        if (aiProvider == AiProvider.GEMINI) {
-                            Icon(
-                                painter = painterResource(id = R.drawable.ic_gemini),
-                                contentDescription = "關閉 AI 面板（${aiProvider.label}）",
-                                tint = if (isAiPanelOpen) MaterialTheme.colorScheme.primary
-                                else glassContentColor(isDarkTheme)
-                            )
-                        } else {
-                            Icon(
-                                imageVector = Icons.Filled.ChatBubble,
-                                contentDescription = "關閉 AI 面板（${aiProvider.label}）",
-                                tint = if (isAiPanelOpen) MaterialTheme.colorScheme.primary
-                                else glassContentColor(isDarkTheme)
-                            )
-                        }
+                    // 面板開關固定用人腦圖案：不隨 provider 變（切換鈕已搬進面板把手上方）。
+                    IconButton(onClick = onToggleAiPanel, modifier = Modifier.size(toolButtonSize)) {
+                        Icon(
+                            imageVector = Icons.Outlined.Psychology,
+                            contentDescription = "切換 AI 面板",
+                            tint = if (isAiPanelOpen) MaterialTheme.colorScheme.primary
+                            else glassContentColor(isDarkTheme)
+                        )
                     }
                     EditorIconButton(
                         onClick = { if (!isSendingPage) onSendPageToAi() },
@@ -651,14 +641,7 @@ fun TabletEditorTopBar(
                         icon = Icons.Filled.Download,
                         contentDescription = if (isAiImportArmed) "抓取打勾段落" else "引入 ${aiProvider.label} 文字"
                     )
-                    // AI 來源切換：抽屜裡的切換條會吃掉面板高度，搬上工具列當小圖示。
-                    // 圖示顯示「切過去會用的那個」，不是目前用的——按下去才不會誤以為沒換。
-                    EditorIconButton(
-                        onClick = onSwitchAiProvider,
-                        isActive = false,
-                        icon = if (aiProvider == AiProvider.CHATGPT) Icons.Outlined.AutoAwesome else Icons.Filled.ChatBubble,
-                        contentDescription = "切換 AI 到 ${aiProvider.other.label}"
-                    )
+                    // AI 來源切換鈕已搬到 AI 面板把手上方（24dp），工具列不再放這顆。
                 }
             }
 

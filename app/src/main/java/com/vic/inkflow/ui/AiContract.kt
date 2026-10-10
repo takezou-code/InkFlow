@@ -97,8 +97,11 @@ enum class AiAction {
  *
  * 取代過去三個各自為政的隱性變數（fileUri／prompt／autoSend）——它們從來沒有名字，
  * 靠約定湊在一起，這就是換 provider 時最容易漏改的地方。
+ *
+ * @param id 建立時指派的唯一序號，去重只看它。**不要用內容推導去重鍵**（見 dedupeKey）。
  */
 data class AiRequest(
+    val id: Long,
     val action: AiAction,
     /** 要送的圖（可空＝純文字追問）。 */
     val image: Uri? = null,
@@ -107,33 +110,26 @@ data class AiRequest(
     /** 填完要不要自動送出。整頁鈕 false（只填不送），圈選快捷列 true。 */
     val autoSend: Boolean = true
 ) {
-    /** 沒圖也沒字＝空請求，送了沒有意義。上游應該先擋掉。 */
+    /** 沒圖也沒字＝空請求，送了沒意義。上游應該先擋掉。 */
     val isEmpty: Boolean get() = image == null && prompt == null
 
     /**
-     * 去重鍵。沿用舊的「比對 Uri」語意，但把它變成一個名字，
-     * 避免新 provider 把比較邏輯散落重寫。
+     * 投遞去重鍵＝請求序號。
+     *
+     * ## 為什麼不能用內容推導（這是踩過的坑）
+     *
+     * 原本是 `"$action|$image|$prompt|$autoSend"`。但 [prompt] 會在投遞後被
+     * `onPromptConsumed` 清成 null（提示詞已填入網頁），於是鍵立刻改變 →
+     * 下一輪重組看起來像「新請求」→ **同一張圖被貼兩次**（Gemini／ChatGPT 都中）。
+     *
+     * 序號在 `copy()` 時會被保留，所以「內容變了」不再等於「換了一次投遞」。
+     * 而同一張圖再送一次是**新請求、新序號**，照樣送得出去。
      */
-    fun dedupeKey(): String = dedupeKey(action, image?.toString(), prompt, autoSend)
+    fun dedupeKey(): String = "${id}_${action.name}"
 
     companion object {
-        /**
-         * 去重鍵的**純函數**版本：吃字串、不碰任何 Android 類別。
-         *
-         * 為什麼多這一層：`image` 是 [Uri]，而 plain JVM 單測裡 android.net.Uri 是
-         * stub（build.gradle 有 isReturnDefaultValues，Uri.parse 會回 null），
-         * 直接對 Uri 取值根本測不了。環境規則要求可測邏輯抽成純函數。
-         *
-         * 語意：同一張圖配不同提示詞或不同 autoSend＝**不同請求**。
-         * 舊版只比對 Uri，整頁(解釋·不送)與圈選(總結·自動送)若剛好同一張 Uri
-         * 會被誤判成同一個而漏送。
-         */
-        fun dedupeKey(
-            action: AiAction,
-            imageId: String?,
-            prompt: String?,
-            autoSend: Boolean
-        ): String = "${action.name}|$imageId|$prompt|$autoSend"
+        /** 去重鍵的純函數版本，供 JVM 測試直接驗證，不碰 Android 類別。 */
+        fun dedupeKey(id: Long, action: AiAction): String = "${id}_${action.name}"
     }
 }
 
