@@ -82,4 +82,26 @@ interface TextAnnotationDao {
 
     @Query("SELECT COUNT(*) FROM text_annotations WHERE documentUri = :documentUri AND ABS(docY - (pageIndex * :stride + modelY)) > 0.01")
     suspend fun countTextDocMismatch(documentUri: String, stride: Float): Int
+
+    // ── v6 併發合併（§15.1）──────────────────────────────────────────────
+
+    /** 同 [StrokeDao.bumpStrokeVersion]：序號由 SQLite 在寫入當下讀自己的舊值。 */
+    @Query("UPDATE text_annotations SET version = version + 1, versionNonce = :nonce WHERE id = :id")
+    suspend fun bumpTextVersion(id: String, nonce: Int): Int
+
+    @Query("SELECT id AS id, version AS version, versionNonce AS versionNonce FROM text_annotations WHERE documentUri = :documentUri")
+    suspend fun getTextVersions(documentUri: String): List<StrokeVersionRow>
+
+    @Query("SELECT id AS id, version AS version, versionNonce AS versionNonce, deletedAt AS deletedAt FROM text_annotations WHERE id = :id")
+    suspend fun getTextVersion(id: String): StrokeVersionRow?
+
+    @Query("SELECT COUNT(*) FROM text_annotations WHERE documentUri = :documentUri AND deletedAt IS NULL")
+    suspend fun countLiveTexts(documentUri: String): Int
+
+    @Query("UPDATE text_annotations SET deletedAt = :at, version = version + 1, versionNonce = :nonce WHERE id IN (:ids) AND deletedAt IS NULL")
+    suspend fun tombstoneTexts(ids: List<String>, at: Long, nonce: Int): Int
+
+    /** 復活墓碑（§15.4「修改勝」）：對端改過的東西，不該因為一次刪除就憑空消失。 */
+    @Query("UPDATE text_annotations SET deletedAt = NULL WHERE id IN (:ids) AND deletedAt IS NOT NULL")
+    suspend fun reviveTexts(ids: List<String>): Int
 }

@@ -30,5 +30,12 @@ data class TextAnnotationEntity(
     val fontSize: Float = 16f,
     val colorArgb: Int = android.graphics.Color.BLACK,
     /** true = oversized emoji stamp, false = regular text label */
-    val isStamp: Boolean = false
+    val isStamp: Boolean = false,
+
+    // ── v6 併發合併（SYNC_PROTOCOL.md §15.1，與 StrokeEntity 同一套）─────
+    // 欄位語意逐字對齊筆跡：version 計數器、versionNonce 打平時的決定性 tiebreak、
+    // deletedAt 墓碑（NULL = 活著）。三者的理由見 StrokeEntity 的註解。
+    val version: Int = 1,
+    val versionNonce: Int = 0,
+    val deletedAt: Long? = null
 )

@@ -31,7 +31,11 @@ data class TextAnnotationEntity(
     val modelY: Float,
     val fontSize: Float = 16f,
     val colorArgb: Int = 0xFF000000.toInt(),
-    val isStamp: Boolean = false
+    val isStamp: Boolean = false,
+    // ── v6 merge columns: identical semantics to StrokeEntity (§15.1) ────────
+    val version: Int = 1,
+    val versionNonce: Int = 0,
+    val deletedAt: Long? = null
 )
 
 /**

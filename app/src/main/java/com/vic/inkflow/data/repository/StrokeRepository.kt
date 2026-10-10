@@ -5,6 +5,8 @@ import com.vic.inkflow.data.AppDatabase
 import com.vic.inkflow.data.PageStrokeCount
 import com.vic.inkflow.data.StrokeDao
 import com.vic.inkflow.data.StrokeEntity
+import com.vic.inkflow.data.MergeVersion
+import com.vic.inkflow.data.StrokeVersionRow
 import com.vic.inkflow.data.StrokeWithPoints
 import com.vic.inkflow.data.PointEntity
 import kotlinx.coroutines.flow.Flow
@@ -57,6 +59,26 @@ interface StrokeRepository : PageShiftTarget {
     suspend fun countMissingDocY(documentUri: String): Int
     suspend fun backfillStrokeDocY(documentUri: String, stride: Float): Int
     suspend fun countStrokeDocMismatch(documentUri: String, stride: Float): Int
+
+    // ── v6 併發合併（§15.1／§15.2／§15.4）───────────────────────────────
+
+    /** 本機改寫一筆筆跡：前進版本序號並換 tiebreak nonce。0 = 這筆不存在。 */
+    suspend fun bumpStrokeVersion(id: String): Int
+
+    /** 整份文件的 (id, version, nonce)，供提案逐 op 仲裁（§15.2）。 */
+    suspend fun getStrokeVersions(documentUri: String): List<StrokeVersionRow>
+
+    /** 單筆的合併狀態，含墓碑；刪除仲裁需要（§15.4）。 */
+    suspend fun getStrokeVersion(id: String): StrokeVersionRow?
+
+    /** 活著（非墓碑）的筆數。docVersion 與 page_counts 都用這個語意。 */
+    suspend fun countLiveStrokes(documentUri: String): Int
+
+    /** 刪除＝寫墓碑（§15.4）。回傳實際寫入的列數。 */
+    suspend fun tombstoneStrokes(strokeIds: List<String>): Int
+
+    /** 復活墓碑（§15.4 修改勝）。 */
+    suspend fun reviveStrokes(strokeIds: List<String>): Int
 }
 
 /**
@@ -135,4 +157,17 @@ class RoomStrokeRepository(
 
     override suspend fun countStrokeDocMismatch(documentUri: String, stride: Float): Int =
         dao.countStrokeDocMismatch(documentUri, stride)
+
+    override suspend fun bumpStrokeVersion(id: String): Int = dao.bumpStrokeVersion(id, MergeVersion.nextNonce())
+
+    override suspend fun getStrokeVersions(documentUri: String): List<StrokeVersionRow> = dao.getStrokeVersions(documentUri)
+
+    override suspend fun getStrokeVersion(id: String): StrokeVersionRow? = dao.getStrokeVersion(id)
+
+    override suspend fun countLiveStrokes(documentUri: String): Int = dao.countLiveStrokes(documentUri)
+
+    override suspend fun tombstoneStrokes(strokeIds: List<String>): Int =
+        dao.tombstoneStrokes(strokeIds, System.currentTimeMillis(), MergeVersion.nextNonce())
+
+    override suspend fun reviveStrokes(strokeIds: List<String>): Int = dao.reviveStrokes(strokeIds)
 }

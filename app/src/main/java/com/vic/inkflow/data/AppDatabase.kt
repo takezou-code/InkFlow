@@ -28,12 +28,14 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 // v25: M7 公式源 sidecar：新增 math_sources 表（imageUri 唯一關聯 image_annotations.uri，
 //      只加表不動現有表）。
 // v26: 補 document_preferences.palmThresholdDp 的 migration（見 MIGRATION_25_26 註解）。
+// v27: 併發合併的 per-object 版本欄（strokes/text_annotations 各加
+//      version/versionNonce/deletedAt，見 MIGRATION_26_27 註解）。
 @Database(
     entities = [StrokeEntity::class, PointEntity::class, DocumentEntity::class, FolderEntity::class,
                 TextAnnotationEntity::class, ImageAnnotationEntity::class,
                 DocumentPreferenceEntity::class, BookmarkEntity::class,
                 MathSourceEntity::class],
-    version = 26
+    version = 27
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun strokeDao(): StrokeDao
@@ -586,6 +588,41 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v27：v6 併發合併的 per-object 版本欄（§15.1／§15.4）。
+         *
+         * `strokes` 與 `text_annotations` 各加三欄：`version`、`versionNonce`、`deletedAt`。
+         * **只加欄、不改舊語意、不回填**：舊列的 `version` 用 DEFAULT 1 起步就夠——
+         * 沒有任何一份舊資料需要跟別人比較版本（v6 之前沒有版本可比），第一次改寫就會
+         * 長到 2。回填一個「假造但更高」的版本反而會蓋掉對端的新內容。
+         *
+         * **必須冪等**：已经有這三欄的 DB 重跑就炸 duplicate column（同 v26 那次的
+         * 教訓）。所以先讀 PRAGMA table_info，只補缺的那幾欄；已存在的欄保持原值，
+         * 不覆蓋——覆蓋等於把別的裝置的版本序號清零，會讓併發合併整個失準。
+         */
+        private val MIGRATION_26_27 = object : Migration(26, 27) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                for (table in listOf("strokes", "text_annotations")) {
+                    val existing = mutableSetOf<String>()
+                    db.query("PRAGMA table_info($table)").use { c ->
+                        val nameIdx = c.getColumnIndexOrThrow("name")
+                        while (c.moveToNext()) existing.add(c.getString(nameIdx))
+                    }
+                    // 欄位宣告必須與 entity 逐字一致（含 NOT NULL 與 DEFAULT），否則
+                    // Room 的 schema identity check 會在開啟時丟 IllegalStateException。
+                    if ("version" !in existing) {
+                        db.execSQL("ALTER TABLE $table ADD COLUMN version INTEGER NOT NULL DEFAULT 1")
+                    }
+                    if ("versionNonce" !in existing) {
+                        db.execSQL("ALTER TABLE $table ADD COLUMN versionNonce INTEGER NOT NULL DEFAULT 0")
+                    }
+                    if ("deletedAt" !in existing) {
+                        db.execSQL("ALTER TABLE $table ADD COLUMN deletedAt INTEGER DEFAULT NULL")
+                    }
+                }
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val appContext = context.applicationContext
@@ -620,7 +657,8 @@ abstract class AppDatabase : RoomDatabase() {
                     MIGRATION_22_23,
                     MIGRATION_23_24,
                     MIGRATION_24_25,
-                    MIGRATION_25_26
+                    MIGRATION_25_26,
+                    MIGRATION_26_27
                 )
                 // Only allow destructive migration on downgrade (e.g. user reverts to an
                 // older APK). Unknown *upgrade* paths surface as a hard crash rather than

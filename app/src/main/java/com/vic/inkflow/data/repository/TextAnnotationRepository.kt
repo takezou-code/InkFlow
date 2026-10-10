@@ -1,6 +1,7 @@
 package com.vic.inkflow.data.repository
 
 import com.vic.inkflow.data.AppDatabase
+import com.vic.inkflow.data.MergeVersion
 import com.vic.inkflow.data.PageTextCount
 import com.vic.inkflow.data.TextAnnotationDao
 import com.vic.inkflow.data.TextAnnotationEntity
@@ -37,6 +38,14 @@ interface TextAnnotationRepository : PageShiftTarget {
     suspend fun countMissingDocY(documentUri: String): Int
     suspend fun backfillTextDocY(documentUri: String, stride: Float): Int
     suspend fun countTextDocMismatch(documentUri: String, stride: Float): Int
+
+    // ── v6 併發合併（§15.1／§15.2／§15.4）───────────────────────────────
+    suspend fun bumpTextVersion(id: String): Int
+    suspend fun getTextVersions(documentUri: String): List<com.vic.inkflow.data.StrokeVersionRow>
+    suspend fun getTextVersion(id: String): com.vic.inkflow.data.StrokeVersionRow?
+    suspend fun countLiveTexts(documentUri: String): Int
+    suspend fun tombstoneTexts(ids: List<String>): Int
+    suspend fun reviveTexts(ids: List<String>): Int
 }
 
 class RoomTextAnnotationRepository(
@@ -73,4 +82,12 @@ class RoomTextAnnotationRepository(
     override suspend fun countMissingDocY(documentUri: String): Int = dao.countMissingDocY(documentUri)
     override suspend fun backfillTextDocY(documentUri: String, stride: Float): Int = dao.backfillTextDocY(documentUri, stride)
     override suspend fun countTextDocMismatch(documentUri: String, stride: Float): Int = dao.countTextDocMismatch(documentUri, stride)
+
+    override suspend fun bumpTextVersion(id: String): Int = dao.bumpTextVersion(id, MergeVersion.nextNonce())
+    override suspend fun getTextVersions(documentUri: String): List<com.vic.inkflow.data.StrokeVersionRow> = dao.getTextVersions(documentUri)
+    override suspend fun getTextVersion(id: String): com.vic.inkflow.data.StrokeVersionRow? = dao.getTextVersion(id)
+    override suspend fun countLiveTexts(documentUri: String): Int = dao.countLiveTexts(documentUri)
+    override suspend fun tombstoneTexts(ids: List<String>): Int =
+        dao.tombstoneTexts(ids, System.currentTimeMillis(), MergeVersion.nextNonce())
+    override suspend fun reviveTexts(ids: List<String>): Int = dao.reviveTexts(ids)
 }

@@ -428,7 +428,7 @@ pass 編號持久化在 `sync_meta.passCounter`——**不能放在記憶體**�
 | **v3** | **`instanceId` 世代偵測、`docVersion` 內容雜湊取代時間戳、刪除傳播（含寬限期）、PSK 認證、`strokes.docY`、兩端 schema 解耦、單執行緒 DB** |
 | **v4** | **文字註解隨 `document_detail` 傳輸、`docVersion` 加入 `textCount`、`SyncResult.textsPulled`。⚠️ 兩端都必須升版：舊平板會把新增欄位當不存在、雜湊算在另一組欄位上，導致每份文件每輪都被判成有變更** |
 | **v5** | **雙向提案：桌面 `sync_oplog` 按物件 id 記錄本地修改，`proposal_submit` 帶 `baseDocVersion` 送平板仲裁（接受／整筆駁回，不合併），`proposal_status` 可查詢；桌面 schema v4 新增 `sync_proposals`／`sync_oplog`；`SyncResult.proposalsAccepted/proposalConflicts`。⚠️ 兩端都必須升版，否則桌面只會排永遠沒人讀的提案** |
-| **v6** | **合併取代駁回：per-object `version`＋`versionNonce`（Excalidraw 制）、逐 op 仲裁、衝突副本保留、tombstone 刪除、提案涵蓋建檔／刪檔／換檔。見 §15。⚠️ 兩端都必須升版：v5 平板把逐 op 回應當未知欄位忽略、v6 桌面把 v5 整筆駁回當全部衝突，語義各自封閉，不會半合併** |
+| **v6** | **合併取代駁回：per-object `version`＋`versionNonce`（Excalidraw 制）、逐 op 仲裁、衝突副本保留、tombstone 刪除。見 §15。⚠️ 兩端都必須升版：v5 平板把逐 op 回應當未知欄位忽略、v5 桌面送不出 `baseVersion`，兩邊都無法仲裁，只能整筆處理——不會半合併，但會退回舊語義** |
 
 ## 15. v6：合併（兩邊都不丟）
 
@@ -449,34 +449,59 @@ pass 編號持久化在 `sync_meta.passCounter`——**不能放在記憶體**�
 
 為什麼不用 Yjs／Automerge 那套：我們的資料本來就是「一堆有全域唯一 id 的物件」，
 不需要向量時鐘那種為「無 id 文本」設計的機制；`version`＋`nonce` 兩欄加一個
-`reconcile()` 純函數就是 Excalidraw 跑了五年的做法（`reconcile.ts`：id 對齊、
+`incomingWins()` 純函數就是 Excalidraw 跑了五年的做法（`reconcile.ts`：id 對齊、
 version 大者贏、打平比 nonce）。
+
+#### 15.1.1 誰該前進版本：pull 不動，本地編輯才動
+
+這是最容易寫反、而且寫反了症狀會是「同步看起來正常但資料慢慢變舊」的地方：
+
+| 寫入來源 | 版本 | 理由 |
+|---|---|---|
+| **pull**（同步拉平板的資料） | **原樣照抄** | 平板是單調的權威。在這裡 +1，桌面就會自稱比平板新，下次推提案時把自己剛拉到的東西蓋回去。 |
+| **本地編輯** | **+1，換新 nonce** | 不動的話兩端對「我改了」停在同一個數字，仲裁退化成擲硬幣。 |
+| **新 id** | 從傳入值起步 | 沒有舊值可比。 |
+
+桌面 `saveStroke`／`saveTextAnnotation` 不需要額外參數來區分：`incoming.version >=
+現況` 即為 pull（平板的版本單調），否則是拿記憶體裡的舊值回寫的本地編輯。兩者都會
+改到 nonce，所以 pull 必須連 nonce 一起照抄——只照抄 version 等於對內容動了手。
 
 ### 15.2 逐 op 仲裁（取代整筆駁回）
 
-`ProposalArbiter.decide` 的第二條規則改掉：版本不同不再整筆 `ConflictStale`，
-而是**逐 op 比對物件版本**：
+`ProposalArbiter.decideOps` 的規則順序（`decide` 是無版本資訊時的 v5 相容入口）：
 
-- op 目標的 `(version, nonce)` == 平板現況 → 接受並套用。
-- 不同 → 這個 op 衝突，**其餘 op 照樣套用**。
-- 整筆裡沒有一個接受 → 才回 `conflict_stale`（語義不變，只是門檻變細）。
+1. 世代不同 → `Reject`。版本字串跨安裝沒有可比性，連比都不用比。
+2. **文件版本不同 → `ConflictStale`（全部）**。這條**不變**：文件雜湊涵蓋 PDF 本體與
+   頁集合，逐物件版本描述不了它。放掉這條等於允許「PDF 被換掉但註解留在舊頁」。
+3. 其餘 → 逐 op 決定：`(version, nonce)` 決定性排序，高者贏、打平 nonce 小者贏。
+   平板沒有這筆物件 → 接受（桌面是唯一持有者）。
 
-回應沿用 `ProposalStatusPayload`，`conflictIds` 從「全部」變成「真的撞到的」；
-桌面 `ProposalQueue` 只丟 `conflictIds` 命中的 seq，其餘保留、base 前進到
-`winnerDocVersion`。v5 平板回的本來就是全部 id——所以**桌面先改，行為與今天
-完全一致**；v6 平板上線那天，不用再動桌面。
+**決定性排序滿足交換律與結合律，所以兩端必然收斂到同一結果**——這是兩台機器能共存的
+唯一前提。刻意不用牆鐘（兩台時鐘無從對齊，§6 連 `lastOpenedAt` 都捨棄了）。
+
+回應沿用 `ProposalStatusPayload`：部分接受時一律回 `ACCEPTED` ＋ `conflictCopies`，
+而不是 `conflict_stale`。因為對桌面的語義是「已送出」與「要丟掉」——回 stale 會讓桌面
+丟掉那幾筆，正是本設計要避免的結果。
+
+**base 從哪裡來**：upsert op 的 payload 自帶 `version`/`versionNonce`（實體有這兩欄），
+delete op 沒有 payload，base 只能由桌面顯式填在 `ProposalOp.baseVersion`。任一 op 兩者
+皆缺 → `opStates` 為空 → 退回 v5 整筆語義（保守，不可猜）。
 
 ### 15.3 衝突副本（同物件兩邊都動，兩條都留）
 
-逐 op 仲裁後唯一還會丟資料的情況：同一個 id 兩邊都改（例如兩邊各拖同一筆線）。
-做法抄 Automerge 的 `conflicts` 物件和 Obsidian 的「衝突檔」，落地成手寫場景的形狀：
+逐 op 仲裁後唯一還會「少一個」的 op：同一個 id 兩邊都改（例如兩邊各拖同一筆線）。
+做法抄 Automerge 的 `conflicts` 物件與 Obsidian 的「衝突檔」，落地成手寫場景的形狀：
 
 - 平板那份為主（平板是顯示真相來源，不動它的座標）。
-- 桌面那份**另存成一筆新線**：新 id、`version=1`、座標與桌面送來的一致（視覺上
-  疊在同一位置），`conflictOf` 指向原 id。
-- 使用者看得到兩條，自己動手刪掉不想要的那條；刪掉就沒了，不自動消失。
-- `conflictCopies: List<String>`（新 id 清單）跟著狀態回應回桌面，桌面把送出的
-  seq 消費掉、base 前進——**出隊成功，不算衝突。**
+- 桌面那份**另存成一筆新線**：新 id、`version=1`、新 nonce、座標與桌面送來的一致
+  （視覺上疊在同一位置）。
+- 副本從 `version=1` 起步而非沿用舊高版本號：它從未被仲裁過，帶著舊號會讓它第一次
+  被別人改時就被判成「對方比較新」。
+- 使用者看得到兩條，自己動手刪掉不想要的那條。
+- `conflictCopies: List<String>` 回給桌面；桌面把它當**成功出隊**（`resolveSend` 的
+  accepted 分支），不算衝突、不提示「未送出」。
+
+刪除衝突（一邊刪一邊改）不產生副本——留一個空物件等於憑空造一筆使用者沒畫過的東西。
 
 不同 id 的併發（不同頁、不同筆）本來就各自保留，不需要副本。
 
@@ -484,22 +509,23 @@ version 大者贏、打平比 nonce）。
 
 刪除不再物理消失，改寫 `deletedAt`（毫秒時間戳）：
 
-- 刪除 vs 沒動過 → 刪除勝（tombstone 照常傳播，manifest 缺席規則不變）。
-- 刪除 vs 對方改過（version 比 tombstone 的 base 新）→ **修改勝**，tombstone 撤銷。
-  你刪掉的東西被別人改過，不該憑空消失；反過來你刪了別人剛改的，就該刪掉。
-- tombstone 保留 30 天才 GC；`sync_tombstones` 隨 manifest 傳，裝置重灌也不會
-  把刪掉的東西「復活」回來（Yjs 的刪除就是同一招：delete flag，不記 who/when）。
+- 刪除 vs 對方沒動過（`baseVersion >= 現況`）→ 刪除勝。刪除已是墓碑時重送亦接受（冪等）。
+- 刪除 vs 對方改過（`baseVersion < 現況`）→ **修改勝**，刪除不執行。你刪掉的東西被
+  別人改過，不該憑空消失。
+- upsert 遇到墓碑 → 清掉 `deletedAt` 復活。
+- 筆數雜湊改用「非墓碑」計數（`countLiveStrokes`），否則刪除後文件版本不會變。
+- tombstone 保留 30 天才 GC（尚未實作）；語意取自 Yjs——刪除是 flag，不記 who/when。
 
-### 15.5 提案涵蓋整個書庫
+### 15.5 提案涵蓋整個書庫（規劃中，尚未實作）
 
 op 種類從四種（upsert/delete × stroke/text）擴到文件級：
 
 - `create_document`（帶檔案本體走 `file_data` 分塊＋offset 續傳，中斷續傳，
   不再 300MB 重拉）、`delete_document`、`replace_file`、`rename`、`folder_ops`。
 - 文件級 op 走同一個 `proposalId` 冪等鍵，重送不重建。
-- 現在桌面建檔／刪檔／換 PDF 永遠到不了平板——v6 做完書庫才是真的雙向。
+- 現在桌面建檔／刪檔／換 PDF 永遠到不了平板——這一步做完書庫才是真的雙向。
 
-### 15.6 衝突要看得見（抄 Obsidian 的 Sync log）
+### 15.6 衝突要看得見（抄 Obsidian 的 Sync log，規劃中）
 
 - 文件庫對有「未送出提案／衝突副本」的文件掛標記，點進去看得到兩邊各是什麼。
 - 同步紀錄頁：什麼時候、哪個文件、合併了什麼、丟了什麼（v6 的丟棄只發生在

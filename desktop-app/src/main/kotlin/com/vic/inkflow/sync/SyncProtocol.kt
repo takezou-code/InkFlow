@@ -45,7 +45,7 @@ object SyncConstants {
  * already rejects a version mismatch, so bumping turns a silent queue leak into one
  * clear error.
  */
-const val PROTOCOL_VERSION = 5
+const val PROTOCOL_VERSION = 6
     const val APP_TAG = "InkFlow"
     const val DOCUMENTS_SUBDIR = "documents"
 }
@@ -290,7 +290,21 @@ data class ProposalOp(
     /** Present when op == "upsert_text". Serialized TextAnnotationEntity. */
     val text: Any? = null,
     /** Present when op starts with "delete_". */
-    val id: String? = null
+    val id: String? = null,
+    /**
+     * v6: this object's version as the desktop saw it when the edit was made.
+     *
+     * Without it the tablet has no way to tell "you changed this since I last
+     * sent it" from "you changed something I never had" — the first is a merge,
+     * the second is not. Deletes carry no payload, so this field is the only
+     * place their base can live; it is on every op type for that reason.
+     *
+     * Null on a v5 client, which is precisely why PROTOCOL_VERSION was bumped:
+     * a null base cannot be arbitrated and guessing would silently overwrite.
+     */
+    val baseVersion: Int? = null,
+    /** v6: the nonce counterpart of [baseVersion]. */
+    val baseNonce: Int? = null
 ) {
     companion object {
         const val UPSERT_STROKE = "upsert_stroke"
@@ -329,6 +343,14 @@ data class ProposalStatusPayload(
     val winnerDocVersion: String? = null,
     /** Object ids the proposal touched that no longer match. Empty when accepted. */
     val conflictIds: List<String> = emptyList(),
+    /**
+     * v6: ids of conflict copies the tablet kept for us (§15.3).
+     *
+     * Same id edited on both devices means one copy has to lose; the tablet keeps
+     * its own and stores ours under a fresh id so nothing disappears. The desktop
+     * treats this as a successful send — the ops are consumed, not dropped.
+     */
+    val conflictCopies: List<String> = emptyList(),
     val message: String? = null
 ) {
     companion object {

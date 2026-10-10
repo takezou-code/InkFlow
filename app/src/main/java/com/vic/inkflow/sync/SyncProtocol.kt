@@ -22,15 +22,17 @@ object SyncPorts {
 
 object SyncConstants {
     /**
-     * v5。
+     * v6。
      *
-     * 升版是**強制**的。v5 新增 `proposal_submit`/`proposal_status` 兩個 verb；
-     * 舊平板會回「未知 verb」，新桌面若不檢查版本就會一直排提案進永遠沒人讀的
-     * 佇列——佇列無限增長，而症狀只是「桌面改的東西沒過去」。handshake 本來就會拒
-     * 絕版本不符，所以升版是為了把「靜默漏寫」換成「一句明確的錯誤」。兩端的這個
-     * 常數必須一致。
+     * 升版是**強制**的，而且這次是為了「語義各自封閉」：v6 的平板做逐 op 仲裁
+     * （§15.2），v5 的平板整筆駁回。兩者對同一個提案會給出**結構相同但意義相反**的回應
+     * （v5 的 `conflictIds` 是全部、v6 是真的撞到的），所以混用不是「退化到舊行為」，
+     * 而是桌面端會把「已套用並留副本」的提案誤判成「全部失敗」而丟掉。
+     *
+     * handshake 本來就會拒絕版本不符，所以升版是為了把這個靜默的錯語義換成一句明確的
+     * 錯誤。兩端的這個常數必須一致。
      */
-    const val PROTOCOL_VERSION = 5
+    const val PROTOCOL_VERSION = 6
 
     /** 探索封包用的應用程式標記；不是 InkFlow 的封包直接不回應（§3）。 */
     const val APP_TAG = "InkFlow"
@@ -229,14 +231,26 @@ data class FileMetaPayload(
  * 兩者按 id 冪等——重送同一提案會落在同一狀態，不需持久化去重表。
  */
 data class ProposalOp(
-    /** "upsert_stroke" | "delete_stroke" | "upsert_text" | "delete_text"。 */
+    /** "upsert_stroke" | "delete_stroke" | "upsert_text" | "delete_text". */
     val op: String,
     /** op == "upsert_stroke" 時：StrokeWithPoints。 */
     val stroke: Any? = null,
     /** op == "upsert_text" 時：TextAnnotationEntity。 */
     val text: Any? = null,
     /** op 以 "delete_" 開頭時：目標 id。 */
-    val id: String? = null
+    val id: String? = null,
+    /**
+     * v6：桌面改這筆時看到的該物件版本。沒有它，平板分不出「你在我上次送出版本之後
+     * 又改了這筆」（該合併）與「你改了一件我從沒有的東西」（不該合併）。
+     *
+     * delete 類 op 沒有 payload，base 只能放在這裡，所以四種 op 都有這兩欄。
+     *
+     * v5 桌面送 null，而 null 無法仲裁、猜一個就會靜默覆蓋——所以 `PROTOCOL_VERSION`
+     * 升 6，兩端不會混用。
+     */
+    val baseVersion: Int? = null,
+    /** v6：[baseVersion] 的 tiebreak 配對欄。 */
+    val baseNonce: Int? = null
 ) {
     companion object {
         const val UPSERT_STROKE = "upsert_stroke"
@@ -274,6 +288,14 @@ data class ProposalStatusPayload(
     val winnerDocVersion: String? = null,
     /** 提案動過但已對不上的物件 id。接受時為空。 */
     val conflictIds: List<String> = emptyList(),
+    /**
+     * v6：因同一 id 兩邊都改過而另存的副本 id（§15.3）。
+     *
+     * **預設空清單讓 v5 payload 仍可解碼**，但語意不同：v5 的 `conflictIds` 是
+     * 「駁回、待重試」，v6 的是「已解決、留了痕跡」。桌面端是照 `status` 分流的，
+     * 所以混用會出錯——這正是 `PROTOCOL_VERSION` 升 6 的原因。
+     */
+    val conflictCopies: List<String> = emptyList(),
     val message: String? = null
 ) {
     companion object {
