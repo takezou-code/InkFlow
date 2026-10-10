@@ -28,20 +28,30 @@ class SyncIdentityTest {
         const val PSK_SALT = "inkflow-sync-v3"
     }
 
-    /** Independent re-implementation of the documented layout. */
+    /**
+     * Independent re-implementation of the documented layout.
+     *
+     * [textCount] is here because v4 appended it (text annotations joined the hash
+     * so a notes-only edit is visible to the diff). It was **missing** from this
+     * reference for several releases, which made the two "matches the reference"
+     * assertions below fail — and a failing test here is the one thing that hides
+     * a real wire break, because CI that ignores red tests is the same as no test.
+     */
     private fun reference(
         instanceId: String,
         uri: String,
         strokeCount: Int,
         fileSha256: String?,
-        fileSize: Long?
+        fileSize: Long?,
+        textCount: Int = 0
     ): String = sha256(
         buildString {
             append(instanceId).append(NUL)
             append(uri).append(NUL)
             append(strokeCount).append(NUL)
             append(fileSha256 ?: "-").append(NUL)
-            append(fileSize ?: -1L)
+            append(fileSize ?: -1L).append(NUL)
+            append(textCount)
         }
     )
 

@@ -639,6 +639,10 @@ val allowSinglePan = startedBlank || fingerPanOnPaperAllowed(
             if (pdfViewModel.isScrollingFast.value) pdfViewModel.holdRenders()
             // 可視範圍預取：未露臉的鄰頁先查好，快取當初始值，第一幀就有墨
             if (first != Int.MAX_VALUE && last != Int.MIN_VALUE) {
+                // v6 分級渲染：只有可見頁吃滿倍率，窗外頁維持低清（見 setRenderPlan）。
+                // 這裡就是「可見」的定義來源——不餵的話倍率範圍停在最後一次縮放的舊值，
+                // 捲到新頁時那頁會拿到窗外倍率而糊掉。
+                pdfViewModel.setVisiblePageRange(first..last)
                 viewModel.prefetchPages(first, last)
                 // 鄰頁只預熱縮圖（便宜，240px 封頂），高清等落定按序補。
                 for (p in first - 1..last + 1) pdfViewModel.prefetchThumbnail(p)
@@ -667,15 +671,27 @@ val allowSinglePan = startedBlank || fingerPanOnPaperAllowed(
         }
     }
 
-    // 渲染刻度跟著可視寬：可視越寬渲染倍率越高（2x–3.5x），旋轉/轉向自動重渲
-    // Fix2b: 防抖 300ms — AI 面板開合/拖曳時寬度連變，只在落定後重渲，避免 evict 風暴
+    // 渲染刻度跟著**紙寬**（視窗寬 × docZoom），不是跟著視窗寬。
+    //
+    // 舊版傳 `viewportWpx / w`，而縮放後紙比視窗寬（listWdp = viewportWpx × max(docZoom,1)），
+    // 於是倍率永遠停在視窗那一格：放大時墨是向量重畫所以銳利，PDF 卻只能被拉大變糊，
+    // 同一頁上兩層清晰度打架。現在傳紙寬，讓倍率真的追上縮放。
+    //
+    // `docZoom` 必須進 key：少了它，縮放根本不會觸發重算。放進去之後它同時就是
+    // 防抖器——捏合每一幀都重新 key 這個 effect，300ms 的 delay 從頭計時，
+    // 所以只在**落定後**升級重渲，捏合途中不換圖。
+    //
+    // Fix2b: 防抖 300ms — AI 面板開合/拖曳時寬度連變，只在落定後重渲。
     val renderEpoch by pdfViewModel.renderEpoch.collectAsState()
     val firstSize by pdfViewModel.firstPageSize.collectAsState()
-    LaunchedEffect(viewportWpx, firstSize) {
+    LaunchedEffect(viewportWpx, docZoom, firstSize) {
         val w = firstSize?.first ?: 595f
         if (viewportWpx > 0 && w > 0f) {
             delay(300)
-            pdfViewModel.setDisplayRenderScale(viewportWpx.toFloat() / w)
+            pdfViewModel.setRenderPlan(
+                paperWidthPx = viewportWpx.toFloat() * maxOf(docZoom, 1f),
+                pageWidthPt = w
+            )
         }
     }
 
