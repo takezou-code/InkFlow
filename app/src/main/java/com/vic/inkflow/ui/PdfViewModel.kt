@@ -403,7 +403,16 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
     private var appliedLoScale = -1f
     private var appliedRange: IntRange = IntRange.EMPTY
 
-    /** renderEpoch 供 UI 納入 remember key。縮放**不**再推它：那會強制所有可見頁斷訂閱重取。 */
+    /**
+     * 供 UI 納入 remember key 的重取信號（PageWorkspace 的 `remember(index, renderEpoch)`）。
+     *
+     * 縮放**不**再推它：那是舊「evictAll + 置 null」時代的機制，靠「強制重取 flow」
+     * 讓倍率變化生效，而強制重取正是縮放閃白的來源之一。現在改為原地重渲
+     * （[applyRenderPlan]），flow 實例不變，所以縮放不需要它。
+     *
+     * 它仍保留給頁操作（插刪頁 → 世代更換）這類「資料本身變了、必須重取」的路徑，
+     * 那些情況推它是對的。**不要**拿它來做縮放失效。
+     */
     private val _renderEpoch = MutableStateFlow(0)
     val renderEpoch: StateFlow<Int> = _renderEpoch.asStateFlow()
 

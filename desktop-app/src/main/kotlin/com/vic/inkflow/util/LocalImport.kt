@@ -57,6 +57,26 @@ object LocalImport {
     }
 
     /**
+     * Is [candidate] inside [root] (or the root itself)?
+     *
+     * 用 canonicalPath 比對，不做字串 prefix：字串比對會被 `../` 逃逸騙過
+     * （`~/.inkflow/documents/../../ssh/id_rsa` 的字串確實以 documents 開頭），
+     * 也擋不住指向目外的符號連結/junction。canonical 會把這些全部解析掉。
+     *
+     * 純函式、無副作用，所以可以直接釘單測——這道閘是「已認證的 client 不能讀
+     * 桌面任意檔案」的唯一保證。
+     */
+    fun isInsideDir(root: File, candidate: File): Boolean {
+        val canonicalRoot = runCatching { root.canonicalFile }.getOrNull() ?: return false
+        val canonicalCandidate = runCatching { candidate.canonicalFile }.getOrNull() ?: return false
+        val rootPath = canonicalRoot.path
+        val candidatePath = canonicalCandidate.path
+        if (candidatePath == rootPath) return true
+        val prefix = if (rootPath.endsWith(File.separator)) rootPath else rootPath + File.separator
+        return candidatePath.startsWith(prefix)
+    }
+
+    /**
      * Inverse of [toDocumentUri]. Null for anything that is not a local file.
      *
      * The leading slash is stripped deliberately: `file:///C:/x` has three slashes
