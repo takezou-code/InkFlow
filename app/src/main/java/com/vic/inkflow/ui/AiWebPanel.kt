@@ -229,14 +229,20 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * Phase 0 GPT 驗證用 provider 開關。
- * 只在 AiWebPanel 內暫存，不寫設定、不動 EditorScreen；ChatGPT 自動化尚未移植，
- * ChatGPT 分支刻意不設 isPageLoaded，避免 Gemini 專用注入腳本誤跑。
+ * AI 來源。開關放在工具列（EditorChrome），面板本身只是被動的 view。
+ *
+ * host 是 onPageFinished 的閘門：換 host 卻沒同步換這裡，整套注入會靜默失效，
+ * 所以兩個 provider 的 URL／host 綁在同一個 enum，避免再次分家。
  */
-private enum class AiProbeProvider {
-    GEMINI,
-    CHATGPT
+enum class AiProvider(val label: String, val startUrl: String, val host: String) {
+    GEMINI("Gemini", "https://gemini.google.com/app", "gemini.google.com"),
+    CHATGPT("ChatGPT", "https://chatgpt.com/", "chatgpt.com");
+
+    val other: AiProvider get() = if (this == GEMINI) CHATGPT else GEMINI
 }
+
+/** AI 來源持久化 key（與 AppNav 的 theme_mode／power_saver 共用同一份 prefs）。 */
+const val KEY_AI_PROVIDER = "ai_provider"
 
 @androidx.compose.runtime.Composable
 fun AiWebPanel(
@@ -251,6 +257,8 @@ fun AiWebPanel(
     onClose: () -> Unit,
     // 整頁送 AI 用 false：圖貼上＋提示詞填入即停，不自動送出（lasso 路徑預設 true 不變）
     autoSend: Boolean = true,
+    // 由工具列切換帶進來；面板不持有也不持久化，避免兩處狀態打架。
+    provider: AiProvider = AiProvider.GEMINI,
     // 抽屜收起來＝false：WebView 熄燈（onPause）省電，但**物件與網頁狀態全留著**，
     // 下次打開立刻見到原畫面，不重載。true 時 onResume。
     active: Boolean = true,
@@ -265,23 +273,35 @@ fun AiWebPanel(
     val webViewCallback = androidx.compose.runtime.rememberUpdatedState(onWebView)
     val currentWebLight = androidx.compose.runtime.rememberUpdatedState(webLight)
     val currentAutoSend = androidx.compose.runtime.rememberUpdatedState(autoSend)
-    var probeProvider by rememberSaveable { mutableStateOf(AiProbeProvider.GEMINI) }
-    val currentProbeProvider = androidx.compose.runtime.rememberUpdatedState(probeProvider)
-    val probeStartUrl = if (probeProvider == AiProbeProvider.CHATGPT) {
-        "https://chatgpt.com/"
-    } else {
-        "https://gemini.google.com/app"
-    }
-    val probeHost = if (probeProvider == AiProbeProvider.CHATGPT) {
-        "chatgpt.com"
-    } else {
-        "gemini.google.com"
-    }
+    val currentProvider = androidx.compose.runtime.rememberUpdatedState(provider)
     val uploadState = androidx.compose.runtime.remember {
         object {
             var lastProcessedUri: android.net.Uri? = null
             var isPageLoaded: Boolean = false
             var lastProbeUrl: String? = null
+        }
+    }
+
+    // Phase 1 取證用 DOM 探針。刻意做成可延遲、可重複呼叫：
+    // onPageFinished 會早於 SPA 渲染，單次探針量到的是空殼（實測一進頁面全 0）。
+    fun runProbe(target: android.webkit.WebView?, tag: String) {
+        try {
+            target?.evaluateJavascript(buildDomProbeJs()) { v ->
+                android.util.Log.d("InkFlowDbg", "AI probe[$tag]: $v")
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("AiWebPanel", "dom probe failed", e)
+        }
+    }
+
+    fun scheduleProbe(target: android.webkit.WebView?, tag: String, delayMs: Long) {
+        if (target == null) return
+        if (delayMs <= 0L) {
+            runProbe(target, tag)
+        } else {
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                runProbe(target, tag)
+            }, delayMs)
         }
     }
 
@@ -333,28 +353,14 @@ fun AiWebPanel(
     // 但不能是不透明 surface 色：容器本身是玻璃，不透明底會把玻璃整片蓋死。
     // 半透明黑只在「還沒載入」時當底，載入後由網頁自己的內容接手。
     val webViewBgArgb = android.graphics.Color.TRANSPARENT
-    androidx.compose.foundation.layout.Column(
+    androidx.compose.foundation.layout.Box(
         modifier = modifier
             .fillMaxSize()
             .clip(RoundedCornerShape(20.dp))
     ) {
-        // Phase 0：Gemini/ChatGPT 驗證切換。設定頁持久化留到 Phase 1，
-        // 這裡先用共用 GlassSegmentedBar，避免自幹選項 UI。
-        GlassSegmentedBar(
-            options = listOf("Gemini", "ChatGPT"),
-            selectedIndex = if (probeProvider == AiProbeProvider.CHATGPT) 1 else 0,
-            onSelect = { index ->
-                val next = if (index == 1) AiProbeProvider.CHATGPT else AiProbeProvider.GEMINI
-                if (next != probeProvider) {
-                    uploadState.isPageLoaded = false
-                    uploadState.lastProcessedUri = null
-                    uploadState.lastProbeUrl = null
-                    probeProvider = next
-                }
-            },
-            modifier = androidx.compose.ui.Modifier.padding(start = 8.dp, top = 8.dp, end = 8.dp)
-        )
-        androidx.compose.runtime.key(probeProvider) {
+        // 切換 provider = 換站點，必須重建 WebView（loadUrl 只在 factory 跑一次）。
+        // key 放這裡而不是外面，是為了讓「按一下切換」有明確的一次完整換血。
+        androidx.compose.runtime.key(provider) {
         androidx.compose.ui.viewinterop.AndroidView(
             factory = { ctx ->
                 android.util.Log.d("InkFlowDbg", "WebView factory start ${System.currentTimeMillis()}")
@@ -453,9 +459,10 @@ fun AiWebPanel(
                         override fun onPageFinished(view: android.webkit.WebView?, url: String?) {
                             super.onPageFinished(view, url)
                             val finishedUrl = url.orEmpty()
-                            val isProbeHost = finishedUrl.contains(probeHost)
-                            if (currentProbeProvider.value == AiProbeProvider.CHATGPT && isProbeHost) {
-                                // Phase 0 只做載入＋手動驗證＋DOM 取證，不跑 Gemini 注入鏈。
+                            val activeProvider = currentProvider.value
+                            val isProbeHost = finishedUrl.contains(activeProvider.host)
+                            if (activeProvider == AiProvider.CHATGPT && isProbeHost) {
+                                // ChatGPT 分支目前只做主題＋取证，不跑 Gemini 注入鏈。
                                 try {
                                     view?.evaluateJavascript(buildThemeJs(currentWebLight.value)) { v ->
                                         android.util.Log.d("InkFlowDbg", "AI theme(chatgpt-load): $v")
@@ -465,15 +472,12 @@ fun AiWebPanel(
                                 }
                                 if (uploadState.lastProbeUrl != finishedUrl) {
                                     uploadState.lastProbeUrl = finishedUrl
-                                    try {
-                                        view?.evaluateJavascript(buildDomProbeJs()) { v ->
-                                            android.util.Log.d("InkFlowDbg", "AI probe(chatgpt): $v")
-                                        }
-                                    } catch (e: Exception) {
-                                        android.util.Log.e("AiWebPanel", "chatgpt probe failed", e)
-                                    }
+                                    // onPageFinished 早於 React SPA 渲染（實測一進頁面全 0），
+                                    // 所以即刻探一次當基線，再延遲補一發抓 hydration 後的真實 DOM。
+                                    scheduleProbe(view, "load", 0L)
+                                    scheduleProbe(view, "hydrated", 4000L)
                                 }
-                            } else if (currentProbeProvider.value == AiProbeProvider.GEMINI && finishedUrl.contains("gemini.google.com")) {
+                            } else if (activeProvider == AiProvider.GEMINI && finishedUrl.contains("gemini.google.com")) {
                                 uploadState.isPageLoaded = true
                                 // 主題跟 App 深淺色：載入完成就套一次。
                                 // 不能只靠 LaunchedEffect(webLight)——那條在首次組合時 webView
@@ -595,7 +599,7 @@ fun AiWebPanel(
                         }
                     }
 
-                    loadUrl(probeStartUrl)
+                    loadUrl(provider.startUrl)
                 }
             },
             update = { view ->
@@ -703,7 +707,7 @@ fun AiWebPanel(
                     }
                 }
             },
-            modifier = androidx.compose.ui.Modifier.weight(1f).fillMaxWidth()
+            modifier = androidx.compose.ui.Modifier.fillMaxSize()
         )
         }
     }

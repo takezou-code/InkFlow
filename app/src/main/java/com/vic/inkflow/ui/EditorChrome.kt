@@ -104,6 +104,7 @@ import androidx.compose.material.icons.filled.Article
 import androidx.compose.material.icons.filled.BackHand
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ChatBubble
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
@@ -143,6 +144,7 @@ import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.TouchApp
 import androidx.compose.material.icons.outlined.BackHand
 import androidx.compose.material.icons.outlined.Spa
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.rounded.Brush
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Gesture
@@ -261,6 +263,8 @@ fun TabletEditorTopBar(
     isAiImportArmed: Boolean = false,
     isAiPanelOpen: Boolean = false,
     isSendingPage: Boolean = false,
+    aiProvider: AiProvider = AiProvider.GEMINI,
+    onSwitchAiProvider: () -> Unit = {},
     isPowerSaver: Boolean = false,
     onTogglePowerSaver: () -> Unit = {},
     /**
@@ -634,7 +638,15 @@ fun TabletEditorTopBar(
                         onClick = onToggleAiImport,
                         isActive = isAiImportArmed,
                         icon = Icons.Filled.Download,
-                        contentDescription = if (isAiImportArmed) "抓取打勾段落" else "引入 Gemini 文字"
+                        contentDescription = if (isAiImportArmed) "抓取打勾段落" else "引入 ${aiProvider.label} 文字"
+                    )
+                    // AI 來源切換：抽屜裡的切換條會吃掉面板高度，搬上工具列當小圖示。
+                    // 圖示顯示「切過去會用的那個」，不是目前用的——按下去才不會誤以為沒換。
+                    EditorIconButton(
+                        onClick = onSwitchAiProvider,
+                        isActive = false,
+                        icon = if (aiProvider == AiProvider.CHATGPT) Icons.Outlined.AutoAwesome else Icons.Filled.ChatBubble,
+                        contentDescription = "切換 AI 到 ${aiProvider.other.label}"
                     )
                 }
             }

@@ -251,6 +251,14 @@ fun TabletEditorScreen(
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val prefs = remember { context.getSharedPreferences("inkflow_settings", 0) }
+    // AI 來源：工具列小圖示切換，持久化在設定 prefs（重開 App 記得）
+    var aiProvider by rememberSaveable {
+        mutableStateOf(
+            runCatching {
+                AiProvider.valueOf(prefs.getString(KEY_AI_PROVIDER, AiProvider.GEMINI.name) ?: AiProvider.GEMINI.name)
+            }.getOrDefault(AiProvider.GEMINI)
+        )
+    }
     // P2：整個畫面只建一次 repository 容器，取代到處直接摸 AppDatabase。
     val repos = remember(db) { InkFlowRepositories(db) }
     val settingsRepository = remember(db, prefs) {
@@ -300,6 +308,18 @@ fun TabletEditorScreen(
     // 用遞增 Int 而非 Boolean：同一頁可能重複請求，布爾翻回去就不會再觸發。
     var imagePickRequest by remember { mutableStateOf(0) }
     var aiWebView by remember { mutableStateOf<android.webkit.WebView?>(null) }
+    fun switchAiProvider() {
+        val next = aiProvider.other
+        aiProvider = next
+        prefs.edit().putString(KEY_AI_PROVIDER, next.name).apply()
+        // 換站＝換對話。清掉待送檔案/提示詞/圈選武裝，避免舊站的東西跨站重複注入。
+        aiFileUri = null
+        aiPrompt = null
+        aiPickMode = false
+        aiPickEnterId = 0
+        aiPickCollectId = 0
+        android.widget.Toast.makeText(context, "已切換到 ${next.label}", android.widget.Toast.LENGTH_SHORT).show()
+    }
     val sidebarListState = rememberLazyListState()
     val mainListState = rememberLazyListState()
     val pinchActive by viewModel.pinchActive.collectAsState()
@@ -399,11 +419,16 @@ fun TabletEditorScreen(
     // 按鈕常駐工具列，所以抽屜收起時也要能用：武裝時順手把抽屜滑開，
     // 否則使用者看不到打勾框，等於按了沒反應。
     fun toggleAiImport() {
+        // ChatGPT 的圈選/抓取還沒移植（Phase 2）。寧可明講，不要按下去像壞掉。
+        if (aiProvider != AiProvider.GEMINI) {
+            android.widget.Toast.makeText(context, "${aiProvider.label} 匯入還沒接上，請用 Gemini", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
         if (!aiPickMode) {
             aiPickMode = true
             aiPickEnterId++
             if (!showAiPanel) showAiPanel = true
-            android.widget.Toast.makeText(context, "點 Gemini 回覆的段落打勾，再按一次匯入抓取", android.widget.Toast.LENGTH_SHORT).show()
+            android.widget.Toast.makeText(context, "點 ${aiProvider.label} 回覆的段落打勾，再按一次匯入抓取", android.widget.Toast.LENGTH_SHORT).show()
         } else {
             aiPickMode = false
             aiPickCollectId++
@@ -414,6 +439,11 @@ fun TabletEditorScreen(
     // （與套索快捷列同一提示詞常數，差別只在這裡 autoSend=false）
     fun sendPageToAi() {
         if (isSendingPage) return
+        // 同上：ChatGPT 還沒接自動貼圖＋填詞，先講清楚。
+        if (aiProvider != AiProvider.GEMINI) {
+            android.widget.Toast.makeText(context, "${aiProvider.label} 自動送圖還沒接上，請用 Gemini", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
         isSendingPage = true
         scope.launch {
             try {
@@ -1069,6 +1099,7 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                         pickEnterId = aiPickEnterId,
                         pickCollectId = aiPickCollectId,
                         webLight = !isEditorDark,
+                        provider = aiProvider,
                         onPickedJson = { json ->
                             scope.launch {
                                 if (json.isBlank()) {
@@ -1384,10 +1415,12 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                     showExportConfirmDialog = true
                 },
                 onDocumentSettings = { showDocumentSettingsDialog = true },
-                onToggleAiPanel = { showAiPanel = !showAiPanel },
-                onSendPageToAi = { sendPageToAi() },
-                onToggleAiImport = { toggleAiImport() },
-                isAiImportArmed = aiPickMode,
+onToggleAiPanel = { showAiPanel = !showAiPanel },
+    onSendPageToAi = { sendPageToAi() },
+    onToggleAiImport = { toggleAiImport() },
+    isAiImportArmed = aiPickMode,
+    aiProvider = aiProvider,
+    onSwitchAiProvider = { switchAiProvider() },
                 isAiPanelOpen = showAiPanel,
                 isSendingPage = isSendingPage,
                 isPowerSaver = isPowerSaver,
