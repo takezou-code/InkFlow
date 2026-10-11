@@ -16,16 +16,36 @@ interface StrokeDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertPoints(points: List<PointEntity>)
 
+    // ── 墓碑隔離（v6 §15.4）────────────────────────────────────────────────
+    //
+    // 下面這五支「內容／計數」查詢一律帶 deletedAt IS NULL，與 [countLiveStrokes]
+    // 同一套語意。這不是可有可無的清理，是兩條正確性不變式：
+    //
+    // 1) docVersion 自我矛盾：docVersion 的筆數欄位由 TabletSyncServer 呼叫
+    //    [getAllStrokesForDocument] 取得，而同一份文件的仲裁計數走 [countLiveStrokes]。
+    //    墓碑兩邊算得到不同數字 → 只要這份文件刪過任何一筆，manifest 報的版本與
+    //    實際版本永遠對不上，桌面端每輪都會被迫重拉。
+    //
+    // 2) 刪除永遠傳不到桌面端：桌面端靠「數字變小」發現刪除
+    //    （LocalSyncManager.tryDeltaPull 比對 page_counts 後整頁重拉並先刪本地列）。
+    //    墓碑留在計數裡，數字就不變，桌面端永遠看不到那筆被刪了。
+    //
+    // 平板端本機刪除走硬刪除（EditorViewModel 用 deleteStrokesByIds），墓碑只會由
+    // TabletSyncServer 套用桌面提案時產生，所以這層過濾不影響平板自己的畫面。
+    //
+    // 反過來，下面三支「版本／仲裁」查詢（[getStrokeVersion]、[getStrokeVersions]、
+    // [tombstoneStrokes]）**絕對不能**加這層過濾：仲裁必須看得見墓碑才知道對端刪過。
+
     @Transaction
-    @Query("SELECT * FROM strokes WHERE documentUri = :documentUri AND pageIndex = :pageIndex")
+    @Query("SELECT * FROM strokes WHERE documentUri = :documentUri AND pageIndex = :pageIndex AND deletedAt IS NULL")
     fun getStrokesForPage(documentUri: String, pageIndex: Int): Flow<List<StrokeWithPoints>>
 
     @Transaction
-    @Query("SELECT * FROM strokes WHERE documentUri = :documentUri AND pageIndex = :pageIndex")
+    @Query("SELECT * FROM strokes WHERE documentUri = :documentUri AND pageIndex = :pageIndex AND deletedAt IS NULL")
     suspend fun getStrokesForPageSync(documentUri: String, pageIndex: Int): List<StrokeWithPoints>
 
     @Transaction
-    @Query("SELECT * FROM strokes WHERE documentUri = :documentUri")
+    @Query("SELECT * FROM strokes WHERE documentUri = :documentUri AND deletedAt IS NULL")
     suspend fun getAllStrokesForDocument(documentUri: String): List<StrokeWithPoints>
 
     @Query("DELETE FROM strokes WHERE id IN (:strokeIds)")
@@ -37,8 +57,12 @@ interface StrokeDao {
      * This exists because `getAllStrokesForDocument` loads every point to count them,
      * which is exactly the cost incremental pull is trying to avoid on large
      * documents. Two indexed GROUP BY queries replace a full table load.
+     *
+     * `deletedAt IS NULL` keeps this count in lockstep with [countLiveStrokes];
+     * see the tombstone-isolation note above. The (documentUri, pageIndex) index
+     * still drives the GROUP BY, so the predicate is a filter, not a scan.
      */
-    @Query("SELECT pageIndex AS pageIndex, COUNT(*) AS strokeCount FROM strokes WHERE documentUri = :documentUri GROUP BY pageIndex")
+    @Query("SELECT pageIndex AS pageIndex, COUNT(*) AS strokeCount FROM strokes WHERE documentUri = :documentUri AND deletedAt IS NULL GROUP BY pageIndex")
     suspend fun countStrokesByPage(documentUri: String): List<PageStrokeCount>
 
     @Query("DELETE FROM strokes WHERE documentUri = :documentUri AND pageIndex = :pageIndex")
@@ -74,6 +98,7 @@ interface StrokeDao {
     @Query("""
         SELECT * FROM strokes
         WHERE documentUri = :documentUri
+          AND deletedAt IS NULL
           AND docY IS NOT NULL AND docY <= :y1
           AND (docY + (boundsBottom - boundsTop)) >= :y0
     """)

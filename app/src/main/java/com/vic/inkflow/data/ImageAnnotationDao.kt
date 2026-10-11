@@ -49,6 +49,21 @@ interface ImageAnnotationDao {
     @Query("DELETE FROM image_annotations WHERE documentUri = :documentUri")
     suspend fun deleteForDocument(documentUri: String)
 
+    /**
+     * 還有多少列仍然指向這個圖檔 uri。
+     *
+     * 資產回收用：刪除一份文件時，它帶走的 image_annotations 列會先被交易刪掉，
+     * 這時才知道「沒人再引用了」——但套圈貼（DrawCommand.AddSelectionCopies）會讓
+     * **多份文件共用同一個 uri 字串**，直接刪檔會把別人正在看的圖弄壞。
+     * 刪檔前必須回頭確認一次。
+     *
+     * math_sources.imageUri 雖也存同一個路徑，但公式圖必然同時是 image_annotations
+     * 的一列（AiImportFlow 先 insertImportedImage 再寫 TeX sidecar），所以只查這一張表
+     * 就足以涵蓋兩個引用來源。
+     */
+    @Query("SELECT COUNT(*) FROM image_annotations WHERE uri = :uri")
+    suspend fun countByUri(uri: String): Int
+
     // ── S1 單畫布：docY = pageIndex × stride + modelY（只寫不讀，見 StrokeDao）──
 
     @Query("""

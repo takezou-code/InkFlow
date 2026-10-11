@@ -276,7 +276,9 @@ object BackupManager {
                     Col("image_annotations", "documentUri"),
                     Col("image_annotations", "uri"),
                     Col("document_preferences", "documentUri"),
-                    Col("bookmarks", "documentUri")
+                    Col("bookmarks", "documentUri"),
+                    Col("math_sources", "documentUri"),
+                    Col("math_sources", "imageUri")
                 ).forEach { target ->
                     db.execSQL(
                         "UPDATE ${target.table} SET ${target.col} = REPLACE(${target.col}, '$escapedOld', '$escapedNew') WHERE ${target.col} LIKE '$escapedOld%'"

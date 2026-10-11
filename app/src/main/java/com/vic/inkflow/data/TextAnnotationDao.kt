@@ -13,13 +13,22 @@ interface TextAnnotationDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(annotation: TextAnnotationEntity)
 
-    @Query("SELECT * FROM text_annotations WHERE documentUri = :documentUri AND pageIndex = :pageIndex")
+    // ── 墓碑隔離（v6 §15.4）────────────────────────────────────────────────
+    //
+    // 與 [StrokeDao] 同一套理由：這五支「內容／計數」查詢必須與 [countLiveTexts]
+    // 一致帶 deletedAt IS NULL，否則 (a) manifest 的 textCount 與 docVersion 對不上，
+    // 每輪強迫桌面端重拉；(b) 文字刪除因為計數不變而永遠傳不到桌面端。
+    // 平板本機刪除走硬刪除，墓碑只由同步層產生，故不影響平板畫面。
+    // [getTextVersion]／[getTextVersions]／[tombstoneTexts] 不可加這層過濾——
+    // 仲裁必須看得見墓碑。
+
+    @Query("SELECT * FROM text_annotations WHERE documentUri = :documentUri AND pageIndex = :pageIndex AND deletedAt IS NULL")
     fun getForPage(documentUri: String, pageIndex: Int): Flow<List<TextAnnotationEntity>>
 
-    @Query("SELECT * FROM text_annotations WHERE documentUri = :documentUri AND pageIndex = :pageIndex")
+    @Query("SELECT * FROM text_annotations WHERE documentUri = :documentUri AND pageIndex = :pageIndex AND deletedAt IS NULL")
     suspend fun getForPageSync(documentUri: String, pageIndex: Int): List<TextAnnotationEntity>
 
-    @Query("SELECT * FROM text_annotations WHERE documentUri = :documentUri")
+    @Query("SELECT * FROM text_annotations WHERE documentUri = :documentUri AND deletedAt IS NULL")
     suspend fun getAllForDocument(documentUri: String): List<TextAnnotationEntity>
 
     @Update
@@ -30,9 +39,10 @@ interface TextAnnotationDao {
 
     /**
      * Per-page note counts for incremental sync (`page_counts` verb).
-     * See [StrokeDao.countStrokesByPage] for why this exists.
+     * See [StrokeDao.countStrokesByPage] for why this exists and for why
+     * `deletedAt IS NULL` is part of the count.
      */
-    @Query("SELECT pageIndex AS pageIndex, COUNT(*) AS textCount FROM text_annotations WHERE documentUri = :documentUri GROUP BY pageIndex")
+    @Query("SELECT pageIndex AS pageIndex, COUNT(*) AS textCount FROM text_annotations WHERE documentUri = :documentUri AND deletedAt IS NULL GROUP BY pageIndex")
     suspend fun countTextsByPage(documentUri: String): List<PageTextCount>
 
     @Query("DELETE FROM text_annotations WHERE documentUri = :documentUri AND pageIndex = :pageIndex")
@@ -62,6 +72,7 @@ interface TextAnnotationDao {
     @Query("""
         SELECT * FROM text_annotations
         WHERE documentUri = :documentUri
+          AND deletedAt IS NULL
           AND docY IS NOT NULL AND docY <= :y1
           AND (docY + fontSize * 2) >= :y0
     """)
