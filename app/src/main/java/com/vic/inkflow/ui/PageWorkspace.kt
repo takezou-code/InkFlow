@@ -175,13 +175,22 @@ internal fun Workspace(
         return raw.coerceIn(-max, max)
     }
     fun isBlankX(x: Float): Boolean {
-        // 放大中沒有「紙外」可言：紙比視窗寬，視窗內每一點都在紙上。
-        // 這裡回 false = 紙上，單指准入改由 fingerPanOnPaperAllowed 決定（觸控筆模式照樣准）。
-        if (viewModel.docZoom.value > 1f) return false
+        // 紙在視窗座標下的實際左右邊。版式（見下方 LazyColumn/horizontalScroll 修飾符鏈）：
+        //   列表寬 L = 視窗 × max(z,1)，Box contentAlignment=Center → 置中偏移 (視窗−L)/2
+        //   內容左緣 = 置中偏移 − hScroll + 整列 pan
+        //   紙(Surface) 在列表內占寬 = L × min(z,1)，置中
+        //
+        // ⚠️ 放大時水平寫入的是 **hScrollState**（applyHorizontalDelta 分流），不是 panOffsetX。
+        // 只算 panOffsetX 會漏掉 hScroll 那一項 → 紙邊位置算錯 → 放大後永遠判定不出紙外，
+        // 單指就推不動。兩項都要算。
+        val zoom = viewModel.docZoom.value
+        val listW = viewportWpx * maxOf(zoom, 1f)
+        val contentLeft = (viewportWpx - listW) / 2f -
+            hScrollState.value + clampPan(viewModel.panOffsetX.value)
+        val slot = listW * minOf(zoom, 1f)
+        val paperLeft = contentLeft + (listW - slot) / 2f
         // 紙的實際位置＝置中＋當前橫移：推到底後空出來的地方整條都是活區，點哪都能拉回。
-        // （之前沒加 pan，空出來的 [L, L+pan] 被誤判成紙，推到底只剩 20dp 縫能起手＝卡死。）
-        val paperLeft = (viewportWpx - paperWpxForPan()) / 2f + clampPan(viewModel.panOffsetX.value)
-        return x < paperLeft || x > paperLeft + paperWpxForPan()
+        return x < paperLeft || x > paperLeft + slot
     }
     val clampedPanX = clampPan(panOffsetX)
     // zoom/旋轉導致邊界縮小：只在 viewport/zoom 變化時收斂一次（直給，不用 spring 追移動目標）。
