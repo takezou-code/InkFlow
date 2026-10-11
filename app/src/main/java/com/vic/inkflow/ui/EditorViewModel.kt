@@ -1133,6 +1133,27 @@ class EditorViewModel(
         return ann.id
     }
 
+    /**
+     * 一次性「選中剛插進來的圖」通道。
+     *
+     * 插圖流程現在整條住在 EditorScreen（launcher 只宣告一次），但「選取」是每頁
+     * InkCanvas 的私選狀態（selectedImageAnnotationId），要由擁有該 id 的那頁取走。
+     *
+     * 放 ViewModel 而不是 Compose state：InkCanvas 掛在 LazyColumn item 上，捲出視窗就會
+     * 被 dispose；記在畫面層的令牌在頁面回來時會重播（舊 bug：imagePickRequest 只增不減
+     * → 捲頁／開側欄第 3 階網格後系統圖庫自己彈出來）。這裡取走即清空，語意是「一次」。
+     */
+    private val _pendingImageSelectId = MutableStateFlow<String?>(null)
+    val pendingImageSelectId: StateFlow<String?> = _pendingImageSelectId.asStateFlow()
+
+    fun requestImageSelect(id: String) {
+        _pendingImageSelectId.value = id
+    }
+
+    fun consumeImageSelectRequest() {
+        _pendingImageSelectId.value = null
+    }
+
     /** Places an image at the center of the model canvas (used when picked via gallery). Returns the new annotation ID. */
     fun placeImageAnnotation(
         uri: String,

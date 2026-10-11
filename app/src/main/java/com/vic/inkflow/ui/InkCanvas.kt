@@ -3,9 +3,6 @@
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.Log
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.PickVisualMediaRequest
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -199,18 +196,7 @@ fun InkCanvas(
     /** 頁間隙 px（Workspace 的 Arrangement.spacedBy，需與列表一致）。 */
     pageGapPx: Float = 0f,
     /** 邊緣自動捲：手指拖出紙上下界時回傳期望捲動量 px（正=往後頁）；回傳實際捲動量。 */
-    onEdgeAutoScroll: (Float) -> Float = { _ -> 0f },
-    /**
-     * 插圖請求令牌：工具列按圖片鈕時 +1，畫布看到變化就開系統圖片庫。
-     *
-     * 舊設計是「圖片工具下點紙面空白就開圖庫」，而「空白」只是「四個命中測試都沒抓到」
-     * 的 fall-through，且在 DOWN 當下就執行、沒有 tap/drag 區分 → 想滑頁也會彈圖庫，
-     * 而且 :846-851 的無條件 consume 讓頁面也不會滑。改成令牌觸發後：
-     * 紙面只負責「選取 / 移動 / 縮放 / 旋轉」，插圖是明確的工具列動作。
-     *
-     * 用 Int 令牌（遞增）而非 Boolean：同一頁可能重複請求，布爾翻回去就不會再觸發。
-     */
-    imagePickRequest: Int = 0
+    onEdgeAutoScroll: (Float) -> Float = { _ -> 0f }
 ) {
     // 全活頁：筆/字/圖吃傳入的本頁資料（Workspace 熱流），不再訂閱作用頁流；
     // 工具/顏色/設定等全域態照舊。
@@ -516,107 +502,19 @@ fun InkCanvas(
     // 靜態虛線只建一次（形狀預覽用；選取框已統一走液態玻璃共用繪製）
     val dashPreview = remember { PathEffect.dashPathEffect(floatArrayOf(10f, 10f)) }
 
-    // Image picker launcher — opened by the toolbar (imagePickRequest token), not by tapping the page.
-    val imagePickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 50)
-    ) { uris ->
-        if (uris.isEmpty()) return@rememberLauncherForActivityResult
-        scope.launch {
-            data class ImportedImage(val localUriString: String, val imagePixelWidth: Int, val imagePixelHeight: Int)
-
-            val imported = withContext(Dispatchers.IO) {
-                uris.mapNotNull { uri ->
-                    val localUri = com.vic.inkflow.util.PdfManager.copyImageToAppDir(context, uri)
-                        ?: return@mapNotNull null
-                    val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                    context.contentResolver.openInputStream(localUri)?.use { stream ->
-                        android.graphics.BitmapFactory.decodeStream(stream, null, opts)
-                    }
-                    ImportedImage(
-                        localUriString = localUri.toString(),
-                        imagePixelWidth = opts.outWidth.coerceAtLeast(0),
-                        imagePixelHeight = opts.outHeight.coerceAtLeast(0)
-                    )
-                }
-            }
-
-            if (imported.isEmpty()) return@launch
-
-            suspend fun waitForInsertedPage(previousPageCount: Int): Boolean {
-                return withTimeoutOrNull(10_000) {
-                    while (pdfViewModel.pageCount.value < previousPageCount + 1) {
-                        delay(50)
-                    }
-                    true
-                } == true
-            }
-
-            var lastInsertedImageId: String? = null
-            // 插圖來源＝工具列，沒有「點哪插哪」的錨點 → 落位由 EditorViewModel 置中
-            // （見 centeredImageOrigin）。多選：第 1 張放本頁，後續各開新頁（既有行為保留）。
-            if (imported.size == 1) {
-                val item = imported.first()
-                lastInsertedImageId = viewModel.placeImageAnnotationOnPage(
-                    uri = item.localUriString,
-                    targetPageIndex = pageIndex,
-                    imagePixelWidth = item.imagePixelWidth,
-                    imagePixelHeight = item.imagePixelHeight
-                )
-            } else {
-                val currentPageIndex = pageIndex
-                var insertAfterIndex = currentPageIndex
-                imported.forEachIndexed { index, item ->
-                    if (index == 0) {
-                        lastInsertedImageId = viewModel.placeImageAnnotationOnPage(
-                            uri = item.localUriString,
-                            targetPageIndex = currentPageIndex,
-                            imagePixelWidth = item.imagePixelWidth,
-                            imagePixelHeight = item.imagePixelHeight
-                        )
-                    } else {
-                        // P0：多頁插入會移位頁號，先清復原棧（單張不動頁，不用清）。
-                        viewModel.clearUndoStacks()
-                        val previousPageCount = pdfViewModel.pageCount.value
-                        pdfViewModel.insertBlankPage(
-                            context = context,
-                            documentUri = documentUri,
-                            afterIndex = insertAfterIndex,
-                            pageWidthPt = viewModel.modelWidth,
-                            pageHeightPt = viewModel.modelHeight
-                        )
-                        val inserted = waitForInsertedPage(previousPageCount)
-                        if (!inserted) return@forEachIndexed
-
-                        val targetPageIndex = insertAfterIndex + 1
-                        lastInsertedImageId = viewModel.placeImageAnnotationOnPage(
-                            uri = item.localUriString,
-                            targetPageIndex = targetPageIndex,
-                            imagePixelWidth = item.imagePixelWidth,
-                            imagePixelHeight = item.imagePixelHeight
-                        )
-                        insertAfterIndex = targetPageIndex
-                    }
-                }
-            }
-
-            lastInsertedImageId?.let { insertedId ->
-                selectedImageAnnotationId = insertedId
-                imageMovePreview = Offset.Zero
-                imageResizeScale = 1f
-                imageResizeAnchor = null
-                imageRotatePreview = 0f
-            }
-        }
-        // Stay in IMAGE tool so the user can immediately adjust the placed image
-    }
-
-    // 工具列按圖片鈕 → 開系統圖片庫（只在作用頁開，避免每頁 InkCanvas 都跳一次）。
-    LaunchedEffect(imagePickRequest) {
-        if (imagePickRequest > 0 && pageIndex == viewModel.selectionPage()) {
-            imagePickerLauncher.launch(
-                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-            )
-        }
+    // 插圖選取：EditorScreen 插完圖後丟 id 過來，由「持有該 id 的那一頁」接走並選中。
+    // 取走即請 ViewModel 清空請求 → 不會因為頁面被 dispose／重組而重播。
+    // imageAnnotations 一起當 key：DB 寫入是異步的，請求可能先到、註解後到。
+    val pendingImageSelectId by viewModel.pendingImageSelectId.collectAsState()
+    LaunchedEffect(pendingImageSelectId, imageAnnotations) {
+        val wantedId = pendingImageSelectId ?: return@LaunchedEffect
+        if (imageAnnotations.none { it.id == wantedId }) return@LaunchedEffect
+        selectedImageAnnotationId = wantedId
+        imageMovePreview = Offset.Zero
+        imageResizeScale = 1f
+        imageResizeAnchor = null
+        imageRotatePreview = 0f
+        viewModel.consumeImageSelectRequest()
     }
 
     // 切工具時收尾選取狀態。插圖不再由畫布接觸觸發（舊註解寫「Open gallery whenever
@@ -1376,7 +1274,7 @@ fun InkCanvas(
                     }
 
                     // Tap on empty canvas: do nothing, let the event bubble up to the workspace pan handler.
-                    // 插圖改由工具列觸發（imagePickRequest）。舊版在 DOWN 當下就 launch
+                    // 插圖改由工具列觸發（launcher 在 EditorScreen）。舊版在 DOWN 當下就 launch
                     // 系統 Activity，而且「空白」只是四個命中測試都沒抓到的 fall-through、
                     // 沒有 tap/drag 區分 → 想滑頁也會彈圖庫。
                     // 這裡刻意不 consume：圖片工具不畫東西，空白處該讓事件冒泡去捲頁。
