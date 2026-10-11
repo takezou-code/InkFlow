@@ -170,22 +170,15 @@ internal fun Workspace(
         return raw.coerceIn(-max, max)
     }
     fun isBlankX(x: Float): Boolean {
-        // 紙在視窗座標下的實際左右邊。版式（見下方 LazyColumn/horizontalScroll 修飾符鏈）：
-        //   列表寬 L = 視窗 × max(z,1)，Box contentAlignment=Center → 置中偏移 (視窗−L)/2
-        //   內容左緣 = 置中偏移 − hScroll + 整列 pan
-        //   紙(Surface) 在列表內占寬 = L × min(z,1)，置中
-        //
-        // ⚠️ 放大時水平寫入的是 **hScrollState**（applyHorizontalDelta 分流），不是 panOffsetX。
-        // 只算 panOffsetX 會漏掉 hScroll 那一項 → 紙邊位置算錯 → 放大後永遠判定不出紙外，
-        // 單指就推不動。兩項都要算。
-        val zoom = viewModel.docZoom.value
-        val listW = viewportWpx * maxOf(zoom, 1f)
-        val contentLeft = (viewportWpx - listW) / 2f -
-            hScrollState.value + clampPan(viewModel.panOffsetX.value)
-        val slot = listW * minOf(zoom, 1f)
-        val paperLeft = contentLeft + (listW - slot) / 2f
+        // 算式與理由都在 paperEdgesInViewport（純函式，有回歸測試釘住）。
+        val (paperLeft, paperRight) = paperEdgesInViewport(
+            viewportWpx = viewportWpx.toFloat(),
+            docZoom = viewModel.docZoom.value,
+            hScrollPx = hScrollState.value.toFloat(),
+            panX = clampPan(viewModel.panOffsetX.value)
+        )
         // 紙的實際位置＝置中＋當前橫移：推到底後空出來的地方整條都是活區，點哪都能拉回。
-        return x < paperLeft || x > paperLeft + slot
+        return x < paperLeft || x > paperRight
     }
     val clampedPanX = clampPan(panOffsetX)
     // zoom/旋轉導致邊界縮小：只在 viewport/zoom 變化時收斂一次（直給，不用 spring 追移動目標）。
@@ -1226,6 +1219,40 @@ internal fun fingerPanOnPaperAllowed(inputMode: InputMode, activeTool: Tool): Bo
  */
 internal fun hubShouldYieldToInk(hubGotDelta: Boolean, inkConsumed: Boolean): Boolean =
     hubGotDelta && inkConsumed
+
+/**
+ * 紙在視窗座標下的左右邊界（純函數）。
+ *
+ * 從 Workspace 內聯的 isBlankX 抽出來，理由與 [fingerPanOnPaperAllowed] 相同：
+ * 這段是「放大時橫推到極限就推不動」那個 bug 的修法所在，而那個 bug 修過兩輪都沒
+ * 修好 —— 因為它沒有任何測試，只能靠實機手勢碰。抽出來之後這段算式有一組純函數
+ * 例釘住（FingerPanAdmissionTest），下一次動版式不必再靠手試。
+ *
+ * 版式（見 Workspace 的 horizontalScroll → offset → LazyColumn 修飾符鏈）：
+ *   列表寬 L  = 視窗 × max(z, 1)
+ *   置中偏移 = (視窗 − L) / 2             （contentAlignment = Center）
+ *   內容左緣 = 置中偏移 − hScroll + pan    （hScroll 由原生排版套用、pan 由樞紐夾）
+ *   紙占寬  = L × min(z, 1)               （紙在列表內置中）
+ *
+ * ⚠️ **hScroll 與 pan 都要算。** 放大時水平位移寫進的是 hScrollState
+ * （applyHorizontalDelta 分流），不是 panOffsetX；只算 pan 會漏掉 hScroll 那一項 →
+ * 紙邊算錯 → 放大後永遠判定不出紙外，單指就推不動。這個漏項正是上一輪修不好的原因。
+ *
+ * z ≤ 1：L = 視窗，紙比視窗窄 → 推的是紙本身，紙外是活區（可滑回來）。
+ * z > 1：L > 視窗，紙與列表同寬 → 邊界跟著捲動走。
+ */
+internal fun paperEdgesInViewport(
+    viewportWpx: Float,
+    docZoom: Float,
+    hScrollPx: Float,
+    panX: Float
+): Pair<Float, Float> {
+    val listW = viewportWpx * maxOf(docZoom, 1f)
+    val contentLeft = (viewportWpx - listW) / 2f - hScrollPx + panX
+    val slot = listW * minOf(docZoom, 1f)
+    val left = contentLeft + (listW - slot) / 2f
+    return left to (left + slot)
+}
 
 /**
  * 水平位移的唯一寫者分流（純函數，便於回歸測試）。
