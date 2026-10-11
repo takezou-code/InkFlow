@@ -94,6 +94,11 @@ class DocumentViewModel(
         val appContext = context.applicationContext
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             invalidateThumbnail(appContext, uri)
+
+            // 必須在交易「之前」抓：deleteAllForDocument 會把 image_annotations 的列刪掉，
+            // 之後就再也問不出這份文件用過哪些圖檔，磁碟會永久留下看不見的孤兒。
+            val ownedImages = repos.images.getAllForDocument(uri).map { it.uri }
+
             // 整份連帶清（含書籤/公式源，不留孤兒）＋文件列，同一交易。
             repos.transaction {
                 // P2：五張頁範圍表收斂成一個呼叫。順序與重構前逐表相同，
@@ -102,6 +107,7 @@ class DocumentViewModel(
                 repos.documentPreferences.deleteByDocumentUri(uri)
                 repos.documents.delete(uri)
             }
+
             // Delete the physical file for app-private documents (file:// URIs).
             try {
                 val parsed = android.net.Uri.parse(uri)
@@ -110,6 +116,19 @@ class DocumentViewModel(
                     if (file.exists()) file.delete()
                 }
             } catch (_: Exception) { }
+
+            // 連帶清圖檔，但只清「已經沒有任何一份文件引用」的。
+            // 套圈貼／複製選取會讓同一個 uri 字串出現在多份文件裡（DrawCommand.AddSelectionCopies
+            // 複製的是快照、uri 不變），不確認就直接刪會把別人正在看的圖弄成壞圖。
+            for (imageUri in ownedImages) {
+                try {
+                    val parsed = android.net.Uri.parse(imageUri)
+                    if (parsed.scheme != "file") continue
+                    val path = parsed.path ?: continue
+                    if (repos.images.countByUri(imageUri) > 0) continue
+                    java.io.File(path).takeIf { it.exists() }?.delete()
+                } catch (_: Exception) { }
+            }
         }
     }
 
