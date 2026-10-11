@@ -25,6 +25,16 @@ interface TextAnnotationRepository : PageShiftTarget {
     suspend fun countTextsByPage(documentUri: String): List<PageTextCount>
 
     suspend fun deleteById(id: String): Int
+
+    /**
+     * 刪除「使用者看得見的」文字註解：寫墓碑而不是硬刪除（§15.4）。
+     *
+     * 與筆跡同一套理由與同一個警告 —— 見 [StrokeRepository.tombstoneStrokesByIds]。
+     * 不要把所有 [deleteById] 換成這個：undo/redo 一筆「剛新增」時，那筆從來沒被
+     * 同步看過，硬刪才對。
+     */
+    suspend fun tombstoneByIds(ids: List<String>): Int
+
     suspend fun deleteForPage(documentUri: String, pageIndex: Int)
     suspend fun deleteForDocument(documentUri: String)
 
@@ -44,6 +54,8 @@ interface TextAnnotationRepository : PageShiftTarget {
     suspend fun getTextVersions(documentUri: String): List<com.vic.inkflow.data.StrokeVersionRow>
     suspend fun getTextVersion(id: String): com.vic.inkflow.data.StrokeVersionRow?
     suspend fun countLiveTexts(documentUri: String): Int
+    /** 回收比 [cutoff] 更早的墓碑。回傳刪掉幾列。 */
+    suspend fun purgeTombstonedTexts(cutoff: Long): Int
     suspend fun tombstoneTexts(ids: List<String>): Int
     suspend fun reviveTexts(ids: List<String>): Int
 }
@@ -63,6 +75,10 @@ class RoomTextAnnotationRepository(
     override suspend fun countTextsByPage(documentUri: String) = dao.countTextsByPage(documentUri)
     override suspend fun getForRange(documentUri: String, y0: Float, y1: Float) = dao.getForRange(documentUri, y0, y1)
     override suspend fun deleteById(id: String): Int = dao.deleteById(id)
+
+    override suspend fun tombstoneByIds(ids: List<String>): Int =
+        if (ids.isEmpty()) 0
+        else dao.tombstoneTexts(ids, System.currentTimeMillis(), MergeVersion.nextNonce())
     override suspend fun deleteForPage(documentUri: String, pageIndex: Int) = dao.deleteForPage(documentUri, pageIndex)
     override suspend fun deleteForDocument(documentUri: String) = dao.deleteForDocument(documentUri)
     override suspend fun shiftPageIndicesDown(documentUri: String, deletedPageIndex: Int) =
@@ -87,6 +103,8 @@ class RoomTextAnnotationRepository(
     override suspend fun getTextVersions(documentUri: String): List<com.vic.inkflow.data.StrokeVersionRow> = dao.getTextVersions(documentUri)
     override suspend fun getTextVersion(id: String): com.vic.inkflow.data.StrokeVersionRow? = dao.getTextVersion(id)
     override suspend fun countLiveTexts(documentUri: String): Int = dao.countLiveTexts(documentUri)
+
+    override suspend fun purgeTombstonedTexts(cutoff: Long): Int = dao.purgeTombstonedTexts(cutoff)
     override suspend fun tombstoneTexts(ids: List<String>): Int =
         dao.tombstoneTexts(ids, System.currentTimeMillis(), MergeVersion.nextNonce())
     override suspend fun reviveTexts(ids: List<String>): Int = dao.reviveTexts(ids)
