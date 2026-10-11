@@ -22,6 +22,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.FileProvider
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
@@ -47,7 +48,6 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -119,7 +119,6 @@ import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
@@ -177,7 +176,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
@@ -192,7 +190,6 @@ import androidx.compose.ui.draganddrop.toAndroidDragEvent
 import androidx.compose.ui.input.pointer.PointerEventPass
 import android.util.Log
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -648,17 +645,18 @@ fun TabletEditorScreen(
         }
     }
 
-    // 插圖：只由工具列圖片鈕觸發，整條流程（拷貝／量測／落位／開頁）住這裡。
+    // 插圖：整條流程（拷貝／量測／落位／開頁）住這裡，圖庫與相機共用同一條。
     //
     // 為什麼不在 InkCanvas：舊版每頁畫布各掛一個 launcher，靠「imagePickRequest 只增不減
     // 的令牌 + pageIndex == selectionPage()」挑一頁開。畫布掛在 LazyColumn item 上，
     // 捲出視窗或切到側欄第 3 階（EditorScreen 那個 gridOverlayProgress < 0.98 會把整個
     // 紙張移出 composition）都會 dispose 再重生 → 令牌仍是舊的非零值 → 系統圖庫自己彈出來。
     // 現在 launcher 跟按鈕同壽（EditorScreen 不會被逐頁 dispose），令牌整個消失。
-    val imagePickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 50)
-    ) { uris ->
-        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+    /** 拍攝暫存檔（cacheDir/shared）；相機回來前持有，拷貝完成後即刪。 */
+    var pendingCaptureFile by remember { mutableStateOf<java.io.File?>(null) }
+
+    fun importPickedImages(uris: List<Uri>, cleanupFile: java.io.File? = null) {
+        if (uris.isEmpty()) return
         scope.launch {
             data class ImportedImage(val localUriString: String, val imagePixelWidth: Int, val imagePixelHeight: Int)
 
@@ -678,6 +676,11 @@ fun TabletEditorScreen(
                 }
             }
 
+            // 拍攝暫存檔：拷貝完成（成功或失敗）就刪 —— 絕不能早於讀取。
+            // 舊 bug：在 coroutine 讀檔之前先 delete，讀到 ENOENT → copyImageToAppDir
+            // 回 null → imported 全空 → 整張照片從沒被建立（實機 logcat 實證）。
+            cleanupFile?.delete()
+
             if (imported.isEmpty()) return@launch
 
             suspend fun waitForInsertedPage(previousPageCount: Int): Boolean {
@@ -689,7 +692,7 @@ fun TabletEditorScreen(
                 } == true
             }
 
-            // 落位基準＝按鈕當下的作用頁（不是 selectionPage()：選取可能留在別頁，
+            // 落位基準＝按下按鈕當下的作用頁（不是 selectionPage()：選取可能留在別頁，
             // 那會讓圖插到使用者根本沒在看的那頁）。多選：第 1 張放本頁，後續各開新頁。
             val basePageIndex = currentPageIndex
             var lastInsertedImageId: String? = null
@@ -737,10 +740,78 @@ fun TabletEditorScreen(
                 }
             }
 
-            // 選中最後一張，讓使用者接手就能拖／縮／旋（工具仍是 IMAGE）。
+            // 選中最後一張，讓使用者接手就能拖／縮／旋（此時工具已是 IMAGE）。
             // 選取是每頁畫布的私選態 → 交給 ViewModel 的一次性通道，由擁有該 id 的頁面取走。
             lastInsertedImageId?.let(viewModel::requestImageSelect)
         }
+    }
+
+    val imagePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 50)
+    ) { uris -> importPickedImages(uris) }
+
+    /**
+     * 相機拍照。
+     *
+     * 權限：manifest 刻意不宣告 CAMERA（宣告了卻沒 grant 反而 SecurityException），
+     * 走外部相機 App，零權限零授權框。輸出寫到 cacheDir/shared/<ts>.jpg，
+     * file_paths.xml 的 <cache-path name="shared_images" path="shared/"/> 已涵蓋，
+     * 再餵同一條 copyImageToAppDir 進 App 私有目錄 —— 與圖庫路徑完全一致。
+     */
+    // 小米相機自己就有「保留／重拍／取消」三選一，不再做第二次確認：
+    // 拍完直接走同一條 importPickedImages 落位＋選中。
+    val takePictureLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture()
+    ) { saved ->
+        val file = pendingCaptureFile
+        pendingCaptureFile = null
+        // saved=false = 使用者按返回／相機沒寫出檔 → 沒人在讀，直接刪。
+        // 成功路徑的暫存刪除交給 importPickedImages（拷貝完成後），絕不早於讀取。
+        if (saved && file != null && file.length() > 0L) {
+            importPickedImages(
+                listOf(
+                    FileProvider.getUriForFile(
+                        context, "${context.packageName}.fileprovider", file
+                    )
+                ),
+                cleanupFile = file
+            )
+        } else {
+            file?.delete()
+        }
+    }
+
+    // 有沒有相機 App 能接 IMAGE_CAPTURE。Android 11+ 套件可見性靠 manifest 的
+    // <queries> 開門（沒有它 resolveActivity 永遠 null → 子選單「拍照」會被誤 disable）。
+    // 只是預先 disable 子選單那一列；真正 launch 仍有 runCatching 兜底。
+    val hasCameraApp = remember {
+        android.content.Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE)
+            .resolveActivity(context.packageManager) != null
+    }
+
+    fun launchCameraCapture() {
+        val dir = java.io.File(context.cacheDir, "shared").apply { mkdirs() }
+        val file = java.io.File(dir, "capture_${System.currentTimeMillis()}.jpg")
+        pendingCaptureFile = file
+        runCatching {
+            takePictureLauncher.launch(
+                FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+            )
+        }.onFailure {
+            // 沒有任何相機 App 可接 → ActivityNotFoundException。
+            file.delete()
+            pendingCaptureFile = null
+            scope.launch {
+                withContext(Dispatchers.Main) {
+                    android.widget.Toast.makeText(context, "找不到相機 App", android.widget.Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    // 拍攝暫存檔的最終回收：相機還開著／拷貝還沒跑完就離開編輯器也不留孤兒檔。
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        onDispose { pendingCaptureFile?.delete() }
     }
 
     // When the PDF first loads, initialize the EditorViewModel's model space to match the first page.
@@ -837,6 +908,8 @@ fun TabletEditorScreen(
             }
         )
     }
+
+    // 插圖來源（圖庫／拍照）走工具列 IMAGE 子選單（見 EditorChrome），這裡不再彈框。
 
     // Per-page aspect ratio: follows each page's real dimensions once scanned;
     // falls back to the document model space (which annotations are normalised against).
@@ -1572,13 +1645,18 @@ onToggleAiPanel = { showAiPanel = !showAiPanel },
                 isPowerSaver = isPowerSaver,
                 onTogglePowerSaver = onTogglePowerSaver,
                 onPickImage = {
-                    // 插圖是明確的工具列動作：按一下直接開系統圖片庫，不必先點紙面
-                    // （舊設計是「圖片工具下點紙面空白就開圖庫」，而「空白」只是四個命中
-                    // 測試都沒抓到的 fall-through、沒有 tap/drag 區分 → 手滑想捲頁就彈圖庫）。
+                    // 子選單「從檔案選擇」：工具已經是 IMAGE（按圖片鈕時切的），
+                    // 直接開圖庫，行為與之前一致。
                     imagePickerLauncher.launch(
                         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                     )
                 },
+                onTakePhoto = {
+                    // 子選單「拍照」：工具已經是 IMAGE，不切；
+                    // 拍完直接插入（小米相機自帶保留／重拍／取消，不再二次確認）。
+                    launchCameraCapture()
+                },
+                isPhotoEnabled = hasCameraApp,
                 hazeState = chromeHaze,   // 工具列用專屬 state：採背景＋紙，不採自己
                 isDarkTheme = isEditorDark
             )

@@ -112,12 +112,7 @@ internal fun Workspace(
     db: AppDatabase,
     mainListState: LazyListState = rememberLazyListState(),
     onRequestPage: (Int) -> Unit = {},
-    onScrollPage: (Int) -> Unit = {},
-    /**
-     * 插圖請求令牌（工具列按圖片鈕時遞增）。傳到每頁 InkCanvas，只有作用頁會開圖片庫。
-     * 見 InkCanvas 的 imagePickRequest 說明（為什麼不用「點紙面空白就插圖」）。
-     */
-    imagePickRequest: Int = 0
+    onScrollPage: (Int) -> Unit = {}
 ) {
     val isDarkSurface = isDarkTheme || MaterialTheme.colorScheme.background.luminance() < 0.5f
     // 桌面全透明：底由 EditorScreen 根 Aurora 提供，紙直接浮在光斑上
@@ -950,7 +945,6 @@ val allowSinglePan = startedBlank || fingerPanOnPaperAllowed(
                 texts = pageTexts,
                 images = pageImages,
                 pageGapPx = pageGapPx,
-                imagePickRequest = imagePickRequest,
                 onEdgeAutoScroll = { dy ->
                     // 同步施加：寫筆中邊緣捲不斷流，提筆即停（不經協程排隊）
                     mainListState.dispatchRawDelta(dy)

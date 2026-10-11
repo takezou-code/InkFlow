@@ -268,13 +268,24 @@ fun TabletEditorTopBar(
     isPowerSaver: Boolean = false,
     onTogglePowerSaver: () -> Unit = {},
     /**
-     * 插圖：工具列按圖片鈕就直接開系統圖片庫。
+     * 插圖：圖片鈕切到 IMAGE 工具，來源（圖庫／拍照）由工具列子選單選（見下方
+     * activeTool == Tool.IMAGE 的 AnimatedVisibility，結構照抄圈選子選單）。
      *
      * 舊版是「選 IMAGE 工具 → 點紙面空白 → 開圖庫」，而「空白」只是四個命中測試都
      * 沒抓到的 fall-through、沒有 tap/drag 區分 → 手滑想捲頁就彈出圖片庫。
      * 插圖是明確動作，該由按鈕承擔；紙面留給選取/移動/縮放/旋轉/捲頁。
+     *
+     * 兩列都是一次性動作、沒有選中態，所以不套 glassSelectionPill。
      */
     onPickImage: () -> Unit = {},
+    /**
+     * 拍照：IMAGE 子選單「拍照」列。呼叫端直接發系統相機（小米相機自帶
+     * 保留／重拍／取消，不再做第二次確認），拍完直接插入。
+     * 沒相機 App 時該列由 isPhotoEnabled 關掉。
+     */
+    onTakePhoto: () -> Unit = {},
+    /** 有沒有相機 App 能接 IMAGE_CAPTURE（沒有 → 子選單「拍照」列 disable）。 */
+    isPhotoEnabled: Boolean = true,
     hazeState: dev.chrisbanes.haze.HazeState,
     isDarkTheme: Boolean
 ) {
@@ -520,9 +531,8 @@ fun TabletEditorTopBar(
                                 onClick = {
                                     viewModel.onToolSelected(Tool.IMAGE)
                                     onHideStrokeWidthSlider()
-                                    // 按一下就插圖：不必先點紙面（舊設計的誤觸來源）。
-                                    // 同時切到 IMAGE 工具，選完立刻能調整位置/大小/旋轉。
-                                    onPickImage()
+                                    // 來源（從檔案選擇／拍照）由下方 IMAGE 子選單承接，
+                                    // 結構照抄圈選子選單（按鈕只切工具，不直接開圖庫）。
                                 },
                                 isActive = activeTool == Tool.IMAGE,
                                 icon = Icons.Outlined.Image,
@@ -565,6 +575,47 @@ fun TabletEditorTopBar(
                                         .padding(horizontal = 12.dp, vertical = 7.dp)
                                 )
                             }
+                        }
+                    }
+
+                    // IMAGE 子選單：從檔案選擇／拍照（一次性動作，無選中態，不套藥丸）。
+                    // 動畫／排版／字階照抄圈選子選單；換工具（切回筆/形狀/圈選）自動收合。
+                    AnimatedVisibility(
+                        visible = activeTool == Tool.IMAGE,
+                        enter = fadeIn(tween(200)) + androidx.compose.animation.expandHorizontally(tween(250, easing = androidx.compose.animation.core.FastOutSlowInEasing)),
+                        exit = fadeOut(tween(180)) + androidx.compose.animation.shrinkHorizontally(tween(200))
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .padding(start = 8.dp)
+                                .padding(horizontal = 4.dp, vertical = 2.dp),
+                            horizontalArrangement = Arrangement.spacedBy(2.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "從檔案選擇",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier
+                                    .clip(ShapeMd)
+                                    .clickable { onPickImage() }
+                                    .padding(horizontal = 12.dp, vertical = 7.dp)
+                            )
+                            Text(
+                                text = "拍照",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = (if (isPhotoEnabled) MaterialTheme.colorScheme.onSurface
+                                else MaterialTheme.colorScheme.onSurfaceVariant).copy(
+                                    alpha = if (isPhotoEnabled) 1f else 0.38f
+                                ),
+                                modifier = Modifier
+                                    .clip(ShapeMd)
+                                    .then(
+                                        if (isPhotoEnabled) Modifier.clickable { onTakePhoto() }
+                                        else Modifier
+                                    )
+                                    .padding(horizontal = 12.dp, vertical = 7.dp)
+                            )
                         }
                     }
 
