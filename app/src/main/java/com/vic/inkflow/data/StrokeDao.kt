@@ -140,6 +140,33 @@ interface StrokeDao {
     @Query("UPDATE strokes SET version = version + 1, versionNonce = :nonce WHERE id = :id")
     suspend fun bumpStrokeVersion(id: String, nonce: Int): Int
 
+    /**
+     * 丟掉已進墓碑的筆跡的點。
+     *
+     * 為什麼需要：墓碑讓 strokes 的列留下來，但 points 是 FK CASCADE 在**硬刪除**時
+     * 才會跟著走。寫墓碑不會觸發它，沒有這支查詢的話 points 會隨刪除次數無限膨脹——
+     * 而這些點沒有任何仲裁會去讀（仲裁只看 strokes 的 version/nonce/deletedAt），
+     * 是純粹的垃圾。
+     *
+     * `IN (:ids) AND deletedAt IS NOT NULL`：只在真的蓋上墓碑的那些筆跡上生效，
+     * 就算呼叫端傳來一份沒被刪掉的 id 進來，也不會誤刪還活著的點。
+     */
+    @Query("DELETE FROM points WHERE strokeId IN (SELECT id FROM strokes WHERE id IN (:strokeIds) AND deletedAt IS NOT NULL)")
+    suspend fun deletePointsForTombstoned(strokeIds: List<String>): Int
+
+    /**
+     * 墓碑保留期：過了就把列真的刪掉。
+     *
+     * 墓碑存在的唯一理由是「另一台裝置可能還沒看到這次刪除」。一旦所有對端都拉過
+     * 一輪、比對不到這筆了，留著就只是垃圾——而本機每天都在製造垃圾（每擦一筆多
+     * 一列）。保留期取 30 天：遠比 28 秒一輪的同步週期長，涵蓋「桌面端整個禮拜沒
+     * 開機」這種真實情況，又不至於讓資料庫無限長大。
+     *
+     * 冪等：純粹是「比 cutoff 舊就刪」，重跑不影響結果，也不依賴外部狀態。
+     */
+    @Query("DELETE FROM strokes WHERE deletedAt IS NOT NULL AND deletedAt < :cutoff")
+    suspend fun purgeTombstonedStrokes(cutoff: Long): Int
+
     /** 單筆的 (version, nonce, deletedAt)，供提案仲裁比對（§15.2）。 */
     @Query("SELECT id AS id, version AS version, versionNonce AS versionNonce, deletedAt AS deletedAt FROM strokes WHERE id = :id")
     suspend fun getStrokeVersion(id: String): StrokeVersionRow?

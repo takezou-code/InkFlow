@@ -726,7 +726,11 @@ class EditorViewModel(
             var erasedAnything = false
             if (intersectingStrokes.isNotEmpty()) {
                 withContext(Dispatchers.IO) {
-                    repos.strokes.deleteStrokesByIds(intersectingStrokes.map { it.stroke.id })
+                    // 走墓碑而非硬刪除：橡皮擦刪掉的是使用者看得到的筆跡，平板與桌面
+                    // 各自獨立工作時，桌面端可能同時在改同一筆。留墓碑讓
+                    // 「刪除 vs 修改」有狀態可比（§15.4 修改勝），硬刪除則會讓對端
+                    // 無從得知這裡曾經刪過東西。
+                    repos.strokes.tombstoneStrokesByIds(intersectingStrokes.map { it.stroke.id })
                 }
                 if (accumulateToGesture) {
                     withContext(Dispatchers.Main) {
@@ -769,7 +773,7 @@ class EditorViewModel(
                 android.graphics.RectF.intersects(eraserBounds, annBounds)
             }
             hitTexts.forEach { ann ->
-                withContext(Dispatchers.IO) { repos.texts.deleteById(ann.id) }
+                withContext(Dispatchers.IO) { repos.texts.tombstoneByIds(listOf(ann.id)) }
                 if (accumulateToGesture) {
                     withContext(Dispatchers.Main) {
                         if (eraseGestureOpen) eraseGestureTexts += ann
@@ -978,7 +982,8 @@ class EditorViewModel(
     fun deleteTextAnnotation(id: String) {
         val ann = findTextAnnotation(id) ?: return
         viewModelScope.launch(Dispatchers.IO) {
-            repos.texts.deleteById(id)
+            // 走墓碑而非硬刪除：同筆跡刪除的理由（§15.4）。
+            repos.texts.tombstoneByIds(listOf(id))
             withContext(Dispatchers.Main) { pushUndo(DrawCommand.RemoveTextAnnotation(ann)) }
         }
     }
@@ -1393,13 +1398,15 @@ class EditorViewModel(
                     }
                 }
                 is DrawCommand.RemoveStrokes -> {
-                    repos.strokes.deleteStrokesByIds(command.strokes.map { it.stroke.id })
+                    // redo 重新蓋墓碑，而不是硬刪（undo 是 insertStroke 把列覆蓋回來，
+                    // 所以 redo 必須回到「有列但已刪」的狀態才對稱）。
+                    repos.strokes.tombstoneStrokesByIds(command.strokes.map { it.stroke.id })
                 }
                 is DrawCommand.EraseGesture -> {
                     if (command.strokes.isNotEmpty()) {
-                        repos.strokes.deleteStrokesByIds(command.strokes.map { it.stroke.id })
+                        repos.strokes.tombstoneStrokesByIds(command.strokes.map { it.stroke.id })
                     }
-                    command.texts.forEach { repos.texts.deleteById(it.id) }
+                    command.texts.let { repos.texts.tombstoneByIds(it.map { t -> t.id }) }
                 }
                 is DrawCommand.MoveStrokes -> {
                     // 跨頁移動：updated 帶新 pageIndex，直接恢復快照；
@@ -1499,10 +1506,10 @@ class EditorViewModel(
                 }
                 is DrawCommand.RemoveSelectionMixed -> {
                     if (command.strokes.isNotEmpty()) {
-                        repos.strokes.deleteStrokesByIds(command.strokes.map { it.stroke.id })
+                        repos.strokes.tombstoneStrokesByIds(command.strokes.map { it.stroke.id })
                     }
                     command.images.forEach { repos.images.deleteById(it.id) }
-                    command.texts.forEach { repos.texts.deleteById(it.id) }
+                    command.texts.let { repos.texts.tombstoneByIds(it.map { t -> t.id }) }
                 }
                 is DrawCommand.ExtractToNewPage -> {
                     // pageKept（undo 守衛留頁）時不再建頁，只重貼圖。
@@ -2101,10 +2108,12 @@ class EditorViewModel(
 
         viewModelScope.launch(Dispatchers.IO) {
             if (selectedStrokeSnapshots.isNotEmpty()) {
-                repos.strokes.deleteStrokesByIds(selectedStrokeSnapshots.map { it.stroke.id })
+                // 同上：刪選取是使用者可見的刪除，走墓碑（undo/redo 會用 insertStroke
+                // 把整列覆蓋回來，deletedAt 自然歸 null，所以 undo 不需要特別處理）。
+                repos.strokes.tombstoneStrokesByIds(selectedStrokeSnapshots.map { it.stroke.id })
             }
             selectedImageSnapshots.forEach { repos.images.deleteById(it.id) }
-            selectedTextSnapshots.forEach { repos.texts.deleteById(it.id) }
+            selectedTextSnapshots.let { repos.texts.tombstoneByIds(it.map { t -> t.id }) }
             withContext(Dispatchers.Main) {
                 clearSelection(keepLastRegion = true)
                 pushUndo(

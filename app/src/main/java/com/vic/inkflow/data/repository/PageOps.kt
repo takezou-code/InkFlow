@@ -29,6 +29,17 @@ interface PageOps {
     suspend fun deleteAllForDocument(documentUri: String)
 
     /**
+     * 回收過期的筆跡／文字墓碑（§15.4）。回傳實際刪掉的列數。
+     *
+     * 放這裡而不是各自 repository：兩張表必須**一起**清，且要跟其他跨表操作走同一個
+     * 交易邊界（`docs/specs/data.md`：跨表操作一律走 PageOps）。
+     *
+     * 冪等且無副作用：純粹「比 cutoff 舊就刪」，重跑結果一樣。保留期由呼叫端決定，
+     * 這裡不做政策決定。
+     */
+    suspend fun purgeExpiredTombstones(cutoff: Long): Int
+
+    /**
      * S1 單畫布 docY 全量回填（無 NULL 守衛，冪等）。
      * docY = pageIndex × stride + 各自的 y 錨點；stride 必須是開檔時的 live modelH。
      */
@@ -110,6 +121,14 @@ class RoomPageOps(
         images.deleteForDocument(documentUri)
         bookmarks.deleteForDocument(documentUri)
         mathSources.deleteForDocument(documentUri)
+    }
+
+    override suspend fun purgeExpiredTombstones(cutoff: Long): Int {
+        // 先刪 strokes：它的 points 由 FK CASCADE 跟著走，不會留下孤兒點。
+        // 文字註解沒有子表，直接刪。
+        val s = strokes.purgeTombstonedStrokes(cutoff)
+        val t = texts.purgeTombstonedTexts(cutoff)
+        return s + t
     }
 
     override suspend fun backfillAllDocY(documentUri: String, stride: Float) {

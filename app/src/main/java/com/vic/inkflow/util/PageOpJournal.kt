@@ -125,7 +125,32 @@ object PageOpJournal {
         reconcileScope.launch(Dispatchers.IO) {
             runCatching { reconcilePending(context, db) }
                 .onFailure { Log.e(TAG, "journal reconcile failed", it) }
+            // 墓碑回收（§15.4）：跟在崩潰重放之後，同一個 app-lifetime scope、同樣不擋開檔。
+            //
+            // 為什麼放在啟動而不是每次刪除：刪除是熱路徑（每擦一筆一次），回收是冷路徑
+            // （一天可能只有零到一次），混在一起只會讓擦筆變慢。而且這裡已經有現成的
+            // 「啟動時在背景掃一次、不阻擋使用者」的形狀，不必另開一套排程。
+            runCatching { purgeExpiredTombstones(db) }
+                .onFailure { Log.e(TAG, "tombstone purge failed", it) }
         }
+    }
+
+    /**
+     * 墓碑保留期：30 天。
+     *
+     * 墓碑存在的唯一理由是「對端可能還沒看到這次刪除」。30 天遠長於 28 秒一輪的同步
+     * 週期，涵蓋「桌面端整個禮拜沒開機」這種真實情況；又不至於讓資料庫無限長大
+     * （每天擦一筆就是一天一列）。純粹是政策常數，不是技術限制——真要更保守就調大它。
+     */
+    private const val TOMBSTONE_RETENTION_MS = 30L * 24 * 60 * 60 * 1000
+
+    /** 回傳實際回收的列數；失敗不回擲（呼叫端用 runCatching 包住）。 */
+    suspend fun purgeExpiredTombstones(db: AppDatabase): Int {
+        val cutoff = System.currentTimeMillis() - TOMBSTONE_RETENTION_MS
+        val repos = InkFlowRepositories(db)
+        val purged = repos.transaction { repos.pageOps.purgeExpiredTombstones(cutoff) }
+        if (purged > 0) Log.i(TAG, "purged $purged expired tombstone(s) older than $TOMBSTONE_RETENTION_MS ms")
+        return purged
     }
 
     /**

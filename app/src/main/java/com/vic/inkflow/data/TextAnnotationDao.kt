@@ -106,6 +106,10 @@ interface TextAnnotationDao {
     @Query("SELECT id AS id, version AS version, versionNonce AS versionNonce, deletedAt AS deletedAt FROM text_annotations WHERE id = :id")
     suspend fun getTextVersion(id: String): StrokeVersionRow?
 
+    /** 墓碑保留期：過了就把列真的刪掉。理由與保留期見 [StrokeDao.purgeTombstonedStrokes]。 */
+    @Query("DELETE FROM text_annotations WHERE deletedAt IS NOT NULL AND deletedAt < :cutoff")
+    suspend fun purgeTombstonedTexts(cutoff: Long): Int
+
     @Query("SELECT COUNT(*) FROM text_annotations WHERE documentUri = :documentUri AND deletedAt IS NULL")
     suspend fun countLiveTexts(documentUri: String): Int
 

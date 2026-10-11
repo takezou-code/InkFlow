@@ -45,6 +45,25 @@ interface StrokeRepository : PageShiftTarget {
     suspend fun countStrokesByPage(documentUri: String): List<PageStrokeCount>
 
     suspend fun deleteStrokesByIds(strokeIds: List<String>): Int
+
+    /**
+     * 刪除「使用者看得見的」筆跡：寫墓碑而不是硬刪除（§15.4）。
+     *
+     * 與 [deleteStrokesByIds] 的差別不是風格，是**同步語意**。硬刪除讓對端無從得知
+     * 「這裡曾經刪過東西」，於是「刪除 vs 對方修改」這條規則根本沒有狀態可比；墓碑
+     * 留下可比較的 (version, nonce, deletedAt)，仲裁才能給出「修改勝」。
+     *
+     * **不要把所有 deleteStrokesByIds 換成這個。** 那個方法的三種用途語意不同：
+     *   - undo/redo 一筆 AddStroke：這筆從來沒被同步看過，硬刪才對，寫墓碑只會留下
+     *     永遠沒人回收的幽靈列（redo 又會 insertStroke 把它蓋回來，deletedAt 歸零，
+     *     等於刪除紀錄被抹掉，行為跟硬刪一樣但多走一圈）。
+     *   - AddSelectionCopies / ExtractToNewPage 的復原：同上，這些物件本機自生自滅。
+     *   - 頁面／文件層級的結構操作：見 clearPage／deleteStrokesForDocument，兩者都是
+     *     整頁或整份文件消失，不該逐筆留墓碑。
+     * 只有「刪掉別人可能也看得見、也可能同時在改的東西」才用這個。
+     */
+    suspend fun tombstoneStrokesByIds(strokeIds: List<String>): Int
+
     suspend fun clearPage(documentUri: String, pageIndex: Int): Int
     suspend fun deleteStrokesForDocument(documentUri: String)
     suspend fun deletePointsForStroke(strokeId: String)
@@ -73,6 +92,9 @@ interface StrokeRepository : PageShiftTarget {
 
     /** 活著（非墓碑）的筆數。docVersion 與 page_counts 都用這個語意。 */
     suspend fun countLiveStrokes(documentUri: String): Int
+
+    /** 回收比 [cutoff] 更早的墓碑。回傳刪掉幾列。 */
+    suspend fun purgeTombstonedStrokes(cutoff: Long): Int
 
     /** 刪除＝寫墓碑（§15.4）。回傳實際寫入的列數。 */
     suspend fun tombstoneStrokes(strokeIds: List<String>): Int
@@ -121,6 +143,15 @@ class RoomStrokeRepository(
     override suspend fun deleteStrokesByIds(strokeIds: List<String>): Int =
         dao.deleteStrokesByIds(strokeIds)
 
+    override suspend fun tombstoneStrokesByIds(strokeIds: List<String>): Int {
+        if (strokeIds.isEmpty()) return 0
+        // 點也一起收：墓碑讓列留下來，但 points 若留著就是純浪費——這筆已經不存在了，
+        // 沒有任何仲裁會去比對它的點。留著只會讓 points 表隨刪除次數無限膨脹。
+        val tombstoned = dao.tombstoneStrokes(strokeIds, System.currentTimeMillis(), MergeVersion.nextNonce())
+        if (tombstoned > 0) dao.deletePointsForTombstoned(strokeIds)
+        return tombstoned
+    }
+
     override suspend fun clearPage(documentUri: String, pageIndex: Int): Int =
         dao.clearPage(documentUri, pageIndex)
 
@@ -165,6 +196,8 @@ class RoomStrokeRepository(
     override suspend fun getStrokeVersion(id: String): StrokeVersionRow? = dao.getStrokeVersion(id)
 
     override suspend fun countLiveStrokes(documentUri: String): Int = dao.countLiveStrokes(documentUri)
+
+    override suspend fun purgeTombstonedStrokes(cutoff: Long): Int = dao.purgeTombstonedStrokes(cutoff)
 
     override suspend fun tombstoneStrokes(strokeIds: List<String>): Int =
         dao.tombstoneStrokes(strokeIds, System.currentTimeMillis(), MergeVersion.nextNonce())
