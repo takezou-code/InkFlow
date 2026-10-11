@@ -117,4 +117,131 @@ class FingerPanAdmissionTest {
         assertEquals(HorizontalPanTarget.PAN_OFFSET_X, horizontalPanTarget(1.0f))
         assertEquals(HorizontalPanTarget.SCROLL_ZOOMED_CONTENT, horizontalPanTarget(1.0001f))
     }
+
+    // ---- 紙邊界算式（放大時推到底推不動的修法所在）------------------------
+    //
+    // 這些不是「多寫的測試」，是補上一個兩輪沒修好的 bug 的回歸網。紙邊界算式原本
+    // 內聯在 Workspace 的 isBlankX 裡，只能靠實機手勢碰，於是漏掉 hScroll 那一項
+    // 的錯誤重現了兩次。抽出成純函式後才釘得住。
+
+    @Test
+    fun atFullScalePaperIsCentredAndPanShiftsIt() {
+        // 視窗 1000、z=1：L = 1000（視窗同寬）、置中偏移 = 0、紙占寬 = 1000
+        // → 紙滿版，(0, 1000)。pan=0 時紙外沒有活區。
+        val (l0, r0) = paperEdgesInViewport(1000f, 1f, hScrollPx = 0f, panX = 0f)
+        assertEquals(0f, l0, 0.01f)
+        assertEquals(1000f, r0, 0.01f)
+
+        // pan=+200 → 整張紙右移 200，左邊露出 200px 活區
+        val (l1, _) = paperEdgesInViewport(1000f, 1f, hScrollPx = 0f, panX = 200f)
+        assertEquals(200f, l1, 0.01f)
+    }
+
+    @Test
+    fun belowFullScalePaperIsNarrowerAndCentred() {
+        // z=0.5：紙占寬 = 1000 × 0.5 = 500，置中 → (250, 750)。左右各有 250px 活區。
+        val (l, r) = paperEdgesInViewport(1000f, 0.5f, hScrollPx = 0f, panX = 0f)
+        assertEquals(250f, l, 0.01f)
+        assertEquals(750f, r, 0.01f)
+    }
+
+    @Test
+    fun whenZoomedPaperSpansWholeScrollingList() {
+        // z=2：L = 2000 > 視窗。置中偏移 = (1000−2000)/2 = −500。
+        // 紙占寬 = L × 1 = 2000（與列表同寬），列表內置中偏移為 0 → 紙邊 = −500..1500。
+        val (l, r) = paperEdgesInViewport(1000f, 2f, hScrollPx = 0f, panX = 0f)
+        assertEquals(-500f, l, 0.01f)
+        assertEquals(1500f, r, 0.01f)
+    }
+
+    @Test
+    fun zoomedEdgesFollowHScrollNotJustPan() {
+        // ⚠️ 這條是修好那個 bug 的關鍵，也是舊測試做不到的。
+        // 放大時 applyHorizontalDelta 把位移寫進 hScrollState，不是 panOffsetX。
+        // 舊版算式只算 pan → hScroll 推了 400 而邊界紋絲不動 → 永遠判定不出紙外
+        // → 單指推不動。
+        //
+        // 這裡固定 pan=0，只動 hScroll：邊界必須跟著動。
+        val (l0, _) = paperEdgesInViewport(1000f, 2f, hScrollPx = 0f, panX = 0f)
+        val (l1, r1) = paperEdgesInViewport(1000f, 2f, hScrollPx = 400f, panX = 0f)
+        assertEquals(-900f, l1, 0.01f)      // −500 − 400
+        assertEquals(1100f, r1, 0.01f)      // 1500 − 400
+        assertTrue(
+            "hScroll 必須影響紙邊界，否則放大後單指推不動",
+            l1 < l0
+        )
+    }
+
+    @Test
+    fun hScrollAndPanAreIndependentAndOpposed() {
+        // 兩項都必須算，而且**方向相反**，這是最容易寫錯的地方：
+        //   內容左緣 = 置中偏移 − hScroll + pan
+        // hScroll 是原生捲動偏移（內容往左移），pan 是內層 Column 的 .offset（整列往右移）。
+        //
+        // 誰把其中一項的正負號寫反，這裡就紅 —— 而寫反的後果是放大後紙邊界算錯、
+        // 單指推不動，而且症狀是「感覺怪怪的」而不是任何明確錯誤，極難靠實機發現。
+        val (l0, _) = paperEdgesInViewport(1000f, 2f, hScrollPx = 0f, panX = 0f)
+        assertEquals(-500f, l0, 0.01f)
+
+        // 只有 hScroll=200 → 左移 200
+        val (ls, _) = paperEdgesInViewport(1000f, 2f, hScrollPx = 200f, panX = 0f)
+        assertEquals(l0 - 200f, ls, 0.01f)
+
+        // 只有 pan=200 → 右移 200
+        val (lp, _) = paperEdgesInViewport(1000f, 2f, hScrollPx = 0f, panX = 200f)
+        assertEquals(l0 + 200f, lp, 0.01f)
+
+        // 兩項同時：相減而不是相加（−200 + 200 = 淨 0）
+        val (lb, _) = paperEdgesInViewport(1000f, 2f, hScrollPx = 200f, panX = 200f)
+        assertEquals(l0, lb, 0.01f)
+    }
+
+    @Test
+    fun fullOutLeavesReachableBlankAreaToPanBack() {
+        // 這是「推到底卡死」這個 bug 的核心不變式：推到極限之後，畫面上**必須還有**
+        // 活區存在，否則單指落在紙上就再也拉不回來。
+        //
+        // clampPan 的極限 = paperW × 0.75（PaperWorkspace 的 KEEP 規則，至少留 1/4 紙在區內），
+        // 所以推到極限時左邊至少露出 25% 視窗。
+        val viewport = 1000f
+        val paperW = viewport - 80f          // paperWpxForPan：視窗 − 40dp×2（密度 1）
+        val maxPan = paperW * 0.75f
+        val (l, _) = paperEdgesInViewport(viewport, 1f, hScrollPx = 0f, panX = maxPan)
+        assertTrue(
+            "推到極限後左邊必須還有活區（$l）",
+            l > 0f
+        )
+        // 具體數字：paperW=920、極限 pan=690 → 紙左緣 = 690 > 0 ✅
+        assertEquals(690f, l, 0.01f)
+    }
+
+    @Test
+    fun panLimitAndBlankAreaStayConsistentAtEveryZoom() {
+        // 鉗制極限（clampPan 用 paperWpxForPan = 視窗×z − 80）與命中區（isBlankX 用
+        // slot = 視窗×z）刻意差那 80px——那是紙左右的留白。這裡釘住兩者的關係：
+        // 推到極限時活區必須 **大於** 極限本身留出的量，也就是使用者永遠拉得回來。
+        val viewport = 1000f
+        for (zoom in listOf(0.4f, 0.5f, 0.8f, 1f)) {
+            val paperW = (viewport * zoom - 80f).coerceAtLeast(0f)
+            val maxPan = paperW * 0.75f
+            val (l, _) = paperEdgesInViewport(viewport, zoom, hScrollPx = 0f, panX = maxPan)
+            assertTrue(
+                "z=$zoom 推到極限（pan=$maxPan）後左邊必須還有活區",
+                l > 0f
+            )
+            // 活區 = 紙左緣，必須不超過視窗寬（紙不會被推出畫面外到不可見）
+            assertTrue("z=$zoom 紙左緣不該超出視窗", l < viewport)
+        }
+    }
+
+    @Test
+    fun zoomBelowOneStillTracksPanTheSameWay() {
+        // z < 1 與 z == 1 共用同一條 pan 路徑（clampPan / 紙外活區），
+        // 行為必須一致：pan 每加 1，紙邊界就左移 1。不能因為縮小就換語意。
+        val zoom = 0.6f
+        val (l0, r0) = paperEdgesInViewport(1000f, zoom, hScrollPx = 0f, panX = 0f)
+        val (l1, r1) = paperEdgesInViewport(1000f, zoom, hScrollPx = 0f, panX = 37f)
+        assertEquals(l0 + 37f, l1, 0.01f)
+        assertEquals(r0 + 37f, r1, 0.01f)
+    }
 }
