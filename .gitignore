@@ -1,52 +1,47 @@
-<<<<<<< HEAD
-*.iml
+# ─── Gradle ───
+.gradle/
 .gradle
-.kotlin
-/local.properties
+.kotlin/
+build/
+/build
+kotlin-js-store/
+.externalNativeBuild
+.cxx
+
+# ─── IDE ───
+.idea/
 /.idea/caches
 /.idea/libraries
 /.idea/modules.xml
 /.idea/workspace.xml
 /.idea/navEditor.xml
 /.idea/assetWizardSettings.xml
+.vscode/
+*.iml
 .DS_Store
-/build
-/captures
-.externalNativeBuild
-.cxx
+
+# ─── 本機專屬設定（絕不進版控）───
+/local.properties
 local.properties
+/captures
 
-# Windows desktop worktree (branch `windows`), a sibling checkout, not part of this tree
-/InkFlow-Windows/
-
-# Release signing key (never commit; back it up separately)
+# ─── 簽章／憑證（絕不提交，另行寄放）───
 *.pfx
 *.p12
 *.jks
 *.keystore
 
-# Desktop run artifacts
+# ─── 執行期產物 ───
 *.log
 hs_err_pid*.log
 out/
-.kotlin/
 
-# Agent rules: local-only, never push (purged from all history; restore from local backup if needed)
-/AGENTS.md
-/docs/specs/
-=======
-# Gradle
-.gradle/
-build/
-kotlin-js-store/
+# ─── 桌面端 worktree（windows 分支旁系 checkout，不在本樹內）───
+/InkFlow-Windows/
 
-# IDE
-.idea/
-.kotlin/
-.vscode/
+# 注意：AGENTS.md 與 docs/specs/ 已恢復進版控（2026-10-12）。
+# 它們是規則的單一真相源，不追蹤就等於規則會失憶。
 
-# Runtime artifacts
-*.log
-hs_err_pid*.log
-out/
->>>>>>> windows
+# 注意：本檔必須是 UTF-8。用 PowerShell 5.1 的 > / Out-File 重寫會把中文
+# 註解寫成雙重編碼（─── 變成 â”€â”€），而且不會報錯。要改這個檔請用編輯器
+# 或專用工具，詳見 docs/specs/pitfalls.md。
