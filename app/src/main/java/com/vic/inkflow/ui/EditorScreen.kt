@@ -20,6 +20,7 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
@@ -236,6 +237,7 @@ import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 // --- 3. Editor Screen ---
 // 側欄階段定義在 SidebarStage.kt（含狀態機與單元測試），這裡不再重複定義。
@@ -309,9 +311,6 @@ fun TabletEditorScreen(
     // AI 面板黑白切換（預設亮底；只影響 Gemini 網頁，不動 App 主題）
     // Gemini 網頁自己的淺/深色不再手動：直接跟 App 深淺色走（見 isEditorDark，:420）。
     var aiPickCollectId by remember { mutableStateOf(0) }
-    // 插圖請求令牌：工具列按圖片鈕 → +1 → 傳到 Workspace → 作用頁的 InkCanvas 開圖庫。
-    // 用遞增 Int 而非 Boolean：同一頁可能重複請求，布爾翻回去就不會再觸發。
-    var imagePickRequest by remember { mutableStateOf(0) }
     var aiWebView by remember { mutableStateOf<android.webkit.WebView?>(null) }
     fun switchAiProvider() {
         val next = aiProvider.other
@@ -649,6 +648,101 @@ fun TabletEditorScreen(
         }
     }
 
+    // 插圖：只由工具列圖片鈕觸發，整條流程（拷貝／量測／落位／開頁）住這裡。
+    //
+    // 為什麼不在 InkCanvas：舊版每頁畫布各掛一個 launcher，靠「imagePickRequest 只增不減
+    // 的令牌 + pageIndex == selectionPage()」挑一頁開。畫布掛在 LazyColumn item 上，
+    // 捲出視窗或切到側欄第 3 階（EditorScreen 那個 gridOverlayProgress < 0.98 會把整個
+    // 紙張移出 composition）都會 dispose 再重生 → 令牌仍是舊的非零值 → 系統圖庫自己彈出來。
+    // 現在 launcher 跟按鈕同壽（EditorScreen 不會被逐頁 dispose），令牌整個消失。
+    val imagePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 50)
+    ) { uris ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        scope.launch {
+            data class ImportedImage(val localUriString: String, val imagePixelWidth: Int, val imagePixelHeight: Int)
+
+            val imported = withContext(Dispatchers.IO) {
+                uris.mapNotNull { picked ->
+                    val localUri = com.vic.inkflow.util.PdfManager.copyImageToAppDir(context, picked)
+                        ?: return@mapNotNull null
+                    val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    context.contentResolver.openInputStream(localUri)?.use { stream ->
+                        android.graphics.BitmapFactory.decodeStream(stream, null, opts)
+                    }
+                    ImportedImage(
+                        localUriString = localUri.toString(),
+                        imagePixelWidth = opts.outWidth.coerceAtLeast(0),
+                        imagePixelHeight = opts.outHeight.coerceAtLeast(0)
+                    )
+                }
+            }
+
+            if (imported.isEmpty()) return@launch
+
+            suspend fun waitForInsertedPage(previousPageCount: Int): Boolean {
+                return withTimeoutOrNull(10_000) {
+                    while (pdfViewModel.pageCount.value < previousPageCount + 1) {
+                        delay(50)
+                    }
+                    true
+                } == true
+            }
+
+            // 落位基準＝按鈕當下的作用頁（不是 selectionPage()：選取可能留在別頁，
+            // 那會讓圖插到使用者根本沒在看的那頁）。多選：第 1 張放本頁，後續各開新頁。
+            val basePageIndex = currentPageIndex
+            var lastInsertedImageId: String? = null
+            if (imported.size == 1) {
+                val item = imported.first()
+                lastInsertedImageId = viewModel.placeImageAnnotationOnPage(
+                    uri = item.localUriString,
+                    targetPageIndex = basePageIndex,
+                    imagePixelWidth = item.imagePixelWidth,
+                    imagePixelHeight = item.imagePixelHeight
+                )
+            } else {
+                var insertAfterIndex = basePageIndex
+                imported.forEachIndexed { index, item ->
+                    if (index == 0) {
+                        lastInsertedImageId = viewModel.placeImageAnnotationOnPage(
+                            uri = item.localUriString,
+                            targetPageIndex = basePageIndex,
+                            imagePixelWidth = item.imagePixelWidth,
+                            imagePixelHeight = item.imagePixelHeight
+                        )
+                    } else {
+                        // P0：多頁插入會移位頁號，先清復原棧（單張不動頁，不用清）。
+                        viewModel.clearUndoStacks()
+                        val previousPageCount = pdfViewModel.pageCount.value
+                        pdfViewModel.insertBlankPage(
+                            context = context,
+                            documentUri = uri.toString(),
+                            afterIndex = insertAfterIndex,
+                            pageWidthPt = viewModel.modelWidth,
+                            pageHeightPt = viewModel.modelHeight
+                        )
+                        val inserted = waitForInsertedPage(previousPageCount)
+                        if (!inserted) return@forEachIndexed
+
+                        val targetPageIndex = insertAfterIndex + 1
+                        lastInsertedImageId = viewModel.placeImageAnnotationOnPage(
+                            uri = item.localUriString,
+                            targetPageIndex = targetPageIndex,
+                            imagePixelWidth = item.imagePixelWidth,
+                            imagePixelHeight = item.imagePixelHeight
+                        )
+                        insertAfterIndex = targetPageIndex
+                    }
+                }
+            }
+
+            // 選中最後一張，讓使用者接手就能拖／縮／旋（工具仍是 IMAGE）。
+            // 選取是每頁畫布的私選態 → 交給 ViewModel 的一次性通道，由擁有該 id 的頁面取走。
+            lastInsertedImageId?.let(viewModel::requestImageSelect)
+        }
+    }
+
     // When the PDF first loads, initialize the EditorViewModel's model space to match the first page.
     val firstPageSize by pdfViewModel.firstPageSize.collectAsState()
     androidx.compose.runtime.LaunchedEffect(firstPageSize) {
@@ -963,8 +1057,7 @@ fun TabletEditorScreen(
                         db = db,
                         mainListState = mainListState,
                         onRequestPage = onRequestPage,
-                        onScrollPage = onScrollPage,
-                        imagePickRequest = imagePickRequest
+                        onScrollPage = onScrollPage
                     )
                 }
                 Row(Modifier.fillMaxSize()) {
@@ -1152,6 +1245,9 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                         modifier = Modifier
                             .align(Alignment.CenterEnd)
                             .fillMaxHeight()
+                            // 把手只佔內容區（跟 WebView 同一個上緣），把頂部 header 讓給切換鈕，
+                            // 否則兩者都掛在同一個右緣、會疊在一起。
+                            .padding(top = toolbarH + 6.dp, bottom = 6.dp)
                             .width(20.dp)
                             .pointerInput(Unit) {
                                 detectHorizontalDragGestures { change, dragAmount ->
@@ -1181,13 +1277,14 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                             )
                         }
                     }
-                    // AI 來源切換：原本掛在工具列（多一顆 32dp），改放在把手正上方。
-                    // 24dp 方形玻璃鈕壓在把手 Drag 手勢區之上——按鈕自己 consume，
-                    // 不會被把手的橫拖吃掉（外層先 hit 到鈕才輪到把手）。
+                    // AI 來源切換：原本掛在工具列（多一顆 32dp），現在放進面板頂部那條空白 header。
+                    // 位置＝把手「正上方」：把手本身下移讓出 header（見上方 padding），
+                    // 所以兩者完全不重疊——不是把鈕疊在握把上。
+                    // top 用 header 高度對半算，縮放滑桿出現、header 變高時仍置中。
                     Box(
                         modifier = Modifier
-                            .align(Alignment.CenterEnd)
-                            .padding(end = 2.dp)
+                            .align(Alignment.TopEnd)
+                            .padding(top = (toolbarH + 6.dp - 24.dp) / 2, end = 10.dp)
                             .size(24.dp)
                             .clip(CircleShape)
                             .pressableGlass(
@@ -1475,10 +1572,12 @@ onToggleAiPanel = { showAiPanel = !showAiPanel },
                 isPowerSaver = isPowerSaver,
                 onTogglePowerSaver = onTogglePowerSaver,
                 onPickImage = {
-                    // 插圖改由工具列觸發：舊版是「圖片工具下點紙面空白就開圖庫」，
-                    // 而「空白」只是四個命中測試都沒抓到的 fall-through、沒有 tap/drag
-                    // 區分 → 手滑想捲頁就彈出系統圖片庫。見 InkCanvas imagePickRequest。
-                    imagePickRequest++
+                    // 插圖是明確的工具列動作：按一下直接開系統圖片庫，不必先點紙面
+                    // （舊設計是「圖片工具下點紙面空白就開圖庫」，而「空白」只是四個命中
+                    // 測試都沒抓到的 fall-through、沒有 tap/drag 區分 → 手滑想捲頁就彈圖庫）。
+                    imagePickerLauncher.launch(
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                    )
                 },
                 hazeState = chromeHaze,   // 工具列用專屬 state：採背景＋紙，不採自己
                 isDarkTheme = isEditorDark
