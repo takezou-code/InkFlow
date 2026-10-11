@@ -11,6 +11,24 @@ package com.vic.inkflow.ui
  */
 internal object AiGeminiDriver {
 
+    /**
+     * 回覆容器候選鏈（唯一真正需要隨 provider 變的東西）。
+     *
+     * 其餘看起來 Gemini 專屬的 selector（`.math-block[data-math]`、`span.math-inline`…）
+     * 在 ChatGPT 上會自然匹配到 0 個，於是自動落到泛用的 KaTeX `annotation[encoding*=tex]`
+     * 路徑——**因此不必參數化，也不該參數化**，多一份設定就多一處會走樣的機會。
+     */
+    val REPLY_CHAIN = listOf(
+        "div[data-message-author-role=\"model\"]",
+        "message-content",
+        ".response-container",
+        "[class*=\"model-response\"]",
+        "[class*=\"response-content\"]"
+    )
+
+    /** 把候選鏈鋪成 JS 陣列字面值。Gemini 預設產出與舊版逐字相同。 */
+    private fun chainJs(chain: List<String>): String = chain.joinToString(", ") { "'$it'" }
+
 
 /**
  * 快捷指令送出腳本：獨立輪詢 Gemini 輸入框（穿一層 shadow DOM），填入 prompt 並自動送出。
@@ -147,9 +165,10 @@ fun promptSendJs(promptQuoted: String, send: Boolean = true): String {
  * 打勾樣式走 <style> + ::before（不插入 DOM，innerText 永遠乾淨）。
  * 回報 PICK_MODE_ON:N（N=當下可點段落數）。
  */
-fun pickJs(): String {
+fun pickJs(replyChain: List<String> = REPLY_CHAIN): String {
+    val chainsJs = chainJs(replyChain)
     return """
-        (function() {
+    (function() {
             function note(s) {
                 try { if (window.AndroidBridge && window.AndroidBridge.onPasteResult) window.AndroidBridge.onPasteResult(s); } catch(e){}
             }
@@ -169,7 +188,7 @@ fun pickJs(): String {
                 catch(e){ return false; }
             }
             function findContainer() {
-                var chains = ['div[data-message-author-role="model"]', 'message-content', '.response-container', '[class*="model-response"]', '[class*="response-content"]'];
+                var chains = [$chainsJs];
                 for (var c = 0; c < chains.length; c++) {
                     var hits = deepAll(document, chains[c], []);
                     if (hits.length > 0) return { el: hits[hits.length - 1], fb: false };
@@ -263,9 +282,10 @@ fun pickJs(): String {
  * 一個都沒勾則退回最後回覆全文。清掉委派 listener、樣式與全部標記。
  * 結果經 AndroidBridge.onTextGrabbed 回傳（上限 20000 字）。
  */
-fun collectJs(): String {
+fun collectJs(replyChain: List<String> = REPLY_CHAIN): String {
+    val chainsJs = chainJs(replyChain)
     return """
-        (function() {
+    (function() {
             function note(s) {
                 try { if (window.AndroidBridge && window.AndroidBridge.onPasteResult) window.AndroidBridge.onPasteResult(s); } catch(e){}
             }
@@ -333,7 +353,7 @@ fun collectJs(): String {
                 return { b: nb, i: ni };
             }
             function lastReply() {
-                var chains = ['div[data-message-author-role="model"]', 'message-content', '.response-container', '[class*="model-response"]', '[class*="response-content"]'];
+                var chains = [$chainsJs];
                 for (var c = 0; c < chains.length; c++) {
                     var hits = deepAll(document, chains[c], []);
                     if (hits.length > 0) {

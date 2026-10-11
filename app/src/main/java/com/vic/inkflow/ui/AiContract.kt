@@ -42,15 +42,17 @@ enum class AiProvider(
     /**
      * ChatGPT：Phase 0 實測頁面可開、可登入、可對話（沒被 Cloudflare 擋）。
      *
-     * S3 起開啟 [sendImage]（整頁／圈選送圖），但**匯入仍未接上**——
-     * 匯入要等 reply selector 定案，且必須等停止鈕消失才收（虛擬滾動，長對話只有畫面上的在 DOM）。
-     * 每開一項都必須先有實機驗證；沒驗證就翻 flag 等於對使用者說謊。
+     * S4 起 [importReply] 開啟：圈選＋抓回覆。與 Gemini **共用同一份實作**，
+     * 只換回覆容器候選（assistant vs model）＋收集前等停止鈕消失（串流中會抓到半截）。
+     *
+     * [mathCrop] 仍關閉：ChatGPT 的 KaTeX 版面還沒實機驗證過裁圖座標。
+     * 匯入會先用文字（LaTeX）路徑，數學不會消失，只是不附裁切圖。
      */
     CHATGPT(
         "ChatGPT",
         "https://chatgpt.com/",
         "chatgpt.com",
-        AiCapabilities(sendImage = true, importReply = false, mathCrop = false)
+        AiCapabilities(sendImage = true, importReply = true, mathCrop = false)
     );
 
     val other: AiProvider get() = if (this == GEMINI) CHATGPT else GEMINI
@@ -81,6 +83,35 @@ internal val AiProvider.imagePasteInputSelector: String
     get() = when (this) {
         AiProvider.GEMINI -> "rich-textarea, div[role=\"textbox\"][contenteditable=\"true\"]"
         AiProvider.CHATGPT -> AiChatGptDriver.IMAGE_PASTE_INPUT_SELECTOR
+    }
+
+/**
+ * 圈選腳本。兩個 provider 共用同一份實作，只換回覆容器候選鏈
+ * （Gemini 是 `model` 角色、ChatGPT 是 `assistant`）。
+ */
+fun AiProvider.pickJs(): String = AiGeminiDriver.pickJs(replyChain = replyChain)
+
+/** 收集腳本，同上。 */
+fun AiProvider.collectJs(): String = AiGeminiDriver.collectJs(replyChain = replyChain)
+
+/** 回覆容器候選鏈。 */
+val AiProvider.replyChain: List<String>
+    get() = when (this) {
+        AiProvider.GEMINI -> AiGeminiDriver.REPLY_CHAIN
+        AiProvider.CHATGPT -> AiChatGptDriver.REPLY_CHAIN
+    }
+
+/**
+ * 收集前必須等它消失的 selector（串流中的指標）。null＝不用等。
+ *
+ * 這是 ChatGPT 特有的必要閘門：回覆還在生成就去抓會拿到殘缺內容，
+ * 而且長對話會虛擬滾動，畫面外的訊息根本不在 DOM 裡。
+ * 放在 Kotlin 側輪詢（不在 JS 裡改流程），是為了**完全不去動 Gemini 已驗收的腳本結構**。
+ */
+val AiProvider.replyIdleSelector: String?
+    get() = when (this) {
+        AiProvider.GEMINI -> null
+        AiProvider.CHATGPT -> AiChatGptDriver.REPLY_IDLE_SELECTOR
     }
 
 /** 這次請求要做什麼。 */

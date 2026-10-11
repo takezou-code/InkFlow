@@ -228,6 +228,45 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/**
+ * 等回覆生成完（串流指標消失）。
+ *
+ * 只對有 [AiProvider.replyIdleSelector] 的 provider 有意義；Gemini 直接回 true，
+ * 行為與過往完全相同。
+ *
+ * @return true＝可以安全收集；false＝逾時，放棄這次匯入（寧可不要，也不要匯入半截的回覆）。
+ */
+private suspend fun awaitReplyIdle(
+    target: android.webkit.WebView?,
+    idleSelector: String,
+    timeoutMs: Long = 90_000L,
+    intervalMs: Long = 700L
+): Boolean {
+    if (target == null) return false
+    val js = "(function(){try{return document.querySelectorAll('$idleSelector').length;}catch(e){return 0;}})()"
+    var waited = 0L
+    while (waited < timeoutMs) {
+        val busy = kotlinx.coroutines.suspendCancellableCoroutine { cont ->
+            try {
+                target.evaluateJavascript(js) { v ->
+                    val n = v?.trim()?.removeSurrounding("\"")?.toIntOrNull() ?: 0
+                    if (cont.isActive) cont.resume(n > 0) {}
+                }
+            } catch (e: Exception) {
+                if (cont.isActive) cont.resume(false) {}
+            }
+        }
+        if (!busy) {
+            android.util.Log.d("InkFlowDbg", "COLLECT reply idle after ${waited}ms")
+            return true
+        }
+        kotlinx.coroutines.delay(intervalMs)
+        waited += intervalMs
+    }
+    android.util.Log.d("InkFlowDbg", "COLLECT reply still busy after ${waited}ms")
+    return false
+}
+
 @androidx.compose.runtime.Composable
 fun AiWebPanel(
     // L1 契約：一個請求物件取代過去三個各自為政的隱性變數（fileUri／prompt／autoSend）。
@@ -391,19 +430,35 @@ fun AiWebPanel(
     androidx.compose.runtime.LaunchedEffect(pickEnterId) {
         if (pickEnterId > 0) {
             try {
-                webView?.evaluateJavascript(AiGeminiDriver.pickJs(), null)
+                webView?.evaluateJavascript(currentProvider.value.pickJs(), null)
             } catch (e: Exception) {
                 e.printStackTrace()
             }
         }
     }
     androidx.compose.runtime.LaunchedEffect(pickCollectId) {
-        if (pickCollectId > 0) {
-            try {
-                webView?.evaluateJavascript(AiGeminiDriver.collectJs(), null)
-            } catch (e: Exception) {
-                e.printStackTrace()
+        if (pickCollectId <= 0) return@LaunchedEffect
+        val provider = currentProvider.value
+        val idleSelector = provider.replyIdleSelector
+        try {
+            // ChatGPT：回覆還在生成時去抓會拿到殘缺內容（且長對話虛擬滾動，畫面外的不在 DOM）。
+            // 這道閘門刻意做在 Kotlin 側輪詢，**不去改 Gemini 已驗收的腳本結構**。
+            if (idleSelector != null) {
+                if (!awaitReplyIdle(webView, idleSelector)) {
+                    android.util.Log.d("InkFlowDbg", "COLLECT aborted: reply still streaming after timeout")
+                    try {
+                        android.widget.Toast.makeText(
+                            context,
+                            "AI 還在回覆中，請等它回完再匯入",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                    } catch (_: Throwable) { }
+                    return@LaunchedEffect
+                }
             }
+            webView?.evaluateJavascript(provider.collectJs(), null)
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
 
