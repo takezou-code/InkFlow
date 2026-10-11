@@ -5,6 +5,7 @@ import com.vic.inkflow.ui.AiCapabilities
 import com.vic.inkflow.ui.AiOutcome
 import com.vic.inkflow.ui.AiProvider
 import com.vic.inkflow.ui.AiRequest
+import com.vic.inkflow.ui.PickPalette
 import com.vic.inkflow.ui.domProbeJs
 import com.vic.inkflow.ui.imagePasteInputSelector
 import com.vic.inkflow.ui.collectJs
@@ -156,6 +157,74 @@ class AiContractTest {
         // Gemini 沒有停止鈕語意，必須完全不受這道閘門影響（行為零變化）。
         assertNull(AiProvider.GEMINI.replyIdleSelector)
         assertEquals("[data-testid=\"stop-button\"]", AiProvider.CHATGPT.replyIdleSelector)
+    }
+
+    // ── 圈選 UI 重做（相容性不變量）────────────────────────────────────
+
+    @Test
+    fun `圈選的取值契約不能變`() {
+        // collectJs 靠 data-inkpick="1" 認段落。重做 UI 若改掉這個屬性，匯入會直接壞掉。
+        val pick = AiProvider.GEMINI.pickJs()
+        assertTrue(pick.contains("data-inkpick=\"1\""))
+        assertTrue(pick.contains("setAttribute('data-inkpick', '1')"))
+        assertTrue(pick.contains("setAttribute('data-inkpick', '0')"))
+    }
+
+    @Test
+    fun `圈選高亮不得用 before 內容擠開文字`() {
+        // 舊版用 ::before{content:"✓ "}，會把整段往右推一行，讀起來斷掉。
+        // 只允許出現在註解裡。
+        val pick = AiProvider.GEMINI.pickJs()
+        val cssLines = pick.lines().filterNot { it.trim().startsWith("//") }
+        assertFalse(
+            "不可在生效的 CSS/JS 裡用 ::before 產生勾勾",
+            cssLines.any { it.contains("::before") && it.contains("content:") }
+        )
+    }
+
+    @Test
+    fun `未選中段落不得常駐外框`() {
+        // 舊版每段都畫虛線框，整篇像表單。新版只允許 hover 才有提示。
+        val pick = AiProvider.GEMINI.pickJs()
+        assertFalse("不可常駐 dashed 外框", pick.contains("dashed"))
+    }
+
+    @Test
+    fun `圈選支援 shift 連續選取與浮動工具列`() {
+        val pick = AiProvider.GEMINI.pickJs()
+        assertTrue("要有 shift 連續選取", pick.contains("ev.shiftKey"))
+        assertTrue("要有浮動列", pick.contains("inkpick-bar"))
+        assertTrue("浮動列要有計數", pick.contains("已選"))
+        assertTrue("浮動列要有全選", pick.contains("data-act=\"all\""))
+        assertTrue("浮動列要有清除", pick.contains("data-act=\"none\""))
+        assertTrue("浮動列的完成要回報 Kotlin", pick.contains("onPickAction"))
+    }
+
+    @Test
+    fun `收集時必須收掉浮動列`() {
+        // 漏掉的話匯入完成後網頁上還留著工具列，且下一輪圈選會疊兩層。
+        val collect = AiProvider.GEMINI.collectJs()
+        assertTrue("collectJs 要呼叫 teardown", collect.contains("__inkpickTeardown"))
+    }
+
+    @Test
+    fun `圈選配色來自 App 注入而非寫死品牌色`() {
+        // 舊版硬寫 Google 藍，換到 ChatGPT 就不搭。
+        val gemini = AiProvider.GEMINI.pickJs()
+        assertFalse("不可寫死 Google 藍", gemini.contains("#1a73e8"))
+        val custom = AiProvider.GEMINI.pickJs(
+            palette = PickPalette(accent = "#FF0000", tint = "rgba(255,0,0,0.5)")
+        )
+        assertTrue("App 注入的色票要真的進到腳本裡", custom.contains("#FF0000"))
+        assertTrue("tint 也要跟著換", custom.contains("rgba(255,0,0,0.5)"))
+    }
+
+    @Test
+    fun `浮動列不得帶取用屬性以免被收進匯入內容`() {
+        // collectJs 抓的是 [data-inkpick="1"]；浮動列若誤帶就會被當成一段文字匯進筆記。
+        val pick = AiProvider.GEMINI.pickJs()
+        val barLine = pick.lines().firstOrNull { it.contains("bar.id = 'inkpick-bar'") } ?: ""
+        assertFalse("浮動列不能自帶 data-inkpick", barLine.contains("data-inkpick"))
     }
 
     @Test

@@ -426,17 +426,42 @@ fun AiWebPanel(
         applyTheme(webView, "change")
     }
 
+    // 圈選高亮配色取自 App 主題（不在 JS 裡寫死品牌色）。
+    // accent 用 colorScheme.primary，其餘 rgba 由同一顏色推導，深淺色自然一致。
+val isDarkPanel = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    // 注意：MaterialTheme 必須在 remember **外面**讀——remember 的計算 lambda 不是
+    // @Composable，裡面讀 colorScheme 編譯不過。
+    val primaryColor = MaterialTheme.colorScheme.primary
+    val pickPalette = androidx.compose.runtime.remember(primaryColor, isDarkPanel) {
+        val c = primaryColor
+        val r = (c.red * 255f).toInt().coerceIn(0, 255)
+        val g = (c.green * 255f).toInt().coerceIn(0, 255)
+        val b = (c.blue * 255f).toInt().coerceIn(0, 255)
+        PickPalette(
+            accent = String.format("#%02X%02X%02X", r, g, b),
+            tint = "rgba($r,$g,$b,0.16)",
+            hover = "rgba($r,$g,$b,0.10)",
+            outline = "rgba($r,$g,$b,0.40)",
+            barBg = if (isDarkPanel) "rgba(20,20,26,0.88)" else "rgba(28,28,34,0.90)",
+            barFg = "rgba(255,255,255,0.94)",
+            barBtn = "rgba(255,255,255,0.16)"
+        )
+    }
+
     // M2b-2：拉桿「引入」鈕兩段式 — ①進圈選模式（段落打勾）②收集打勾段落（無勾選則取最後回覆全文）。
+    // 圈選模式下「完成」鈕由網頁端回報，用這個計數器觸發收集。
+    val pickDoneSignal = androidx.compose.runtime.remember { androidx.compose.runtime.mutableIntStateOf(0) }
+
     androidx.compose.runtime.LaunchedEffect(pickEnterId) {
         if (pickEnterId > 0) {
             try {
-                webView?.evaluateJavascript(currentProvider.value.pickJs(), null)
+                webView?.evaluateJavascript(currentProvider.value.pickJs(palette = pickPalette), null)
             } catch (e: Exception) {
                 e.printStackTrace()
             }
         }
     }
-    androidx.compose.runtime.LaunchedEffect(pickCollectId) {
+    androidx.compose.runtime.LaunchedEffect(pickCollectId, pickDoneSignal.value) {
         if (pickCollectId <= 0) return@LaunchedEffect
         val provider = currentProvider.value
         val idleSelector = provider.replyIdleSelector
@@ -548,6 +573,16 @@ fun AiWebPanel(
                             try {
                                 android.util.Log.d("AiWebPanel", "onPickedJson len=${json.length}")
                                 pickedCallback.value(json)
+                            } catch (t: Throwable) { }
+                        }
+                        /** 圈選浮動列的「完成」：網頁端按下 → 觸發收集，不必再回工具列。 */
+                        @android.webkit.JavascriptInterface
+                        fun onPickAction(action: String) {
+                            try {
+                                android.util.Log.d("InkFlowDbg", "PICK action=$action")
+                                if (action == "done") {
+                                    pickDoneSignal.value = pickDoneSignal.value + 1
+                                }
                             } catch (t: Throwable) { }
                         }
                     }
