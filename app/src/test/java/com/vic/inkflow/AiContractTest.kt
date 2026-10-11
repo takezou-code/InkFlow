@@ -7,7 +7,11 @@ import com.vic.inkflow.ui.AiProvider
 import com.vic.inkflow.ui.AiRequest
 import com.vic.inkflow.ui.domProbeJs
 import com.vic.inkflow.ui.imagePasteInputSelector
+import com.vic.inkflow.ui.collectJs
+import com.vic.inkflow.ui.pickJs
 import com.vic.inkflow.ui.promptSendJs
+import com.vic.inkflow.ui.replyChain
+import com.vic.inkflow.ui.replyIdleSelector
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -110,12 +114,48 @@ class AiContractTest {
     }
 
     @Test
-    fun `S3 ChatGPT 只開啟已實作的送圖，匯入仍關閉`() {
-        // S3 交付截圖送 AI；匯入（圈選＋抓回覆）還沒做，必須保持關閉。
-        val chatgpt = AiProvider.CHATGPT.capabilities
-        assertTrue("S3 已實作截圖送 AI", chatgpt.sendImage)
-        assertFalse("匯入尚未移植，不得宣稱可用", chatgpt.importReply)
-        assertFalse("數學裁圖尚未驗證，不得宣稱可用", chatgpt.mathCrop)
+    fun `S3 ChatGPT 只開啟已實作的送圖`() {
+        // S3 交付截圖送 AI。S4 之後匯入由另一條測試覆蓋。
+        assertTrue(AiProvider.CHATGPT.capabilities.sendImage)
+    }
+
+    @Test
+    fun `S4 兩個 provider 都具備完整匯入能力`() {
+        // S4 交付 ChatGPT 匯入；Gemini 的三項能力不許因為重構而退化。
+        AiProvider.values().forEach {
+            assertTrue("${it.name} 必須能送圖", it.capabilities.sendImage)
+            assertTrue("${it.name} 必須能匯入", it.capabilities.importReply)
+        }
+        // 數學裁圖只有 Gemini 驗過，ChatGPT 仍保守關閉。
+        assertTrue(AiProvider.GEMINI.capabilities.mathCrop)
+        assertFalse(AiProvider.CHATGPT.capabilities.mathCrop)
+    }
+
+    @Test
+    fun `S4 回覆容器候選必須是各自的角色標記`() {
+        // 混用就會抓錯對象：Gemini 是 model、ChatGPT 是 assistant。
+        assertTrue(AiProvider.GEMINI.replyChain.any { it.contains("data-message-author-role=\"model\"") })
+        assertTrue(AiProvider.CHATGPT.replyChain.any { it.contains("data-message-author-role=\"assistant\"") })
+        assertFalse(
+            "兩個 provider 的候選鏈不可相同",
+            AiProvider.GEMINI.replyChain == AiProvider.CHATGPT.replyChain
+        )
+    }
+
+    @Test
+    fun `S4 圈選與收集腳本必須依 provider 換容器鏈`() {
+        val gemini = AiProvider.GEMINI.pickJs()
+        val chatgpt = AiProvider.CHATGPT.pickJs()
+        assertTrue("Gemini 腳本要帶 model 角色", gemini.contains("data-message-author-role=\"model\""))
+        assertTrue("ChatGPT 腳本要帶 assistant 角色", chatgpt.contains("data-message-author-role=\"assistant\""))
+        assertFalse("兩者不可共用同一份", gemini == chatgpt)
+    }
+
+    @Test
+    fun `S4 只有 ChatGPT 需要等回覆生成完`() {
+        // Gemini 沒有停止鈕語意，必須完全不受這道閘門影響（行為零變化）。
+        assertNull(AiProvider.GEMINI.replyIdleSelector)
+        assertEquals("[data-testid=\"stop-button\"]", AiProvider.CHATGPT.replyIdleSelector)
     }
 
     @Test

@@ -36,9 +36,7 @@ internal object AiChatGptDriver {
         "button[aria-label*=\"Send\"]",
         "button[aria-label*=\"傳送\"]"
     )
-
-    /** 回覆容器候選：ChatGPT 是 assistant 角色，包在 <article> 裡，不是 Gemini 的 model。 */
-    private val REPLY_CANDIDATES = listOf(
+    val REPLY_CHAIN = listOf(
         "article[data-message-author-role=\"assistant\"]",
         "[data-message-author-role=\"assistant\"]",
         "article[data-message-author-role]",
@@ -46,7 +44,41 @@ internal object AiChatGptDriver {
     )
 
     /** 串流中判斷：ChatGPT 會顯示停止鈕，Gemini 沒有這個語意。 */
-    private val STOP_SELECTOR = "[data-testid=\"stop-button\"]"
+    const val STOP_SELECTOR = "[data-testid=\"stop-button\"]"
+
+    /**
+     * 圈選要等的 selector：回覆還在生成時（停止鈕還在）就去抓，會抓到殘缺內容。
+     * ChatGPT 長對話會虛擬滾動，畫面外的訊息根本不在 DOM 裡，所以這道閘門是必需的。
+     * 回傳 null＝不用等（Gemini 沒有停止鈕這個語意）。
+     */
+    val REPLY_IDLE_SELECTOR: String? = "[data-testid=\"stop-button\"]"
+
+    /** 探針用：確認停止鈕／回覆容器到底存不存在。 */
+    fun idleProbeJs(): String = "(function(){try{return document.querySelectorAll('$STOP_SELECTOR').length;}catch(e){return -1;}})()"
+
+    /** 探針用：確認回覆容器候選命中數（穿 shadow）。 */
+    fun replyProbeJs(): String {
+        val replies = REPLY_CHAIN.joinToString(", ") { "\"$it\"" }
+        return """
+            (function(){
+                function deepCount(root, sel, out) {
+                    try {
+                        var f = root.querySelectorAll(sel);
+                        for (var i = 0; i < f.length; i++) out++;
+                        var all = root.querySelectorAll('*');
+                        for (var j = 0; j < all.length; j++) {
+                            try { if (all[j].shadowRoot) deepCount(all[j].shadowRoot, sel, out); } catch(e){}
+                        }
+                    } catch(e){}
+                    return out;
+                }
+                var res = [];
+                [$replies].forEach(function(s){ res.push(s + '=' + deepCount(document, s, 0)); });
+                res.push('stop=' + deepCount(document, '$STOP_SELECTOR', 0));
+                return res.join(' | ');
+            })();
+        """.trimIndent()
+    }
 
     /** 貼圖時瞄準的輸入框（與 [buildImagePasteJs] 的 selector 同一套）。 */
     const val IMAGE_PASTE_INPUT_SELECTOR = "#prompt-textarea, div[contenteditable=\"true\"]"
@@ -55,7 +87,7 @@ internal object AiChatGptDriver {
     fun candidatesForLog(): String = buildString {
         append("input=").append(INPUT_CANDIDATES.joinToString("|"))
         append(" send=").append(SEND_CANDIDATES.joinToString("|"))
-        append(" reply=").append(REPLY_CANDIDATES.joinToString("|"))
+        append(" reply=").append(REPLY_CHAIN.joinToString("|"))
     }
 
     /**
@@ -192,7 +224,7 @@ internal object AiChatGptDriver {
     fun domProbeJs(): String {
         val inputs = INPUT_CANDIDATES.joinToString(", ") { "\"$it\"" }
         val sends = SEND_CANDIDATES.joinToString(", ") { "\"$it\"" }
-        val replies = REPLY_CANDIDATES.joinToString(", ") { "\"$it\"" }
+        val replies = REPLY_CHAIN.joinToString(", ") { "\"$it\"" }
         return """
             (function() {
                 function deepCount(root, sel, out) {
