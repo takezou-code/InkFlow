@@ -89,7 +89,8 @@ internal val AiProvider.imagePasteInputSelector: String
  * 圈選腳本。兩個 provider 共用同一份實作，只換回覆容器候選鏈
  * （Gemini 是 `model` 角色、ChatGPT 是 `assistant`）。
  */
-fun AiProvider.pickJs(): String = AiGeminiDriver.pickJs(replyChain = replyChain)
+fun AiProvider.pickJs(palette: PickPalette = PickPalette()): String =
+    AiGeminiDriver.pickJs(replyChain = replyChain, palette = palette)
 
 /** 收集腳本，同上。 */
 fun AiProvider.collectJs(): String = AiGeminiDriver.collectJs(replyChain = replyChain)
