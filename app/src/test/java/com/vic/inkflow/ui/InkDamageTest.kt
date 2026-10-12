@@ -69,6 +69,16 @@ class InkDamageTest {
     }
 
     @Test
+    fun nonFiniteBoundsAreDetected() {
+        // 包絡退化输入可能产出 NaN/Inf：调用端看到一个就走全量重建，
+        // 绝不能进增量路径（minOf/maxOf 会静默吞掉 NaN，相交全 false，该画的全跳过）。
+        assertTrue(Rect(0f, 0f, 10f, 10f).hasFiniteBounds())
+        assertTrue(!Rect(Float.NaN, 0f, 10f, 10f).hasFiniteBounds())
+        assertTrue(!Rect(0f, 0f, Float.POSITIVE_INFINITY, 10f).hasFiniteBounds())
+        assertTrue(!Rect(0f, 0f, 10f, Float.NEGATIVE_INFINITY).hasFiniteBounds())
+    }
+
+    @Test
     fun inflatedZoneStillOverlapsTheStroke() {
         // 外擴后的髒區必須蓋住原筆（否則跨區筆觸邊緣留縫）。
         val stroke = Rect(100f, 100f, 200f, 120f)

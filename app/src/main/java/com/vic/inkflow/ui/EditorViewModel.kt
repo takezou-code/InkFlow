@@ -727,11 +727,32 @@ class EditorViewModel(
         }
     }
 
-    /** 擦除手勢被取消/縮放丟棄呼叫：累積作廢，不留復原格。 */
+    /**
+     * 擦除手勢被取消/縮放丟棄呼叫。
+     *
+     * 舊語義是「累積作廢，不留復原格」——但飛行中的批次墓碑可能已經提交了，
+     * 作廢等於靜默丟失（跟 latch 丟失同一條：DB 動了、undo 裡沒有）。既然攔不住
+     * 已提交的寫入，唯一正確的是跟 endEraseGesture 一樣結算：有戰果就記一格。
+     * 「取消」只決定手勢本身不繼續，不決定已發生的刪除要不要負責。
+     */
     fun discardEraseGesture() {
+        if (!eraseGestureOpen) return
         eraseGestureOpen = false
-        eraseGestureStrokes.clear()
-        eraseGestureTexts.clear()
+        viewModelScope.launch(Dispatchers.Default) {
+            eraserMutex.withLock { } // 排空：同 endEraseGesture
+            val (strokes, texts) = withContext(Dispatchers.Main) {
+                val s = eraseGestureStrokes.toList()
+                val t = eraseGestureTexts.toList()
+                eraseGestureStrokes.clear()
+                eraseGestureTexts.clear()
+                s to t
+            }
+            if (strokes.isNotEmpty() || texts.isNotEmpty()) {
+                withContext(Dispatchers.Main) {
+                    pushUndo(DrawCommand.EraseGesture(strokes, texts))
+                }
+            }
+        }
     }
 
     /**
@@ -804,8 +825,13 @@ class EditorViewModel(
                 }
                 if (accumulateToGesture) {
                     withContext(Dispatchers.Main) {
-                        // 開關門栓：在飛行中的舊寫入若遇到 discard/begin 後才落定，直接丟棄不污染。
-                        if (eraseGestureOpen) eraseGestureStrokes += intersectingStrokes
+                        // 無條件累積：這個 append 跑在 eraserMutex 持有區間內，
+                        // endEraseGesture 的排空（drain）保證所有 append 都先跑完才快照。
+                        // 舊碼在這裡檢查 eraseGestureOpen——提筆瞬間落定的批次會撞上
+                        // 已關的旗標而被丟棄，但它的墓碑已經提交了：undo 快照裡永遠
+                        // 缺那幾筆＝「刪了很多筆、回來只有一些」。旗標只管開關手勢，
+                        // 不管累積完整性。
+                        eraseGestureStrokes += intersectingStrokes
                     }
                 } else {
                     val command = DrawCommand.RemoveStrokes(intersectingStrokes)
@@ -854,7 +880,8 @@ class EditorViewModel(
                 }
                 if (accumulateToGesture) {
                     withContext(Dispatchers.Main) {
-                        if (eraseGestureOpen) eraseGestureTexts += ann
+                        // 同筆跡：無條件累積，drain 保證順序。
+                        eraseGestureTexts += ann
                     }
                 } else {
                     withContext(Dispatchers.Main) { pushUndo(DrawCommand.RemoveTextAnnotation(ann)) }
