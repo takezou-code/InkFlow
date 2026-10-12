@@ -129,6 +129,19 @@ class DocumentViewModel(
                     java.io.File(path).takeIf { it.exists() }?.delete()
                 } catch (_: Exception) { }
             }
+
+            // AI 記憶 key（AiContract.aiDocProviderKey／aiDocUrlKey）：同一份
+            // inkflow_settings 裡按文件 URI 記的 provider＋上次對話 URL。
+            // 刪文件時一起清，否則每刪一份永久留下數個孤兒 key。
+            // 走 entries 而不是點名兩站：將來加第三個站也不會漏。
+            try {
+                val prefsEdit = appContext
+                    .getSharedPreferences("inkflow_settings", Context.MODE_PRIVATE)
+                    .edit()
+                prefsEdit.remove(aiDocProviderKey(uri))
+                AiProvider.entries.forEach { p -> prefsEdit.remove(aiDocUrlKey(uri, p)) }
+                prefsEdit.apply()
+            } catch (_: Exception) { }
         }
     }
 

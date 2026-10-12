@@ -132,6 +132,10 @@ object PageOpJournal {
             // 「啟動時在背景掃一次、不阻擋使用者」的形狀，不必另開一套排程。
             runCatching { purgeExpiredTombstones(db) }
                 .onFailure { Log.e(TAG, "tombstone purge failed", it) }
+            // 孤兒圖檔清掃：同一個 scope、同一批「啟動時掃一次」的冷工作。
+            // 單張刪除不能在當下刪檔（undo 會把同一 uri 的列插回來），只能在這裡認。
+            runCatching { sweepUnreferencedFiles(context, db) }
+                .onFailure { Log.e(TAG, "orphan sweep failed", it) }
         }
     }
 
@@ -151,6 +155,92 @@ object PageOpJournal {
         val purged = repos.transaction { repos.pageOps.purgeExpiredTombstones(cutoff) }
         if (purged > 0) Log.i(TAG, "purged $purged expired tombstone(s) older than $TOMBSTONE_RETENTION_MS ms")
         return purged
+    }
+
+    /**
+     * 孤兒圖檔清掃：磁碟上有、DB 裡沒人指的圖。
+     *
+     * 孤兒的三個來源（全部是「列先走、檔留下」）：
+     *   1. 單張刪除（deleteImageAnnotation、復原、擷取頁）：列刪了檔留著。此時**不能**
+     *      在刪除當下直接刪檔——undo 會把同一 uri 的列插回來，檔先刪了 undo 就復活
+     *      一張壞圖。所以只能在這裡用「無引用＋夠老」認。
+     *   2. 拷貝中斷（copyImageToAppDir 寫一半崩潰）：從來沒有列指過它。
+     *   3. 相機暫存沒清乾淨（正常路徑有 DisposableEffect＋拷貝後刪除，這裡是兜底）。
+     *
+     *   文件級刪除不走這裡（DocumentViewModel.delete 在交易前後處理，有引用檢查）。
+     *
+     * 安全條件（缺一不可）：
+     *   - 只看副檔名：jpg／jpeg／png（圖）＋ workingDir 下的 pdf（拷貝中斷的半成品）。
+     *     pending_page_op.json、備份目錄、資料庫一律不在掃描範圍內。
+     *   - file:// 才比：content:// 等其它 scheme 的列直接跳過（比了也對不上）。
+     *   - 夠老才刪（[ORPHAN_MIN_AGE_MS]，7 天）：剛拷貝、列還沒寫入的圖（圖庫多選是
+     *     「先全拷貝、再逐張落位」，中間有時間窗）絕對不能碰。用 mtime 認，不用任何
+     *     外部狀態，所以冪等、重跑安全。
+     *
+     * 縮圖磁碟快取（cacheDir/thumbnails）另有政策：它是純快取、key 帶 mtime，每次
+     * 改 PDF 就多一個 PNG。用數量＋年齡雙上限（[THUMB_MAX_FILES]／[THUMB_MAX_AGE_MS]），
+     * 刪最舊的——快取被清掉的後果只是下次重算，不會傷資料。
+     */
+    private const val ORPHAN_MIN_AGE_MS = 7L * 24 * 60 * 60 * 1000
+    private const val THUMB_MAX_AGE_MS = 30L * 24 * 60 * 60 * 1000
+    private const val THUMB_MAX_FILES = 100
+
+    /** 回傳實際刪掉的檔案數；失敗不回擲（呼叫端用 runCatching 包住）。 */
+    suspend fun sweepUnreferencedFiles(context: Context, db: AppDatabase): Int {
+        val repos = InkFlowRepositories(db)
+        val now = System.currentTimeMillis()
+        var swept = 0
+
+        // 活著的圖：全部 image_annotations.uri 的絕對路徑集合。
+        // 公式圖必然同時是 image_annotations 的一列（先落位再寫 TeX sidecar），
+        // 所以 math_sources 不用另查。
+        val livePaths = repos.images.allUris().mapNotNullTo(HashSet()) { uriString ->
+            runCatching {
+                val parsed = Uri.parse(uriString)
+                if (parsed.scheme != "file") null else parsed.path
+            }.getOrNull()
+        }
+        // 活著的 PDF：documents.uri 的絕對路徑集合。
+        val livePdfPaths = repos.documents.getAllDocumentsSync().mapNotNullTo(HashSet()) { doc ->
+            runCatching {
+                val parsed = Uri.parse(doc.uri)
+                if (parsed.scheme != "file") null else parsed.path
+            }.getOrNull()
+        }
+
+        fun sweepDir(dir: File, extensions: Set<String>, live: Set<String>, minAgeMs: Long) {
+            val files = dir.listFiles() ?: return
+            for (f in files) {
+                if (!f.isFile) continue
+                if (f.extension.lowercase() !in extensions) continue
+                if (f.absolutePath in live) continue
+                if (now - f.lastModified() < minAgeMs) continue
+                if (f.delete()) swept++
+            }
+        }
+
+        val imageExts = setOf("jpg", "jpeg", "png")
+        // filesDir：公式／裁圖／擷取圖的家。只掃圖，不碰 pdf（這裡沒有 pdf）。
+        sweepDir(context.filesDir, imageExts, livePaths, ORPHAN_MIN_AGE_MS)
+        // workingDir：貼圖（UUID.jpg）＋文件 PDF。圖對活圖集，PDF 對活文件集。
+        val workingDir = BackupManager.workingDir(context)
+        sweepDir(workingDir, imageExts, livePaths, ORPHAN_MIN_AGE_MS)
+        sweepDir(workingDir, setOf("pdf"), livePdfPaths, ORPHAN_MIN_AGE_MS)
+
+        // 縮圖快取：只管總量，不管引用（key 帶 mtime，舊 key 算不出來）。
+        val thumbDir = File(context.cacheDir, "thumbnails")
+        val thumbs = (thumbDir.listFiles() ?: emptyArray()).filter { it.isFile }
+        val expired = thumbs.filter { now - it.lastModified() > THUMB_MAX_AGE_MS }
+        val overCount = (thumbs.size - expired.size - THUMB_MAX_FILES).coerceAtLeast(0)
+        val overflow = if (overCount > 0) {
+            (thumbs - expired.toSet()).sortedBy { it.lastModified() }.take(overCount)
+        } else emptyList()
+        for (f in expired + overflow) {
+            if (f.delete()) swept++
+        }
+
+        if (swept > 0) Log.i(TAG, "swept $swept unreferenced file(s)")
+        return swept
     }
 
     /**
