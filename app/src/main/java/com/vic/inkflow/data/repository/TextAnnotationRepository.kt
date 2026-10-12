@@ -1,5 +1,6 @@
 package com.vic.inkflow.data.repository
 
+import androidx.room.withTransaction
 import com.vic.inkflow.data.AppDatabase
 import com.vic.inkflow.data.MergeVersion
 import com.vic.inkflow.data.PageTextCount
@@ -51,6 +52,12 @@ interface TextAnnotationRepository : PageShiftTarget {
 
     // ── v6 併發合併（§15.1／§15.2／§15.4）───────────────────────────────
     suspend fun bumpTextVersion(id: String): Int
+
+    /**
+     * 改寫＋序號前進（文字修改的寫入漏斗）。
+     * 用這個，不要直接呼叫 update —— 序號不動的話仲裁看不出這筆被改過（§15.1）。
+     */
+    suspend fun updateAndBump(annotation: TextAnnotationEntity)
     suspend fun getTextVersions(documentUri: String): List<com.vic.inkflow.data.StrokeVersionRow>
     suspend fun getTextVersion(id: String): com.vic.inkflow.data.StrokeVersionRow?
     suspend fun countLiveTexts(documentUri: String): Int
@@ -100,6 +107,20 @@ class RoomTextAnnotationRepository(
     override suspend fun countTextDocMismatch(documentUri: String, stride: Float): Int = dao.countTextDocMismatch(documentUri, stride)
 
     override suspend fun bumpTextVersion(id: String): Int = dao.bumpTextVersion(id, MergeVersion.nextNonce())
+
+    /**
+     * 改寫＋序號前進（文字修改的寫入漏斗）。
+     *
+     * 與筆跡的 [StrokeRepository.replaceStrokeSnapshots] 同一套理由：呼叫端傳進來的
+     * entity 帶舊 version，直接 update 會讓序號停在原地，仲裁看不出改過。
+     * update 與 bump 必須在同一交易里（update 先、bump 後）。
+     */
+    override suspend fun updateAndBump(annotation: TextAnnotationEntity) {
+        db.withTransaction {
+            dao.update(annotation)
+            dao.bumpTextVersion(annotation.id, MergeVersion.nextNonce())
+        }
+    }
     override suspend fun getTextVersions(documentUri: String): List<com.vic.inkflow.data.StrokeVersionRow> = dao.getTextVersions(documentUri)
     override suspend fun getTextVersion(id: String): com.vic.inkflow.data.StrokeVersionRow? = dao.getTextVersion(id)
     override suspend fun countLiveTexts(documentUri: String): Int = dao.countLiveTexts(documentUri)

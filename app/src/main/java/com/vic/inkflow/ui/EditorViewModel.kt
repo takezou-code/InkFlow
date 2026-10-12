@@ -975,7 +975,7 @@ class EditorViewModel(
         if (old.text == newText || newText.isBlank()) return
         val updated = old.copy(text = newText)
         viewModelScope.launch(Dispatchers.IO) {
-            repos.texts.update(updated)
+            repos.texts.updateAndBump(updated)
             withContext(Dispatchers.Main) { pushUndo(DrawCommand.EditTextAnnotation(old, updated)) }
         }
     }
@@ -1024,7 +1024,7 @@ class EditorViewModel(
         )
         if (updated == old) return
         viewModelScope.launch(Dispatchers.IO) {
-            repos.texts.update(updated)
+            repos.texts.updateAndBump(updated)
             withContext(Dispatchers.Main) { pushUndo(DrawCommand.MoveTextAnnotation(old, updated)) }
         }
     }
@@ -1040,7 +1040,7 @@ class EditorViewModel(
             docY = old.pageIndex * docStride + newY
         )
         viewModelScope.launch(Dispatchers.IO) {
-            repos.texts.update(updated)
+            repos.texts.updateAndBump(updated)
             withContext(Dispatchers.Main) { pushUndo(DrawCommand.ResizeTextAnnotation(old, updated)) }
         }
     }
@@ -1598,14 +1598,9 @@ class EditorViewModel(
         copy(docY = pageIndex * docStride + modelY)
 
     private suspend fun replaceStrokeSnapshots(strokes: List<StrokeWithPoints>) {
-        repos.transaction {
-            strokes.forEach { swp ->
-                val fixed = swp.redoc()
-                repos.strokes.deletePointsForStroke(fixed.stroke.id)
-                repos.strokes.insertStroke(fixed.stroke)
-                repos.strokes.insertPoints(fixed.points)
-            }
-        }
+        // 走 repository 的漏斗：覆蓋＋bump 在同一交易里。自己拼三步會漏 bump，
+        // 序號被蓋回舊值，仲裁就看不出這筆被改過（§15.1）。
+        repos.strokes.replaceStrokeSnapshots(strokes.map { it.redoc() })
     }
 
     // transformPolygon 見 SelectionGeometry.kt
@@ -1911,7 +1906,7 @@ class EditorViewModel(
                 replaceStrokeSnapshots(movedStrokes)
             }
             movedImages.forEach { repos.images.update(it) }
-            movedTexts.forEach { repos.texts.update(it) }
+            movedTexts.forEach { repos.texts.updateAndBump(it) }
             withContext(Dispatchers.Main) {
                 if (_commitPreview.value === movedStrokes) {
                     _commitPreview.value = null
@@ -2007,7 +2002,7 @@ class EditorViewModel(
                 replaceStrokeSnapshots(redocUpdated)
             }
             redocUpdatedImages.forEach { repos.images.update(it) }
-            redocUpdatedTexts.forEach { repos.texts.update(it) }
+            redocUpdatedTexts.forEach { repos.texts.updateAndBump(it) }
             withContext(Dispatchers.Main) {
                 if (_commitPreview.value === redocUpdated) {
                     _commitPreview.value = null
