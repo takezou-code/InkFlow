@@ -151,6 +151,40 @@ internal fun StrokeWithPoints.matches(cached: CachedStrokePath?): Boolean {
         cached.boundsBottom == stroke.boundsBottom
 }
 
+// ── 髒矩形（damage region）增量重建 ─────────────────────────────────────────
+// 全量重建（清空整張墨圖＋重畫全筆）是擦除卡頓的最大頭（實測 draw 17.6ms/幀）。
+// 標準解法跟 Android View.invalidate(rect)／Skia clip 同一思想：重繪成本跟著
+// 變化量走——加筆只畫新增，刪筆只清髒區＋重畫相交的，髒區過大才全量。
+
+/** 髒區佔頁面積超過這個比例，全量重建反而划算（clip 來回不如一次清）。 */
+internal const val INK_FULL_REBUILD_COVERAGE = 0.5f
+
+/**
+ * 髒區外擴（model px）：包絡 bounds 本來就含線寬，只需再吞掉抗鋸齒的 1~2px。
+ * 跨區筆觸的重繪以此為界，邊界外舊像素原樣保留、保證無縫。
+ */
+internal const val INK_DIRTY_INFLATE_PX = 3f
+
+/** null 容忍的包圍盒聯集（任一為 null 回另一；都被呼叫端保證非空才進來）。 */
+internal fun unionRect(a: Rect?, b: Rect): Rect {
+    if (a == null || a.isEmpty) return b
+    if (b.isEmpty) return a
+    return Rect(
+        left = minOf(a.left, b.left),
+        top = minOf(a.top, b.top),
+        right = maxOf(a.right, b.right),
+        bottom = maxOf(a.bottom, b.bottom)
+    )
+}
+
+/** 髒區佔頁面積比（0~1；頁面積為 0 回 1＝全量）。 */
+internal fun damageCoverage(dirty: Rect, page: Rect): Float {
+    val pageArea = page.width * page.height
+    if (pageArea <= 0f) return 1f
+    val dirtyArea = dirty.width.coerceAtLeast(0f) * dirty.height.coerceAtLeast(0f)
+    return (dirtyArea / pageArea).coerceIn(0f, 1f)
+}
+
 // ---- Liquid-glass selection frame, shared by lasso / image / text ----
 //
 // 尺寸全走 ui/theme/Handles.kt（dp），這裡只留「純 px 換算 + 純幾何」。

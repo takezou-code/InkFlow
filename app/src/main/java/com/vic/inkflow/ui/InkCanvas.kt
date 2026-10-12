@@ -477,6 +477,9 @@ fun InkCanvas(
     // 筆跡幾何快取：普通 Map，只在 drawWithCache 建構區讀寫。
     // 不用 State 容器 → 提交只觸發一次重建（之前 StateMap 寫入造成第二次失效）。
     val committedPathCache = remember { mutableMapOf<String, CachedStrokePath>() }
+    // 形狀上一幀 bounds：形狀走快照覆蓋（同 id 新 bounds），髒區需要舊 bounds。
+    // 普通 Map，同上只在建構區讀寫。
+    val lastShapeBounds = remember { mutableMapOf<String, Rect>() }
 
     // Image bitmap cache: uri-string → decoded Bitmap (null = load failed / placeholder)
     val loadedImages = remember { mutableStateMapOf<String, android.graphics.Bitmap?>() }
@@ -1913,18 +1916,20 @@ fun InkCanvas(
             // 讀 pinchActive 會訂閱——放開切換時失效重建，剛好是銳利化的時機。
             // 注意：手勢中若有新墨提交（理論上不會，門衛會棄筆），放開後自然重建。
             val frozen = pinchActive && pinchReuse.bmp != null
+            // 新圖＝空白，不用清；重用舊圖的清空搬到下面的髒區邏輯
+            // （全量清整張／增量只清髒區）。原來在這裡無條件全清——增量重建下，
+            // 那會把髒區外的有效像素一起洗掉，整頁只剩髒區有墨。
+            var bitmapFresh = frozen
             val cachedImage = if (frozen) {
                 pinchReuse.bmp!!
             } else {
                 val reuse = pinchReuse.bmp
                 if (reuse != null && reuse.width == cacheW && reuse.height == cacheH) {
-                    // 同尺寸重用：清掉舊墨再重畫，提筆不再配置數十 MB（卡頓主因）
-                    androidx.compose.ui.graphics.Canvas(reuse).drawRect(
-                        0f, 0f, cacheW.toFloat(), cacheH.toFloat(),
-                        Paint().apply { blendMode = BlendMode.Clear }
-                    )
+                    // 同尺寸重用：提筆不再配置數十 MB（卡頓主因）。不清，
+                    // 清空動作由下面的全量／增量分支决定。
                     reuse
                 } else {
+                    bitmapFresh = true
                     ImageBitmap(cacheW, cacheH, ImageBitmapConfig.Argb8888).also {
                         pinchReuse.bmp = it
                     }
@@ -1934,36 +1939,143 @@ fun InkCanvas(
 
             // 凍結中連畫都跳過：整塊重建是捏合卡頓的最大頭
             if (!frozen) {
-                cacheCanvas.save()
-                cacheCanvas.scale(sx * cacheScale, sy * cacheScale)
-                // 淘汰已刪筆跡（普通 Map 操作，不寫 State、不二次失效）
+                // ── 髒矩形增量重建 ──
+                // 全量（清空整張＋重畫全筆）是擦除卡頓的最大頭（實測 draw 17.6ms/幀）。
+                // 只清髒區、只重畫相交的筆：重繪成本跟著變化量走。髒區過大／新圖／
+                // 尺寸變 → 走全量（舊行為原樣保留當 fallback）。
+                val modelW = viewModel.modelWidth
+                val modelH = viewModel.modelHeight
+                val pageRect = Rect(0f, 0f, modelW, modelH)
+                fun strokeRect(swp: StrokeWithPoints) = Rect(
+                    swp.stroke.boundsLeft, swp.stroke.boundsTop,
+                    swp.stroke.boundsRight, swp.stroke.boundsBottom
+                )
+                var dirty: Rect? = null
+                // 刪筆的髒：淘汰前先把舊 bounds 留下來（淘汰後就問不到了）
                 val keepIds = HashSet<String>(strokes.size + 16)
                 strokes.forEach { if (it.stroke.shapeType == null) keepIds.add(it.stroke.id) }
-                committedPathCache.keys.removeAll { it !in keepIds }
-                strokes.forEach { swp ->
-                    if (swp.stroke.id in previewIds) return@forEach
-                    if (swp.stroke.shapeType != null) {
-                        drawShapeOnCanvas(cacheCanvas, swp.stroke, swp.points)
-                    } else {
-                        // 增量建幾何：命中直接重用，只建新增/變更的筆
-                        val cached = committedPathCache[swp.stroke.id]
-                        val path = if (cached != null && swp.matches(cached)) {
-                            cached.path
-                        } else {
-                            swp.points.toComposePath().also {
-                                committedPathCache[swp.stroke.id] = CachedStrokePath(
-                                    path = it,
-                                    pointCount = swp.points.size,
-                                    boundsLeft = swp.stroke.boundsLeft,
-                                    boundsTop = swp.stroke.boundsTop,
-                                    boundsRight = swp.stroke.boundsRight,
-                                    boundsBottom = swp.stroke.boundsBottom
-                                )
-                            }
-                        }
-                        drawPathOnCanvas(cacheCanvas, path,
-                            Color(swp.stroke.color), swp.stroke.strokeWidth, swp.stroke.isHighlighter)
+                committedPathCache.forEach { (id, cached) ->
+                    if (id !in keepIds) {
+                        dirty = unionRect(
+                            dirty,
+                            Rect(cached.boundsLeft, cached.boundsTop, cached.boundsRight, cached.boundsBottom)
+                        )
                     }
+                }
+                // 淘汰已刪筆跡（普通 Map 操作，不寫 State、不二次失效）
+                committedPathCache.keys.removeAll { it !in keepIds }
+                // 加筆＋改筆的髒（改筆要舊 bounds ∪ 新 bounds，否則舊位置殘影）
+                val changedIds = HashSet<String>()
+                strokes.forEach { swp ->
+                    if (swp.stroke.shapeType != null) return@forEach
+                    if (swp.stroke.id in previewIds) return@forEach
+                    val cached = committedPathCache[swp.stroke.id]
+                    if (cached == null || !swp.matches(cached)) {
+                        if (cached != null) {
+                            dirty = unionRect(
+                                dirty,
+                                Rect(cached.boundsLeft, cached.boundsTop, cached.boundsRight, cached.boundsBottom)
+                            )
+                        }
+                        dirty = unionRect(dirty, strokeRect(swp))
+                        changedIds.add(swp.stroke.id)
+                    }
+                }
+                // 形狀的髒：同 id 新 bounds＝移動／縮放過，舊 bounds 也要清
+                val shapeIds = HashSet<String>()
+                strokes.forEach { swp ->
+                    if (swp.stroke.shapeType == null) return@forEach
+                    if (swp.stroke.id in previewIds) return@forEach
+                    shapeIds.add(swp.stroke.id)
+                    val now = strokeRect(swp)
+                    val old = lastShapeBounds[swp.stroke.id]
+                    if (old == null || old != now) {
+                        if (old != null) dirty = unionRect(dirty, old)
+                        dirty = unionRect(dirty, now)
+                    }
+                }
+                lastShapeBounds.keys.removeAll { it !in shapeIds }
+                strokes.forEach { swp ->
+                    if (swp.stroke.shapeType != null && swp.stroke.id !in previewIds) {
+                        lastShapeBounds[swp.stroke.id] = strokeRect(swp)
+                    }
+                }
+
+                val fullRebuild = dirty == null ||
+                    damageCoverage(dirty, pageRect) >= INK_FULL_REBUILD_COVERAGE
+                cacheCanvas.save()
+                cacheCanvas.scale(sx * cacheScale, sy * cacheScale)
+                if (fullRebuild) {
+                    // 舊行為：一律清空＋重畫全部（含形狀）。新圖／尺寸變／大髒區走這裡。
+                    // 新圖本來就是空白，只有重用舊圖才需要清（跟原來一字一樣的語義）。
+                    if (!bitmapFresh) {
+                        androidx.compose.ui.graphics.Canvas(cachedImage).drawRect(
+                            0f, 0f, cacheW.toFloat(), cacheH.toFloat(),
+                            Paint().apply { blendMode = BlendMode.Clear }
+                        )
+                    }
+                    strokes.forEach { swp ->
+                        if (swp.stroke.id in previewIds) return@forEach
+                        if (swp.stroke.shapeType != null) {
+                            drawShapeOnCanvas(cacheCanvas, swp.stroke, swp.points)
+                        } else {
+                            val cached = committedPathCache[swp.stroke.id]
+                            val path = if (cached != null && swp.matches(cached)) {
+                                cached.path
+                            } else {
+                                swp.points.toComposePath().also {
+                                    committedPathCache[swp.stroke.id] = CachedStrokePath(
+                                        path = it,
+                                        pointCount = swp.points.size,
+                                        boundsLeft = swp.stroke.boundsLeft,
+                                        boundsTop = swp.stroke.boundsTop,
+                                        boundsRight = swp.stroke.boundsRight,
+                                        boundsBottom = swp.stroke.boundsBottom
+                                    )
+                                }
+                            }
+                            drawPathOnCanvas(cacheCanvas, path,
+                                Color(swp.stroke.color), swp.stroke.strokeWidth, swp.stroke.isHighlighter)
+                        }
+                    }
+                } else {
+                    // 增量：只清髒區（外擴吞掉抗鋸齒），只重畫與髒區相交的。
+                    // 相交判定用包絡 bounds（含線寬），髒區外舊像素原樣保留、無縫。
+                    val zone = dirty!!.inflate(INK_DIRTY_INFLATE_PX).intersect(pageRect)
+                    // 注意：此時 cacheCanvas 已套 scale(sx*cacheScale)，
+                    // clip/clear 都用 model 座標直接給，跟重畫同一套。
+                    cacheCanvas.save()
+                    cacheCanvas.clipRect(zone.left, zone.top, zone.right, zone.bottom)
+                    cacheCanvas.drawRect(
+                        zone.left, zone.top, zone.right, zone.bottom,
+                        Paint().apply { blendMode = BlendMode.Clear }
+                    )
+                    strokes.forEach { swp ->
+                        if (swp.stroke.id in previewIds) return@forEach
+                        if (!strokeRect(swp).inflate(INK_DIRTY_INFLATE_PX).overlaps(zone)) return@forEach
+                        if (swp.stroke.shapeType != null) {
+                            drawShapeOnCanvas(cacheCanvas, swp.stroke, swp.points)
+                        } else {
+                            val cached = committedPathCache[swp.stroke.id]
+                            val path = if (cached != null && swp.matches(cached)) {
+                                cached.path
+                            } else {
+                                swp.points.toComposePath().also {
+                                    committedPathCache[swp.stroke.id] = CachedStrokePath(
+                                        path = it,
+                                        pointCount = swp.points.size,
+                                        boundsLeft = swp.stroke.boundsLeft,
+                                        boundsTop = swp.stroke.boundsTop,
+                                        boundsRight = swp.stroke.boundsRight,
+                                        boundsBottom = swp.stroke.boundsBottom
+                                    )
+                                }
+                            }
+                            drawPathOnCanvas(cacheCanvas, path,
+                                Color(swp.stroke.color), swp.stroke.strokeWidth, swp.stroke.isHighlighter)
+                        }
+                    }
+                    cacheCanvas.restore()
                 }
                 cacheCanvas.restore()
             }
