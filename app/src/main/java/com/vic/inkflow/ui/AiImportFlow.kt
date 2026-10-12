@@ -373,8 +373,9 @@ suspend fun insertOnePageAfter(
     return false
 }
 
-// 接續前頁：sourcePage 是自家頁（DB 有墨＋紙大致白，原生 PDF 出局）且下方夠兩行
-// → 回傳首頁起始游標；否則 null（舊路：掃空白／開新頁）。在 IO 執行緒呼叫。
+// 接續前頁：空白自家頁（DB 空＋紙白）→ 回 64f 直接寫當前頁頂；
+// 有墨自家頁（DB 有墨＋紙大致白，原生 PDF 出局）且下方夠兩行 → 回接續游標；
+// 否則 null（開新頁）。在 IO 執行緒呼叫。
 suspend fun resolveContinueTop(
     repos: InkFlowRepositories,
     pdfViewModel: PdfViewModel,
@@ -390,11 +391,17 @@ suspend fun resolveContinueTop(
         val images = repos.images.getForPageSync(documentUri, sourcePage)
         val dbEmpty = strokes.isEmpty() && texts.isEmpty() && images.isEmpty()
         Log.d("InkFlowDbg", "CONTINUE DB p=$sourcePage strokes=${strokes.size} texts=${texts.size} images=${images.size} dbEmpty=$dbEmpty")
-        if (dbEmpty) return null
         val bmp = withTimeoutOrNull(1200) {
             pdfViewModel.getPageBitmap(sourcePage).filterNotNull().first()
         } ?: pdfViewModel.getPageBitmap(sourcePage).value
         val ratio = if (bmp != null) whiteRatioOfBitmap(bmp) else 0f
+        // 空白當前頁：DB 空＋紙白 → 直接寫當前頁頂（64f = paginate 預設 marginTop），不開新頁。
+        // 原生 PDF 有字（白比例低）或點陣拿不到 → 回 null 走開新頁，避免蓋住原文。
+        if (dbEmpty) {
+            Log.d("InkFlowDbg", "CONTINUE blank-gate p=$sourcePage ratio=$ratio blank=${isBlankPage(true, ratio)} bmpNull=${bmp == null}")
+            if (bmp != null && isBlankPage(true, ratio)) return 64f
+            return null
+        }
         Log.d("InkFlowDbg", "CONTINUE gate p=$sourcePage ratio=$ratio self=${isSelfPage(dbEmpty, ratio)} bmpNull=${bmp == null}")
         if (!isSelfPage(dbEmpty, ratio)) {
             Log.d("InkFlowDbg", "CONTINUE skip p=$sourcePage ratio=$ratio (native?)")
