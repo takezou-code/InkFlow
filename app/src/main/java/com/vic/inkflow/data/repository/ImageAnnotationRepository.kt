@@ -23,6 +23,9 @@ interface ImageAnnotationRepository : PageShiftTarget {
     /** 還有多少列指向這個圖檔 uri；0 = 可以安全刪檔。見 [ImageAnnotationDao.countByUri]。 */
     suspend fun countByUri(uri: String): Int
 
+    /** 全庫圖檔 uri（去重）；開機清掃比對用。見 [ImageAnnotationDao.allUris]。 */
+    suspend fun allUris(): List<String>
+
     // ── 頁操作五件套 ──────────────────────────────────────────────────────
     suspend fun shiftPageIndicesDown(documentUri: String, deletedPageIndex: Int)
     suspend fun shiftPageIndicesUp(documentUri: String, startingIndex: Int, amount: Int)
@@ -52,6 +55,8 @@ class RoomImageAnnotationRepository(
     override suspend fun deleteForDocument(documentUri: String) = dao.deleteForDocument(documentUri)
 
     override suspend fun countByUri(uri: String) = dao.countByUri(uri)
+
+    override suspend fun allUris() = dao.allUris()
     override suspend fun shiftPageIndicesDown(documentUri: String, deletedPageIndex: Int) =
         dao.shiftPageIndicesDown(documentUri, deletedPageIndex)
     override suspend fun shiftPageIndicesUp(documentUri: String, startingIndex: Int, amount: Int) =

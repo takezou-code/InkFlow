@@ -64,6 +64,16 @@ interface ImageAnnotationDao {
     @Query("SELECT COUNT(*) FROM image_annotations WHERE uri = :uri")
     suspend fun countByUri(uri: String): Int
 
+    /**
+     * 全庫圖檔 uri 清單（去重）：開機清掃用。
+     *
+     * 磁碟上的圖（貼圖／公式／裁圖）只有被這張表指著才算活著；掃描 app 目錄時，
+     * 不在這份清單裡的圖檔就是孤兒（單張刪除、復原、拷貝中斷都會產生，見
+     * PageOpJournal.sweepUnreferencedFiles）。只取 uri 欄，不碰點不碰座標。
+     */
+    @Query("SELECT DISTINCT uri FROM image_annotations")
+    suspend fun allUris(): List<String>
+
     // ── S1 單畫布：docY = pageIndex × stride + modelY（只寫不讀，見 StrokeDao）──
 
     @Query("""
