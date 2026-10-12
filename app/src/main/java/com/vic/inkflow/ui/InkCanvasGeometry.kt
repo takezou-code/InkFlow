@@ -177,6 +177,15 @@ internal fun unionRect(a: Rect?, b: Rect): Rect {
     )
 }
 
+/**
+ * bounds 是否全是有限數。包絡數學在退化輸入（重合點、零長段）下可能產出
+ * NaN/Inf——minOf/maxOf 會靜默吞掉 NaN（當不存在），導致髒區算小、相交判定
+ * 全 false，該畫的筆一支也畫不出來（且無崩潰、無 log，純隱形）。
+ * 看到非有限，一律走全量重建（畫了一定對，多花幾毫秒而已）。
+ */
+internal fun Rect.hasFiniteBounds(): Boolean =
+    left.isFinite() && top.isFinite() && right.isFinite() && bottom.isFinite()
+
 /** 髒區佔頁面積比（0~1；頁面積為 0 回 1＝全量）。 */
 internal fun damageCoverage(dirty: Rect, page: Rect): Float {
     val pageArea = page.width * page.height

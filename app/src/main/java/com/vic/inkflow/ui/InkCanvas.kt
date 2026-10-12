@@ -1951,15 +1951,19 @@ fun InkCanvas(
                     swp.stroke.boundsRight, swp.stroke.boundsBottom
                 )
                 var dirty: Rect? = null
+                var boundsBroken = false
                 // 刪筆的髒：淘汰前先把舊 bounds 留下來（淘汰後就問不到了）
                 val keepIds = HashSet<String>(strokes.size + 16)
-                strokes.forEach { if (it.stroke.shapeType == null) keepIds.add(it.stroke.id) }
+                strokes.forEach {
+                    if (it.stroke.shapeType == null) keepIds.add(it.stroke.id)
+                    if (!strokeRect(it).hasFiniteBounds()) boundsBroken = true
+                }
                 committedPathCache.forEach { (id, cached) ->
                     if (id !in keepIds) {
-                        dirty = unionRect(
-                            dirty,
-                            Rect(cached.boundsLeft, cached.boundsTop, cached.boundsRight, cached.boundsBottom)
-                        )
+                        val old = Rect(cached.boundsLeft, cached.boundsTop, cached.boundsRight, cached.boundsBottom)
+                        // 被刪的列若帶非有限舊 bounds：髒區表達不出來，硬走增量會留鬼影，直接全量。
+                        if (!old.hasFiniteBounds()) boundsBroken = true
+                        dirty = unionRect(dirty, old)
                     }
                 }
                 // 淘汰已刪筆跡（普通 Map 操作，不寫 State、不二次失效）
@@ -1972,10 +1976,9 @@ fun InkCanvas(
                     val cached = committedPathCache[swp.stroke.id]
                     if (cached == null || !swp.matches(cached)) {
                         if (cached != null) {
-                            dirty = unionRect(
-                                dirty,
-                                Rect(cached.boundsLeft, cached.boundsTop, cached.boundsRight, cached.boundsBottom)
-                            )
+                            val old = Rect(cached.boundsLeft, cached.boundsTop, cached.boundsRight, cached.boundsBottom)
+                            if (!old.hasFiniteBounds()) boundsBroken = true
+                            dirty = unionRect(dirty, old)
                         }
                         dirty = unionRect(dirty, strokeRect(swp))
                         changedIds.add(swp.stroke.id)
@@ -1994,14 +1997,23 @@ fun InkCanvas(
                         dirty = unionRect(dirty, now)
                     }
                 }
-                lastShapeBounds.keys.removeAll { it !in shapeIds }
+                lastShapeBounds.keys.removeAll {
+                    val gone = it !in shapeIds
+                    // 被刪形狀帶非有限舊 bounds：同上，表達不出髒區，直接全量。
+                    if (gone && lastShapeBounds[it]?.hasFiniteBounds() == false) boundsBroken = true
+                    gone
+                }
                 strokes.forEach { swp ->
                     if (swp.stroke.shapeType != null && swp.stroke.id !in previewIds) {
                         lastShapeBounds[swp.stroke.id] = strokeRect(swp)
                     }
                 }
 
-                val fullRebuild = dirty == null ||
+                // 非有限 bounds 熔斷（在下面 keepIds/shape 兩輪遍歷里順手收集，
+                // 不另開一輪）：退化輸入的包絡數學可能產出 NaN/Inf；minOf/maxOf
+                // 會靜默吞掉 NaN，髒區算小、相交全 false，該畫的全被跳過
+                // （無崩潰無 log 的純隱形）。看到一個就走全量：無條件重畫一定對。
+                val fullRebuild = boundsBroken || dirty == null ||
                     damageCoverage(dirty, pageRect) >= INK_FULL_REBUILD_COVERAGE
                 cacheCanvas.save()
                 cacheCanvas.scale(sx * cacheScale, sy * cacheScale)
