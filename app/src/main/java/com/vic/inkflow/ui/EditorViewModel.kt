@@ -130,7 +130,14 @@ class EditorViewModel(
 
     // Canvas pixel dimensions — reported by InkCanvas via setCanvasSize().
     // Default to MODEL dimensions so normalisation is identity before the first size report.
+    //
+    // Volatile 不是多餘的：寫入在主線程（onSizeChanged），但讀取有一處在
+    // Dispatchers.Default（deleteStrokesIntersecting 的相交計算）。plain var 跨線程
+    // 讀在 JVM 語義下允許無限期 stale——實務上 ART 幾乎都會刷新，但橡皮擦命中用錯
+    // 一次縮放係數就是整批擦錯/擦空，而這裡修掉它只要兩個字。
+    @Volatile
     private var canvasW = modelWidth
+    @Volatile
     private var canvasH = modelHeight
 
     fun setCanvasSize(w: Float, h: Float) {
@@ -617,6 +624,20 @@ class EditorViewModel(
         )
         val pointEntities = normalizedPoints.map {
             PointEntity(strokeId = strokeId, x = it.x, y = it.y, width = it.width)
+        }
+        // 存檔法醫線（debug only）：下次再看到「筆偏移」，直接對這行——
+        // cW/cH 是落庫當下的畫布尺寸，modelW/H 是紙尺寸，bounds 是算出來的結果。
+        // 若某筆的 model 座標除回去對不上手指位置，看這行就知道是哪個輸入錯了
+        //（画布尺寸 stale／紙尺寸剛換／點列本身 NaN），不用重猜整條管線。
+        if (com.vic.inkflow.BuildConfig.DEBUG) {
+            val first = normalizedPoints.firstOrNull()
+            android.util.Log.d(
+                "InkFlowDbg",
+                "SAVE id=${strokeId.take(8)} n=${normalizedPoints.size} " +
+                    "canvas=${cW.toInt()}x${cH.toInt()} model=${modelWidth.toInt()}x${modelHeight.toInt()} " +
+                    "first=(${first?.x?.toInt()},${first?.y?.toInt()}) " +
+                    "bounds=[${bounds.left.toInt()},${bounds.top.toInt()},${bounds.right.toInt()},${bounds.bottom.toInt()}]"
+            )
         }
         val pendingStroke = StrokeWithPoints(strokeEntity, pointEntities)
         _pendingStrokes.value = _pendingStrokes.value + (strokeId to pendingStroke)
