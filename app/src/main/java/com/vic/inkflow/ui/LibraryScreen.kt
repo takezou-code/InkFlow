@@ -828,9 +828,20 @@ fun DocumentLibraryScreen(
                     // 不開逐項協程。參數與舊動畫同（300ms 本體＋60ms stagger，上限 8 張）；
                     // 位移用固定 56px（舊版是半卡高，graphicsLayer 裡量不到卡高，
                     // 取中間值保證 sequential 看得出來）。
+                    //
+                    // 入場只演一次：rememberSaveable 在 pop 回來（backstack 恢復）時還在，
+                    // 所以從文件回來不再重播。重播會跟 pop 轉場＋縮圖重訂閱＋編輯器
+                    // teardown（PdfViewModel 的點陣快取整批變垃圾待 GC）擠在同一時刻，
+                    // 正是「剛開不卡、回來卡」的那一坨。冷啟動照常演。
+                    var entrancePlayed by rememberSaveable { mutableStateOf(false) }
                     val entranceBudget = remember { Animatable(0f) }
                     LaunchedEffect(entranceBudget) {
-                        entranceBudget.animateTo(1f, tween(LIBRARY_ENTRANCE_WINDOW_MS))
+                        if (entrancePlayed) {
+                            entranceBudget.snapTo(1f)
+                        } else {
+                            entranceBudget.animateTo(1f, tween(LIBRARY_ENTRANCE_WINDOW_MS))
+                            entrancePlayed = true
+                        }
                     }
                     val entranceShiftPx = with(LocalDensity.current) { 56.dp.toPx() }
                     if (isGridView) {
