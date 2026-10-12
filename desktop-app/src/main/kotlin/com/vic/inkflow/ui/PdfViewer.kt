@@ -259,6 +259,7 @@ fun PdfViewer(
     // shape, or drawing across a page boundary becomes a mode lottery.
     var tool by remember(documentUri) { mutableStateOf(InkTool.Pen) }
     var inkColour by remember(documentUri) { mutableIntStateOf(0xFF121826.toInt()) }
+    var inkWidthPt by remember(documentUri) { mutableFloatStateOf(INK_WIDTH_PT) }
     var shapeSubType by remember(documentUri) { mutableStateOf(com.vic.inkflow.util.ShapeType.RECT) }
 
     // Export runs off the UI thread: a long document must not freeze the reader while
@@ -469,6 +470,7 @@ fun PdfViewer(
                         onLocalEdit = onLocalEdit,
                         tool = tool,
                         inkColour = inkColour,
+                        inkWidthPt = inkWidthPt,
                         shapeSubType = shapeSubType,
                         handle = handles.getOrPut(idx) { PageHandle() },
                         onFocused = { focusPage(idx) },
@@ -483,6 +485,8 @@ fun PdfViewer(
                 colour = inkColour,
                 onToolChange = { tool = it },
                 onColourChange = { inkColour = it },
+                widthPt = inkWidthPt,
+                onWidthChange = { inkWidthPt = it },
                 shapeSubType = shapeSubType,
                 onShapeSubTypeChange = { shapeSubType = it },
                 canUndo = h?.canUndo?.value == true,
@@ -522,6 +526,7 @@ private fun PageView(
     onLocalEdit: () -> Unit = {},
     tool: InkTool = InkTool.Pen,
     inkColour: Int = 0xFF121826.toInt(),
+    inkWidthPt: Float = INK_WIDTH_PT,
     shapeSubType: com.vic.inkflow.util.ShapeType = com.vic.inkflow.util.ShapeType.RECT,
     handle: PageHandle,
     onFocused: () -> Unit = {},
@@ -1243,7 +1248,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
             pageIndex = requestedPage,
             docY = null,
             color = inkColour,
-            strokeWidth = INK_WIDTH_PT,
+            strokeWidth = inkWidthPt,
             boundsLeft = minOf(start.x, end.x),
             boundsTop = minOf(start.y, end.y),
             boundsRight = maxOf(start.x, end.x),
@@ -1252,8 +1257,8 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
             shapeType = shapeSubType.name
         )
         val points = listOf(
-            PointEntity(id = 1L, strokeId = stroke.id, x = start.x, y = start.y, width = INK_WIDTH_PT),
-            PointEntity(id = 2L, strokeId = stroke.id, x = end.x, y = end.y, width = INK_WIDTH_PT)
+            PointEntity(id = 1L, strokeId = stroke.id, x = start.x, y = start.y, width = inkWidthPt),
+            PointEntity(id = 2L, strokeId = stroke.id, x = end.x, y = end.y, width = inkWidthPt)
         )
         runCatching { databaseManager.saveStroke(stroke, points) }
             .onSuccess {
@@ -1274,12 +1279,15 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
 
     fun commitStroke(pts: List<Offset>, modelWidths: List<Float>) {
         val b = box ?: return
+        // Stored base is what the user picked; the per-sample widths carry the
+        // highlighter expansion, exactly like the tablet.
+        val baseWidth = if (tool == InkTool.Highlighter) inkWidthPt * HIGHLIGHTER_WIDTH_MULT else inkWidthPt
         val stroke = StrokeEntity(
             documentUri = documentUri,
             pageIndex = requestedPage,
             docY = null,
             color = inkColour,
-            strokeWidth = INK_WIDTH_PT,
+            strokeWidth = inkWidthPt,
             boundsLeft = pts.minOf { it.x },
             boundsTop = pts.minOf { it.y },
             boundsRight = pts.maxOf { it.x },
@@ -1295,7 +1303,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                 // Per-sample drawn width, exactly like the tablet. Storing the base
                 // width here instead would make the stroke render as a flat
                 // hairline on both devices.
-                width = modelWidths.getOrNull(i) ?: INK_WIDTH_PT
+                width = modelWidths.getOrNull(i) ?: baseWidth
             )
         }
         runCatching { databaseManager.saveStroke(stroke, points) }
@@ -1629,10 +1637,10 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
         }
     }
 
-    // Tool switch cancels any in-progress preview: the drawing handler below
-    // restarts on tool change (it is a key), and a cancelled gesture would
-    // otherwise leave its ghost on screen until the next stroke.
-    LaunchedEffect(tool) {
+    // Tool or width switch cancels any in-progress preview: the drawing handler
+    // below restarts on either change (both are keys), and a cancelled gesture
+    // would otherwise leave its ghost on screen until the next stroke.
+    LaunchedEffect(tool, inkWidthPt) {
         liveStroke = null
         liveStrokeWidths = emptyList()
         liveShape = null
@@ -1704,7 +1712,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                 }
                 // Keyboard and focus live in the parent reader now; this canvas keeps
                 // gestures and the wheel only.
-                .pointerInput(documentUri, requestedPage, editable, tool) {
+                .pointerInput(documentUri, requestedPage, editable, tool, inkWidthPt) {
                     // LAST in the chain on purpose: a pointerInput modifier that is
                     // further from the content receives events first, so this one
                     // sees the press before the pan/zoom handler above and can
@@ -1712,9 +1720,9 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                     // transform gesture had already started panning the page, and
                     // drawing appeared to do nothing at all.
                     //
-                    // `tool` is a key (not just read inside): the coroutine captures
-                    // values at start, so without it every gesture after a tool
-                    // switch would keep drawing with the old tool.
+                    // `tool` and `inkWidthPt` are keys (not just read inside): the
+                    // coroutine captures values at start, so without them every
+                    // gesture after a switch would keep drawing with the old tool.
                     if (!editable) return@pointerInput
                     // The grab hand never touches the pointer stream: unconsumed
                     // drags fall through to the page list, which scrolls.
@@ -1729,8 +1737,12 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                         val start = toModel(down.position)
                             ?: return@awaitEachGesture // press landed in the margin
                         down.consume()
+                        // Picked width, expanded for the marker: the tablet draws a
+                        // highlighter at 3x the pen width, so desktop ink matches it
+                        // stroke for stroke.
+                        val baseWidth = if (tool == InkTool.Highlighter) inkWidthPt * HIGHLIGHTER_WIDTH_MULT else inkWidthPt
                         val pts = mutableListOf(Offset(start.x, start.y))
-                        val modelWidths = mutableListOf(INK_WIDTH_PT)
+                        val modelWidths = mutableListOf(baseWidth)
                         var lastTime = System.currentTimeMillis()
                         // The eraser follows the same pointer path as the pen and
                         // differs only in what happens on release. Branching here keeps
@@ -1852,7 +1864,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                                         posX = m.x,
                                         posY = m.y,
                                         dtMs = now - lastTime,
-                                        baseWidth = INK_WIDTH_PT,
+                                        baseWidth = baseWidth,
                                         isHighlighter = tool == InkTool.Highlighter
                                     )
                                     lastTime = now
@@ -1954,6 +1966,7 @@ for (swp in strokes) {
                     // away from the cursor — visible as "no preview at all" whenever
                     // the page was centred with a margin.
                     liveStroke?.takeIf { it.isNotEmpty() }?.let { pts ->
+                        val previewBase = if (tool == InkTool.Highlighter) inkWidthPt * HIGHLIGHTER_WIDTH_MULT else inkWidthPt
                         val screenPts = pts.map {
                             Offset(
                                 (it.x - b.originX) * scale,
@@ -1965,7 +1978,7 @@ for (swp in strokes) {
                                 screenPts.mapIndexed { i, o ->
                                     com.vic.inkflow.util.StrokePoint(
                                         o.x, o.y,
-                                        liveStrokeWidths.getOrNull(i) ?: (INK_WIDTH_PT * scale)
+                                        liveStrokeWidths.getOrNull(i) ?: (previewBase * scale)
                                     )
                                 }
                             ),
@@ -1985,7 +1998,7 @@ color = Color(inkColour).copy(
                       liveShape?.let { (a, z) ->
                           val sa = Offset((a.x - b.originX) * scale, (a.y - b.originY) * scale)
                           val sz = Offset((z.x - b.originX) * scale, (z.y - b.originY) * scale)
-                          val sw = (INK_WIDTH_PT * scale).coerceAtLeast(MIN_INK_PX)
+                          val sw = (inkWidthPt * scale).coerceAtLeast(MIN_INK_PX)
                           val previewStyle = androidx.compose.ui.graphics.drawscope.Stroke(
                               width = sw,
                               cap = androidx.compose.ui.graphics.StrokeCap.Round,
@@ -2023,7 +2036,7 @@ color = Color(inkColour).copy(
                                   )
                                   val head = ShapeGeometry.arrowHead(
                                       a.x, a.y, z.x, z.y,
-                                      ShapeGeometry.arrowHeadSize(INK_WIDTH_PT)
+                                      ShapeGeometry.arrowHeadSize(inkWidthPt)
                                   )
                                   // The barbs come back in model coordinates, so only
                                   // their RELATIVE vector may be added to the
@@ -2217,8 +2230,22 @@ private const val TEXT_SIZE_PT = 16f
 /**
  * Stroke width in **model units** (PDF points), not pixels, so it scales with the
  * page exactly the way the tablet's does — a 2pt pen is 2pt at any zoom.
+ *
+ * This is the default picked width; the live value lives in the reader state and
+ * arrives as `inkWidthPt`. The highlighter multiplies it (see below), so the
+ * stored per-sample widths — not this constant — are what the renderer reads.
  */
 private const val INK_WIDTH_PT = 1.6f
+
+/**
+ * Highlighter-to-pen width ratio. Matches the tablet (`strokeWidth * 3f` for the
+ * marker): without it desktop highlighter ink renders at pen thinness and reads
+ * as "the highlighter is still a pen".
+ */
+private const val HIGHLIGHTER_WIDTH_MULT = 3f
+
+/** Width stops offered in the toolbar while a stroke tool is armed. */
+private val INK_WIDTH_PRESETS = listOf("細" to 1.0f, "標準" to 1.6f, "粗" to 2.6f)
 
 /**
  * Floating ink toolbar: tool, colour, and a destructive clear.
@@ -2232,6 +2259,8 @@ private fun InkToolbar(
     colour: Int,
     onToolChange: (InkTool) -> Unit,
     onColourChange: (Int) -> Unit,
+    widthPt: Float,
+    onWidthChange: (Float) -> Unit,
     shapeSubType: com.vic.inkflow.util.ShapeType,
     onShapeSubTypeChange: (com.vic.inkflow.util.ShapeType) -> Unit,
     canUndo: Boolean,
@@ -2381,6 +2410,24 @@ private fun InkToolbar(
                     text = SHAPE_LABELS[st] ?: st.name,
                     selected = shapeSubType == st,
                     onClick = { onShapeSubTypeChange(st) },
+                    isDark = InkThemeState.darkMode
+                )
+            }
+        }
+
+        // Width presets ride the same row while a stroke tool is armed — the same
+        // pattern as the shape subtypes. Three named stops, not a slider: a mouse
+        // cannot feel pressure, so coarse steps beat fine scrubbing.
+        if (tool == InkTool.Pen || tool == InkTool.Highlighter) {
+            androidx.compose.material3.VerticalDivider(
+                modifier = Modifier.height(24.dp).padding(horizontal = 6.dp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
+            )
+            INK_WIDTH_PRESETS.forEach { (label, w) ->
+                GlassOptionChip(
+                    text = label,
+                    selected = widthPt == w,
+                    onClick = { onWidthChange(w) },
                     isDark = InkThemeState.darkMode
                 )
             }
