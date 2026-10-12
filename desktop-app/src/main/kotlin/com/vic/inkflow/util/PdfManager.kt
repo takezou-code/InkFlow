@@ -36,8 +36,10 @@ private const val POINTS_PER_INCH = 72f
  *
  * Every function here is **blocking** (PDFBox parses and rasterises on the calling thread).
  * Callers must wrap them in `withContext(Dispatchers.IO)`. Nothing here touches Compose
- * state, so the object is safe to share across coroutines; the only shared mutable state is
- * the thumbnail LRU cache, which is guarded by its own monitor.
+ * state. Open documents are cached (see [withDocument]): every use of a cached
+ * `PDDocument` runs under one lock, because PDFBox objects are not thread-safe and
+ * parallel page renders must serialise instead of tearing a shared document apart.
+ * The thumbnail LRU cache is guarded by its own monitor.
  */
 object PdfManager {
 
@@ -378,22 +380,97 @@ object PdfManager {
         return withDocument(file, block)
     }
 
+    // ── Open-document cache ─────────────────────────────────────────────
+    //
+    // Opening a document means parsing the whole file. The reader used to do that
+    // on every call, so opening one N-page document parsed it 2N+1 times (one
+    // readPageInfo plus one renderPage per page, plus the parent's). Now the
+    // parsed document stays open and every call reuses it.
+    //
+    // Two rules keep this safe:
+    // 1. One lock for all PDFBox use. PDDocument and PDFRenderer are not
+    //    thread-safe, and pages render on parallel IO threads, so every block
+    //    runs serialised under [docLock]. Parsing dominates the cost, so
+    //    serialising cheap shared reads is still far faster than re-parsing.
+    // 2. The key carries mtime + size. A file replaced under us (sync, export
+    //    overwrite) never matches, so a stale handle cannot serve new bytes.
+    //    A block that throws also evicts its entry: the failure may have left
+    //    the document half-torn, and the next call must reopen cleanly.
+    private data class OpenDocKey(val path: String, val mtime: Long, val size: Long)
+
+    private const val OPEN_DOC_CACHE_ENTRIES = 4
+
+    private val docLock = Any()
+
+    private val openDocs = object : LinkedHashMap<OpenDocKey, PDDocument>(8, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<OpenDocKey, PDDocument>): Boolean {
+            if (size > OPEN_DOC_CACHE_ENTRIES) {
+                runCatching { eldest.value.close() }
+                    .onFailure { logger.warn(it) { "Failed to close evicted ${eldest.key.path}" } }
+                return true
+            }
+            return false
+        }
+    }
+
+    /** Counts real parses. Tests use it to prove the cache reuses documents. */
+    internal var documentOpens = 0
+        private set
+
+    internal fun resetDocumentOpensForTest() {
+        synchronized(docLock) { documentOpens = 0 }
+    }
+
+    /**
+     * Closes every cached document. Tests call this so temp files can be deleted
+     * on Windows (an open handle blocks deletion); the app calls it on shutdown.
+     */
+    fun closeOpenDocuments() {
+        synchronized(docLock) {
+            openDocs.values.forEach { runCatching { it.close() } }
+            openDocs.clear()
+        }
+    }
+
     private fun <T> withDocument(file: File, block: (PDDocument) -> PdfResult<T>): PdfResult<T> {
         if (!file.isFile) return PdfResult.Err("找不到檔案 ${file.name}")
         if (file.length() > MAX_FILE_BYTES) {
             return PdfResult.Err("檔案過大（${file.length() / 1024 / 1024} MB），無法開啟")
         }
         if (file.length() == 0L) return PdfResult.Err("檔案是空的（${file.name}）")
-        return try {
-            // The empty-password overload is explicit so an encrypted file fails with
-            // InvalidPasswordException instead of a generic IOException.
-            Loader.loadPDF(file, "").use { doc -> block(doc) }
-        } catch (e: OutOfMemoryError) {
-            logger.error(e) { "Out of memory rendering ${file.name}" }
-            PdfResult.Err("PDF 太大，記憶體不足")
-        } catch (e: Throwable) {
-            logger.error(e) { "PDFBox failed on ${file.absolutePath}" }
-            PdfResult.Err(describe(e), e)
+        synchronized(docLock) {
+            val key = OpenDocKey(file.absolutePath, file.lastModified(), file.length())
+            var doc = openDocs[key]
+            if (doc == null) {
+                // Same path, different stamp: the file was replaced. Drop the
+                // stale handle before opening, or two entries would alias one file.
+                openDocs.keys.firstOrNull { it.path == key.path }?.let { stale ->
+                    runCatching { openDocs.remove(stale)?.close() }
+                }
+                doc = try {
+                    // The empty-password overload is explicit so an encrypted file fails with
+                    // InvalidPasswordException instead of a generic IOException.
+                    Loader.loadPDF(file, "").also { documentOpens++ }
+                } catch (e: OutOfMemoryError) {
+                    logger.error(e) { "Out of memory opening ${file.name}" }
+                    return PdfResult.Err("PDF 太大，記憶體不足")
+                } catch (e: Throwable) {
+                    logger.error(e) { "PDFBox failed on ${file.absolutePath}" }
+                    return PdfResult.Err(describe(e), e)
+                }
+                openDocs[key] = doc
+            }
+            return try {
+                block(doc)
+            } catch (e: OutOfMemoryError) {
+                logger.error(e) { "Out of memory rendering ${file.name}" }
+                runCatching { openDocs.remove(key)?.close() }
+                PdfResult.Err("PDF 太大，記憶體不足")
+            } catch (e: Throwable) {
+                logger.error(e) { "PDFBox failed on ${file.absolutePath}" }
+                runCatching { openDocs.remove(key)?.close() }
+                PdfResult.Err(describe(e), e)
+            }
         }
     }
 
