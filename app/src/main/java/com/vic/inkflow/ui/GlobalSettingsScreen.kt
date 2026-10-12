@@ -1011,11 +1011,22 @@ private fun TouchCalibrationBlock(
 ) {
     val density = LocalDensity.current
     Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
-        Text(
-            text = String.format("dx %+.1fdp　dy %+.1fdp（範圍 ±%.0fdp）", dxDp, dyDp, TOUCH_CAL_RANGE_DP),
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.primary
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = String.format("dx %+.1fdp　dy %+.1fdp（範圍 ±%.0fdp）", dxDp, dyDp, TOUCH_CAL_RANGE_DP),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.primary
+            )
+            // 誤觸搖桿會留下垃圾偏移（按下即結算、彈簧回去但數值保留），且關掉開關
+            // 只是停用、不清零——給一個顯式歸零，否則使用者永遠不知道值髒了。
+            TextButton(onClick = { onOffsetChange(0f, 0f) }) {
+                Text("歸零")
+            }
+        }
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1041,9 +1052,17 @@ private fun TouchCalibrationBlock(
                                 // 每個手勢以當下最新偏移為基點累加
                                 val baseDx = dxRef.value
                                 val baseDy = dyRef.value
+                                // 死區：輕碰（落點離中心不到一根手指的誤觸範圍）不結算。
+                                // 之前沒有死區，點開設定時手指擦過搖桿就會寫入垃圾偏移，
+                                // 而搖桿彈簧回去、數值保留——使用者永遠不知道值髒了。
+                                val deadPx = with(density) { 10.dp.toPx() }
                                 fun push(pos: androidx.compose.ui.geometry.Offset) {
                                     val d = pos - centerPx
                                     val len = kotlin.math.hypot(d.x, d.y)
+                                    if (len < deadPx) {
+                                        knobPx = androidx.compose.ui.geometry.Offset.Zero
+                                        return
+                                    }
                                     val clamped = if (len > maxDeflectPx) d * (maxDeflectPx / len) else d
                                     knobPx = clamped
                                     val step = with(density) {
