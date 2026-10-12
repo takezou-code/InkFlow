@@ -560,6 +560,11 @@ class LocalSyncManager(
                                 proposalsAccepted++
                                 continue
                             }
+                            // Accepted on a stale base: count it, but do NOT skip —
+                            // the winner covers tablet-side content we never pulled.
+                            PushOutcome.SENT_ACCEPTED_STALE -> {
+                                proposalsAccepted++
+                            }
                             // The tablet moved first: our edits are already gone from the
                             // local rows (the pull below replaces them), so drop the dead
                             // ops loudly and let the pull proceed.
@@ -703,6 +708,14 @@ class LocalSyncManager(
         NOTHING_QUEUED,
         /** Accepted; stored version already advanced, pull is a no-op — skip it. */
         SENT_ACCEPTED,
+        /**
+         * Accepted, but sent on a stale base: the winner version covers tablet-side
+         * content this desktop has never pulled (independent edits that moved the
+         * base in the first place). The pull-skip that [SENT_ACCEPTED] enjoys is
+         * **invalid** here — skipping would leave that content unfetched until some
+         * unrelated change moves the version again. Count as accepted, then pull.
+         */
+        SENT_ACCEPTED_STALE,
         /** Tablet had moved on; ops dropped loudly, let the pull proceed. */
         CONFLICT,
         /** Transport died; ops kept for retry, skip the pull to protect them. */
@@ -722,7 +735,10 @@ class LocalSyncManager(
         val pending = queue.takeForSend(entry.uri) ?: return PushOutcome.NOTHING_QUEUED
         if (pending.ops.isEmpty()) return PushOutcome.NOTHING_QUEUED
 
-        if (pending.baseDocVersion != remoteVersion) {
+        // Remembered for the ACCEPTED branch: an accept on a stale base still
+        // leaves independently-added tablet content unfetched (see SENT_ACCEPTED_STALE).
+        val staleBase = pending.baseDocVersion != remoteVersion
+        if (staleBase) {
             // The tablet moved under us. Whether sending is safe depends on WHAT moved:
             //
             // - File body changed (or we hold no local mirror to verify against):
@@ -759,7 +775,7 @@ class LocalSyncManager(
                     databaseManager.setDocVersion(instanceId, entry.uri, winner, pass)
                 }
                 logger.info { "Proposal ${pending.proposalId} accepted for ${entry.uri}" }
-                PushOutcome.SENT_ACCEPTED
+                if (staleBase) PushOutcome.SENT_ACCEPTED_STALE else PushOutcome.SENT_ACCEPTED
             }
             else -> {
                 // v6 §15.2: resolve per op, not per proposal. Against a v5 tablet

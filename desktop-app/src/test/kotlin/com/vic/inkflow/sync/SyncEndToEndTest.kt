@@ -438,6 +438,134 @@ class SyncEndToEndTest {
         }
     }
 
+    /**
+     * v6, no genuine conflict: the tablet added an unrelated stroke (moving the
+     * document version under the desktop's base) while the desktop drew new ink
+     * and edited an object the tablet never touched.
+     *
+     * v5 dropped the whole desktop proposal here. v6 must accept every op, and
+     * the desktop must still pull the tablet's independent edit afterwards —
+     * accepting on a stale base must NOT skip the pull (SENT_ACCEPTED_STALE),
+     * or that edit would never arrive.
+     */
+    @Test
+    fun `v6 merge accepts everything when nothing truly collides, then pulls the rest`() {
+        withFakeTablet { srv, tablet ->
+            desktop { db, dir ->
+                val queue = ProposalQueue(db)
+                val mgr = LocalSyncManager(
+                    db, dir.absolutePath, transferPort = srv.localPort, proposalQueue = queue
+                )
+                val device = deviceFor(srv)
+                mgr.syncWithTablet(device)
+
+                tablet.v6Merge = true
+                tablet.pushedStrokes.add(desktopStroke(tablet.uri, "tablet-2", x = 300f, y = 300f))
+
+                val swp = desktopStroke(tablet.uri, "desktop-1")
+                db.saveStroke(swp.stroke, swp.points)
+                queue.record(tablet.uri, ProposalOp(ProposalOp.UPSERT_STROKE, stroke = swp))
+
+                // Desktop edits stroke-1. Saved with version 0 so the desktop's
+                // stale-save rule advances it to 2 (beats the tablet's untouched 1).
+                val s1 = db.getAllStrokesForDocument(tablet.uri).first { it.stroke.id == "stroke-1" }
+                val moved = s1.copy(stroke = s1.stroke.copy(boundsLeft = 500f, version = 0))
+                db.saveStroke(moved.stroke, moved.points)
+                val s1v2 = db.getAllStrokesForDocument(tablet.uri).first { it.stroke.id == "stroke-1" }
+                assertEquals(2, s1v2.stroke.version, "setup: desktop edit must reach v2")
+                queue.record(tablet.uri, ProposalOp(ProposalOp.UPSERT_STROKE, stroke = s1v2))
+
+                val r = mgr.syncWithTablet(device)
+                assertEquals(0, r.errors.size, "errors: ${r.errors}")
+                assertEquals(1, r.proposalsAccepted, "merged proposal counts as accepted")
+                assertEquals(0, r.proposalConflicts)
+                assertEquals(0, queue.pendingOpCount(), "accepted ops are consumed")
+                assertTrue(
+                    tablet.pushedStrokes.none { it.stroke.id.startsWith("copy-") },
+                    "no genuine conflict, so no conflict copies may exist"
+                )
+
+                // The tablet's independent edit must still arrive: the accept went
+                // out on a stale base, so the pull may not be skipped.
+                val r2 = mgr.syncWithTablet(device)
+                assertEquals(0, r2.errors.size, "errors: ${r2.errors}")
+                val ids = db.getAllStrokesForDocument(tablet.uri).map { it.stroke.id }.toSet()
+                assertTrue("tablet-2" in ids, "independent tablet edit must arrive, got: $ids")
+                assertTrue("desktop-1" in ids)
+                assertTrue("stroke-1" in ids)
+                assertEquals(
+                    500f,
+                    db.getAllStrokesForDocument(tablet.uri)
+                        .first { it.stroke.id == "stroke-1" }.stroke.boundsLeft,
+                    "the desktop edit must survive the round trip"
+                )
+            }
+        }
+    }
+
+    /**
+     * v6, genuine conflict: both sides edited stroke-1 from the same base.
+     * The tablet moved ahead (v2); the desktop's edit stayed at v1, so the
+     * tablet wins — but the desktop's work must survive as a visible
+     * `copy-stroke-1`, not vanish.
+     */
+    @Test
+    fun `v6 merge keeps the losers work as a conflict copy`() {
+        withFakeTablet { srv, tablet ->
+            desktop { db, dir ->
+                val queue = ProposalQueue(db)
+                val mgr = LocalSyncManager(
+                    db, dir.absolutePath, transferPort = srv.localPort, proposalQueue = queue
+                )
+                val device = deviceFor(srv)
+                mgr.syncWithTablet(device)
+
+                tablet.v6Merge = true
+                // Tablet edited stroke-1 (version advances, count does not — the
+                // blind spot the document hash cannot see) and added tablet-2
+                // (moves the version so the desktop base goes stale).
+                tablet.versions["stroke-1"] = 2 to 0
+                tablet.pushedStrokes.add(desktopStroke(tablet.uri, "tablet-2", x = 300f, y = 300f))
+
+                val swp = desktopStroke(tablet.uri, "desktop-1")
+                db.saveStroke(swp.stroke, swp.points)
+                queue.record(tablet.uri, ProposalOp(ProposalOp.UPSERT_STROKE, stroke = swp))
+
+                // Desktop edits stroke-1 but the version does not advance past
+                // the tablet's (saves back the loaded v1, the desktop rule keeps it).
+                val s1 = db.getAllStrokesForDocument(tablet.uri).first { it.stroke.id == "stroke-1" }
+                val moved = s1.copy(stroke = s1.stroke.copy(boundsLeft = 500f))
+                db.saveStroke(moved.stroke, moved.points)
+                val s1v1 = db.getAllStrokesForDocument(tablet.uri).first { it.stroke.id == "stroke-1" }
+                assertEquals(1, s1v1.stroke.version, "setup: desktop edit stays at v1")
+                queue.record(tablet.uri, ProposalOp(ProposalOp.UPSERT_STROKE, stroke = s1v1))
+
+                val r = mgr.syncWithTablet(device)
+                assertEquals(0, r.errors.size, "errors: ${r.errors}")
+                assertEquals(1, r.proposalsAccepted, "merge answers ACCEPTED")
+                assertEquals(0, r.proposalConflicts)
+                assertTrue(
+                    tablet.pushedStrokes.any { it.stroke.id == "copy-stroke-1" },
+                    "the losing edit must be kept as a copy on the tablet"
+                )
+                assertEquals(
+                    500f,
+                    tablet.pushedStrokes.first { it.stroke.id == "copy-stroke-1" }
+                        .stroke.boundsLeft,
+                    "the copy must carry the desktop edit, not the tablet content"
+                )
+
+                // The copy travels back on the next pull like any new object.
+                val r2 = mgr.syncWithTablet(device)
+                assertEquals(0, r2.errors.size, "errors: ${r2.errors}")
+                val ids = db.getAllStrokesForDocument(tablet.uri).map { it.stroke.id }.toSet()
+                assertTrue("tablet-2" in ids, "got: $ids")
+                assertTrue("desktop-1" in ids, "got: $ids")
+                assertTrue("copy-stroke-1" in ids, "the conflict copy must arrive, got: $ids")
+            }
+        }
+    }
+
     @Test
     fun `a proposal that changes nothing still round-trips`() {
         // Degenerate but legal: an empty op list against a matching base. The tablet
@@ -627,6 +755,29 @@ class SyncEndToEndTest {
         val texts: MutableList<TextAnnotationEntity> = mutableListOf(),
         /** v5: strokes applied via accepted proposals. Mutable for the same reason. */
         val pushedStrokes: MutableList<StrokeWithPoints> = mutableListOf(),
+        /**
+         * v6: accepted upserts to the FIXTURE id replace it here instead of
+         * appending to [pushedStrokes] — otherwise document_detail would serve
+         * two rows with the same id (the real tablet REPLACEs by primary key).
+         * Null = fixture untouched.
+         */
+        var strokeOverride: StrokeWithPoints? = null,
+        /** v6: a delete of the fixture id hides it (revived by a later upsert). */
+        var fixtureDeleted: Boolean = false,
+        /**
+         * v6: per-object (version, nonce), seeded to mirror the fixture stroke
+         * (stroke-1 at version 1). Tests mutate it to simulate "the tablet edited
+         * this object" without changing any count — the exact blind spot the
+         * document hash cannot see and per-object merge exists for.
+         */
+        val versions: MutableMap<String, Pair<Int, Int>> = mutableMapOf("stroke-1" to (1 to 0)),
+        /**
+         * False (default) = v5 whole-proposal arbitration: a stale base rejects
+         * every op. True = v6 per-object merge: stale base arbitrates each op by
+         * (version, nonce) and keeps the loser's work as a `copy-<id>` object,
+         * mirroring ProposalArbiter.decideOps + TabletSyncServer.applyMergedProposal.
+         */
+        var v6Merge: Boolean = false,
         /** Folders served by folder_list. Mutable so a test can delete one. */
         val folders: MutableList<FolderEntity> = mutableListOf(),
         /** proposalId -> status, proving idempotent resends. */
@@ -637,11 +788,13 @@ class SyncEndToEndTest {
          *  [texts], because the count is part of the hash in v4. */
         val rehash: () -> String
     ) {
-        /** Every stroke the tablet currently holds: fixture + pushed. */
+        /** Every stroke the tablet currently holds: fixture (±override) + pushed. */
         fun allStrokes(): List<StrokeWithPoints> =
-            listOf(StrokeWithPoints(stroke, points)) + pushedStrokes.toList()
+            (if (fixtureDeleted) emptyList()
+            else listOf(strokeOverride ?: StrokeWithPoints(stroke, points))) +
+                pushedStrokes.toList()
 
-        fun strokeCount(): Int = 1 + pushedStrokes.size
+        fun strokeCount(): Int = (if (fixtureDeleted) 0 else 1) + pushedStrokes.size
     }
 
     private var lastPdfSize = 0L
@@ -820,7 +973,7 @@ class SyncEndToEndTest {
                                         message = "unknown document"
                                     ).also { tablet.seenProposals[p.proposalId] = it }
                                 )
-                            } else if (p.baseDocVersion != tablet.rehash()) {
+                            } else if (p.baseDocVersion != tablet.rehash() && !tablet.v6Merge) {
                                 respond(
                                     req.type,
                                     ProposalStatusPayload(
@@ -834,6 +987,89 @@ class SyncEndToEndTest {
                                             }
                                         },
                                         message = "base moved on"
+                                    ).also { tablet.seenProposals[p.proposalId] = it }
+                                )
+                            } else if (tablet.v6Merge && p.baseDocVersion != tablet.rehash()) {
+                                // v6: stale base arbitrates per object, like the real tablet.
+                                // Accepted ops apply and advance the version; losers are kept
+                                // as `copy-<id>` objects (version 1) instead of dropped.
+                                // Conflicted deletes apply nothing (modify-wins), like prod.
+                                val copies = mutableListOf<String>()
+                                for (op in p.ops) {
+                                    val isDelete = op.op == ProposalOp.DELETE_STROKE ||
+                                        op.op == ProposalOp.DELETE_TEXT
+                                    val incomingSwp = op.stroke?.let {
+                                        gson.fromJson(gson.toJson(it), StrokeWithPoints::class.java)
+                                    }
+                                    val incomingText = op.text?.let {
+                                        gson.fromJson(gson.toJson(it), TextAnnotationEntity::class.java)
+                                    }
+                                    val id = op.id ?: incomingSwp?.stroke?.id ?: incomingText?.id
+                                        ?: continue
+                                    val iv = incomingSwp?.stroke?.version ?: incomingText?.version ?: 1
+                                    val ino = incomingSwp?.stroke?.versionNonce
+                                        ?: incomingText?.versionNonce ?: 0
+                                    val cur = tablet.versions[id]
+                                    val wins = cur == null || iv > cur.first ||
+                                        (iv == cur.first && ino < cur.second)
+                                    if (wins) {
+                                        when (op.op) {
+                                            ProposalOp.UPSERT_STROKE -> {
+                                                val swp = incomingSwp!!
+                                                if (swp.stroke.id == tablet.stroke.id) {
+                                                    tablet.strokeOverride = swp
+                                                    tablet.fixtureDeleted = false
+                                                    tablet.pushedStrokes.removeAll { it.stroke.id == swp.stroke.id }
+                                                } else {
+                                                    tablet.pushedStrokes.removeAll { it.stroke.id == swp.stroke.id }
+                                                    tablet.pushedStrokes.add(swp)
+                                                }
+                                                tablet.versions[id] = iv to ino
+                                            }
+                                            ProposalOp.DELETE_STROKE -> {
+                                                if (id == tablet.stroke.id) {
+                                                    tablet.strokeOverride = null
+                                                    tablet.fixtureDeleted = true
+                                                }
+                                                tablet.pushedStrokes.removeAll { it.stroke.id == id }
+                                                tablet.versions.remove(id)
+                                            }
+                                            ProposalOp.UPSERT_TEXT -> {
+                                                val t = incomingText!!
+                                                tablet.texts.removeAll { it.id == t.id }
+                                                tablet.texts.add(t)
+                                                tablet.versions[id] = iv to ino
+                                            }
+                                            ProposalOp.DELETE_TEXT -> {
+                                                tablet.texts.removeAll { it.id == id }
+                                                tablet.versions.remove(id)
+                                            }
+                                        }
+                                    } else if (!isDelete) {
+                                        val copyId = "copy-$id"
+                                        if (incomingSwp != null) {
+                                            val copy = incomingSwp.copy(
+                                                stroke = incomingSwp.stroke.copy(id = copyId, version = 1)
+                                            )
+                                            tablet.pushedStrokes.removeAll { it.stroke.id == copyId }
+                                            tablet.pushedStrokes.add(copy)
+                                        } else {
+                                            val t = incomingText!!
+                                            tablet.texts.removeAll { it.id == copyId }
+                                            tablet.texts.add(t.copy(id = copyId, version = 1))
+                                        }
+                                        tablet.versions[copyId] = 1 to 0
+                                        copies.add(copyId)
+                                    }
+                                }
+                                respond(
+                                    req.type,
+                                    ProposalStatusPayload(
+                                        p.proposalId, ProposalStatusPayload.ACCEPTED,
+                                        winnerDocVersion = tablet.rehash(),
+                                        conflictIds = emptyList(),
+                                        message = if (copies.isEmpty()) null
+                                        else "merged; ${copies.size} kept as conflict copies"
                                     ).also { tablet.seenProposals[p.proposalId] = it }
                                 )
                             } else {
