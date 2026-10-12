@@ -280,6 +280,13 @@ fun AiWebPanel(
     onClose: () -> Unit,
     // 由工具列切換帶進來；面板不持有也不持久化，避免兩處狀態打架。
     provider: AiProvider = AiProvider.GEMINI,
+    // 每份文件的 AI 記憶：初次建 WebView 時進這個地址（null／空白＝進站首頁）。
+    // 切文件不重建 WebView，還原由呼叫端 loadUrl；這裡只管「出生第一頁」。
+    initialUrl: String? = null,
+    // 頁面落定就回報（onPageFinished＋doUpdateVisitedHistory 兩處，SPA 切對話
+    // 不觸發 onPageFinished，只靠後者）。只報同站 URL，登入中轉頁不上報。
+    // 面板只管報，存不存由呼叫端決定（面板不持有文件概念）。
+    onUrlChanged: (String) -> Unit = {},
     // 抽屜收起來＝false：WebView 熄燈（onPause）省電，但**物件與網頁狀態全留著**，
     // 下次打開立刻見到原畫面，不重載。true 時 onResume。
     active: Boolean = true,
@@ -293,6 +300,16 @@ fun AiWebPanel(
     val webViewCallback = androidx.compose.runtime.rememberUpdatedState(onWebView)
     val currentWebLight = androidx.compose.runtime.rememberUpdatedState(webLight)
     val currentProvider = androidx.compose.runtime.rememberUpdatedState(provider)
+    val urlChangedCallback = androidx.compose.runtime.rememberUpdatedState(onUrlChanged)
+    // 同站才回報：登入中轉（accounts.google.com 等）不上報，還原才不會落在中轉頁。
+    // 比解析出的 host（見 urlHost），不用 contains：中轉頁 query 裡也帶著站名。
+    fun reportUrl(url: String) {
+        if (url.isBlank()) return
+        if (urlHost(url) != currentProvider.value.host) return
+        try {
+            urlChangedCallback.value(url)
+        } catch (_: Throwable) { }
+    }
     val uploadState = androidx.compose.runtime.remember {
         object {
             // 舊版是 lastProcessedUri（只比對 Uri）。改用請求的去重鍵，
@@ -621,13 +638,21 @@ override fun onPageFinished(view: android.webkit.WebView?, url: String?) {
                             if (!finishedUrl.contains(provider.host)) return
 
                             uploadState.isPageLoaded = true
+                            reportUrl(finishedUrl)
                             applyTheme(view, "load")
                             probeOnce(view, finishedUrl)
                             deliverPendingRequest(view, UPLOAD_ATTEMPTS_LOAD, "load")
                         }
+
+                        // SPA 內跳轉（切對話）不走 onPageFinished，這裡才抓得到。
+                        // 只回報、不做任何注入或重載，避免跟投遞鏈互相踩。
+                        override fun doUpdateVisitedHistory(view: android.webkit.WebView?, url: String?, isReload: Boolean) {
+                            super.doUpdateVisitedHistory(view, url, isReload)
+                            reportUrl(url.orEmpty())
+                        }
                     }
 
-                    loadUrl(provider.startUrl)
+                    loadUrl(initialUrl?.takeIf { it.isNotBlank() } ?: provider.startUrl)
                 }
             },
 update = { view ->

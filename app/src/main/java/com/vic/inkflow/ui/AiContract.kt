@@ -62,6 +62,49 @@ enum class AiProvider(
 const val KEY_AI_PROVIDER = "ai_provider"
 
 /**
+ * 每份文件的 AI 記憶（provider＋上次對話 URL），存在同一份 `inkflow_settings` prefs。
+ *
+ * 為什麼不用 DB／document_preferences：這只是「打開哪頁」的 UI 記憶，
+ * 跟文件內容無關；prefs 讀寫同步、無需 DAO，壞了最多回到起始頁，不會傷資料。
+ * key 帶 provider 名：同一份文件在兩個站各有自己的對話，切站不互相覆蓋。
+ */
+fun aiDocProviderKey(docId: String): String = "ai_doc_provider_$docId"
+
+fun aiDocUrlKey(docId: String, provider: AiProvider): String =
+    "ai_doc_url_${provider.name}_$docId"
+
+/**
+ * 算出這份文件這次該進的地址。純函數，單測釘住。
+ *
+ * 只接受「同站」的記憶地址：登入跳轉（accounts.google.com 之類）不存，
+ * 存了也不認——否則還原會落在登入中轉頁而不是對話。
+ *
+ * 注意比的是解析出的 host，不是子字串：中轉頁的 `?continue=https://gemini...`
+ * 查詢參數裡也帶著站名，子字串比對會誤判（單測釘死）。
+ */
+fun AiProvider.resolveRestoreUrl(savedUrl: String?): String {
+    val s = savedUrl.orEmpty()
+    return if (s.isNotBlank() && urlHost(s) == host) s else startUrl
+}
+
+/** 從 URL 反推是哪個站；認不得回 null（呼叫端自行忽略，不存）。 */
+fun aiProviderForUrl(url: String): AiProvider? {
+    val h = urlHost(url) ?: return null
+    return AiProvider.entries.firstOrNull { it.host == h }
+}
+
+/**
+ * 取 URL 的 host（纯字串解析，不碰 android.net.Uri——单测里 Uri 是 stub）。
+ * 比大小寫、大寫 scheme、帶 port 都先正規化；解析不出來回 null。
+ */
+internal fun urlHost(url: String): String? {
+    val afterScheme = url.substringAfter("://", "")
+    if (afterScheme.isEmpty()) return null
+    val host = afterScheme.substringBefore("/").substringBefore(":").lowercase().trim()
+    return host.ifEmpty { null }
+}
+
+/**
  * 產生填詞腳本。**這是面板與 driver 之間唯一的注入分歧點。**
  *
  * S3：以前這個 `buildPromptSendJs` 是 AiWebPanel 裡一整支 Gemini 專屬函式；

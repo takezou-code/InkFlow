@@ -6,6 +6,10 @@ import com.vic.inkflow.ui.AiOutcome
 import com.vic.inkflow.ui.AiProvider
 import com.vic.inkflow.ui.AiRequest
 import com.vic.inkflow.ui.PickPalette
+import com.vic.inkflow.ui.aiDocProviderKey
+import com.vic.inkflow.ui.aiDocUrlKey
+import com.vic.inkflow.ui.aiProviderForUrl
+import com.vic.inkflow.ui.resolveRestoreUrl
 import com.vic.inkflow.ui.domProbeJs
 import com.vic.inkflow.ui.imagePasteInputSelector
 import com.vic.inkflow.ui.collectJs
@@ -261,5 +265,49 @@ class AiContractTest {
         val good = AiOutcome.ok("PASTE_DISPATCHED")
         assertTrue(good.ok)
         assertNull(good.userHint)
+    }
+
+    // ── 每份文件的 AI 記憶 ──────────────────────────────────────────
+
+    @Test
+    fun `有记忆就还原上次的对话地址`() {
+        val url = "https://chatgpt.com/c/abc123"
+        assertEquals(url, AiProvider.CHATGPT.resolveRestoreUrl(url))
+    }
+
+    @Test
+    fun `没记忆就进站首页`() {
+        assertEquals(AiProvider.GEMINI.startUrl, AiProvider.GEMINI.resolveRestoreUrl(null))
+        assertEquals(AiProvider.CHATGPT.startUrl, AiProvider.CHATGPT.resolveRestoreUrl(""))
+        assertEquals(AiProvider.GEMINI.startUrl, AiProvider.GEMINI.resolveRestoreUrl("   "))
+    }
+
+    @Test
+    fun `登录中转页不上算，还原不许落在那里`() {
+        // 登入跳轉（accounts.google.com）不是對話，記了也不認。
+        val transit = "https://accounts.google.com/v3/signin/identifier?continue=https://gemini.google.com"
+        assertEquals(AiProvider.GEMINI.startUrl, AiProvider.GEMINI.resolveRestoreUrl(transit))
+    }
+
+    @Test
+    fun `不同文件不同站的记忆互不覆盖`() {
+        val docA = "file:///storage/docA.pdf"
+        val docB = "file:///storage/docB.pdf"
+        assertNotEquals(aiDocUrlKey(docA, AiProvider.GEMINI), aiDocUrlKey(docB, AiProvider.GEMINI))
+        assertNotEquals(
+            aiDocUrlKey(docA, AiProvider.GEMINI),
+            aiDocUrlKey(docA, AiProvider.CHATGPT)
+        )
+        assertNotEquals(aiDocProviderKey(docA), aiDocProviderKey(docB))
+    }
+
+    @Test
+    fun `从 URL 反推站点，认不得就回 null 而不是乱猜`() {
+        assertEquals(AiProvider.GEMINI, aiProviderForUrl("https://gemini.google.com/share/xyz"))
+        assertEquals(AiProvider.CHATGPT, aiProviderForUrl("https://chatgpt.com/c/abc"))
+        assertNull(aiProviderForUrl("https://accounts.google.com/signin"))
+        assertNull(aiProviderForUrl(""))
+        // query 里带站名也不算：这是登录中转页，不是本站。
+        assertNull(aiProviderForUrl("https://accounts.google.com/v3/signin?continue=https://gemini.google.com"))
     }
 }
