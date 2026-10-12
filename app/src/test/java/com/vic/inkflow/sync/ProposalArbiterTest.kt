@@ -107,6 +107,47 @@ class ProposalArbiterTest {
         assertEquals(listOf("s1", "n2"), (d as ProposalArbiter.Decision.ConflictStale).conflictIds)
     }
 
+    /**
+     * v6 的核心承諾：文件版本移動＋有物件版本 → 逐 op 仲裁，而不是整筆 ConflictStale。
+     *
+     * 這正是 v5 語意（movedDocumentVersionStillConflictsEverything）與 v6 的分界：
+     * 沒有版本可比時保守整筆否決，有版本時讓每筆各自決定。桌面端會在檔案本體沒變
+     * 的前提下才送出（LocalSyncManager），所以這裡的版本移動只可能是註解動了。
+     */
+    @Test
+    fun movedDocumentVersionWithObjectStatesMergesPerObject() {
+        // 平板加了一筆（版本 v10 → v11），桌面改的是另一筆不相干的物件。
+        // v5 會整筆丟掉桌面的修改；v6 應該接受它。
+        val d = ProposalArbiter.decideOps(
+            currentVersion = "v11", currentInstance = "inst-a",
+            baseVersion = "v10", baseInstance = "inst-a",
+            opIds = listOf("s-desktop"),
+            opStates = listOf(
+                opState("s-desktop", incomingVersion = 3, currentVersion = 2)
+            )
+        )
+        assertEquals(ProposalArbiter.Decision.Accept, d)
+    }
+
+    @Test
+    fun movedDocumentVersionStillSplitsGenuineConflicts() {
+        // 同一個版本移動，但桌面改的正是平板也改過的那筆 → 只衝突那一筆，
+        // 而不是整份提案。
+        val d = ProposalArbiter.decideOps(
+            currentVersion = "v11", currentInstance = "inst-a",
+            baseVersion = "v10", baseInstance = "inst-a",
+            opIds = listOf("s-clean", "s-clash"),
+            opStates = listOf(
+                opState("s-clean", incomingVersion = 3, currentVersion = 2),
+                opState("s-clash", incomingVersion = 2, currentVersion = 9)
+            )
+        )
+        assertTrue("got $d", d is ProposalArbiter.Decision.Merge)
+        val m = d as ProposalArbiter.Decision.Merge
+        assertEquals(listOf("s-clean"), m.acceptIds)
+        assertEquals(listOf("s-clash"), m.conflictIds)
+    }
+
     // ── v6 per-object merge ────────────────────────────────────────────────
 
     @Test

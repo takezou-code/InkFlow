@@ -543,13 +543,15 @@ class LocalSyncManager(
                             databaseManager.getDocVersion(instanceId, entry.uri) else null
                         val changed = local == null || localVersion == null || localVersion != remoteVersion
 
-                        // v5: push before pull. When our queued ops' base matches what the
+                        // Push before pull. When our queued ops' base matches what the
                         // tablet reports, the tablet has not moved under us: sending first
                         // means the pull below brings back a state that already includes
                         // our edits, instead of wiping them and calling it a conflict.
-                        // When the base does NOT match, the outcome is already decided —
-                        // sending would only waste a round trip learning it.
-                        val push = tryPushProposal(out, input, entry, instanceId, remoteVersion, pass)
+                        // When the base does NOT match, tryPushProposal decides whether
+                        // sending is safe (file body unchanged → v6 per-object merge)
+                        // or must be dropped (file body moved → our ops reference a
+                        // dead page structure).
+                        val push = tryPushProposal(out, input, entry, instanceId, remoteVersion, pass, local)
                         when (push) {
                             // Accepted: the tablet now holds our edits. The stored version
                             // jumps straight to the winner, so the pull below would be a
@@ -713,21 +715,33 @@ class LocalSyncManager(
         entry: DocumentManifestEntry,
         instanceId: String?,
         remoteVersion: String,
-        pass: Long
+        pass: Long,
+        local: DocumentEntity?
     ): PushOutcome {
         val queue = proposalQueue ?: return PushOutcome.NOTHING_QUEUED
         val pending = queue.takeForSend(entry.uri) ?: return PushOutcome.NOTHING_QUEUED
         if (pending.ops.isEmpty()) return PushOutcome.NOTHING_QUEUED
 
         if (pending.baseDocVersion != remoteVersion) {
-            // Known stale before a single byte is sent: the tablet's manifest already
-            // says it moved on. Sending would only waste the round trip to learn that.
-            queue.onConflict(
-                entry.uri, pending.ops.size,
-                "平板已有新內容（${shortVersion(remoteVersion)}）"
-            )
-            logger.info { "Proposal for ${entry.uri} known stale; dropping ${pending.ops.size} ops" }
-            return PushOutcome.CONFLICT
+            // The tablet moved under us. Whether sending is safe depends on WHAT moved:
+            //
+            // - File body changed (or we hold no local mirror to verify against):
+            //   our ops reference a dead page structure — sending would misplace
+            //   annotations onto wrong pages. Drop loudly, same as the old v5 path.
+            // - Only annotations changed: the file our ops were recorded against is
+            //   byte-identical to the tablet's. Send anyway — a v6 tablet arbitrates
+            //   per object and keeps both sides' work (ProposalArbiter.decideOps);
+            //   a v5 tablet answers whole-proposal CONFLICT_STALE and resolveSend
+            //   collapses to this same drop, so sending is safe against old tablets.
+            if (local == null || (entry.filePresent && needsFileDownload(local, entry))) {
+                queue.onConflict(
+                    entry.uri, pending.ops.size,
+                    "平板已有新內容（${shortVersion(remoteVersion)}）"
+                )
+                logger.info { "Proposal for ${entry.uri} known stale; dropping ${pending.ops.size} ops" }
+                return PushOutcome.CONFLICT
+            }
+            logger.info { "Proposal for ${entry.uri} stale on annotations only; sending for per-object merge" }
         }
 
         val status = try {
