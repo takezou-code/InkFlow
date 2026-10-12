@@ -39,7 +39,6 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
@@ -156,7 +155,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -820,7 +818,18 @@ fun DocumentLibraryScreen(
                             isDarkTheme = isDarkTheme
                         )
                 } else {
-                    val animatedCardUris = remember { mutableStateMapOf<String, Boolean>() }
+                    // 入場動畫：一支 screen-level 預算＋每張卡純算式（graphicsLayer 合成器層）。
+                    //
+                    // 之前是每張卡各開 LaunchedEffect(delay)→visible=true＋AnimatedVisibility。
+                    // N 個延遲寫入在 measure/layout 途中觸發 composition，撞上 focus 搜尋
+                    // 的預組件就是 ComposeRuntimeError "pending composition has not been
+                    // applied"（dropbox 10/09 起 7 次同簽名＝主畫面崩潰）。解法抄
+                    // SidebarPageGrid：全程只動 graphicsLayer，不觸發 measure／重排、
+                    // 不開逐項協程。參數與舊動畫同（300ms 本體＋60ms stagger，上限 8 張）。
+                    val entranceBudget = remember { Animatable(0f) }
+                    LaunchedEffect(entranceBudget) {
+                        entranceBudget.animateTo(1f, tween(LIBRARY_ENTRANCE_WINDOW_MS))
+                    }
                     if (isGridView) {
                         androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
                             columns = androidx.compose.foundation.lazy.grid.GridCells.Adaptive(minSize = 180.dp),
@@ -833,21 +842,14 @@ fun DocumentLibraryScreen(
                             items(filteredDocs.size, key = { filteredDocs[it].uri }) { index ->
                                 val doc = filteredDocs[index]
                                 val coverBitmap by docViewModel.getDocumentThumbnail(context, doc.uri).collectAsState()
-                                val hasAnimated = animatedCardUris[doc.uri] == true
-                                var visible by remember(doc.uri) { mutableStateOf(hasAnimated) }
-                                LaunchedEffect(doc.uri) {
-                                    if (!hasAnimated) {
-                                        delay(index.coerceAtMost(8) * 60L)
-                                        visible = true
-                                        animatedCardUris[doc.uri] = true
+                                Box(
+                                    modifier = Modifier.graphicsLayer {
+                                        val t = libraryEntranceT(entranceBudget.value, index)
+                                        alpha = t
+                                        val s = 0.96f + 0.04f * t
+                                        scaleX = s
+                                        scaleY = s
                                     }
-                                }
-                                androidx.compose.animation.AnimatedVisibility(
-                                    visible = visible,
-                                    enter = slideInVertically(
-                                        initialOffsetY = { it / 2 },
-                                        animationSpec = tween(300)
-                                    ) + fadeIn(animationSpec = tween(300))
                                 ) {
                                     DocumentCard(
                                         document = doc,
@@ -879,21 +881,14 @@ fun DocumentLibraryScreen(
                             items(filteredDocs.size, key = { filteredDocs[it].uri }) { index ->
                                 val doc = filteredDocs[index]
                                 val coverBitmap by docViewModel.getDocumentThumbnail(context, doc.uri).collectAsState()
-                                val hasAnimated = animatedCardUris[doc.uri] == true
-                                var visible by remember(doc.uri) { mutableStateOf(hasAnimated) }
-                                LaunchedEffect(doc.uri) {
-                                    if (!hasAnimated) {
-                                        delay(index.coerceAtMost(8) * 60L)
-                                        visible = true
-                                        animatedCardUris[doc.uri] = true
+                                Box(
+                                    modifier = Modifier.graphicsLayer {
+                                        val t = libraryEntranceT(entranceBudget.value, index)
+                                        alpha = t
+                                        val s = 0.96f + 0.04f * t
+                                        scaleX = s
+                                        scaleY = s
                                     }
-                                }
-                                androidx.compose.animation.AnimatedVisibility(
-                                    visible = visible,
-                                    enter = slideInVertically(
-                                        initialOffsetY = { it / 2 },
-                                        animationSpec = tween(300)
-                                    ) + fadeIn(animationSpec = tween(300))
                                 ) {
                                     DocumentListRow(
                                         document = doc,
@@ -924,6 +919,26 @@ fun DocumentLibraryScreen(
     }   // close outer Box (background + gradient overlay)
 }
 
+
+/**
+ * 書庫卡片入場錯落的進度函數（純函數，可測）。
+ *
+ * 預算 0→1 跑完總窗 [LIBRARY_ENTRANCE_WINDOW_MS]；前 [LIBRARY_ENTRANCE_CAP] 張卡
+ * 各延遲 [LIBRARY_ENTRANCE_STAGGER_MS]，本體 [LIBRARY_ENTRANCE_BODY_MS]。
+ * 參數與舊 AnimatedVisibility（tween 300＋60ms stagger，上限 8 張）同，
+ * 所以視覺語言不變，只是驅動方式從「N 個協程寫 state」換成「一支預算純算式」。
+ */
+internal const val LIBRARY_ENTRANCE_BODY_MS = 300
+internal const val LIBRARY_ENTRANCE_STAGGER_MS = 60
+internal const val LIBRARY_ENTRANCE_CAP = 8
+internal const val LIBRARY_ENTRANCE_WINDOW_MS =
+    LIBRARY_ENTRANCE_BODY_MS + LIBRARY_ENTRANCE_CAP * LIBRARY_ENTRANCE_STAGGER_MS
+
+internal fun libraryEntranceT(budget: Float, index: Int): Float {
+    val window = LIBRARY_ENTRANCE_WINDOW_MS.toFloat()
+    val delay = (index.coerceAtMost(LIBRARY_ENTRANCE_CAP) * LIBRARY_ENTRANCE_STAGGER_MS) / window
+    return ((budget - delay) / (LIBRARY_ENTRANCE_BODY_MS / window)).coerceIn(0f, 1f)
+}
 
 @Composable
 internal fun GlassRailItem(
