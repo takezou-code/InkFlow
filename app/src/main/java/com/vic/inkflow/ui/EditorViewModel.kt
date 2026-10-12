@@ -1364,8 +1364,10 @@ class EditorViewModel(
                 is DrawCommand.RemoveStrokes -> {
                     // 恢復：先放回畫面（同 id 之前被 hide 過，不先清會永久隱形）。
                     showIds(command.strokes.map { it.stroke.id })
-                    command.strokes.forEach { strokeWithPoints ->
-                        repos.transaction {
+                    // 整包同一交易：逐筆交易＝N 次提交＋N 次 Flow 重發＋N 次重建，
+                    // undo 一大包時就是連發卡頓。Room 失效以交易為單位合併，一次就行。
+                    repos.transaction {
+                        command.strokes.forEach { strokeWithPoints ->
                             repos.strokes.insertStroke(strokeWithPoints.stroke)
                             repos.strokes.insertPoints(strokeWithPoints.points)
                         }
@@ -1375,17 +1377,17 @@ class EditorViewModel(
                     // R1：一筆擦的整包戰果一次還原（墨＋字）。
                     showIds(command.strokes.map { it.stroke.id })
                     showIds(command.texts.map { it.id })
-                    command.strokes.forEach { strokeWithPoints ->
-                        repos.transaction {
+                    repos.transaction {
+                        command.strokes.forEach { strokeWithPoints ->
                             repos.strokes.insertStroke(strokeWithPoints.stroke)
                             repos.strokes.insertPoints(strokeWithPoints.points)
                         }
+                        command.texts.forEach { repos.texts.insert(it) }
                     }
-                    command.texts.forEach { repos.texts.insert(it) }
                 }
                 is DrawCommand.MoveStrokes -> {
-                    command.originals.forEach { swp ->
-                        repos.transaction {
+                    repos.transaction {
+                        command.originals.forEach { swp ->
                             repos.strokes.deletePointsForStroke(swp.stroke.id)
                             repos.strokes.insertStroke(swp.stroke)
                             repos.strokes.insertPoints(swp.points)
@@ -1393,8 +1395,8 @@ class EditorViewModel(
                     }
                 }
                 is DrawCommand.ResizeStrokes -> {
-                    command.originals.forEach { swp ->
-                        repos.transaction {
+                    repos.transaction {
+                        command.originals.forEach { swp ->
                             repos.strokes.deletePointsForStroke(swp.stroke.id)
                             repos.strokes.insertStroke(swp.stroke)
                             repos.strokes.insertPoints(swp.points)
@@ -1433,49 +1435,51 @@ class EditorViewModel(
                     repos.images.update(command.original)
                 }
                 is DrawCommand.MoveSelectionMixed -> {
-                    command.strokeOriginals.forEach { swp ->
-                        repos.transaction {
+                    repos.transaction {
+                        command.strokeOriginals.forEach { swp ->
                             repos.strokes.deletePointsForStroke(swp.stroke.id)
                             repos.strokes.insertStroke(swp.stroke)
                             repos.strokes.insertPoints(swp.points)
                         }
+                        command.imageOriginals.forEach { repos.images.update(it) }
+                        command.textOriginals.forEach { repos.texts.update(it) }
                     }
-                    command.imageOriginals.forEach { repos.images.update(it) }
-                    command.textOriginals.forEach { repos.texts.update(it) }
                 }
                 is DrawCommand.ResizeSelectionMixed -> {
-                    command.strokeOriginals.forEach { swp ->
-                        repos.transaction {
+                    repos.transaction {
+                        command.strokeOriginals.forEach { swp ->
                             repos.strokes.deletePointsForStroke(swp.stroke.id)
                             repos.strokes.insertStroke(swp.stroke)
                             repos.strokes.insertPoints(swp.points)
                         }
+                        command.imageOriginals.forEach { repos.images.update(it) }
+                        command.textOriginals.forEach { repos.texts.update(it) }
                     }
-                    command.imageOriginals.forEach { repos.images.update(it) }
-                    command.textOriginals.forEach { repos.texts.update(it) }
                 }
                 is DrawCommand.AddSelectionCopies -> {
                     hideIds(command.strokes.map { it.stroke.id })
                     hideIds(command.images.map { it.id })
                     hideIds(command.texts.map { it.id })
-                    if (command.strokes.isNotEmpty()) {
-                        repos.strokes.deleteStrokesByIds(command.strokes.map { it.stroke.id })
+                    repos.transaction {
+                        if (command.strokes.isNotEmpty()) {
+                            repos.strokes.deleteStrokesByIds(command.strokes.map { it.stroke.id })
+                        }
+                        command.images.forEach { repos.images.deleteById(it.id) }
+                        command.texts.forEach { repos.texts.deleteById(it.id) }
                     }
-                    command.images.forEach { repos.images.deleteById(it.id) }
-                    command.texts.forEach { repos.texts.deleteById(it.id) }
                 }
                 is DrawCommand.RemoveSelectionMixed -> {
                     showIds(command.strokes.map { it.stroke.id })
                     showIds(command.images.map { it.id })
                     showIds(command.texts.map { it.id })
-                    command.strokes.forEach { strokeWithPoints ->
-                        repos.transaction {
+                    repos.transaction {
+                        command.strokes.forEach { strokeWithPoints ->
                             repos.strokes.insertStroke(strokeWithPoints.stroke)
                             repos.strokes.insertPoints(strokeWithPoints.points)
                         }
+                        command.images.forEach { repos.images.insert(it) }
+                        command.texts.forEach { repos.texts.insert(it) }
                     }
-                    command.images.forEach { repos.images.insert(it) }
-                    command.texts.forEach { repos.texts.insert(it) }
                 }
                 is DrawCommand.ExtractToNewPage -> {
                     hideIds(listOf(command.image.id))
@@ -1532,30 +1536,36 @@ class EditorViewModel(
                     if (crossSnap != null) {
                         replaceStrokeSnapshots(crossSnap)
                     } else {
-                        command.originals.forEach { swp ->
+                        // 整包同一交易（同 undo 的理由：N 筆 N 交易＝N 次重發重建）。
+                        // 點列純計算先備好，交易裡只做寫（shiftedPoints/Stroke 是 CPU，
+                        // 不碰 DB，放外面不影響原子性，還讓交易窗口更短）。
+                        val shifted = command.originals.map { swp ->
                             val shiftedPoints = swp.points.map { pt ->
                                 PointEntity(strokeId = swp.stroke.id, x = pt.x + command.delta.x, y = pt.y + command.delta.y, width = pt.width)
                             }
-                        val shiftedStroke = swp.stroke.copy(
-                            boundsLeft   = swp.stroke.boundsLeft   + command.delta.x,
-                            boundsTop    = swp.stroke.boundsTop    + command.delta.y,
-                            boundsRight  = swp.stroke.boundsRight  + command.delta.x,
-                            boundsBottom = swp.stroke.boundsBottom + command.delta.y
-                        ).let {
-                            // S1 雙寫：redo 重建的實體把 docY 重算。
-                            it.copy(docY = it.pageIndex * docStride + it.boundsTop)
+                            val shiftedStroke = swp.stroke.copy(
+                                boundsLeft   = swp.stroke.boundsLeft   + command.delta.x,
+                                boundsTop    = swp.stroke.boundsTop    + command.delta.y,
+                                boundsRight  = swp.stroke.boundsRight  + command.delta.x,
+                                boundsBottom = swp.stroke.boundsBottom + command.delta.y
+                            ).let {
+                                // S1 雙寫：redo 重建的實體把 docY 重算。
+                                it.copy(docY = it.pageIndex * docStride + it.boundsTop)
+                            }
+                            shiftedStroke to shiftedPoints
                         }
-                            repos.transaction {
-                                repos.strokes.deletePointsForStroke(swp.stroke.id)
-                                repos.strokes.insertStroke(shiftedStroke)
-                                repos.strokes.insertPoints(shiftedPoints)
+                        repos.transaction {
+                            shifted.forEach { (stroke, points) ->
+                                repos.strokes.deletePointsForStroke(stroke.id)
+                                repos.strokes.insertStroke(stroke)
+                                repos.strokes.insertPoints(points)
                             }
                         }
                     }
                 }
                 is DrawCommand.ResizeStrokes -> {
-                    command.updated.forEach { swp ->
-                        repos.transaction {
+                    repos.transaction {
+                        command.updated.forEach { swp ->
                             repos.strokes.deletePointsForStroke(swp.stroke.id)
                             repos.strokes.insertStroke(swp.stroke)
                             repos.strokes.insertPoints(swp.points)
@@ -1594,49 +1604,51 @@ class EditorViewModel(
                     repos.images.update(command.updated)
                 }
                 is DrawCommand.MoveSelectionMixed -> {
-                    command.strokeUpdated.forEach { swp ->
-                        repos.transaction {
+                    repos.transaction {
+                        command.strokeUpdated.forEach { swp ->
                             repos.strokes.deletePointsForStroke(swp.stroke.id)
                             repos.strokes.insertStroke(swp.stroke)
                             repos.strokes.insertPoints(swp.points)
                         }
+                        command.imageUpdated.forEach { repos.images.update(it) }
+                        command.textUpdated.forEach { repos.texts.update(it) }
                     }
-                    command.imageUpdated.forEach { repos.images.update(it) }
-                    command.textUpdated.forEach { repos.texts.update(it) }
                 }
                 is DrawCommand.ResizeSelectionMixed -> {
-                    command.strokeUpdated.forEach { swp ->
-                        repos.transaction {
+                    repos.transaction {
+                        command.strokeUpdated.forEach { swp ->
                             repos.strokes.deletePointsForStroke(swp.stroke.id)
                             repos.strokes.insertStroke(swp.stroke)
                             repos.strokes.insertPoints(swp.points)
                         }
+                        command.imageUpdated.forEach { repos.images.update(it) }
+                        command.textUpdated.forEach { repos.texts.update(it) }
                     }
-                    command.imageUpdated.forEach { repos.images.update(it) }
-                    command.textUpdated.forEach { repos.texts.update(it) }
                 }
                 is DrawCommand.AddSelectionCopies -> {
                     showIds(command.strokes.map { it.stroke.id })
                     showIds(command.images.map { it.id })
                     showIds(command.texts.map { it.id })
-                    command.strokes.forEach { strokeWithPoints ->
-                        repos.transaction {
+                    repos.transaction {
+                        command.strokes.forEach { strokeWithPoints ->
                             repos.strokes.insertStroke(strokeWithPoints.stroke)
                             repos.strokes.insertPoints(strokeWithPoints.points)
                         }
+                        command.images.forEach { repos.images.insert(it) }
+                        command.texts.forEach { repos.texts.insert(it) }
                     }
-                    command.images.forEach { repos.images.insert(it) }
-                    command.texts.forEach { repos.texts.insert(it) }
                 }
                 is DrawCommand.RemoveSelectionMixed -> {
                     hideIds(command.strokes.map { it.stroke.id })
                     hideIds(command.images.map { it.id })
                     hideIds(command.texts.map { it.id })
-                    if (command.strokes.isNotEmpty()) {
-                        repos.strokes.tombstoneStrokesByIds(command.strokes.map { it.stroke.id })
+                    repos.transaction {
+                        if (command.strokes.isNotEmpty()) {
+                            repos.strokes.tombstoneStrokesByIds(command.strokes.map { it.stroke.id })
+                        }
+                        command.images.forEach { repos.images.deleteById(it.id) }
+                        command.texts.let { repos.texts.tombstoneByIds(it.map { t -> t.id }) }
                     }
-                    command.images.forEach { repos.images.deleteById(it.id) }
-                    command.texts.let { repos.texts.tombstoneByIds(it.map { t -> t.id }) }
                 }
                 is DrawCommand.ExtractToNewPage -> {
                     // pageKept（undo 守衛留頁）時不再建頁，只重貼圖。
