@@ -253,13 +253,31 @@ fun TabletEditorScreen(
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val prefs = remember { context.getSharedPreferences("inkflow_settings", 0) }
-    // AI 來源：工具列小圖示切換，持久化在設定 prefs（重開 App 記得）
+    // 当前文件身份：AI 记忆（provider＋上次对话 URL）按它 key。
+    // 直接 toString，不 remember：重组每次都算，结果一样，比 key 漏 key 安全。
+    val docKey = uri.toString()
+    // AI 來源：工具列小圖示切換，持久化在設定 prefs（重開 App 記得）。
+    // 第一優先是「這份文件上次用的站」，沒有才退回全局（老版本只有全局）。
     var aiProvider by rememberSaveable {
         mutableStateOf(
             runCatching {
-                AiProvider.valueOf(prefs.getString(KEY_AI_PROVIDER, AiProvider.GEMINI.name) ?: AiProvider.GEMINI.name)
+                prefs.getString(aiDocProviderKey(docKey), null)?.let { AiProvider.valueOf(it) }
+                    ?: AiProvider.valueOf(prefs.getString(KEY_AI_PROVIDER, AiProvider.GEMINI.name) ?: AiProvider.GEMINI.name)
             }.getOrDefault(AiProvider.GEMINI)
         )
+    }
+    // 切文件＝換記憶：先把這份文件記的站讀回來（沒有記錄就沿用全局，不強跳）。
+    androidx.compose.runtime.LaunchedEffect(docKey) {
+        val saved = runCatching {
+            prefs.getString(aiDocProviderKey(docKey), null)?.let { AiProvider.valueOf(it) }
+        }.getOrNull()
+        if (saved != null && saved != aiProvider) aiProvider = saved
+    }
+    // 這份文件＋這個站該進的地址（記憶沒有就進站首頁）。provider 切換會重建
+    // WebView（key 在面板裡），factory 用這個值當出生第一頁；同站切文件則
+    // 走下面的還原 effect（不重建，只 loadUrl）。
+    val aiInitialUrl = androidx.compose.runtime.remember(docKey, aiProvider) {
+        aiProvider.resolveRestoreUrl(prefs.getString(aiDocUrlKey(docKey, aiProvider), null))
     }
     // P2：整個畫面只建一次 repository 容器，取代到處直接摸 AppDatabase。
     val repos = remember(db) { InkFlowRepositories(db) }
@@ -309,10 +327,26 @@ fun TabletEditorScreen(
     // Gemini 網頁自己的淺/深色不再手動：直接跟 App 深淺色走（見 isEditorDark，:420）。
     var aiPickCollectId by remember { mutableStateOf(0) }
     var aiWebView by remember { mutableStateOf<android.webkit.WebView?>(null) }
+    // 回调用的 docKey 快照：面板报 URL 是异步的，直接读 docKey 会抓到旧闭包。
+    val docKeyRef = androidx.compose.runtime.rememberUpdatedState(docKey)
+    // 切文件／切站還原：目标地址跟 WebView 当前地址一样就不动，避免无谓重载
+    // （SPA 切对话不闪）。WebView 还没出生（null）时跳过，factory 会用 aiInitialUrl。
+    androidx.compose.runtime.LaunchedEffect(docKey, aiProvider, aiWebView) {
+        val wv = aiWebView ?: return@LaunchedEffect
+        val target = aiProvider.resolveRestoreUrl(prefs.getString(aiDocUrlKey(docKey, aiProvider), null))
+        if (wv.url != target) {
+            try {
+                android.util.Log.d("InkFlowDbg", "AI restore doc=$docKey -> $target")
+                wv.loadUrl(target)
+            } catch (_: Throwable) { }
+        }
+    }
     fun switchAiProvider() {
         val next = aiProvider.other
         aiProvider = next
+        // 全局照寫（新文件預設站），這份文件的站另外記（切文件回來還認得）。
         prefs.edit().putString(KEY_AI_PROVIDER, next.name).apply()
+        prefs.edit().putString(aiDocProviderKey(docKey), next.name).apply()
         // 換站＝換對話。清掉待送請求/圈選武裝，避免舊站的東西跨站重複注入。
         aiRequest = null
         aiPickMode = false
@@ -1289,6 +1323,15 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                         pickCollectId = aiPickCollectId,
                         webLight = !isEditorDark,
                         provider = aiProvider,
+                        initialUrl = aiInitialUrl,
+                        // 地址落定就记到这份文件名下。站从 URL 反推，不读 aiProvider state：
+                        // 回调异步，state 可能已经是切站后的值，按 URL 记才不会串站。
+                        // 只写 prefs，不碰任何 state，所以不会触发重组、无循环。
+                        onUrlChanged = { url ->
+                            aiProviderForUrl(url)?.let { p ->
+                                prefs.edit().putString(aiDocUrlKey(docKeyRef.value, p), url).apply()
+                            }
+                        },
                         onPickedJson = { json ->
                             scope.launch {
                                 if (json.isBlank()) {
