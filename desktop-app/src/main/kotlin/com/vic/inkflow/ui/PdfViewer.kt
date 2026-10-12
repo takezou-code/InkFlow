@@ -1629,6 +1629,16 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
         }
     }
 
+    // Tool switch cancels any in-progress preview: the drawing handler below
+    // restarts on tool change (it is a key), and a cancelled gesture would
+    // otherwise leave its ghost on screen until the next stroke.
+    LaunchedEffect(tool) {
+        liveStroke = null
+        liveStrokeWidths = emptyList()
+        liveShape = null
+        selectionRect = null
+    }
+
     // Each page sizes itself: full list width, aspect from its own box, times its
     // own zoom. The canvas below measures the item, so the existing fit math
     // keeps working unchanged.
@@ -1694,13 +1704,17 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                 }
                 // Keyboard and focus live in the parent reader now; this canvas keeps
                 // gestures and the wheel only.
-                .pointerInput(documentUri, requestedPage, editable) {
+                .pointerInput(documentUri, requestedPage, editable, tool) {
                     // LAST in the chain on purpose: a pointerInput modifier that is
                     // further from the content receives events first, so this one
                     // sees the press before the pan/zoom handler above and can
                     // consume it. With it first it was last to be called, the
                     // transform gesture had already started panning the page, and
                     // drawing appeared to do nothing at all.
+                    //
+                    // `tool` is a key (not just read inside): the coroutine captures
+                    // values at start, so without it every gesture after a tool
+                    // switch would keep drawing with the old tool.
                     if (!editable) return@pointerInput
                     // The grab hand never touches the pointer stream: unconsumed
                     // drags fall through to the page list, which scrolls.
@@ -1814,8 +1828,8 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                             return@awaitEachGesture
                         }
                         if (!erasing) {
-                            liveStroke = pts
-                            liveStrokeWidths = modelWidths
+                            liveStroke = pts.toList()
+                            liveStrokeWidths = modelWidths.toList()
                         }
                         while (true) {
                             val event = awaitPointerEvent()
@@ -1844,6 +1858,15 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                                     lastTime = now
                                     pts.add(Offset(m.x, m.y))
                                     modelWidths.add(w)
+                                    // `pts` is the same list object the preview was
+                                    // given above, so mutating it alone never
+                                    // recomposes: only a new list instance makes the
+                                    // canvas repaint. Without this the stroke stays
+                                    // invisible until release.
+                                    if (!erasing) {
+                                        liveStroke = pts.toList()
+                                        liveStrokeWidths = modelWidths.toList()
+                                    }
                                     change.consume()
                                 }
                             }
