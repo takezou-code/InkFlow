@@ -825,11 +825,14 @@ fun DocumentLibraryScreen(
                     // 的預組件就是 ComposeRuntimeError "pending composition has not been
                     // applied"（dropbox 10/09 起 7 次同簽名＝主畫面崩潰）。解法抄
                     // SidebarPageGrid：全程只動 graphicsLayer，不觸發 measure／重排、
-                    // 不開逐項協程。參數與舊動畫同（300ms 本體＋60ms stagger，上限 8 張）。
+                    // 不開逐項協程。參數與舊動畫同（300ms 本體＋60ms stagger，上限 8 張）；
+                    // 位移用固定 56px（舊版是半卡高，graphicsLayer 裡量不到卡高，
+                    // 取中間值保證 sequential 看得出來）。
                     val entranceBudget = remember { Animatable(0f) }
                     LaunchedEffect(entranceBudget) {
                         entranceBudget.animateTo(1f, tween(LIBRARY_ENTRANCE_WINDOW_MS))
                     }
+                    val entranceShiftPx = with(LocalDensity.current) { 56.dp.toPx() }
                     if (isGridView) {
                         androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
                             columns = androidx.compose.foundation.lazy.grid.GridCells.Adaptive(minSize = 180.dp),
@@ -846,6 +849,7 @@ fun DocumentLibraryScreen(
                                     modifier = Modifier.graphicsLayer {
                                         val t = libraryEntranceT(entranceBudget.value, index)
                                         alpha = t
+                                        translationY = (1f - t) * entranceShiftPx
                                         val s = 0.96f + 0.04f * t
                                         scaleX = s
                                         scaleY = s
@@ -885,6 +889,7 @@ fun DocumentLibraryScreen(
                                     modifier = Modifier.graphicsLayer {
                                         val t = libraryEntranceT(entranceBudget.value, index)
                                         alpha = t
+                                        translationY = (1f - t) * entranceShiftPx
                                         val s = 0.96f + 0.04f * t
                                         scaleX = s
                                         scaleY = s
