@@ -485,8 +485,17 @@ class EditorViewModel(
         kotlinx.coroutines.flow.combine(
             repos.strokes.getStrokesForPage(documentUri, page),
             repos.texts.getForPage(documentUri, page),
-            repos.images.getForPage(documentUri, page)
-        ) { s, t, i -> NeighborPageData(s, t, i) }
+            repos.images.getForPage(documentUri, page),
+            // 第四路：樂觀隱藏集。任一路變化都重組，但這裡只是三個 list filter
+            //（O(n)，相對點陣重建可忽略），DB 真相不受影響。
+            _hiddenIds
+        ) { s, t, i, hidden ->
+            NeighborPageData(
+                strokes = if (hidden.isEmpty()) s else s.filter { it.stroke.id !in hidden },
+                texts = if (hidden.isEmpty()) t else t.filter { it.id !in hidden },
+                images = if (hidden.isEmpty()) i else i.filter { it.id !in hidden }
+            )
+        }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), cachedNeighbor(page) ?: NeighborPageData())
     }
 
@@ -642,6 +651,32 @@ class EditorViewModel(
     private val eraseGestureTexts = mutableListOf<TextAnnotationEntity>()
     private var eraseGestureOpen = false
 
+    /**
+     * 樂觀隱藏：使用者可見的刪除先從畫面拿掉，DB 慢慢跟上。
+     *
+     * 為什麼需要：刪除的可見回饋鏈是「DB 交易 → Room 失效 → Flow 重發 →
+     * combine 重組 → InkCanvas 重繪」，每一批擦除都要走完整趟，手指等的是整條鏈。
+     * 這裡只管「畫面」，不管「真相」：pageDataFlow 把這集合裡的 id 濾掉，
+     * InkCanvas 下一幀就看不見，DB 交易在 IO 線程慢慢落。
+     *
+     * 正確性靠三條不變式：
+     *  1. id 永不重用（UUID），跨文件也不會撞 —— 隱藏集不會誤傷別的列。
+     *  2. undo 恢復同 id 前必先 showIds（否則復活的墨永遠隱形）。
+     *  3. 刪除提交後不清集合（不清＝留在裡面無害；清了＝Flow 還沒重發時閃回一幀）。
+     * 代價：一天的重度擦寫最多幾千個 36 字串（~100KB），可接受。
+     */
+    private val _hiddenIds = MutableStateFlow<Set<String>>(emptySet())
+
+    /** 從畫面拿掉（刪除／redo 刪除時先呼叫，DB 隨後跟上）。執行緒安全，隨處可呼叫。 */
+    internal fun hideIds(ids: Collection<String>) {
+        if (ids.isNotEmpty()) _hiddenIds.value += ids
+    }
+
+    /** 放回畫面（undo 恢復時先呼叫，DB 隨後跟上）。 */
+    internal fun showIds(ids: Collection<String>) {
+        if (ids.isNotEmpty()) _hiddenIds.value -= ids.toSet()
+    }
+
     /** 擦除手勢起手呼叫（InkCanvas 橡皮擦接管處）。 */
     fun beginEraseGesture() {
         eraseGestureStrokes.clear()
@@ -725,6 +760,8 @@ class EditorViewModel(
             )
             var erasedAnything = false
             if (intersectingStrokes.isNotEmpty()) {
+                // 樂觀隱藏先行：畫面下一幀就不見，不等 DB 交易＋Flow 重發整條鏈。
+                hideIds(intersectingStrokes.map { it.stroke.id })
                 withContext(Dispatchers.IO) {
                     // 走墓碑而非硬刪除：橡皮擦刪掉的是使用者看得到的筆跡，平板與桌面
                     // 各自獨立工作時，桌面端可能同時在改同一筆。留墓碑讓
@@ -773,6 +810,7 @@ class EditorViewModel(
                 android.graphics.RectF.intersects(eraserBounds, annBounds)
             }
             hitTexts.forEach { ann ->
+                hideIds(listOf(ann.id))
                 withContext(Dispatchers.IO) { repos.texts.tombstoneByIds(listOf(ann.id)) }
                 if (accumulateToGesture) {
                     withContext(Dispatchers.Main) {
@@ -981,6 +1019,7 @@ class EditorViewModel(
     }
     fun deleteTextAnnotation(id: String) {
         val ann = findTextAnnotation(id) ?: return
+        hideIds(listOf(id))
         viewModelScope.launch(Dispatchers.IO) {
             // 走墓碑而非硬刪除：同筆跡刪除的理由（§15.4）。
             repos.texts.tombstoneByIds(listOf(id))
@@ -1249,6 +1288,7 @@ class EditorViewModel(
 
     fun deleteImageAnnotation(id: String) {
         val ann = findImageAnnotation(id) ?: return
+        hideIds(listOf(id))
         viewModelScope.launch(Dispatchers.IO) {
             repos.images.deleteById(id)
             withContext(Dispatchers.Main) { pushUndo(DrawCommand.RemoveImageAnnotation(ann)) }
@@ -1262,9 +1302,13 @@ class EditorViewModel(
         viewModelScope.launch(Dispatchers.IO) {
             when (command) {
                 is DrawCommand.AddStroke -> {
+                    // 剛畫的拿掉：先藏（它從沒被 show 過，不在集合裡也無害）。
+                    hideIds(listOf(command.stroke.stroke.id))
                     repos.strokes.deleteStrokesByIds(listOf(command.stroke.stroke.id))
                 }
                 is DrawCommand.RemoveStrokes -> {
+                    // 恢復：先放回畫面（同 id 之前被 hide 過，不先清會永久隱形）。
+                    showIds(command.strokes.map { it.stroke.id })
                     command.strokes.forEach { strokeWithPoints ->
                         repos.transaction {
                             repos.strokes.insertStroke(strokeWithPoints.stroke)
@@ -1274,6 +1318,8 @@ class EditorViewModel(
                 }
                 is DrawCommand.EraseGesture -> {
                     // R1：一筆擦的整包戰果一次還原（墨＋字）。
+                    showIds(command.strokes.map { it.stroke.id })
+                    showIds(command.texts.map { it.id })
                     command.strokes.forEach { strokeWithPoints ->
                         repos.transaction {
                             repos.strokes.insertStroke(strokeWithPoints.stroke)
@@ -1301,9 +1347,11 @@ class EditorViewModel(
                     }
                 }
                 is DrawCommand.AddTextAnnotation -> {
+                    hideIds(listOf(command.annotation.id))
                     repos.texts.deleteById(command.annotation.id)
                 }
                 is DrawCommand.RemoveTextAnnotation -> {
+                    showIds(listOf(command.annotation.id))
                     repos.texts.insert(command.annotation)
                 }
                 is DrawCommand.MoveTextAnnotation -> {
@@ -1316,9 +1364,11 @@ class EditorViewModel(
                     repos.texts.update(command.original)
                 }
                 is DrawCommand.AddImageAnnotation -> {
+                    hideIds(listOf(command.annotation.id))
                     repos.images.deleteById(command.annotation.id)
                 }
                 is DrawCommand.RemoveImageAnnotation -> {
+                    showIds(listOf(command.annotation.id))
                     repos.images.insert(command.annotation)
                 }
                 is DrawCommand.MoveImageAnnotation -> {
@@ -1350,6 +1400,9 @@ class EditorViewModel(
                     command.textOriginals.forEach { repos.texts.update(it) }
                 }
                 is DrawCommand.AddSelectionCopies -> {
+                    hideIds(command.strokes.map { it.stroke.id })
+                    hideIds(command.images.map { it.id })
+                    hideIds(command.texts.map { it.id })
                     if (command.strokes.isNotEmpty()) {
                         repos.strokes.deleteStrokesByIds(command.strokes.map { it.stroke.id })
                     }
@@ -1357,6 +1410,9 @@ class EditorViewModel(
                     command.texts.forEach { repos.texts.deleteById(it.id) }
                 }
                 is DrawCommand.RemoveSelectionMixed -> {
+                    showIds(command.strokes.map { it.stroke.id })
+                    showIds(command.images.map { it.id })
+                    showIds(command.texts.map { it.id })
                     command.strokes.forEach { strokeWithPoints ->
                         repos.transaction {
                             repos.strokes.insertStroke(strokeWithPoints.stroke)
@@ -1367,6 +1423,7 @@ class EditorViewModel(
                     command.texts.forEach { repos.texts.insert(it) }
                 }
                 is DrawCommand.ExtractToNewPage -> {
+                    hideIds(listOf(command.image.id))
                     repos.images.deleteById(command.image.id)
                     // 整組撤銷：頁上若無別的內容，連頁一起收掉；否則只拿掉圖、留頁。
                     val hasStrokes = repos.strokes.getStrokesForPageSync(documentUri, command.targetPage).isNotEmpty()
@@ -1392,6 +1449,8 @@ class EditorViewModel(
         viewModelScope.launch(Dispatchers.IO) {
             when (command) {
                 is DrawCommand.AddStroke -> {
+                    // 重畫回來：先放回畫面（undo 時被 hide 過）。
+                    showIds(listOf(command.stroke.stroke.id))
                     repos.transaction {
                         repos.strokes.insertStroke(command.stroke.stroke)
                         repos.strokes.insertPoints(command.stroke.points)
@@ -1400,9 +1459,12 @@ class EditorViewModel(
                 is DrawCommand.RemoveStrokes -> {
                     // redo 重新蓋墓碑，而不是硬刪（undo 是 insertStroke 把列覆蓋回來，
                     // 所以 redo 必須回到「有列但已刪」的狀態才對稱）。
+                    hideIds(command.strokes.map { it.stroke.id })
                     repos.strokes.tombstoneStrokesByIds(command.strokes.map { it.stroke.id })
                 }
                 is DrawCommand.EraseGesture -> {
+                    hideIds(command.strokes.map { it.stroke.id })
+                    hideIds(command.texts.map { it.id })
                     if (command.strokes.isNotEmpty()) {
                         repos.strokes.tombstoneStrokesByIds(command.strokes.map { it.stroke.id })
                     }
@@ -1446,9 +1508,11 @@ class EditorViewModel(
                     }
                 }
                 is DrawCommand.AddTextAnnotation -> {
+                    showIds(listOf(command.annotation.id))
                     repos.texts.insert(command.annotation)
                 }
                 is DrawCommand.RemoveTextAnnotation -> {
+                    hideIds(listOf(command.annotation.id))
                     repos.texts.deleteById(command.annotation.id)
                 }
                 is DrawCommand.MoveTextAnnotation -> {
@@ -1461,9 +1525,11 @@ class EditorViewModel(
                     repos.texts.update(command.updated)
                 }
                 is DrawCommand.AddImageAnnotation -> {
+                    showIds(listOf(command.annotation.id))
                     repos.images.insert(command.annotation)
                 }
                 is DrawCommand.RemoveImageAnnotation -> {
+                    hideIds(listOf(command.annotation.id))
                     repos.images.deleteById(command.annotation.id)
                 }
                 is DrawCommand.MoveImageAnnotation -> {
@@ -1495,6 +1561,9 @@ class EditorViewModel(
                     command.textUpdated.forEach { repos.texts.update(it) }
                 }
                 is DrawCommand.AddSelectionCopies -> {
+                    showIds(command.strokes.map { it.stroke.id })
+                    showIds(command.images.map { it.id })
+                    showIds(command.texts.map { it.id })
                     command.strokes.forEach { strokeWithPoints ->
                         repos.transaction {
                             repos.strokes.insertStroke(strokeWithPoints.stroke)
@@ -1505,6 +1574,9 @@ class EditorViewModel(
                     command.texts.forEach { repos.texts.insert(it) }
                 }
                 is DrawCommand.RemoveSelectionMixed -> {
+                    hideIds(command.strokes.map { it.stroke.id })
+                    hideIds(command.images.map { it.id })
+                    hideIds(command.texts.map { it.id })
                     if (command.strokes.isNotEmpty()) {
                         repos.strokes.tombstoneStrokesByIds(command.strokes.map { it.stroke.id })
                     }
@@ -1516,6 +1588,7 @@ class EditorViewModel(
                     if (!command.pageKept) {
                         withContext(Dispatchers.Main) { extractPageOps?.insertPageAfter(command.targetPage - 1) }
                     }
+                    showIds(listOf(command.image.id))
                     repos.images.insert(command.image)
                 }
             }
@@ -2101,6 +2174,10 @@ class EditorViewModel(
             selectedTextSnapshots.isEmpty()
         ) return
 
+        // 樂觀隱藏先行：三種物件一次拿掉，DB 在 IO 線程跟上。
+        hideIds(selectedStrokeSnapshots.map { it.stroke.id })
+        hideIds(selectedImageSnapshots.map { it.id })
+        hideIds(selectedTextSnapshots.map { it.id })
         viewModelScope.launch(Dispatchers.IO) {
             if (selectedStrokeSnapshots.isNotEmpty()) {
                 // 同上：刪選取是使用者可見的刪除，走墓碑（undo/redo 會用 insertStroke

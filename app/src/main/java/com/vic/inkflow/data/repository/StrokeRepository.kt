@@ -154,9 +154,14 @@ class RoomStrokeRepository(
         if (strokeIds.isEmpty()) return 0
         // 點也一起收：墓碑讓列留下來，但 points 若留著就是純浪費——這筆已經不存在了，
         // 沒有任何仲裁會去比對它的點。留著只會讓 points 表隨刪除次數無限膨脹。
-        val tombstoned = dao.tombstoneStrokes(strokeIds, System.currentTimeMillis(), MergeVersion.nextNonce())
-        if (tombstoned > 0) dao.deletePointsForTombstoned(strokeIds)
-        return tombstoned
+        //
+        // 同一交易：UPDATE＋DELETE 各自 auto-commit 就是兩次 fsync；橡皮擦最高
+        // 40 批／秒（24ms 節流），fsync 次數直接決定連擦跟不跟得上手指。
+        return db.withTransaction {
+            val tombstoned = dao.tombstoneStrokes(strokeIds, System.currentTimeMillis(), MergeVersion.nextNonce())
+            if (tombstoned > 0) dao.deletePointsForTombstoned(strokeIds)
+            tombstoned
+        }
     }
 
     override suspend fun clearPage(documentUri: String, pageIndex: Int): Int =
