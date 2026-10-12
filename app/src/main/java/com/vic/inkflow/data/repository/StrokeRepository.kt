@@ -84,6 +84,13 @@ interface StrokeRepository : PageShiftTarget {
     /** 本機改寫一筆筆跡：前進版本序號並換 tiebreak nonce。0 = 這筆不存在。 */
     suspend fun bumpStrokeVersion(id: String): Int
 
+    /**
+     * 快照整批覆蓋＋序號前進（移動／縮放的寫入漏斗）。
+     * 用這個，不要自己拼 deletePointsForStroke + insertStroke + insertPoints。
+     * 見實作的註解：覆蓋會把序號蓋回舊值，必須在同一交易里 bump。
+     */
+    suspend fun replaceStrokeSnapshots(snapshots: List<StrokeWithPoints>)
+
     /** 整份文件的 (id, version, nonce)，供提案逐 op 仲裁（§15.2）。 */
     suspend fun getStrokeVersions(documentUri: String): List<StrokeVersionRow>
 
@@ -190,6 +197,32 @@ class RoomStrokeRepository(
         dao.countStrokeDocMismatch(documentUri, stride)
 
     override suspend fun bumpStrokeVersion(id: String): Int = dao.bumpStrokeVersion(id, MergeVersion.nextNonce())
+
+    /**
+     * 快照整批覆蓋＋序號前進（移動／縮放的寫入漏斗）。
+     *
+     * **不能只覆蓋不 bump。** 這裡走的是 insertStroke（REPLACE 整列），而呼叫端傳進來的
+     * swp.stroke 帶的是讀取時的**舊 version** —— REPLACE 會把序號蓋回舊值，仲裁就再也
+     * 看不出這筆被改過。筆數、座標都變了但 version 不動，正是「修改 vs 修改時平板恆輸」
+     * 的那個 bug。
+     *
+     * 為什麼在同一個交易里：bump 的 UPDATE 讀的是 SQLite 在寫入當下的舊值（見
+     * [StrokeDao.bumpStrokeVersion] 的註解），覆蓋與遞增必須原子，否則中間插入的
+     * 同步交易會讓序號算錯。
+     *
+     * 空快照不 bump：replaceStrokeSnapshots 的呼叫端都先判了非空才進來，這裡不再
+     * 設防，保持單一職責。
+     */
+    override suspend fun replaceStrokeSnapshots(snapshots: List<StrokeWithPoints>) {
+        db.withTransaction {
+            snapshots.forEach { swp ->
+                dao.deletePointsForStroke(swp.stroke.id)
+                dao.insertStroke(swp.stroke)
+                if (swp.points.isNotEmpty()) dao.insertPoints(swp.points)
+                dao.bumpStrokeVersion(swp.stroke.id, MergeVersion.nextNonce())
+            }
+        }
+    }
 
     override suspend fun getStrokeVersions(documentUri: String): List<StrokeVersionRow> = dao.getStrokeVersions(documentUri)
 
