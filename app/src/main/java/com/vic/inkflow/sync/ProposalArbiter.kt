@@ -85,6 +85,12 @@ object ProposalArbiter {
      * @param opStates 每個 op 的版本狀態。**空清單代表沒有版本資訊**（v5 桌面不會送），
      *   此時退回 v5 的整筆語義——沒有版本就沒有「誰比較新」的判斷依據，猜一個只會
      *   製造靜默覆寫。保守退回舊語義是唯一安全的選擇。
+     *
+     *   反過來，有版本資訊時（v6），文件版本移動**不再**整筆否決——下面那道閘門只擋
+     *   「沒有版本可比」的情況。文件指紋裡含檔案雜湊，動一下整串就變；若把它當成
+     *   否決條件，逐物件合併永遠到不了（§15 存在的理由就沒了）。檔案本體的保護另有
+     *   去處：桌面端只在「鏡像檔案與平板位元一致」時才送出（見 LocalSyncManager），
+     *   所以走到這裡的版本移動只可能是註解動了——那正是逐物件仲裁能處理的。
      * @param kinds 每個 id 的 op 種類；缺失者一律當 UPSERT（新增物件本來就無爭議）。
      */
     fun decideOps(
@@ -101,7 +107,9 @@ object ProposalArbiter {
         if (baseInstance != null && baseInstance != currentInstance) {
             return Decision.Reject("generation changed since base; wipe and re-pull first")
         }
-        if (baseVersion != currentVersion) {
+        // 文件版本移動時：沒有物件版本可比（v5 客戶端）→ 整筆衝突，保守舊語義；
+        // 有物件版本（v6）→ 落到下面的逐 op 仲裁，不再整筆否決。否決的理由見上。
+        if (baseVersion != currentVersion && opStates.isEmpty()) {
             return Decision.ConflictStale(opIds)
         }
         if (opStates.isEmpty()) return Decision.Accept
