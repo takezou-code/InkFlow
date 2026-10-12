@@ -22,6 +22,7 @@ import com.vic.inkflow.util.DocTransform
 import com.vic.inkflow.util.EnvelopeUtils
 import com.vic.inkflow.util.StrokePoint
 import com.vic.inkflow.util.StrokeTransformUtils
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -782,13 +783,24 @@ class EditorViewModel(
             var erasedAnything = false
             if (intersectingStrokes.isNotEmpty()) {
                 // 樂觀隱藏先行：畫面下一幀就不見，不等 DB 交易＋Flow 重發整條鏈。
-                hideIds(intersectingStrokes.map { it.stroke.id })
-                withContext(Dispatchers.IO) {
-                    // 走墓碑而非硬刪除：橡皮擦刪掉的是使用者看得到的筆跡，平板與桌面
-                    // 各自獨立工作時，桌面端可能同時在改同一筆。留墓碑讓
-                    // 「刪除 vs 修改」有狀態可比（§15.4 修改勝），硬刪除則會讓對端
-                    // 無從得知這裡曾經刪過東西。
-                    repos.strokes.tombstoneStrokesByIds(intersectingStrokes.map { it.stroke.id })
+                val erasedIds = intersectingStrokes.map { it.stroke.id }
+                hideIds(erasedIds)
+                try {
+                    withContext(Dispatchers.IO) {
+                        // 走墓碑而非硬刪除：橡皮擦刪掉的是使用者看得到的筆跡，平板與桌面
+                        // 各自獨立工作時，桌面端可能同時在改同一筆。留墓碑讓
+                        // 「刪除 vs 修改」有狀態可比（§15.4 修改勝），硬刪除則會讓對端
+                        // 無從得知這裡曾經刪過東西。
+                        repos.strokes.tombstoneStrokesByIds(erasedIds)
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // 寫失敗回滾：DB 裡還在、畫面沒了的話，這批墨連重擦都擦不到
+                    //（命中讀的是過濾後流）。放回來讓使用者重試。
+                    // 之前這裡無 catch：異常會一路炸掉整個 viewModelScope。
+                    showIds(erasedIds)
+                    android.util.Log.e("EditorViewModel", "erase tombstone failed, unhidden", e)
                 }
                 if (accumulateToGesture) {
                     withContext(Dispatchers.Main) {
@@ -832,7 +844,14 @@ class EditorViewModel(
             }
             hitTexts.forEach { ann ->
                 hideIds(listOf(ann.id))
-                withContext(Dispatchers.IO) { repos.texts.tombstoneByIds(listOf(ann.id)) }
+                try {
+                    withContext(Dispatchers.IO) { repos.texts.tombstoneByIds(listOf(ann.id)) }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    showIds(listOf(ann.id))
+                    android.util.Log.e("EditorViewModel", "erase text tombstone failed, unhidden", e)
+                }
                 if (accumulateToGesture) {
                     withContext(Dispatchers.Main) {
                         if (eraseGestureOpen) eraseGestureTexts += ann
@@ -1042,9 +1061,17 @@ class EditorViewModel(
         val ann = findTextAnnotation(id) ?: return
         hideIds(listOf(id))
         viewModelScope.launch(Dispatchers.IO) {
-            // 走墓碑而非硬刪除：同筆跡刪除的理由（§15.4）。
-            repos.texts.tombstoneByIds(listOf(id))
-            withContext(Dispatchers.Main) { pushUndo(DrawCommand.RemoveTextAnnotation(ann)) }
+            try {
+                // 走墓碑而非硬刪除：同筆跡刪除的理由（§15.4）。
+                repos.texts.tombstoneByIds(listOf(id))
+                withContext(Dispatchers.Main) { pushUndo(DrawCommand.RemoveTextAnnotation(ann)) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // 失敗不記 undo（沒刪掉的東西不需要恢復格），只放回畫面。
+                showIds(listOf(id))
+                android.util.Log.e("EditorViewModel", "deleteText failed, unhidden", e)
+            }
         }
     }
 
@@ -1311,8 +1338,15 @@ class EditorViewModel(
         val ann = findImageAnnotation(id) ?: return
         hideIds(listOf(id))
         viewModelScope.launch(Dispatchers.IO) {
-            repos.images.deleteById(id)
-            withContext(Dispatchers.Main) { pushUndo(DrawCommand.RemoveImageAnnotation(ann)) }
+            try {
+                repos.images.deleteById(id)
+                withContext(Dispatchers.Main) { pushUndo(DrawCommand.RemoveImageAnnotation(ann)) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                showIds(listOf(id))
+                android.util.Log.e("EditorViewModel", "deleteImage failed, unhidden", e)
+            }
         }
     }
 
@@ -2200,13 +2234,39 @@ class EditorViewModel(
         hideIds(selectedImageSnapshots.map { it.id })
         hideIds(selectedTextSnapshots.map { it.id })
         viewModelScope.launch(Dispatchers.IO) {
-            if (selectedStrokeSnapshots.isNotEmpty()) {
-                // 同上：刪選取是使用者可見的刪除，走墓碑（undo/redo 會用 insertStroke
-                // 把整列覆蓋回來，deletedAt 自然歸 null，所以 undo 不需要特別處理）。
-                repos.strokes.tombstoneStrokesByIds(selectedStrokeSnapshots.map { it.stroke.id })
+            // 逐類回滾（不整包回滾）：三類各寫各的，部分失敗只放回失敗的那類；
+            // 整包放回會讓已刪成功的閃回一幀（Flow 重發前）。
+            val strokeIds = selectedStrokeSnapshots.map { it.stroke.id }
+            val imageIds = selectedImageSnapshots.map { it.id }
+            val textIds = selectedTextSnapshots.map { it.id }
+            if (strokeIds.isNotEmpty()) {
+                try {
+                    // 同上：刪選取是使用者可見的刪除，走墓碑（undo/redo 會用 insertStroke
+                    // 把整列覆蓋回來，deletedAt 自然歸 null，所以 undo 不需要特別處理）。
+                    repos.strokes.tombstoneStrokesByIds(strokeIds)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    showIds(strokeIds)
+                    android.util.Log.e("EditorViewModel", "deleteSelection strokes failed, unhidden", e)
+                }
             }
-            selectedImageSnapshots.forEach { repos.images.deleteById(it.id) }
-            selectedTextSnapshots.let { repos.texts.tombstoneByIds(it.map { t -> t.id }) }
+            try {
+                selectedImageSnapshots.forEach { repos.images.deleteById(it.id) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                showIds(imageIds)
+                android.util.Log.e("EditorViewModel", "deleteSelection images failed, unhidden", e)
+            }
+            try {
+                selectedTextSnapshots.let { repos.texts.tombstoneByIds(it.map { t -> t.id }) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                showIds(textIds)
+                android.util.Log.e("EditorViewModel", "deleteSelection texts failed, unhidden", e)
+            }
             withContext(Dispatchers.Main) {
                 clearSelection(keepLastRegion = true)
                 pushUndo(
