@@ -28,8 +28,8 @@ fun Modifier.reorderableItem(
     return this
         .zIndex(if (isDragging) 1f else 0f)
         .graphicsLayer {
-            translationX = if (isDragging) state.dragOffset.x else 0f
-            translationY = if (isDragging) state.dragOffset.y else 0f
+            translationX = if (isDragging) state.dragVisual.x else 0f
+            translationY = if (isDragging) state.dragVisual.y else 0f
             scaleX = lift
             scaleY = lift
             shadowElevation = if (isDragging) 8f else 0f
