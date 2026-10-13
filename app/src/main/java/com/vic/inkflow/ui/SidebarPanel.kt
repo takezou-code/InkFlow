@@ -936,10 +936,15 @@ internal fun PageIcon(
     hazeState: dev.chrisbanes.haze.HazeState? = null,
     isDarkTheme: Boolean = false
 ) {
-    // 頁碼藥丸本體只留數字（透明），高亮由外面整顆玻璃丸滑過來。
-    // 一顆常駐模糊勝過每格開關：不掉幀、不閃。
+    // 收合態每頁一顆玻璃容器（跟展開態卡片同語言）：底用 faux（十幾個真 blur 會傷幀，
+    // 網格卡片同一理由），選中上共用珍珠外框。藥丸本體只留數字。
     Box(
-        modifier = Modifier.size(48.dp),
+        modifier = Modifier
+            .size(48.dp)
+            .fauxGlassPanel(isDarkTheme, ShapeMd)
+            .then(
+                if (isSelected) Modifier.glassSelectionFrame(ShapeMd) else Modifier
+            ),
         contentAlignment = Alignment.Center
     ) {
         Text(
