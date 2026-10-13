@@ -345,9 +345,11 @@ internal fun SidebarPageGrid(
     val selectedPagesRef = rememberUpdatedState(selectedPages)
     val setSelectedRef = rememberUpdatedState({ s: Set<Int> -> selectedPages = s })
 
-    // 拖排序邊緣自捲：跟拖選同構，但多一道啟動門——手指從拿起點走滿死區才捲
-    //（spec：防「拿起即滾」），速度同樣封頂 20px/步。
-    LaunchedEffect(reorderState.isDragging) {
+    // 拖排序邊緣自捲：2026-10-14 整段先關（kill switch）。
+    // 用戶回報「一動就自己往上捲」——自捲是最大嫌疑，先關掉確認；
+    // 人贓俱獲之前不重開。拖選那套沒被投訴，不動。
+    // 下面整段保留，確認後要麼刪、要麼修好重開。
+    if (false) LaunchedEffect(reorderState.isDragging) {
         if (reorderState.isDragging) {
             while (true) {
                 val gated = reorderState.travelPx >= reorderDeadZonePx
