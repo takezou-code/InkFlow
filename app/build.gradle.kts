@@ -120,6 +120,9 @@ dependencies {
     implementation(libs.haze.blur)
     implementation(libs.haze.glass)
 
+    // 頁面網格拖曳排序（2026-10-14 換用成熟套件，取代手寫版——見 commit 說明）
+    implementation(libs.reorderable)
+
     testImplementation(libs.junit)
     // 單元測試地基（P1）：runTest/Dispatchers.setMain ＋ Flow 斷言 ＋ 介面 fake。
     // 版本對齊 debugRuntimeClasspath 實際解析到的 coroutines 1.9.0。

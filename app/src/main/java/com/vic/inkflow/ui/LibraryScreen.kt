@@ -7,8 +7,6 @@ import com.vic.inkflow.ui.theme.ShapeSm
 import com.vic.inkflow.ui.theme.ShapeMd
 import com.vic.inkflow.ui.theme.ShapeLg
 import com.vic.inkflow.ui.theme.ShapeXl
-import com.vic.inkflow.util.reorderable
-import com.vic.inkflow.util.reorderableItem
 
 import android.content.ClipData
 import android.content.ClipDescription
@@ -611,17 +609,25 @@ fun DocumentLibraryScreen(
                 .padding(vertical = 8.dp)
         ) {
             Spacer(Modifier.height(8.dp))
-            // Brand logo — vivid flowing gradient circle
+            // Brand mark — app 圖示（ic_launcher_foreground）疊在品牌漸層上。
+            // 舊碼是紫色圓＋白色 "I"，跟啟動器 icon 毫無關係，一看不像自家 app。
+            // 用 foreground（前景圖）而不是 mipmap/ic_launcher：後者被 debug 軌覆寫成
+            // 橘底，會讓同一個品牌標記在 debug/release 長相不同；前景圖兩軌一致。
+            // 前景圖本身畫在 108dp 畫布中央約 66%（adaptive icon 安全區），
+            // 所以 Fit 進圓形剛好就是 icon 在啟動器上的樣子。
             Box(
                 modifier = Modifier
                     .size(40.dp)
-                    .background(brandGradient, CircleShape),
+                    .background(brandGradient, CircleShape)
+                    .clip(CircleShape),
                 contentAlignment = Alignment.Center
             ) {
-                Text("I", style = MaterialTheme.typography.titleMedium.copy(
-                    color = androidx.compose.ui.graphics.Color.White,
-                    fontWeight = androidx.compose.ui.text.font.FontWeight.ExtraBold
-                ))
+                Image(
+                    painter = painterResource(R.mipmap.ic_launcher_foreground),
+                    contentDescription = "InkFlow",
+                    modifier = Modifier.size(40.dp),
+                    contentScale = ContentScale.Fit
+                )
             }
             Spacer(Modifier.height(16.dp))
             // Nav items — 自繪玻璃藥丸，取代 M3 實心 indicator
