@@ -406,12 +406,17 @@ fun TabletEditorScreen(
     // 程式化捲動的命：手勢一接管（pinchActive）立刻取消，未跑完的動畫不許在手勢中/手勢後
     // 把紙拽回舊目標（反方向回彈主因）。owner 的預期跟著清。
     var programmaticScrollJob by remember { mutableStateOf<Job?>(null) }
+    // Scrub 專用瞬移 job：手指跟紙必須同幀，animateScrollToItem 的動畫＋80ms 延遲
+    // 會讓一堆捲動互相打架、紙永遠追不上手指。scrollToItem 是 snap，無動畫不排隊。
+    var scrubScrollJob by remember { mutableStateOf<Job?>(null) }
     androidx.compose.runtime.LaunchedEffect(pinchActive) {
         if (pinchActive) {
             programmaticScrollJob?.cancel()
             programmaticScrollJob = null
             previewNavJob?.cancel()
             previewNavJob = null
+            scrubScrollJob?.cancel()
+            scrubScrollJob = null
             pageOwner.cancelExpected()
         }
     }
@@ -1541,6 +1546,8 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                                     // 再熄泡泡、拇指交還給主列表跟隨。
                                     val scrubSettled = scrubPage
                                     scrubPage = null
+                                    scrubScrollJob?.cancel()
+                                    scrubScrollJob = null
                                     if (scrubSettled != null) {
                                         initialScrollDone = true
                                         val commit = pageOwner.commitNow(scrubSettled, PageOwner.SidebarDrive, pageCount)
@@ -1611,7 +1618,14 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                                             scrubPage = jump
                                             initialScrollDone = true
                                             // 拖動中只預覽（泡泡報數、紙跟走），放手才提交。
-                                            previewNavigate(jump)
+                                            // 不走 previewNavigate：它的 80ms＋平滑動畫是給點選的，
+                                            // scrub 要的是瞬移，否則紙黏在手指後面。
+                                            previewPage = jump
+                                            pageOwner.expectTarget(jump, pageCountRef.value, android.os.SystemClock.uptimeMillis())
+                                            scrubScrollJob?.cancel()
+                                            scrubScrollJob = scope.launch {
+                                                runCatching { mainListState.scrollToItem(jump) }
+                                            }
                                         }
                                     }
                                 }

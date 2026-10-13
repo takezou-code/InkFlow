@@ -202,6 +202,7 @@ internal fun SidebarPageGrid(
                     Text(
                         text = "已選取 ${selectedPages.size} 頁",
                         style = MaterialTheme.typography.titleSmall,
+                        color = glassContentColor(isDarkTheme),
                         modifier = Modifier.weight(1f)
                     )
                     GlassTextButton(
