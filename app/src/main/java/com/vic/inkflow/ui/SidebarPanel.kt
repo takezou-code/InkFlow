@@ -132,6 +132,7 @@ import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.ChevronLeft
+import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.rounded.Brush
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Gesture
@@ -593,13 +594,18 @@ internal fun Sidebar(
                             modifier = Modifier.fillMaxWidth().height(2.dp)
                         )
                     }
-                    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                        // 方角版新增頁面：玻璃底 + glassClickable。
-                        // GlassTextButton 是固定圓角的，PANEL 這裡要 ShapeMd 方角才整齊。
+                    // 新增頁面泡泡一分二：左邊加頁，右邊小圓直達全展開（第 3 階）。
+                    // 拉桿拔掉後 PANEL→GRID 沒了入口，這顆是唯一的門。
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 6.dp, vertical = 5.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         Row(
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 6.dp, vertical = 5.dp)
+                                .weight(1f)
                                 .glassPanel(hazeState, isDarkTheme, ShapeMd)
                                 .glassClickable(
                                     onClick = { onAddPage(currentPageIndex) },
@@ -618,6 +624,24 @@ internal fun Sidebar(
                             )
                             Spacer(Modifier.width(4.dp))
                             Text("新增頁面", style = MaterialTheme.typography.labelMedium)
+                        }
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .glassPanel(hazeState, isDarkTheme, CircleShape)
+                                .glassClickable(
+                                    onClick = { onModeChange(SidebarStage.GRID) },
+                                    shape = CircleShape,
+                                    enabled = !isPageOperationInProgress
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.Outlined.GridView,
+                                contentDescription = "全展開",
+                                modifier = Modifier.size(20.dp),
+                                tint = glassContentColor(isDarkTheme)
+                            )
                         }
                     }
                 }
