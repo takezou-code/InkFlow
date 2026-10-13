@@ -247,6 +247,10 @@ object BackupManager {
             if (oldBase.isNotEmpty() && oldBase != targetBase.absolutePath) {
                 rewriteBaseDirectory(dbFile, oldBase, targetBase.absolutePath)
             }
+            // 歷史遺留修復：AI 公式/裁圖曾落 filesDir 根（math_*.png/crop_*.png），
+            // 上面的前綴 remap 夠不到它們。DB 指著卻不存在的檔，若包裡有同名，
+            // 搬進 workingDir 並重寫該列；檔案還在的一律不碰。
+            repairOrphanedImageUris(dbFile, File(staging, "images"), targetBase)
         } catch (e: Exception) {
             Log.e(TAG, "applyPendingRestoreIfNeeded failed", e)
         } finally {
@@ -287,6 +291,58 @@ object BackupManager {
                 db.setTransactionSuccessful()
             } finally {
                 db.endTransaction()
+            }
+        } finally {
+            db.close()
+        }
+    }
+
+    /**
+     * 斷鏈圖片修復（歷史遺留：AI 圖曾落 filesDir，前綴 remap 夠不到）。
+     * 只動「DB 指著但檔案不存在」的列：包裡有同名就搬進 [targetBase] 並重寫該列；
+     * 檔案還在的、非 file:// 的一律不碰。表不存在（舊庫）就跳過該表。
+     */
+    private fun repairOrphanedImageUris(dbFile: File, stagedImagesDir: File, targetBase: File) {
+        val staged = stagedImagesDir.listFiles()?.associateBy { it.name }.orEmpty()
+        if (staged.isEmpty()) return
+        val db = SQLiteDatabase.openDatabase(
+            dbFile.absolutePath, null, SQLiteDatabase.OPEN_READWRITE
+        )
+        try {
+            data class Target(val table: String, val col: String)
+            listOf(
+                Target("image_annotations", "uri"),
+                Target("math_sources", "imageUri")
+            ).forEach { target ->
+                runCatching {
+                    val pending = ArrayList<Pair<String, String>>()
+                    db.rawQuery("SELECT id, ${target.col} FROM ${target.table}", null).use { c ->
+                        while (c.moveToNext()) {
+                            val uriStr = c.getString(1) ?: continue
+                            if (!uriStr.startsWith("file://")) continue
+                            val path = android.net.Uri.parse(uriStr).path ?: continue
+                            if (java.io.File(path).exists()) continue
+                            val base = path.substringAfterLast('/')
+                            if (staged.containsKey(base)) pending.add(c.getString(0) to base)
+                        }
+                    }
+                    pending.forEach { (id, base) ->
+                        val dest = java.io.File(targetBase, base)
+                        runCatching {
+                            java.io.FileInputStream(staged.getValue(base)).use { input ->
+                                java.io.FileOutputStream(dest).use { output -> input.copyTo(output) }
+                            }
+                        }.onFailure {
+                            Log.e(TAG, "repair copy failed $base", it)
+                            return@forEach
+                        }
+                        db.execSQL(
+                            "UPDATE ${target.table} SET ${target.col} = ? WHERE id = ?",
+                            arrayOf(android.net.Uri.fromFile(dest).toString(), id)
+                        )
+                    }
+                    if (pending.isNotEmpty()) Log.w(TAG, "repaired ${pending.size} orphaned ${target.table}.${target.col}")
+                }.onFailure { Log.e(TAG, "repair skipped ${target.table}", it) }
             }
         } finally {
             db.close()

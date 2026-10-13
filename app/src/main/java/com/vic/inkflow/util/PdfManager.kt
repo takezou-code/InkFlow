@@ -27,6 +27,16 @@ object PdfManager {
         return dir.also { it.mkdirs() }
     }
 
+    /**
+     * 註解圖片統一落盤漏斗：圖庫/相機/AI 公式/AI 裁圖全部走這裡。
+     * 歷史教訓：AI 曾直接寫 filesDir 根，還原時只 remap workingDir 前綴，
+     * filesDir 的 URI 一個字沒被改、檔案也沒回去——連結斷掉＝圖不見。
+     * 從此所有要進 image_annotations.uri 的檔都必須生在這裡（workingDir 底下），
+     * 備份打包、還原 remap、LAN 同步才全鏈一致。
+     */
+    fun newAnnotationImageFile(context: Context, suffix: String = ".png"): File =
+        File(pdfDir(context), "${UUID.randomUUID()}$suffix")
+
     // ─── 新功能：複製 PDF 到 App 私有目錄 ─────────────────────────────────────
 
     /** 將外部 content:// PDF 複製到 App 私有目錄，回傳 file:// Uri。失敗回傳 null。 */
@@ -44,8 +54,7 @@ object PdfManager {
             }
         }
 
-    suspend fun copyImageToAppDir(context: Context, sourceUri: Uri): Uri? =
-        withContext(Dispatchers.IO) {
+    suspend fun copyImageToAppDir(context: Context, sourceUri: Uri): Uri? =        withContext(Dispatchers.IO) {
             var dest: File? = null
             try {
                 dest = File(pdfDir(context), "${UUID.randomUUID()}.jpg")

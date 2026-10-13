@@ -2574,10 +2574,10 @@ class EditorViewModel(
                 ?: return@withContext false
             val renderScale = minOf(2f, 4096f / maxOf(modelWidth, modelHeight))
 
-            // Save PNG
+            // Save PNG（經 PdfManager 漏斗落 workingDir：持久化註解圖同一種命，還原不斷鏈）
             val trimmedPixelW = trimmedBitmap.width.coerceAtLeast(1)
             val trimmedPixelH = trimmedBitmap.height.coerceAtLeast(1)
-            val file = java.io.File(context.filesDir, "extracted_${System.currentTimeMillis()}.png")
+            val file = com.vic.inkflow.util.PdfManager.newAnnotationImageFile(context, ".png")
             java.io.FileOutputStream(file).use { out ->
                 trimmedBitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
             }

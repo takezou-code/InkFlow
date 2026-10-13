@@ -17,7 +17,6 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import java.io.File
 import java.io.FileOutputStream
 
 /**
@@ -44,7 +43,9 @@ suspend fun renderMathBlocks(
             try {
                 val bmp = MathSnapshot.render(mathBlockHtml(mb.html))
                 if (bmp != null) {
-                    val f = File(context.filesDir, "math_${System.currentTimeMillis()}_${mb.id}.png")
+                    // 經 PdfManager 漏斗落 workingDir：跟圖庫/相機圖同一種命。
+                    // 舊碼寫 filesDir 根，還原不斷不斷（見漏斗註解）。
+                    val f = com.vic.inkflow.util.PdfManager.newAnnotationImageFile(context, ".png")
                     FileOutputStream(f).use { out ->
                         bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
                     }
