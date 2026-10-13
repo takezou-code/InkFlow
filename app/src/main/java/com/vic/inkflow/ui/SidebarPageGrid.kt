@@ -66,8 +66,6 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.dp
 import com.vic.inkflow.data.repository.InkFlowRepositories
-import com.vic.inkflow.util.reorderable
-import com.vic.inkflow.util.reorderableItem
 import com.vic.inkflow.ui.theme.Motion
 import com.vic.inkflow.ui.theme.ShapeLg
 import kotlinx.coroutines.delay
@@ -119,30 +117,11 @@ internal fun SidebarPageGrid(
         if (showOnlyBookmarked) (0 until pageCount).filter { it in bookmarkedPages }
         else (0 until pageCount).toList()
     }
-    var dragOrder by remember(visibleIndices, thumbnailVersion) { mutableStateOf(visibleIndices) }
-
-    val reorderState = com.vic.inkflow.util.rememberReorderableLazyGridState(
-        gridState = gridState,
-        onMove = { from, to ->
-            val newOrder = dragOrder.toMutableList()
-            val item = newOrder.removeAt(from)
-            newOrder.add(to, item)
-            dragOrder = newOrder
-        },
-        onDragEnd = { _, to ->
-            if (!showOnlyBookmarked && !isSelectionMode) {
-                // to 是「當下順序裡的位置」，movePage 吃的也是位置：
-                // 被拖的頁此刻就坐在 dragOrder[to]。舊碼拿 visibleIndices[to]
-                // 當頁號——非過濾時數字碰巧相等才沒炸，過濾一開就搬錯頁。
-                val order = dragOrder
-                val page = order.getOrNull(to) ?: return@rememberReorderableLazyGridState
-                // R2：移頁是結構操作，清棧。
-                onStructureChanged()
-                pdfViewModel.movePage(documentUri, page, to)
-            }
-        }
-    )
-    // 拖排序邊緣自捲循環見下方（跟拖選循環放一起）：閾值宣告在後面，這裡先不掛。
+    // 拖曳排序已整組拆除（2026-10-13）：手感越改越糟，最後根本拖不動。
+    // 位置/頁號混用＋remember 閉包陳舊＋自捲座標系，三個問題疊在一起，
+    // 補丁只會越補越亂。先回到無排序可用態，research 重做後再寫回去。
+    // 這裡刻意只留 visibleIndices 直排，不留任何預覽順序中間態。
+    val orderForGrid = visibleIndices
 
     // 欄數實測，不能寫死。
     // 舊碼寫 `currentPageIndex / 4`，欄數一改（現在是 7 欄）就會把當前頁捲到錯的列。
@@ -322,32 +301,11 @@ internal fun SidebarPageGrid(
     }
     // pointerInput 只 key gridState（不重啟）：集合經 ref 讀新鮮值，否則拖到一半
     // 讀到舊快照，範圍算出來是錯的。
-    val dragOrderRef = rememberUpdatedState(dragOrder)
+    val dragOrderRef = rememberUpdatedState(orderForGrid)
     val selectedPagesRef = rememberUpdatedState(selectedPages)
     val setSelectedRef = rememberUpdatedState({ s: Set<Int> -> selectedPages = s })
     val haptics = LocalHapticFeedback.current
     val autoScrollThresholdPx = with(LocalDensity.current) { 40.dp.toPx() }
-    // 拖排序邊緣自捲（Keynote/G相簿都有）：手指停在邊緣照樣捲。
-    // 跟拖選循環同構：速度由手指距邊距離現場算，16ms 一步；
-    // 上限 20px/步——舊碼無封頂（40dp 閾值在高密度屏 ≈6800px/s），
-    // 手指一碰邊整屏飛走＝用户說的「飄」。
-    LaunchedEffect(reorderState.isDragging) {
-        if (reorderState.isDragging) {
-            while (true) {
-                val pos = reorderState.dragPosition
-                val h = reorderState.gridState.layoutInfo.viewportSize.height.toFloat()
-                val raw = when {
-                    pos == null -> 0f
-                    h - pos.y < autoScrollThresholdPx -> autoScrollThresholdPx - (h - pos.y)
-                    pos.y < autoScrollThresholdPx -> pos.y - autoScrollThresholdPx
-                    else -> 0f
-                }
-                val speed = raw.coerceIn(-20f, 20f)
-                if (speed != 0f) reorderState.gridState.scrollBy(speed)
-                delay(16)
-            }
-        }
-    }
 
     LazyVerticalGrid(
             columns = GridCells.Adaptive(144.dp),
@@ -357,14 +315,6 @@ internal fun SidebarPageGrid(
             verticalArrangement = Arrangement.spacedBy(12.dp),
             modifier = Modifier
                 .fillMaxSize()
-                .reorderable(
-                    reorderState,
-                    enabled = !showOnlyBookmarked && !isSelectionMode && !isPageOperationInProgress,
-                    // 起飛震動：iOS 拿起那一下有觸感，沒有就像抓空。
-                    onLift = { haptics.performHapticFeedback(HapticFeedbackType.LongPress) },
-                    // 系統取消只回彈不提交（提交在共用層的 commit=true 路）。
-                    onDragCancel = { dragOrder = visibleIndices }
-                )
                 // 選擇模式拖選（Google 相簿／iOS 相簿同款）：點住一頁直接拖，
                 // 拖過的全進集合，回拖縮範圍，從已選起拖是反選。快滑不受影響
                 //（長按超時前鬆手／移動＝捲動，detectDragGesturesAfterLongPress 仲裁）。
@@ -382,8 +332,8 @@ internal fun SidebarPageGrid(
                     } else Modifier
                 )
         ) {
-            items(count = dragOrder.size, key = { dragOrder[it] }) { it ->
-                val index = dragOrder[it]
+            items(count = orderForGrid.size, key = { orderForGrid[it] }) { it ->
+                val index = orderForGrid[it]
                 val thumbFlow = remember(index, thumbnailVersion) {
                     pdfViewModel.getPageThumbnail(index)
                 }
@@ -394,7 +344,6 @@ internal fun SidebarPageGrid(
                 val images by imagesFlow.collectAsState(initial = emptyList())
                 val textsFlow = remember(index) { repos.texts.getForPage(documentUri, index) }
                 val texts by textsFlow.collectAsState(initial = emptyList())
-                val canDrag = !showOnlyBookmarked && !isSelectionMode && !isPageOperationInProgress
                 val currentListIndex = it
                 val isCurrent = !isSelectionMode && index == currentPageIndex
                 // 選中放大必須套在「整張卡」（玻璃框＋白紙）上。
@@ -410,8 +359,7 @@ internal fun SidebarPageGrid(
                 )
                 Box(
                     modifier = Modifier
-                        .let { mod -> if (reorderState.draggingItemIndex == currentListIndex) mod else mod.animateItem() }
-                        .reorderableItem(reorderState, currentListIndex)
+                        .animateItem()
                         // 錯落入場：前 24 張依 index 延遲，之後的同時淡入（不排隊）。
                         // 入場結束後才把選中放大乘上去，否則放大會被入場的 0.92 一起縮掉。
                         .graphicsLayer {
@@ -419,38 +367,23 @@ internal fun SidebarPageGrid(
                             val delay = (currentListIndex.toFloat().coerceAtMost(cap)) / cap
                             val t = ((staggerBudget.value - delay * 0.45f) / 0.55f).coerceIn(0f, 1f)
                             val enter = 0.92f + 0.08f * t
-                            // 拖曳中不疊加選中放大（reorderableItem 已經自己放大 1.05），
-                            // 兩個 scale 疊起來會變 1.11，看起來像卡跳出來。
-                            val s = if (reorderState.draggingItemIndex == currentListIndex) {
-                                enter
-                            } else {
-                                enter * cardScale
-                            }
+                            val s = enter * cardScale
                             alpha = t
                             scaleX = s
                             scaleY = s
                         }
-                        .then(
-                            if (canDrag) {
-                                Modifier.clickable {
-                                    coroutineScope.launch {
-                                        // 先把列表中心對齊再離開網格，否則舊碼會跳回舊頁。
-                                        onPageSelected(index)
-                                        onBack()
-                                    }
-                                }
+                        .clickable {
+                            if (isSelectionMode) {
+                                if (index in selectedPages) selectedPages -= index
+                                else selectedPages += index
                             } else {
-                                Modifier.clickable {
-                                    if (isSelectionMode) {
-                                        if (index in selectedPages) selectedPages -= index
-                                        else selectedPages += index
-                                    } else {
-                                        onPageSelected(index)
-                                        onBack()
-                                    }
+                                coroutineScope.launch {
+                                    // 先把列表中心對齊再離開網格，否則舊碼會跳回舊頁。
+                                    onPageSelected(index)
+                                    onBack()
                                 }
                             }
-                        )
+                        }
                 ) {
                     // 玻璃卡框 + 內嵌 8dp 白紙，跟文件庫卡片同語言。
                     //
