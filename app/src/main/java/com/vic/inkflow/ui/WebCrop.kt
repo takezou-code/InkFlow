@@ -13,7 +13,6 @@ import android.view.View
 import android.webkit.WebView
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withTimeoutOrNull
-import java.io.File
 import java.io.FileOutputStream
 import kotlin.math.roundToInt
 
@@ -284,7 +283,8 @@ object WebCrop {
                 Log.w(TAG, "crop blank, fallback")
                 return null
             }
-            val f = File(activity.filesDir, "crop_${System.currentTimeMillis()}_$tag.png")
+            // 經 PdfManager 漏斗落 workingDir：跟公式渲染圖同一條命（還原不斷鏈）。
+            val f = com.vic.inkflow.util.PdfManager.newAnnotationImageFile(activity, ".png")
             FileOutputStream(f).use { out ->
                 bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
             }
