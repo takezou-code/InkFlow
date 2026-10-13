@@ -314,7 +314,8 @@ internal fun SidebarPageGrid(
     LaunchedEffect(dragAutoScrollSpeed.value) {
         if (dragAutoScrollSpeed.value != 0f) {
             while (true) {
-                gridState.scrollBy(dragAutoScrollSpeed.value)
+                // 同排序：封頂 20px/步，手指碰邊不飛屏。
+                gridState.scrollBy(dragAutoScrollSpeed.value.coerceIn(-20f, 20f))
                 delay(10)
             }
         }
@@ -327,18 +328,21 @@ internal fun SidebarPageGrid(
     val haptics = LocalHapticFeedback.current
     val autoScrollThresholdPx = with(LocalDensity.current) { 40.dp.toPx() }
     // 拖排序邊緣自捲（Keynote/G相簿都有）：手指停在邊緣照樣捲。
-    // 跟拖選循環同構：速度由手指距邊距離現場算，16ms 一步。
+    // 跟拖選循環同構：速度由手指距邊距離現場算，16ms 一步；
+    // 上限 20px/步——舊碼無封頂（40dp 閾值在高密度屏 ≈6800px/s），
+    // 手指一碰邊整屏飛走＝用户說的「飄」。
     LaunchedEffect(reorderState.isDragging) {
         if (reorderState.isDragging) {
             while (true) {
                 val pos = reorderState.dragPosition
                 val h = reorderState.gridState.layoutInfo.viewportSize.height.toFloat()
-                val speed = when {
+                val raw = when {
                     pos == null -> 0f
                     h - pos.y < autoScrollThresholdPx -> autoScrollThresholdPx - (h - pos.y)
                     pos.y < autoScrollThresholdPx -> pos.y - autoScrollThresholdPx
                     else -> 0f
                 }
+                val speed = raw.coerceIn(-20f, 20f)
                 if (speed != 0f) reorderState.gridState.scrollBy(speed)
                 delay(16)
             }

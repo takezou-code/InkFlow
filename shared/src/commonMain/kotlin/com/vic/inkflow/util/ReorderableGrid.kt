@@ -35,6 +35,9 @@ class ReorderableLazyGridState(
     // become public API.
     internal var initialItemIndex: Int? = null
     internal var currentItemIndex: Int? = null
+    // 上一幀被拖卡中心（網格座標）：過中心線遲滯用。只在拖動中有效。
+    private var prevCenterX = 0f
+    private var prevCenterY = 0f
 
     var dragOffset by mutableStateOf(Offset.Zero)
         private set
@@ -58,6 +61,10 @@ class ReorderableLazyGridState(
             draggingItemIndex = it.index
             initialItemIndex = it.index
             currentItemIndex = it.index
+            // 起拖中心＝卡中心（手指不一定按在正中，遲滯基準從卡中心起算，
+            // 否則第一下就可能誤判已過線）。
+            prevCenterX = it.offset.x + it.size.width / 2f
+            prevCenterY = it.offset.y + it.size.height / 2f
             dragPosition = offset
             isDragging = true
             return true
@@ -82,6 +89,15 @@ class ReorderableLazyGridState(
         }
 
         if (targetItem != null) {
+            // 過中心線才換位（遲滯）：只進 bounds 就換，手指停在邊界會來回橫跳、
+            // 整排看起來在飄。上一幀中心還在目標中心另一側＝真的穿過去了才算數。
+            val targetCx = targetItem.offset.x + targetItem.size.width / 2f
+            val targetCy = targetItem.offset.y + targetItem.size.height / 2f
+            val crossedX = (prevCenterX - targetCx) * (centerX - targetCx) < 0f
+            val crossedY = (prevCenterY - targetCy) * (centerY - targetCy) < 0f
+            prevCenterX = centerX
+            prevCenterY = centerY
+            if (!crossedX && !crossedY) return
             onMove(draggingIndex, targetItem.index)
             currentItemIndex = targetItem.index
             // Offset visual translation by the grid layout shift
@@ -89,6 +105,9 @@ class ReorderableLazyGridState(
                 x = targetItem.offset.x - draggingItem.offset.x,
                 y = targetItem.offset.y - draggingItem.offset.y
             )
+        } else {
+            prevCenterX = centerX
+            prevCenterY = centerY
         }
     }
 
