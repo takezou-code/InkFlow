@@ -1393,42 +1393,28 @@ class EditorViewModel(
                     showIds(command.strokes.map { it.stroke.id })
                     // 整包同一交易：逐筆交易＝N 次提交＋N 次 Flow 重發＋N 次重建，
                     // undo 一大包時就是連發卡頓。Room 失效以交易為單位合併，一次就行。
-                    repos.transaction {
-                        command.strokes.forEach { strokeWithPoints ->
-                            repos.strokes.insertStroke(strokeWithPoints.stroke)
-                            repos.strokes.insertPoints(strokeWithPoints.points)
-                        }
-                    }
+                    // 走 replaceStrokeSnapshots 漏斗：覆蓋＋bump 同交易。快照帶的是
+                    // 讀取時的舊 version，直接蓋回去等於版本倒退——v6 的 incomingWins
+                    // 前提是版本只進不退，undo 一次就說謊一次（§15.1）。
+                    repos.strokes.replaceStrokeSnapshots(command.strokes)
                 }
                 is DrawCommand.EraseGesture -> {
                     // R1：一筆擦的整包戰果一次還原（墨＋字）。
                     showIds(command.strokes.map { it.stroke.id })
                     showIds(command.texts.map { it.id })
                     repos.transaction {
-                        command.strokes.forEach { strokeWithPoints ->
-                            repos.strokes.insertStroke(strokeWithPoints.stroke)
-                            repos.strokes.insertPoints(strokeWithPoints.points)
+                        repos.strokes.replaceStrokeSnapshots(command.strokes)
+                        command.texts.forEach {
+                            repos.texts.insert(it)
+                            repos.texts.bumpTextVersion(it.id)
                         }
-                        command.texts.forEach { repos.texts.insert(it) }
                     }
                 }
                 is DrawCommand.MoveStrokes -> {
-                    repos.transaction {
-                        command.originals.forEach { swp ->
-                            repos.strokes.deletePointsForStroke(swp.stroke.id)
-                            repos.strokes.insertStroke(swp.stroke)
-                            repos.strokes.insertPoints(swp.points)
-                        }
-                    }
+                    repos.strokes.replaceStrokeSnapshots(command.originals)
                 }
                 is DrawCommand.ResizeStrokes -> {
-                    repos.transaction {
-                        command.originals.forEach { swp ->
-                            repos.strokes.deletePointsForStroke(swp.stroke.id)
-                            repos.strokes.insertStroke(swp.stroke)
-                            repos.strokes.insertPoints(swp.points)
-                        }
-                    }
+                    repos.strokes.replaceStrokeSnapshots(command.originals)
                 }
                 is DrawCommand.AddTextAnnotation -> {
                     hideIds(listOf(command.annotation.id))
@@ -1437,15 +1423,16 @@ class EditorViewModel(
                 is DrawCommand.RemoveTextAnnotation -> {
                     showIds(listOf(command.annotation.id))
                     repos.texts.insert(command.annotation)
+                    repos.texts.bumpTextVersion(command.annotation.id)
                 }
                 is DrawCommand.MoveTextAnnotation -> {
-                    repos.texts.update(command.original)
+                    repos.texts.updateAndBump(command.original)
                 }
                 is DrawCommand.ResizeTextAnnotation -> {
-                    repos.texts.update(command.original)
+                    repos.texts.updateAndBump(command.original)
                 }
                 is DrawCommand.EditTextAnnotation -> {
-                    repos.texts.update(command.original)
+                    repos.texts.updateAndBump(command.original)
                 }
                 is DrawCommand.AddImageAnnotation -> {
                     hideIds(listOf(command.annotation.id))
@@ -1462,25 +1449,19 @@ class EditorViewModel(
                     repos.images.update(command.original)
                 }
                 is DrawCommand.MoveSelectionMixed -> {
+                    // 單一外層交易（內層 withTransaction 同協程自動合併）：三表同生同死。
+                    // 拆成兩個交易的話，崩潰在中間會留下「墨回來了、字沒回來」的半包。
                     repos.transaction {
-                        command.strokeOriginals.forEach { swp ->
-                            repos.strokes.deletePointsForStroke(swp.stroke.id)
-                            repos.strokes.insertStroke(swp.stroke)
-                            repos.strokes.insertPoints(swp.points)
-                        }
+                        repos.strokes.replaceStrokeSnapshots(command.strokeOriginals)
                         command.imageOriginals.forEach { repos.images.update(it) }
-                        command.textOriginals.forEach { repos.texts.update(it) }
+                        command.textOriginals.forEach { repos.texts.updateAndBump(it) }
                     }
                 }
                 is DrawCommand.ResizeSelectionMixed -> {
                     repos.transaction {
-                        command.strokeOriginals.forEach { swp ->
-                            repos.strokes.deletePointsForStroke(swp.stroke.id)
-                            repos.strokes.insertStroke(swp.stroke)
-                            repos.strokes.insertPoints(swp.points)
-                        }
+                        repos.strokes.replaceStrokeSnapshots(command.strokeOriginals)
                         command.imageOriginals.forEach { repos.images.update(it) }
-                        command.textOriginals.forEach { repos.texts.update(it) }
+                        command.textOriginals.forEach { repos.texts.updateAndBump(it) }
                     }
                 }
                 is DrawCommand.AddSelectionCopies -> {
@@ -1500,12 +1481,12 @@ class EditorViewModel(
                     showIds(command.images.map { it.id })
                     showIds(command.texts.map { it.id })
                     repos.transaction {
-                        command.strokes.forEach { strokeWithPoints ->
-                            repos.strokes.insertStroke(strokeWithPoints.stroke)
-                            repos.strokes.insertPoints(strokeWithPoints.points)
-                        }
+                        repos.strokes.replaceStrokeSnapshots(command.strokes)
                         command.images.forEach { repos.images.insert(it) }
-                        command.texts.forEach { repos.texts.insert(it) }
+                        command.texts.forEach {
+                            repos.texts.insert(it)
+                            repos.texts.bumpTextVersion(it.id)
+                        }
                     }
                 }
                 is DrawCommand.ExtractToNewPage -> {
@@ -1537,10 +1518,7 @@ class EditorViewModel(
                 is DrawCommand.AddStroke -> {
                     // 重畫回來：先放回畫面（undo 時被 hide 過）。
                     showIds(listOf(command.stroke.stroke.id))
-                    repos.transaction {
-                        repos.strokes.insertStroke(command.stroke.stroke)
-                        repos.strokes.insertPoints(command.stroke.points)
-                    }
+                    repos.strokes.replaceStrokeSnapshots(listOf(command.stroke))
                 }
                 is DrawCommand.RemoveStrokes -> {
                     // redo 重新蓋墓碑，而不是硬刪（undo 是 insertStroke 把列覆蓋回來，
@@ -1581,40 +1559,31 @@ class EditorViewModel(
                             }
                             shiftedStroke to shiftedPoints
                         }
-                        repos.transaction {
-                            shifted.forEach { (stroke, points) ->
-                                repos.strokes.deletePointsForStroke(stroke.id)
-                                repos.strokes.insertStroke(stroke)
-                                repos.strokes.insertPoints(points)
-                            }
-                        }
+                        repos.strokes.replaceStrokeSnapshots(shifted.map { (stroke, points) ->
+                            StrokeWithPoints(stroke, points)
+                        })
                     }
                 }
                 is DrawCommand.ResizeStrokes -> {
-                    repos.transaction {
-                        command.updated.forEach { swp ->
-                            repos.strokes.deletePointsForStroke(swp.stroke.id)
-                            repos.strokes.insertStroke(swp.stroke)
-                            repos.strokes.insertPoints(swp.points)
-                        }
-                    }
+                    repos.strokes.replaceStrokeSnapshots(command.updated)
                 }
                 is DrawCommand.AddTextAnnotation -> {
                     showIds(listOf(command.annotation.id))
                     repos.texts.insert(command.annotation)
+                    repos.texts.bumpTextVersion(command.annotation.id)
                 }
                 is DrawCommand.RemoveTextAnnotation -> {
                     hideIds(listOf(command.annotation.id))
                     repos.texts.deleteById(command.annotation.id)
                 }
                 is DrawCommand.MoveTextAnnotation -> {
-                    repos.texts.update(command.updated)
+                    repos.texts.updateAndBump(command.updated)
                 }
                 is DrawCommand.ResizeTextAnnotation -> {
-                    repos.texts.update(command.updated)
+                    repos.texts.updateAndBump(command.updated)
                 }
                 is DrawCommand.EditTextAnnotation -> {
-                    repos.texts.update(command.updated)
+                    repos.texts.updateAndBump(command.updated)
                 }
                 is DrawCommand.AddImageAnnotation -> {
                     showIds(listOf(command.annotation.id))
@@ -1632,24 +1601,16 @@ class EditorViewModel(
                 }
                 is DrawCommand.MoveSelectionMixed -> {
                     repos.transaction {
-                        command.strokeUpdated.forEach { swp ->
-                            repos.strokes.deletePointsForStroke(swp.stroke.id)
-                            repos.strokes.insertStroke(swp.stroke)
-                            repos.strokes.insertPoints(swp.points)
-                        }
+                        repos.strokes.replaceStrokeSnapshots(command.strokeUpdated)
                         command.imageUpdated.forEach { repos.images.update(it) }
-                        command.textUpdated.forEach { repos.texts.update(it) }
+                        command.textUpdated.forEach { repos.texts.updateAndBump(it) }
                     }
                 }
                 is DrawCommand.ResizeSelectionMixed -> {
                     repos.transaction {
-                        command.strokeUpdated.forEach { swp ->
-                            repos.strokes.deletePointsForStroke(swp.stroke.id)
-                            repos.strokes.insertStroke(swp.stroke)
-                            repos.strokes.insertPoints(swp.points)
-                        }
+                        repos.strokes.replaceStrokeSnapshots(command.strokeUpdated)
                         command.imageUpdated.forEach { repos.images.update(it) }
-                        command.textUpdated.forEach { repos.texts.update(it) }
+                        command.textUpdated.forEach { repos.texts.updateAndBump(it) }
                     }
                 }
                 is DrawCommand.AddSelectionCopies -> {
@@ -1657,12 +1618,12 @@ class EditorViewModel(
                     showIds(command.images.map { it.id })
                     showIds(command.texts.map { it.id })
                     repos.transaction {
-                        command.strokes.forEach { strokeWithPoints ->
-                            repos.strokes.insertStroke(strokeWithPoints.stroke)
-                            repos.strokes.insertPoints(strokeWithPoints.points)
-                        }
+                        repos.strokes.replaceStrokeSnapshots(command.strokes)
                         command.images.forEach { repos.images.insert(it) }
-                        command.texts.forEach { repos.texts.insert(it) }
+                        command.texts.forEach {
+                            repos.texts.insert(it)
+                            repos.texts.bumpTextVersion(it.id)
+                        }
                     }
                 }
                 is DrawCommand.RemoveSelectionMixed -> {
@@ -2069,11 +2030,15 @@ class EditorViewModel(
         _commitPreview.value = movedStrokes.takeIf { it.isNotEmpty() }
 
         viewModelScope.launch(Dispatchers.IO) {
-            if (movedStrokes.isNotEmpty()) {
-                replaceStrokeSnapshots(movedStrokes)
+            // 三表同一交易：抬手一次的落庫要麼全進，要麼全不進（內層各自帶交易，
+            // 同協程自動合併，外層只是一個殼）。
+            repos.transaction {
+                if (movedStrokes.isNotEmpty()) {
+                    replaceStrokeSnapshots(movedStrokes)
+                }
+                movedImages.forEach { repos.images.update(it) }
+                movedTexts.forEach { repos.texts.updateAndBump(it) }
             }
-            movedImages.forEach { repos.images.update(it) }
-            movedTexts.forEach { repos.texts.updateAndBump(it) }
             withContext(Dispatchers.Main) {
                 if (_commitPreview.value === movedStrokes) {
                     _commitPreview.value = null
@@ -2165,11 +2130,13 @@ class EditorViewModel(
 
         _commitPreview.value = redocUpdated.takeIf { it.isNotEmpty() }
         viewModelScope.launch(Dispatchers.IO) {
-            if (redocUpdated.isNotEmpty()) {
-                replaceStrokeSnapshots(redocUpdated)
+            repos.transaction {
+                if (redocUpdated.isNotEmpty()) {
+                    replaceStrokeSnapshots(redocUpdated)
+                }
+                redocUpdatedImages.forEach { repos.images.update(it) }
+                redocUpdatedTexts.forEach { repos.texts.updateAndBump(it) }
             }
-            redocUpdatedImages.forEach { repos.images.update(it) }
-            redocUpdatedTexts.forEach { repos.texts.updateAndBump(it) }
             withContext(Dispatchers.Main) {
                 if (_commitPreview.value === redocUpdated) {
                     _commitPreview.value = null
@@ -2291,7 +2258,9 @@ class EditorViewModel(
                 }
             }
             try {
-                selectedImageSnapshots.forEach { repos.images.deleteById(it.id) }
+                repos.transaction {
+                    selectedImageSnapshots.forEach { repos.images.deleteById(it.id) }
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {

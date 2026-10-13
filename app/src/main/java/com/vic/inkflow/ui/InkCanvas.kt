@@ -1969,7 +1969,6 @@ fun InkCanvas(
                 // 淘汰已刪筆跡（普通 Map 操作，不寫 State、不二次失效）
                 committedPathCache.keys.removeAll { it !in keepIds }
                 // 加筆＋改筆的髒（改筆要舊 bounds ∪ 新 bounds，否則舊位置殘影）
-                val changedIds = HashSet<String>()
                 strokes.forEach { swp ->
                     if (swp.stroke.shapeType != null) return@forEach
                     if (swp.stroke.id in previewIds) return@forEach
@@ -1981,7 +1980,6 @@ fun InkCanvas(
                             dirty = unionRect(dirty, old)
                         }
                         dirty = unionRect(dirty, strokeRect(swp))
-                        changedIds.add(swp.stroke.id)
                     }
                 }
                 // 形狀的髒：同 id 新 bounds＝移動／縮放過，舊 bounds 也要清
