@@ -7,6 +7,8 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,7 +29,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.BookmarkBorder
-import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Checklist
 import androidx.compose.material.icons.outlined.ChevronLeft
 import androidx.compose.material.icons.outlined.Close
@@ -41,25 +42,35 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.hapticfeedback.HapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.dp
 import com.vic.inkflow.data.repository.InkFlowRepositories
 import com.vic.inkflow.util.reorderable
 import com.vic.inkflow.util.reorderableItem
 import com.vic.inkflow.ui.theme.Motion
 import com.vic.inkflow.ui.theme.ShapeLg
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
@@ -290,6 +301,25 @@ internal fun SidebarPageGrid(
         staggerBudget.animateTo(1f, tween(Motion.DURATION_SLOW))
     }
 
+    // 拖選自動捲：手指停在上下邊緣照樣捲（寫在 onDrag 裡就停了——手指不動不回調，
+    // 官方博客點名的常見 bug）。速度由手勢按距邊距離給，這裡只負責轉。
+    val dragAutoScrollSpeed = remember { mutableStateOf(0f) }
+    LaunchedEffect(dragAutoScrollSpeed.value) {
+        if (dragAutoScrollSpeed.value != 0f) {
+            while (true) {
+                gridState.scrollBy(dragAutoScrollSpeed.value)
+                delay(10)
+            }
+        }
+    }
+    // pointerInput 只 key gridState（不重啟）：集合經 ref 讀新鮮值，否則拖到一半
+    // 讀到舊快照，範圍算出來是錯的。
+    val dragOrderRef = rememberUpdatedState(dragOrder)
+    val selectedPagesRef = rememberUpdatedState(selectedPages)
+    val setSelectedRef = rememberUpdatedState({ s: Set<Int> -> selectedPages = s })
+    val haptics = LocalHapticFeedback.current
+    val autoScrollThresholdPx = with(LocalDensity.current) { 40.dp.toPx() }
+
     LazyVerticalGrid(
             columns = GridCells.Adaptive(144.dp),
             state = gridState,
@@ -299,6 +329,22 @@ internal fun SidebarPageGrid(
             modifier = Modifier
                 .fillMaxSize()
                 .reorderable(reorderState, enabled = !showOnlyBookmarked && !isSelectionMode && !isPageOperationInProgress)
+                // 選擇模式拖選（Google 相簿／iOS 相簿同款）：點住一頁直接拖，
+                // 拖過的全進集合，回拖縮範圍，從已選起拖是反選。快滑不受影響
+                //（長按超時前鬆手／移動＝捲動，detectDragGesturesAfterLongPress 仲裁）。
+                .then(
+                    if (isSelectionMode) {
+                        Modifier.pageGridDragSelect(
+                            gridState = gridState,
+                            dragOrder = dragOrderRef,
+                            selectedPages = selectedPagesRef,
+                            onSelectionChange = setSelectedRef,
+                            haptics = haptics,
+                            autoScrollSpeed = dragAutoScrollSpeed,
+                            autoScrollThresholdPx = autoScrollThresholdPx
+                        )
+                    } else Modifier
+                )
         ) {
             items(count = dragOrder.size, key = { dragOrder[it] }) { it ->
                 val index = dragOrder[it]
@@ -390,7 +436,7 @@ internal fun SidebarPageGrid(
                                 strokes = strokes,
                                 imageAnnotations = images,
                                 textAnnotations = texts,
-                                isSelected = isSelectionMode && index in selectedPages ||
+                                isSelected = index in selectedPages ||
                                     (!isSelectionMode && index == currentPageIndex),
                                 isBookmarked = index in bookmarkedPages,
                                 onBookmarkToggle = { newState ->
@@ -406,44 +452,15 @@ internal fun SidebarPageGrid(
                                     //  2. 比例不一致 → 灰邊厚薄不均、整個網格排列參差，很難看。
                                     // 頁面管理要的是「每頁一樣大、排整齊」，所以用統一的 A4 比例，
                                     // 實際頁面差異由白紙內部的 bitmap 自己留白處理。
-                                    .aspectRatio(gridAspectRatio)
-                                    .let { if (isSelectionMode) it.padding(8.dp) else it },
+                                    .aspectRatio(gridAspectRatio),
                                 modelWidth = modelWidth,
                                 modelHeight = modelHeight,
                                 // 放大由整張玻璃卡負責（見上方 graphicsLayer），
                                 // 這裡不能再乘一次，否則變 1.08²。
                                 applySelectionScale = false
                             )
-                            if (isSelectionMode) {
-                                // 自繪勾選圓（取代 M3 Checkbox）
-                                val checked = index in selectedPages
-                                Box(
-                                    modifier = Modifier
-                                        .align(Alignment.TopStart)
-                                        .padding(12.dp)
-                                        .size(28.dp)
-                                        .clip(CircleShape)
-                                        .background(
-                                            if (checked) MaterialTheme.colorScheme.primary
-                                            else MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
-                                            CircleShape
-                                        )
-                                        .clickable {
-                                            if (checked) selectedPages -= index
-                                            else selectedPages += index
-                                        },
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    if (checked) {
-                                        Icon(
-                                            Icons.Outlined.Check,
-                                            contentDescription = null,
-                                            tint = MaterialTheme.colorScheme.onPrimary,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                    }
-                                }
-                            }
+                            // 選擇態只剩頁碼徽實心化（PageThumbnail 內部）：勾選圓已刪，
+                            // 整張卡點哪都一樣是 toggle，不再留第二個點位。
                         }
                     }
                 }
@@ -493,4 +510,79 @@ private fun LazyGridState.measuredColumnCount(): Int {
     if (visible.isEmpty()) return 0
     val topOffset = visible.minOf { it.offset.y }
     return visible.count { it.offset.y == topOffset }
+}
+
+/**
+ * 選擇模式拖選（Google 相簿／iOS 相簿手感，照抄）：
+ * 點住一頁直接拖，拖過的全進集合；回拖縮範圍；從已選起拖＝反選；
+ * 手指到上下邊緣自動捲（越近越快）；起點給一次長按震動。
+ *
+ * 位置用「列表位」算範圍、再經 dragOrder 映射到頁號——書籤過濾時位不連號，
+ * 直接對頁號取範圍會把藏起來的頁也選進去。
+ */
+private fun Modifier.pageGridDragSelect(
+    gridState: LazyGridState,
+    dragOrder: State<List<Int>>,
+    selectedPages: State<Set<Int>>,
+    onSelectionChange: State<(Set<Int>) -> Unit>,
+    haptics: HapticFeedback,
+    autoScrollSpeed: androidx.compose.runtime.MutableState<Float>,
+    autoScrollThresholdPx: Float
+): Modifier = pointerInput(gridState, dragOrder, selectedPages, onSelectionChange, haptics) {
+    fun positionAt(hit: Offset): Int? =
+        gridState.layoutInfo.visibleItemsInfo.firstOrNull { info ->
+            IntRect(info.offset, info.size).contains(
+                androidx.compose.ui.unit.IntOffset(hit.x.toInt(), hit.y.toInt())
+            )
+        }?.index
+
+    var anchorPos: Int? = null
+    var currentPos: Int? = null
+    var subtract = false
+    // 本筆手勢已經動過的頁：縮範圍時要先退掉，不然只增不減。
+    var applied: Set<Int> = emptySet()
+
+    fun applyRange(toPos: Int) {
+        val anchor = anchorPos ?: return
+        val order = dragOrder.value
+        val range = if (anchor <= toPos) anchor..toPos else toPos..anchor
+        val pages = range.mapNotNull { order.getOrNull(it) }.toSet()
+        var next = selectedPages.value - applied
+        next = if (subtract) next - pages else next + pages
+        applied = pages
+        currentPos = toPos
+        onSelectionChange.value(next)
+    }
+
+    detectDragGesturesAfterLongPress(
+        onDragStart = { offset ->
+            val pos = positionAt(offset) ?: return@detectDragGesturesAfterLongPress
+            val page = dragOrder.value.getOrNull(pos) ?: return@detectDragGesturesAfterLongPress
+            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+            anchorPos = pos
+            subtract = page in selectedPages.value
+            applyRange(pos)
+        },
+        onDragCancel = {
+            anchorPos = null
+            autoScrollSpeed.value = 0f
+        },
+        onDragEnd = {
+            anchorPos = null
+            autoScrollSpeed.value = 0f
+        },
+        onDrag = { change, _ ->
+            if (anchorPos == null) return@detectDragGesturesAfterLongPress
+            val distFromBottom = gridState.layoutInfo.viewportSize.height - change.position.y
+            val distFromTop = change.position.y
+            autoScrollSpeed.value = when {
+                distFromBottom < autoScrollThresholdPx -> autoScrollThresholdPx - distFromBottom
+                distFromTop < autoScrollThresholdPx -> distFromTop - autoScrollThresholdPx
+                else -> 0f
+            }
+            positionAt(change.position)?.let { pos ->
+                if (pos != currentPos) applyRange(pos)
+            }
+        }
+    )
 }
