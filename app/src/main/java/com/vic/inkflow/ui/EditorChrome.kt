@@ -8,8 +8,6 @@ import com.vic.inkflow.ui.theme.ShapeMd
 import com.vic.inkflow.ui.theme.GlassSelectionInk
 import com.vic.inkflow.ui.theme.ShapeLg
 import com.vic.inkflow.ui.theme.ShapeXl
-import com.vic.inkflow.util.reorderable
-import com.vic.inkflow.util.reorderableItem
 
 import android.content.ClipData
 import android.content.ClipDescription
