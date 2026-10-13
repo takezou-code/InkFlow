@@ -129,14 +129,20 @@ internal fun SidebarPageGrid(
             newOrder.add(to, item)
             dragOrder = newOrder
         },
-        onDragEnd = { from, to ->
+        onDragEnd = { _, to ->
             if (!showOnlyBookmarked && !isSelectionMode) {
+                // to 是「當下順序裡的位置」，movePage 吃的也是位置：
+                // 被拖的頁此刻就坐在 dragOrder[to]。舊碼拿 visibleIndices[to]
+                // 當頁號——非過濾時數字碰巧相等才沒炸，過濾一開就搬錯頁。
+                val order = dragOrder
+                val page = order.getOrNull(to) ?: return@rememberReorderableLazyGridState
                 // R2：移頁是結構操作，清棧。
                 onStructureChanged()
-                pdfViewModel.movePage(documentUri, visibleIndices[from], visibleIndices[to])
+                pdfViewModel.movePage(documentUri, page, to)
             }
         }
     )
+    // 拖排序邊緣自捲循環見下方（跟拖選循環放一起）：閾值宣告在後面，這裡先不掛。
 
     // 欄數實測，不能寫死。
     // 舊碼寫 `currentPageIndex / 4`，欄數一改（現在是 7 欄）就會把當前頁捲到錯的列。
@@ -320,6 +326,24 @@ internal fun SidebarPageGrid(
     val setSelectedRef = rememberUpdatedState({ s: Set<Int> -> selectedPages = s })
     val haptics = LocalHapticFeedback.current
     val autoScrollThresholdPx = with(LocalDensity.current) { 40.dp.toPx() }
+    // 拖排序邊緣自捲（Keynote/G相簿都有）：手指停在邊緣照樣捲。
+    // 跟拖選循環同構：速度由手指距邊距離現場算，16ms 一步。
+    LaunchedEffect(reorderState.isDragging) {
+        if (reorderState.isDragging) {
+            while (true) {
+                val pos = reorderState.dragPosition
+                val h = reorderState.gridState.layoutInfo.viewportSize.height.toFloat()
+                val speed = when {
+                    pos == null -> 0f
+                    h - pos.y < autoScrollThresholdPx -> autoScrollThresholdPx - (h - pos.y)
+                    pos.y < autoScrollThresholdPx -> pos.y - autoScrollThresholdPx
+                    else -> 0f
+                }
+                if (speed != 0f) reorderState.gridState.scrollBy(speed)
+                delay(16)
+            }
+        }
+    }
 
     LazyVerticalGrid(
             columns = GridCells.Adaptive(144.dp),
@@ -329,7 +353,14 @@ internal fun SidebarPageGrid(
             verticalArrangement = Arrangement.spacedBy(12.dp),
             modifier = Modifier
                 .fillMaxSize()
-                .reorderable(reorderState, enabled = !showOnlyBookmarked && !isSelectionMode && !isPageOperationInProgress)
+                .reorderable(
+                    reorderState,
+                    enabled = !showOnlyBookmarked && !isSelectionMode && !isPageOperationInProgress,
+                    // 起飛震動：iOS 拿起那一下有觸感，沒有就像抓空。
+                    onLift = { haptics.performHapticFeedback(HapticFeedbackType.LongPress) },
+                    // 系統取消只回彈不提交（提交在共用層的 commit=true 路）。
+                    onDragCancel = { dragOrder = visibleIndices }
+                )
                 // 選擇模式拖選（Google 相簿／iOS 相簿同款）：點住一頁直接拖，
                 // 拖過的全進集合，回拖縮範圍，從已選起拖是反選。快滑不受影響
                 //（長按超時前鬆手／移動＝捲動，detectDragGesturesAfterLongPress 仲裁）。

@@ -42,7 +42,15 @@ class ReorderableLazyGridState(
     var isDragging by mutableStateOf(false)
         private set
 
-    fun onDragStart(offset: Offset) {
+    /**
+     * 手指在網格裡的位置（網格座標 px）。給呼叫端的邊緣自動捲用：
+     * 官方 Compose 博客同款做法——捲動循環住在呼叫端，這裡只暴露位置。
+     */
+    var dragPosition by mutableStateOf<Offset?>(null)
+        private set
+
+    /** @return 有沒有真的拎起一張卡（點到縫裡不算）。 */
+    fun onDragStart(offset: Offset): Boolean {
         gridState.layoutInfo.visibleItemsInfo.firstOrNull { item ->
             offset.y >= item.offset.y && offset.y <= item.offset.y + item.size.height &&
             offset.x >= item.offset.x && offset.x <= item.offset.x + item.size.width
@@ -50,8 +58,11 @@ class ReorderableLazyGridState(
             draggingItemIndex = it.index
             initialItemIndex = it.index
             currentItemIndex = it.index
+            dragPosition = offset
             isDragging = true
+            return true
         }
+        return false
     }
 
     fun onDrag(dragAmount: Offset) {
@@ -81,35 +92,53 @@ class ReorderableLazyGridState(
         }
     }
 
-    fun onDragInterrupted() {
-        if (initialItemIndex != null && currentItemIndex != null && initialItemIndex != currentItemIndex) {
+    /**
+     * @param commit 手勢正常放手才 true：走 onDragEnd 提交。系統取消（來電之類）
+     * 傳 false——只復位不提交，舊碼連取消都提交是錯的。
+     */
+    fun onDragInterrupted(commit: Boolean) {
+        if (commit && initialItemIndex != null && currentItemIndex != null && initialItemIndex != currentItemIndex) {
             onDragEnd(initialItemIndex!!, currentItemIndex!!)
         }
         draggingItemIndex = null
         initialItemIndex = null
         currentItemIndex = null
         dragOffset = Offset.Zero
+        dragPosition = null
         isDragging = false
+    }
+
+    internal fun updateDragPosition(position: Offset) {
+        if (isDragging) dragPosition = position
     }
 
     private fun IntOffset(x: Int, y: Int) = Offset(x.toFloat(), y.toFloat())
 }
 
-fun Modifier.reorderable(state: ReorderableLazyGridState, enabled: Boolean = true): Modifier = this.pointerInput(enabled) {
+fun Modifier.reorderable(
+    state: ReorderableLazyGridState,
+    enabled: Boolean = true,
+    /** 真的拎起一張卡時一次（起飛震動放這裡）。 */
+    onLift: (() -> Unit)? = null,
+    /** 系統取消時一次（呼叫端把預覽順序彈回去）。正常放手不走這裡。 */
+    onDragCancel: (() -> Unit)? = null
+): Modifier = this.pointerInput(enabled, onLift, onDragCancel) {
     if (!enabled) return@pointerInput
     detectDragGesturesAfterLongPress(
         onDragStart = { offset ->
-            state.onDragStart(offset)
+            if (state.onDragStart(offset)) onLift?.invoke()
         },
         onDrag = { change, dragAmount ->
             change.consume()
+            state.updateDragPosition(change.position)
             state.onDrag(dragAmount)
         },
         onDragEnd = {
-            state.onDragInterrupted()
+            state.onDragInterrupted(commit = true)
         },
         onDragCancel = {
-            state.onDragInterrupted()
+            state.onDragInterrupted(commit = false)
+            onDragCancel?.invoke()
         }
     )
 }
