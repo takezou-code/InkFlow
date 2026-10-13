@@ -5,6 +5,11 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
 
+    <!-- AI 面板語音輸入：WebView 麥克風（WebRTC）要 RECORD_AUDIO；MODIFY_AUDIO_SETTINGS 保迴音消除不斷鏈。 -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+
     <!-- LAN sync (protocol v3). 53530 UDP discovery + 53531 TCP transfer. -->
     <!-- ACCESS_NETWORK_STATE: 挑對網路介面（WiFi vs cellular）來填 DiscoveryResponse.ip，
          否則桌面端會拿著一個連不上的 IP 然後神祕逾時。 -->

@@ -10,13 +10,16 @@ import com.vic.inkflow.ui.theme.ShapeXl
 import com.vic.inkflow.util.reorderable
 import com.vic.inkflow.util.reorderableItem
 
+import android.Manifest
 import android.content.ClipData
 import android.content.ClipDescription
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.OpenableColumns
+import androidx.core.content.ContextCompat
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -317,7 +320,71 @@ fun AiWebPanel(
             var lastHandledKey: String? = null
             var isPageLoaded: Boolean = false
             var lastProbeUrl: String? = null
+            // 自動貼圖退路（feed pendingImage）每個請求只餵一次；
+            // 之後使用者手動點上傳就走系統選擇器，不會被舊圖卡住。
+            var fedImageKey: String? = null
         }
+    }
+
+    // ── 使用者手動上傳：WebView file chooser 橋（圖片／PDF／文件） ──
+    // 與 app 自動貼圖共用 onShowFileChooser 入口：自動退路先餵 pending 圖（每請求一次），
+    // 沒有待餵的圖就開系統選擇器。舊碼這裡直接 super（= 拒絕），手動上傳完全點不開。
+    val fileChooser = androidx.compose.runtime.remember {
+        object {
+            var callback: android.webkit.ValueCallback<Array<Uri>>? = null
+        }
+    }
+    val filePickLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val cb = fileChooser.callback
+        fileChooser.callback = null
+        try {
+            if (result.resultCode == android.app.Activity.RESULT_OK) {
+                val data = result.data
+                val uris = mutableListOf<Uri>()
+                val cd = data?.clipData
+                if (cd != null) {
+                    for (i in 0 until cd.itemCount) uris.add(cd.getItemAt(i).uri)
+                }
+                data?.data?.let { uris.add(it) }
+                cb?.onReceiveValue(if (uris.isEmpty()) null else uris.toTypedArray())
+            } else {
+                cb?.onReceiveValue(null)
+            }
+        } catch (_: Throwable) {
+            try { cb?.onReceiveValue(null) } catch (_: Throwable) { }
+        }
+    }
+    fun launchFilePicker(params: android.webkit.WebChromeClient.FileChooserParams?) {
+        try {
+            val accepts = params?.acceptTypes?.filter { it.isNotBlank() } ?: emptyList()
+            val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = accepts.firstOrNull() ?: "*/*"
+                if (accepts.size > 1) putExtra(Intent.EXTRA_MIME_TYPES, accepts.toTypedArray())
+                putExtra(
+                    Intent.EXTRA_ALLOW_MULTIPLE,
+                    params?.mode == android.webkit.WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE
+                )
+            }
+            filePickLauncher.launch(intent)
+        } catch (t: Throwable) {
+            try { fileChooser.callback?.onReceiveValue(null) } catch (_: Throwable) { }
+            fileChooser.callback = null
+        }
+    }
+
+    // ── 語音輸入：進面板先要麥克風授權（只問一次；拒絕也不擋面板，網頁點麥克風時沒授權就 deny） ──
+    val audioPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { }
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        try {
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                audioPermLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            }
+        } catch (_: Throwable) { }
     }
 
     /**
@@ -465,7 +532,7 @@ val isDarkPanel = MaterialTheme.colorScheme.background.luminance() < 0.5f
         )
     }
 
-    // M2b-2：拉桿「引入」鈕兩段式 — ①進圈選模式（段落打勾）②收集打勾段落（無勾選則取最後回覆全文）。
+    // M2b-2：拉桿「引入」鈕兩段式 — ①進圈選模式（段落打勾）②收集打勾段落（無勾選則不插入）。
     // 圈選模式下「完成」鈕由網頁端回報，用這個計數器觸發收集。
     val pickDoneSignal = androidx.compose.runtime.remember { androidx.compose.runtime.mutableIntStateOf(0) }
 
@@ -606,19 +673,49 @@ val isDarkPanel = MaterialTheme.colorScheme.background.luminance() < 0.5f
                     this.addJavascriptInterface(jsBridge, "AndroidBridge")
                     
                     webChromeClient = object : android.webkit.WebChromeClient() {
+                        // 語音輸入放行：只 grant 麥克風（且系統授權已拿到才放）。
+                        // 相機刻意不放（manifest 沒宣告 CAMERA，一律 deny，不裝會動）。
+                        override fun onPermissionRequest(request: android.webkit.PermissionRequest?) {
+                            try {
+                                if (request == null) return
+                                val res = request.resources ?: emptyArray()
+                                val wantAudio = res.contains(android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE)
+                                val audioOk = ContextCompat.checkSelfPermission(
+                                    context, Manifest.permission.RECORD_AUDIO
+                                ) == PackageManager.PERMISSION_GRANTED
+                                if (wantAudio && audioOk) {
+                                    request.grant(
+                                        res.filter {
+                                            it == android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE
+                                        }.toTypedArray()
+                                    )
+                                } else {
+                                    request.deny()
+                                }
+                            } catch (_: Throwable) {
+                                try { request?.deny() } catch (_: Throwable) { }
+                            }
+                        }
                         override fun onShowFileChooser(
                             webView: android.webkit.WebView?,
                             filePathCallback: android.webkit.ValueCallback<Array<android.net.Uri>>?,
                             fileChooserParams: FileChooserParams?
                         ): Boolean {
-                            // 貼圖退路：頁面自己點了 input[type=file] 時，由我們遞上請求裡的圖。
-                            // 這條完全 provider-agnostic（沒有任何 AI 專屬 selector）。
-                            val pendingImage = currentRequest.value?.image
-                            if (pendingImage != null) {
+                            // 自動貼圖退路：頁面自己點了 input[type=file] 時，由我們遞上請求裡的圖。
+                            // 每個請求只餵一次，避免之後使用者手動上傳被舊圖卡住。
+                            val req = currentRequest.value
+                            val pendingImage = req?.image
+                            if (pendingImage != null && !req.isEmpty && uploadState.fedImageKey != req.dedupeKey()) {
+                                uploadState.fedImageKey = req.dedupeKey()
                                 filePathCallback?.onReceiveValue(arrayOf(pendingImage))
                                 return true
                             }
-                            return super.onShowFileChooser(webView, filePathCallback, fileChooserParams)
+                            // 使用者手動點上傳：開系統檔案選擇器（圖片／PDF／文件）。
+                            if (filePathCallback == null) return false
+                            try { fileChooser.callback?.onReceiveValue(null) } catch (_: Throwable) { }
+                            fileChooser.callback = filePathCallback
+                            launchFilePicker(fileChooserParams)
+                            return true
                         }
                     }
 
