@@ -15,12 +15,12 @@ fun Modifier.reorderableItem(
     index: Int
 ): Modifier {
     val isDragging = state.draggingItemIndex == index
-    // 拿起動畫：Keynote 那種「浮起來」不是瞬間變大，是彈簧收斂。
-    // 參數跟網格選中放大同一組，手感才一致。
+    // 拿起動畫：快速到位、不帶過衝。舊碼 MediumBouncy 會先衝過頭再回來，
+    // 看起來像卡往上彈一下＝用户說的「飄」；stiffness 跟選中放大同一組。
     val lift by animateFloatAsState(
         targetValue = if (isDragging) 1.05f else 1f,
         animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
+            dampingRatio = Spring.DampingRatioNoBouncy,
             stiffness = Spring.StiffnessMedium
         ),
         label = "ReorderLift"
