@@ -406,17 +406,12 @@ fun TabletEditorScreen(
     // 程式化捲動的命：手勢一接管（pinchActive）立刻取消，未跑完的動畫不許在手勢中/手勢後
     // 把紙拽回舊目標（反方向回彈主因）。owner 的預期跟著清。
     var programmaticScrollJob by remember { mutableStateOf<Job?>(null) }
-    // Scrub 專用瞬移 job：手指跟紙必須同幀，animateScrollToItem 的動畫＋80ms 延遲
-    // 會讓一堆捲動互相打架、紙永遠追不上手指。scrollToItem 是 snap，無動畫不排隊。
-    var scrubScrollJob by remember { mutableStateOf<Job?>(null) }
     androidx.compose.runtime.LaunchedEffect(pinchActive) {
         if (pinchActive) {
             programmaticScrollJob?.cancel()
             programmaticScrollJob = null
             previewNavJob?.cancel()
             previewNavJob = null
-            scrubScrollJob?.cancel()
-            scrubScrollJob = null
             pageOwner.cancelExpected()
         }
     }
@@ -1053,15 +1048,6 @@ fun TabletEditorScreen(
             // 這裡用這把鎖強制單寫入者：拖曳中階段動畫不動，放手後才交給動畫。
             var isDraggingSidebar by remember { mutableStateOf(false) }
 
-            // Scrub handle 狀態：直向拖拉桿＝絕對頁碼跳轉（Barteksc 式 scrub）。
-            // null＝沒在 scrub，拇指跟主列表走；非 null＝手指正在拖，拇指跟手指、泡泡報頁碼。
-            // 不新增任何佔位：直接住在現有 24dp 拉桿裡（回用戶「高度重疊」疑慮）。
-            var scrubPage by remember { mutableStateOf<Int?>(null) }
-            var railHpx by remember { mutableIntStateOf(0) }
-            // pageCount 閉包新鮮度：pointerInput(sidebarStage) 只在切階段時重跑，
-            // 增刪頁後 pageCount 變了閉包讀到舊值會跳錯頁，用 ref 讀新鮮值。
-            val pageCountRef = androidx.compose.runtime.rememberUpdatedState(pageCount)
-
             // 收合／展開的過渡動畫。56↔128dp 只差 198px，這段距離重量測側欄內容
             // 的成本可以接受 —— 也正是重構前你回報「手感可以」的那版行為。
             LaunchedEffect(targetWidth) {
@@ -1485,201 +1471,10 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
             }
         } // Box（GRID 疊層）
 
-        // ── 拉桿：只輕點，不拖曳 ──────────────────────────────────────
-        //
-        // 拉桿不再改變寬度。寬度完全由 sidebarStage 驅動（見上面的 animateDpAsState），
-        // 所以拉桿只是「切換階段」的按鈕：一支不會跟手指搶同一個數值的控制項，
-        // 不會有彈跳、閃爍或跟手問題。
-        //
-        // 第 2 階 → 第 3 階；第 3 階 → 收合到第 1 階（否則第 3 階沒有出口）。
-        // 第 1 階沒有拉桿（56dp 太窄，24dp 拉桿會吃掉一半寬度），
-        // 展開靠收合態玻璃脊上的展開鈕。
-        //
-        // 畫在 GRID 疊層之後：疊層是 fillMaxSize 的不透明層，畫在下面會被蓋住收不到事件。
-        if (sidebarStage != SidebarStage.RAIL) {
-            val next = if (sidebarStage == SidebarStage.PANEL) {
-                SidebarStage.GRID
-            } else {
-                SidebarStage.RAIL
-            }
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    // 貼在側欄右緣（第 2 階）；第 3 階貼螢幕最右緣。
-                    .offset {
-                        IntOffset(
-                            if (sidebarStage == SidebarStage.GRID) {
-                                (totalWidth - 24.dp).roundToPx()
-                            } else {
-                                (currentWidthDp - 24.dp).roundToPx()
-                            },
-                            0
-                        )
-                    }
-                    .width(24.dp)
-                    .fillMaxHeight()
-                    .padding(top = toolbarH)
-                    .onSizeChanged { railHpx = it.height }
-                    .pointerInput(sidebarStage) {
-                        awaitEachGesture {
-                            val down = awaitFirstDown()
-                            // null = 未定；true = 橫向拖寬；false = 直向捲主列表
-                            var horizontalLock: Boolean? = null
-                            var prevX = down.position.x
-                            var prevY = down.position.y
-                            var accX = 0f
-                            var accY = 0f
-                            var velX = 0f
-                            var lastT = down.uptimeMillis
-                            var dragged = false
-                            val slop = viewConfiguration.touchSlop
-                            // 第 3 階整屏都是網格，寬度軸不在那裡 → 不拖寬。
-                            val canDragWidth = sidebarStage != SidebarStage.GRID
-                            val railPx = with(density) { collapsedWidth.toPx() }
-                            val panelPx = with(density) { normalWidth.toPx() }
-                            while (true) {
-                                val event = awaitPointerEvent()
-                                val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                                if (!change.pressed) {
-                                    isDraggingSidebar = false
-                                    // Scrub 收尾：有 scrub 目標就結算提交（走單一提交點，owner=SidebarDrive），
-                                    // 再熄泡泡、拇指交還給主列表跟隨。
-                                    val scrubSettled = scrubPage
-                                    scrubPage = null
-                                    scrubScrollJob?.cancel()
-                                    scrubScrollJob = null
-                                    if (scrubSettled != null) {
-                                        initialScrollDone = true
-                                        val commit = pageOwner.commitNow(scrubSettled, PageOwner.SidebarDrive, pageCount)
-                                        pageOwner.expectTarget(commit.page, pageCount, android.os.SystemClock.uptimeMillis())
-                                        applyCommit(commit, prefetch = true)
-                                    }
-                                    when {
-                                        dragged -> {
-                                            // 放手＝交給狀態機決定停哪一階，再彈過去。
-                                            val from = animatableWidth.value
-                                            val t = if (panelPx - railPx <= 1f) 0.5f
-                                            else ((from - railPx) / (panelPx - railPx)).coerceIn(0f, 1f)
-                                            val settled = SidebarStageMachine.snap(t, velX)
-                                            goToStage(settled)
-                                        }
-                                        horizontalLock == null -> goToStage(next)
-                                    }
-                                    break
-                                }
-                                val dx = change.position.x - prevX
-                                val dy = change.position.y - prevY
-                                prevX = change.position.x
-                                prevY = change.position.y
-                                if (horizontalLock == null) {
-                                    accX += dx
-                                    accY += dy
-                                    horizontalLock = when {
-                                        !canDragWidth -> null
-                                        kotlin.math.abs(accX) > slop &&
-                                            kotlin.math.abs(accX) >= kotlin.math.abs(accY) -> true
-                                        kotlin.math.abs(accY) > slop -> false
-                                        else -> null
-                                    }
-                                }
-                                if (horizontalLock == true) {
-                                    val now = change.uptimeMillis
-                                    val dt = (now - lastT).coerceAtLeast(1L)
-                                    lastT = now
-                                    velX = velX * 0.75f + (dx / dt * 1000f) * 0.25f
-                                    change.consume()
-                                    if (!dragged) {
-                                        // 確定要拖寬了才鎖：鎖住期間階段動畫不參與。
-                                        isDraggingSidebar = true
-                                        dragged = true
-                                    }
-                                    val railDp = collapsedWidth
-                                    val panelDp = normalWidth
-                                    scope.launch {
-                                        animatableWidth.snapTo(
-                                            (animatableWidth.value + dx / density.density)
-                                                .coerceIn(railDp.value, panelDp.value)
-                                        )
-                                    }
-                                } else if (horizontalLock == false) {
-                                    change.consume()
-                                    // Scrub：手指在軌道上的絕對位置→目標頁。
-                                    // 舊碼是相對 dy 一頁一頁推，長文件拖到手痠；
-                                    // 改絕對映射，一拖直達（頁碼泡即時報數）。
-                                    // 走程式化單一可取消 job（TOUCH_CONTRACT：手勢接管即殺，
-                                    // 見 pinchActive effect），不用舊 scrollBy 通道。
-                                    val total = pageCountRef.value
-                                    if (total > 1 && size.height > 0) {
-                                        val frac = (change.position.y / size.height.toFloat())
-                                            .coerceIn(0f, 1f)
-                                        val jump = (frac * (total - 1) + 0.5f).toInt()
-                                            .coerceIn(0, total - 1)
-                                        if (jump != scrubPage) {
-                                            scrubPage = jump
-                                            initialScrollDone = true
-                                            // 拖動中只預覽（泡泡報數、紙跟走），放手才提交。
-                                            // 不走 previewNavigate：它的 80ms＋平滑動畫是給點選的，
-                                            // scrub 要的是瞬移，否則紙黏在手指後面。
-                                            previewPage = jump
-                                            pageOwner.expectTarget(jump, pageCountRef.value, android.os.SystemClock.uptimeMillis())
-                                            scrubScrollJob?.cancel()
-                                            scrubScrollJob = scope.launch {
-                                                runCatching { mainListState.scrollToItem(jump) }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    },
-                contentAlignment = Alignment.TopStart
-            ) {
-                // 拇指：沒 scrub 跟主列表走（首可見頁比例），scrub 中跟手指。
-                // 讀 firstVisibleItemIndex 會訂閱重組——丸子 tiny，成本忽略。
-                val denom = (pageCount - 1).coerceAtLeast(1)
-                val thumbFrac = ((scrubPage ?: mainListState.firstVisibleItemIndex).toFloat() / denom)
-                    .coerceIn(0f, 1f)
-                val thumbYpx = (thumbFrac * (railHpx - with(density) { 56.dp.toPx() }).coerceAtLeast(0f))
-                    .toInt()
-                Box(
-                    Modifier
-                        .offset { IntOffset(9.dp.roundToPx(), thumbYpx) }
-                        .width(6.dp)
-                        .height(56.dp)
-                        .glassPanel(chromeHaze, isEditorDark, CircleShape)
-                )
-                // 頁碼泡：只在 scrub 中出現。軌道只寬 24dp，泡浮在外面（Box 預設不裁剪）。
-                // 平時貼軌道右（紙面上方）；GRID 軌道在螢幕最右緣，改貼左，免得飛出螢幕。
-                val sp = scrubPage
-                if (sp != null && pageCount > 0) {
-                    Box(
-                        Modifier
-                            .offset {
-                                IntOffset(
-                                    if (sidebarStage == SidebarStage.GRID) (-100).dp.roundToPx()
-                                    else 28.dp.roundToPx(),
-                                    thumbYpx - 12.dp.roundToPx()
-                                )
-                            }
-                            .width(96.dp)
-                            .glassPanel(chromeHaze, isEditorDark, ShapeMd)
-                            .padding(vertical = 6.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "${sp + 1} / $pageCount",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                    }
-                }
-            }
-        }
-
         } // Box（紙底層＋chrome 疊層）
 
         // 浮空工具列：只蓋「工作區那一欄」，紙從它下面透上來；
-        // 側欄＋拖曳條維持自己的上邊界（不被工具列壓到），全螢幕態才吃滿寬。
+        // 側欄維持自己的上邊界（不被工具列壓到），全螢幕態才吃滿寬。
         Column(modifier = Modifier.align(Alignment.TopStart).fillMaxWidth()) {
             TabletEditorTopBar(
                 documentTitle = documentTitle,
