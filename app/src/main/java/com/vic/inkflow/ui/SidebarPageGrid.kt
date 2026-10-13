@@ -66,6 +66,8 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.dp
 import com.vic.inkflow.data.repository.InkFlowRepositories
+import com.vic.inkflow.util.reorderable
+import com.vic.inkflow.util.reorderableItem
 import com.vic.inkflow.ui.theme.Motion
 import com.vic.inkflow.ui.theme.ShapeLg
 import kotlinx.coroutines.delay
@@ -117,11 +119,49 @@ internal fun SidebarPageGrid(
         if (showOnlyBookmarked) (0 until pageCount).filter { it in bookmarkedPages }
         else (0 until pageCount).toList()
     }
-    // 拖曳排序已整組拆除（2026-10-13）：手感越改越糟，最後根本拖不動。
-    // 位置/頁號混用＋remember 閉包陳舊＋自捲座標系，三個問題疊在一起，
-    // 補丁只會越補越亂。先回到無排序可用態，research 重做後再寫回去。
-    // 這裡刻意只留 visibleIndices 直排，不留任何預覽順序中間態。
-    val orderForGrid = visibleIndices
+    // 拖曳排序（2026-10-13 按 spec 重寫版）：預覽順序是 key 序列的中間態，
+    // 結算時從 key 反查位置，不信任手勢裡的任何 index。
+    val haptics = LocalHapticFeedback.current
+    val autoScrollThresholdPx = with(LocalDensity.current) { 40.dp.toPx() }
+    val reorderDeadZonePx = with(LocalDensity.current) { 8.dp.toPx() }
+    var previewOrder by remember(visibleIndices) { mutableStateOf(visibleIndices) }
+    var reorderInitial by remember { mutableStateOf<List<Int>?>(null) }
+    var reorderStartIndex by remember { mutableStateOf(-1) }
+    val reorderState = com.vic.inkflow.util.rememberReorderableLazyGridState(gridState)
+    val reorderMoveRef = rememberUpdatedState { move: com.vic.inkflow.util.Move ->
+        val newOrder = previewOrder.toMutableList()
+        val item = newOrder.removeAt(move.fromIndex)
+        newOrder.add(move.toIndex, item)
+        previewOrder = newOrder
+    }
+    val reorderStartRef = rememberUpdatedState { index: Int ->
+        reorderInitial = previewOrder.toList()
+        reorderStartIndex = index
+    }
+    val reorderEndRef = rememberUpdatedState {
+        val initial = reorderInitial
+        // R2：移頁是結構操作，清棧。
+        if (!showOnlyBookmarked && initial != null && reorderStartIndex in initial.indices) {
+            val page = initial[reorderStartIndex]
+            val targetPos = previewOrder.indexOf(page)
+            if (targetPos >= 0 && targetPos != reorderStartIndex) {
+                onStructureChanged()
+                pdfViewModel.movePage(documentUri, page, targetPos)
+            }
+        }
+        reorderInitial = null
+        reorderStartIndex = -1
+    }
+    val reorderCancelRef = rememberUpdatedState {
+        // 系統取消：快照回滾，不提交（animateItem 自己彈回去）。
+        reorderInitial?.let { previewOrder = it }
+        reorderInitial = null
+        reorderStartIndex = -1
+    }
+    val reorderLiftRef = rememberUpdatedState {
+        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+    }
+    val orderForGrid = previewOrder
 
     // 欄數實測，不能寫死。
     // 舊碼寫 `currentPageIndex / 4`，欄數一改（現在是 7 欄）就會把當前頁捲到錯的列。
@@ -304,8 +344,27 @@ internal fun SidebarPageGrid(
     val dragOrderRef = rememberUpdatedState(orderForGrid)
     val selectedPagesRef = rememberUpdatedState(selectedPages)
     val setSelectedRef = rememberUpdatedState({ s: Set<Int> -> selectedPages = s })
-    val haptics = LocalHapticFeedback.current
-    val autoScrollThresholdPx = with(LocalDensity.current) { 40.dp.toPx() }
+
+    // 拖排序邊緣自捲：跟拖選同構，但多一道啟動門——手指從拿起點走滿死區才捲
+    //（spec：防「拿起即滾」），速度同樣封頂 20px/步。
+    LaunchedEffect(reorderState.isDragging) {
+        if (reorderState.isDragging) {
+            while (true) {
+                val gated = reorderState.travelPx >= reorderDeadZonePx
+                val pos = reorderState.dragCenter
+                val h = reorderState.gridState.layoutInfo.viewportSize.height.toFloat()
+                val raw = when {
+                    !gated || pos == null -> 0f
+                    h - pos.y < autoScrollThresholdPx -> autoScrollThresholdPx - (h - pos.y)
+                    pos.y < autoScrollThresholdPx -> pos.y - autoScrollThresholdPx
+                    else -> 0f
+                }
+                val speed = raw.coerceIn(-20f, 20f)
+                if (speed != 0f) reorderState.gridState.scrollBy(speed)
+                delay(16)
+            }
+        }
+    }
 
     LazyVerticalGrid(
             columns = GridCells.Adaptive(144.dp),
@@ -315,6 +374,16 @@ internal fun SidebarPageGrid(
             verticalArrangement = Arrangement.spacedBy(12.dp),
             modifier = Modifier
                 .fillMaxSize()
+                .reorderable(
+                    reorderState,
+                    enabled = !showOnlyBookmarked && !isSelectionMode && !isPageOperationInProgress,
+                    deadZonePx = reorderDeadZonePx,
+                    onLift = reorderLiftRef,
+                    onDragStart = reorderStartRef,
+                    onMove = reorderMoveRef,
+                    onDragEnd = reorderEndRef,
+                    onDragCancel = reorderCancelRef
+                )
                 // 選擇模式拖選（Google 相簿／iOS 相簿同款）：點住一頁直接拖，
                 // 拖過的全進集合，回拖縮範圍，從已選起拖是反選。快滑不受影響
                 //（長按超時前鬆手／移動＝捲動，detectDragGesturesAfterLongPress 仲裁）。
@@ -359,7 +428,8 @@ internal fun SidebarPageGrid(
                 )
                 Box(
                     modifier = Modifier
-                        .animateItem()
+                        .let { mod -> if (reorderState.draggingItemIndex == currentListIndex) mod else mod.animateItem() }
+                        .reorderableItem(reorderState, currentListIndex)
                         // 錯落入場：前 24 張依 index 延遲，之後的同時淡入（不排隊）。
                         // 入場結束後才把選中放大乘上去，否則放大會被入場的 0.92 一起縮掉。
                         .graphicsLayer {
@@ -367,7 +437,13 @@ internal fun SidebarPageGrid(
                             val delay = (currentListIndex.toFloat().coerceAtMost(cap)) / cap
                             val t = ((staggerBudget.value - delay * 0.45f) / 0.55f).coerceIn(0f, 1f)
                             val enter = 0.92f + 0.08f * t
-                            val s = enter * cardScale
+                            // 拖曳中不疊加選中放大（reorderableItem 已經自己放大 1.05），
+                            // 兩個 scale 疊起來會變 1.11，看起來像卡跳出來。
+                            val s = if (reorderState.draggingItemIndex == currentListIndex) {
+                                enter
+                            } else {
+                                enter * cardScale
+                            }
                             alpha = t
                             scaleX = s
                             scaleY = s
