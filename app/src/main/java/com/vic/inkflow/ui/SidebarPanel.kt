@@ -132,7 +132,6 @@ import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.ChevronLeft
-import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.rounded.Brush
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Gesture
@@ -606,13 +605,13 @@ internal fun Sidebar(
                         Row(
                             modifier = Modifier
                                 .weight(1f)
+                                .height(40.dp)
                                 .glassPanel(hazeState, isDarkTheme, ShapeMd)
                                 .glassClickable(
                                     onClick = { onAddPage(currentPageIndex) },
                                     shape = ShapeMd,
                                     enabled = !isPageOperationInProgress
-                                )
-                                .padding(vertical = 8.dp),
+                                ),
                             horizontalArrangement = Arrangement.Center,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -637,7 +636,7 @@ internal fun Sidebar(
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
-                                Icons.Outlined.GridView,
+                                Icons.Outlined.ChevronRight,
                                 contentDescription = "全展開",
                                 modifier = Modifier.size(20.dp),
                                 tint = glassContentColor(isDarkTheme)
