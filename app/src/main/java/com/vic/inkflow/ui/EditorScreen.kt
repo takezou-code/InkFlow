@@ -449,7 +449,7 @@ fun TabletEditorScreen(
             latestPage = { currentPageIndex },
             onSettled = { aiPlacing = false })
     }
-    // AI 區「匯入回覆」兩段式：①進圈選模式（段落打勾）②收集打勾段落（沒勾則取最後回覆全文）
+    // AI 區「匯入回覆」兩段式：①進圈選模式（段落打勾）②收集打勾段落（沒勾則不插入）
     // 按鈕常駐工具列，所以抽屜收起時也要能用：武裝時順手把抽屜滑開，
     // 否則使用者看不到打勾框，等於按了沒反應。
     fun toggleAiImport() {

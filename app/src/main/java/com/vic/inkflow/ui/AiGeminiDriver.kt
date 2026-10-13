@@ -387,18 +387,10 @@ fun pickJs(
 
 /**
  * M2b-2 收集腳本 v2：照文件順序收打勾段落（排除被包在已勾段落內的子段，避免重複）；
- * 一個都沒勾則退回最後回覆全文。清掉委派 listener、樣式與全部標記。
- * 結果經 AndroidBridge.onTextGrabbed 回傳（上限 20000 字）。
- */
-
-
-/**
- * M2b-2 收集腳本 v2：照文件順序收打勾段落（排除被包在已勾段落內的子段，避免重複）；
- * 一個都沒勾則退回最後回覆全文。清掉委派 listener、樣式與全部標記。
+ * 一個都沒勾則回空陣列、不插入。清掉委派 listener、樣式與全部標記。
  * 結果經 AndroidBridge.onTextGrabbed 回傳（上限 20000 字）。
  */
 fun collectJs(replyChain: List<String> = REPLY_CHAIN): String {
-    val chainsJs = chainJs(replyChain)
     return """
     (function() {
             function note(s) {
@@ -467,41 +459,6 @@ fun collectJs(replyChain: List<String> = REPLY_CHAIN): String {
                 } catch(e){}
                 return { b: nb, i: ni };
             }
-            function lastReply() {
-                var chains = [$chainsJs];
-                for (var c = 0; c < chains.length; c++) {
-                    var hits = deepAll(document, chains[c], []);
-                    if (hits.length > 0) {
-                        var node = hits[hits.length - 1];
-                        var t = node.innerText || '';
-                        if (t.trim().length > 0) {
-                            try {
-                                var cl = node.cloneNode(true);
-                                var cc = texify(cl);
-                                var tt = cl.innerText || '';
-                                if (tt.trim().length > 0) return { text: tt, b: cc.b, i: cc.i };
-                            } catch(e){}
-                            return { text: t, b: 0, i: 0 };
-                        }
-                    }
-                }
-                try {
-                    var blocks = document.querySelectorAll('main p, main li, article p, article li');
-                    var acc = [];
-                    var tb = 0, ti = 0;
-                    for (var k = 0; k < blocks.length; k++) {
-                        try {
-                            var bcl = blocks[k].cloneNode(true);
-                            var bc = texify(bcl);
-                            tb += bc.b; ti += bc.i;
-                            var bt = bcl.innerText || '';
-                            if (bt.trim().length > 0) acc.push(bt.trim());
-                        } catch(e){}
-                    }
-                    if (acc.length > 0) return { text: acc.join('\n\n'), b: tb, i: ti };
-                } catch(e){}
-                return { text: '', b: 0, i: 0 };
-            }
             try {
                 window.__inkpick = false;
                 if (window.__inkpickHandler) document.removeEventListener('click', window.__inkpickHandler, true);
@@ -553,15 +510,9 @@ fun collectJs(replyChain: List<String> = REPLY_CHAIN): String {
                     }
                 } catch(e){}
             });
-            var src = 'picked x' + picks.length;
-            if (picks.length === 0) {
-                var fb = lastReply();
-                if (fb.text.trim().length > 0) {
-                    picks.push({k:'t', t:fb.text.slice(0, 20000)});
-                    mathB += fb.b; mathI += fb.i;
-                    src = 'fallback-full';
-                }
-            }
+            // 未勾選 = 不插入：直接回空陣列，Kotlin 側 parsePicks 為空會 Toast「沒有可插入的內容」並返回。
+            // （舊行為：退回最後回覆全文，已按需求拿掉。）
+            var src = picks.length === 0 ? 'empty-nopick' : 'picked x' + picks.length;
             try {
                 document.querySelectorAll('[data-inkpick]').forEach(function(el) { el.removeAttribute('data-inkpick'); });
             } catch(e){}
