@@ -39,9 +39,12 @@ out/
 # ─── 桌面端 worktree（windows 分支旁系 checkout，不在本樹內）───
 /InkFlow-Windows/
 
-# 注意：AGENTS.md 與 docs/specs/ 已恢復進版控（2026-10-12）。
-# 它們是規則的單一真相源，不追蹤就等於規則會失憶。
+# ─── Agent 規則（絕不進版控：repo 是 PUBLIC，這些檔含本機路徑與工作習慣）───
+/AGENTS.md
+/docs/specs/
+/.opencode/
+# 護欄：`.git/hooks/pre-commit` 會擋下來（ink hook 安裝）；這裡是第二道
 
 # 注意：本檔必須是 UTF-8。用 PowerShell 5.1 的 > / Out-File 重寫會把中文
-# 註解寫成雙重編碼（─── 變成 â”€â”€），而且不會報錯。要改這個檔請用編輯器
-# 或專用工具，詳見 docs/specs/pitfalls.md。
+# 註解寫成雙重編碼，而且不會報錯。要改這個檔請用編輯器或專用工具。
+# 自我檢查：& C:\Users\Vic\.inkflow-agent\ink.ps1 doctor
