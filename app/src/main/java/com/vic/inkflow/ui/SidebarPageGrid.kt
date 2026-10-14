@@ -33,6 +33,7 @@ import androidx.compose.material.icons.outlined.Checklist
 import androidx.compose.material.icons.outlined.ChevronLeft
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.FileUpload
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -100,6 +101,8 @@ internal fun SidebarPageGrid(
     onCollapse: () -> Unit,
     onPageSelected: (Int) -> Unit,
     onDeletePages: (List<Int>) -> Unit,
+    onExportSelectedPages: (List<Int>) -> Unit = {},
+    isExportingSelection: Boolean = false,
     onStructureChanged: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -133,6 +136,11 @@ internal fun SidebarPageGrid(
     fun commitReorder() {
         val initial = reorderInitial
         val page = reorderStartPage
+        if (isExportingSelection) {
+            reorderInitial = null
+            reorderStartPage = -1
+            return
+        }
         if (!showOnlyBookmarked && initial != null && page in initial) {
             val targetPos = previewOrder.indexOf(page)
             if (targetPos >= 0 && targetPos != initial.indexOf(page)) {
@@ -185,7 +193,7 @@ internal fun SidebarPageGrid(
                 isSelectionMode = false
                 selectedPages = emptySet()
             },
-            confirmEnabled = !isPageOperationInProgress,
+            confirmEnabled = !isPageOperationInProgress && !isExportingSelection,
             confirmColor = MaterialTheme.colorScheme.error
         )
     }
@@ -229,11 +237,21 @@ internal fun SidebarPageGrid(
                     )
                     GridIconButton(
                         onClick = {
+                            if (selectedPages.isNotEmpty() && !isPageOperationInProgress && !isExportingSelection) {
+                                onExportSelectedPages(selectedPages.sorted())
+                            }
+                        },
+                        enabled = selectedPages.isNotEmpty() && !isPageOperationInProgress && !isExportingSelection,
+                        icon = Icons.Outlined.FileUpload,
+                        contentDescription = "匯出選擇"
+                    )
+                    GridIconButton(
+                        onClick = {
                             if (selectedPages.isNotEmpty() && !isPageOperationInProgress) {
                                 deleteConfirmIndices = selectedPages.toList()
                             }
                         },
-                        enabled = selectedPages.isNotEmpty() && !isPageOperationInProgress,
+                        enabled = selectedPages.isNotEmpty() && !isPageOperationInProgress && !isExportingSelection,
                         icon = Icons.Outlined.DeleteOutline,
                         contentDescription = "刪除選擇",
                         tint = MaterialTheme.colorScheme.error
@@ -392,7 +410,7 @@ internal fun SidebarPageGrid(
                         modifier = Modifier
                             // 長按整卡起拖（套件的長按把手；選擇模式/書籤過濾時不啟用）。
                             .then(
-                                if (!showOnlyBookmarked && !isSelectionMode && !isPageOperationInProgress) {
+                                if (!showOnlyBookmarked && !isSelectionMode && !isPageOperationInProgress && !isExportingSelection) {
                                     Modifier.longPressDraggableHandle(
                                         onDragStarted = {
                                             reorderInitial = orderForGrid
