@@ -609,23 +609,23 @@ fun DocumentLibraryScreen(
                 .padding(vertical = 8.dp)
         ) {
             Spacer(Modifier.height(8.dp))
-            // Brand mark — app 圖示（ic_launcher_foreground）疊在品牌漸層上。
-            // 舊碼是紫色圓＋白色 "I"，跟啟動器 icon 毫無關係，一看不像自家 app。
+            // Brand mark — app 圖示，全白底、放大填滿圓形。
             // 用 foreground（前景圖）而不是 mipmap/ic_launcher：後者被 debug 軌覆寫成
             // 橘底，會讓同一個品牌標記在 debug/release 長相不同；前景圖兩軌一致。
-            // 前景圖本身畫在 108dp 畫布中央約 66%（adaptive icon 安全區），
-            // 所以 Fit 進圓形剛好就是 icon 在啟動器上的樣子。
+            // 前景圖畫在 108dp 畫布中央約 66%（adaptive icon 安全區），直接塞進 40dp
+            // 圓形會讓圖只佔中間約 26dp、看起來很小，所以畫成 60dp 再被圓形裁掉外圈，
+            // 圖案才會填滿整顆圓（跟 icon 在啟動器上被遮罩裁切的視覺一致）。
             Box(
                 modifier = Modifier
                     .size(40.dp)
-                    .background(brandGradient, CircleShape)
+                    .background(Color.White, CircleShape)
                     .clip(CircleShape),
                 contentAlignment = Alignment.Center
             ) {
                 Image(
                     painter = painterResource(R.mipmap.ic_launcher_foreground),
                     contentDescription = "InkFlow",
-                    modifier = Modifier.size(40.dp),
+                    modifier = Modifier.size(60.dp),
                     contentScale = ContentScale.Fit
                 )
             }
