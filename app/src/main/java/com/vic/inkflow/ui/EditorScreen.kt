@@ -856,6 +856,8 @@ fun TabletEditorScreen(
     var showDocumentSettingsDialog by remember { mutableStateOf(false) }
     var showExportConfirmDialog by remember { mutableStateOf(false) }
     var isExportingPdf by remember { mutableStateOf(false) }
+    var selectedExportIndices by remember { mutableStateOf<List<Int>>(emptyList()) }
+    var isExportingSelection by remember { mutableStateOf(false) }
     val paperStyle by viewModel.paperStyle.collectAsState()
     AnimatedDialog(visible = showDocumentSettingsDialog) {
         DocumentSettingsDialog(
@@ -936,6 +938,83 @@ fun TabletEditorScreen(
                         }
                     },
                     enabled = !isExportingPdf
+                )
+            }
+        )
+    }
+
+    AnimatedDialog(visible = selectedExportIndices.isNotEmpty()) {
+        val indices = selectedExportIndices.distinct().sorted()
+        GlassDialogCustom(
+            onDismissRequest = {
+                if (!isExportingSelection) selectedExportIndices = emptyList()
+            },
+            isDark = isEditorDark,
+            hazeState = editorHaze,
+            title = { Text("輸出選取頁面") },
+            text = {
+                Text(
+                    if (isExportingSelection) "正在輸出選取頁面，請稍候..."
+                    else "將輸出選取的 ${indices.size} 頁與註記到 Downloads，是否繼續？"
+                )
+            },
+            buttons = {
+                GlassTextButton(
+                    text = "取消",
+                    onClick = { selectedExportIndices = emptyList() },
+                    enabled = !isExportingSelection,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.width(8.dp))
+                GlassTextButton(
+                    text = if (isExportingSelection) "輸出中" else "確認匯出",
+                    onClick = {
+                        if (isExportingSelection || indices.isEmpty()) return@GlassTextButton
+                        isExportingSelection = true
+                        scope.launch {
+                            var extractedUri: android.net.Uri? = null
+                            try {
+                                extractedUri = PdfManager.extractSelectedPages(context, uri, indices)
+                                if (extractedUri == null) {
+                                    android.widget.Toast.makeText(context, "選取頁匯出失敗，請再試一次", android.widget.Toast.LENGTH_SHORT).show()
+                                    return@launch
+                                }
+                                val docUriStr = uri.toString()
+                                com.vic.inkflow.util.PdfExporter.export(
+                                    originalPdfUri = extractedUri,
+                                    strokes = emptyList(),
+                                    textAnnotations = emptyList(),
+                                    imageAnnotations = emptyList(),
+                                    context = context,
+                                    fileName = "InkFlow_selected_${System.currentTimeMillis()}.pdf",
+                                    modelW = viewModel.modelWidth,
+                                    modelH = viewModel.modelHeight,
+                                    pageDataProvider = { outputIndex ->
+                                        val sourceIndex = indices.getOrNull(outputIndex) ?: -1
+                                        Triple(
+                                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                                if (sourceIndex < 0) emptyList()
+                                                else repos.strokes.getStrokesForPageSync(docUriStr, sourceIndex)
+                                            },
+                                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                                if (sourceIndex < 0) emptyList()
+                                                else repos.texts.getForPageSync(docUriStr, sourceIndex)
+                                            },
+                                            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                                if (sourceIndex < 0) emptyList()
+                                                else repos.images.getForPageSync(docUriStr, sourceIndex)
+                                            }
+                                        )
+                                    }
+                                )
+                            } finally {
+                                extractedUri?.path?.let { java.io.File(it).delete() }
+                                isExportingSelection = false
+                                selectedExportIndices = emptyList()
+                            }
+                        }
+                    },
+                    enabled = !isExportingSelection
                 )
             }
         )
@@ -1108,6 +1187,29 @@ fun TabletEditorScreen(
                 //
                 // 0.98 而不是 1.0：此時紙張 alpha 已剩 0.02（不可見），
                 // 移除不會造成跳動，進出都走同一條淡入淡出。
+                //
+                // 工作區重新掛上時補捾到「當前頁」：
+                // 第 3 階期間紙張被移出 composition，LazyColumn 不存在，
+                // 這期間任何 scrollToItem/animateScrollToItem 全部落空（對著
+                // 脫離的狀態物件呼叫）。症狀＝在全展開點第 N 頁：頁碼狀態有更新
+                // （側欄選取框跟著動），但回到第 2 階紙面永遠停在第 1 頁。
+                //
+                // key 用「掛上與否」的布林而不是 gridOverlayProgress 本身：
+                // 後者在淡入淡出期間每幀都變，拿它當 key 會每幀重跑這個捲動，
+                // 直接跟使用者的捲動搶方向。只在掛上那一次轉折觸發。
+                val workspaceMounted = gridOverlayProgress < 0.98f
+                androidx.compose.runtime.LaunchedEffect(workspaceMounted, pageCount) {
+                    if (workspaceMounted && pageCount > 0) {
+                        // 等 LazyColumn 真的量好再捾：LaunchedEffect 在 composition
+                        // 之後、layout 之前跑，此刻 layoutInfo 還是空的，
+                        // 直接 scrollToItem 會靜默失敗（症狀正是「紙停在第 1 頁」）。
+                        androidx.compose.runtime.snapshotFlow {
+                            mainListState.layoutInfo.totalItemsCount
+                        }.first { it > 0 }
+                        val target = pageOwner.clamp(currentPageIndex, pageCount)
+                        runCatching { mainListState.scrollToItem(target) }
+                    }
+                }
                 if (gridOverlayProgress < 0.98f) {
                 // ── 紙：整屏最底層 ────────────────────────────────────────────
                 // 紙必須是「整個螢幕」大小，不能只佔側欄右邊那一塊。
@@ -1461,6 +1563,10 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                         viewModel.clearUndoStacks()
                         pdfViewModel.deletePages(uri.toString(), indices)
                     },
+                    onExportSelectedPages = { indices ->
+                        selectedExportIndices = indices.distinct().sorted()
+                    },
+                    isExportingSelection = isExportingSelection,
                     onStructureChanged = { viewModel.clearUndoStacks() },
                     // 讓整張網格從工具列下緣開始，避免 52dp 玻璃頂欄被工具列壓住一半，
                     // 工具列底下就不會再多出一截小玻璃。

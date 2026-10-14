@@ -74,6 +74,53 @@ object PdfManager {
             }
         }
 
+    // ─── 新功能：抽取選取頁面 ─────────────────────────────────────────────────
+
+    /**
+     * 將來源 PDF 的指定頁面抽成一份新的臨時 PDF。
+     *
+     * 呼叫端傳進來的可能是跳號選取，這裡先排序去重，讓輸出頁保持原文件順序。
+     * 只做實體頁复制，不動來源文件與註解資料庫；呼叫端用完要刪掉回傳的臨時檔。
+     */
+    suspend fun extractSelectedPages(
+        context: Context,
+        sourceUri: Uri,
+        sourceIndices: List<Int>
+    ): Uri? =
+        withContext(Dispatchers.IO) {
+            val indices = sourceIndices.distinct().sorted()
+            if (indices.isEmpty()) return@withContext null
+
+            val localSource = if (sourceUri.scheme == "file") sourceUri else copyPdfToAppDir(context, sourceUri)
+            val sourcePath = localSource?.path
+            if (localSource == null || sourcePath == null) return@withContext null
+
+            var output: File? = null
+            try {
+                PDDocument.load(File(sourcePath)).use { source ->
+                    if (indices.any { it < 0 || it >= source.numberOfPages }) return@withContext null
+                    output = File(pdfDir(context), "${UUID.randomUUID()}.pdf")
+                    PDDocument().use { selected ->
+                        // importPage 會把頁面複製並接到新文件尾端；
+                        // 照排序後的來源索引呼叫，輸出順序就是原文件順序。
+                        for (index in indices) {
+                            selected.importPage(source.getPage(index))
+                        }
+                        selected.save(output)
+                    }
+                }
+                Uri.fromFile(output)
+            } catch (e: Exception) {
+                Log.e(TAG, "extractSelectedPages failed", e)
+                output?.delete()
+                null
+            } finally {
+                if (localSource != sourceUri) {
+                    localSource.path?.let { File(it).delete() }
+                }
+            }
+        }
+
     // ─── 新功能：建立空白 PDF ─────────────────────────────────────────────────
 
     /** 建立一個單頁 A4 空白 PDF，存到 App 私有目錄，回傳 file:// Uri。失敗回傳 null。 */
