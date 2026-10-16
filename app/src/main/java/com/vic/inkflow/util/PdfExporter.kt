@@ -18,6 +18,7 @@ import com.vic.inkflow.data.ImageAnnotationEntity
 import com.vic.inkflow.data.PointF
 import com.vic.inkflow.data.StrokeWithPoints
 import com.vic.inkflow.data.TextAnnotationEntity
+import com.vic.inkflow.ui.wrapTextLines
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
@@ -506,17 +507,26 @@ object PdfExporter {
                            else android.graphics.Typeface.DEFAULT_BOLD
             }
 
-            val lines = ann.text.split("\n")
-            val textWidth = lines.maxOfOrNull { paint.measureText(it) }?.coerceAtLeast(1f) ?: 1f
+            val boxW = ann.boxWidth?.takeIf { it > 0f }
+            val lines = if (boxW != null) wrapTextLines(ann.text, ann.fontSize, boxW)
+                        else ann.text.split("\n")
             val fm        = paint.fontMetrics
             val lineHeight = -fm.ascent + fm.descent + fm.leading
+            val textWidth = if (boxW != null) boxW * BITMAP_SCALE
+                            else (lines.maxOfOrNull { paint.measureText(it) } ?: 1f).coerceAtLeast(1f)
             val bmpW      = (textWidth + 4f).toInt()
             val bmpH      = (lineHeight * lines.size + 4f).toInt().coerceAtLeast(1)
 
             val bmp = android.graphics.Bitmap.createBitmap(bmpW, bmpH, android.graphics.Bitmap.Config.ARGB_8888)
             val canvas = android.graphics.Canvas(bmp)
+            val boxWPx = boxW?.times(BITMAP_SCALE) ?: 0f
             lines.forEachIndexed { i, line ->
-                canvas.drawText(line, 2f, -fm.ascent + 2f + i * lineHeight, paint)
+                val off = when (ann.alignment) {
+                    1 -> ((boxWPx - paint.measureText(line)) / 2f).coerceAtLeast(0f)
+                    2 -> (boxWPx - paint.measureText(line)).coerceAtLeast(0f)
+                    else -> 0f
+                }
+                canvas.drawText(line, 2f + off, -fm.ascent + 2f + i * lineHeight, paint)
             }
 
             val baos = ByteArrayOutputStream()

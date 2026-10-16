@@ -121,4 +121,54 @@ class TextMetricsTest {
             assertEquals(5f, b[0], 0.0001f, "left is the anchor")
         }
     }
+
+    // ---- Text boxes (tablet DB v30 boxWidth / alignment) ----
+
+    @Test
+    fun `a box is that wide and wraps like the tablet`() {
+        // 10 full-width chars @10pt in a 50pt box → 5 per line, two lines.
+        assertEquals(
+            listOf("一二三四五", "六七八九十"),
+            TextMetrics.wrapLines("一二三四五六七八九十", 10f, 50f)
+        )
+        val b = TextMetrics.bounds(0f, 100f, "一二三四五六七八九十", 10f, boxWidth = 50f)
+        assertNotNull(b)
+        assertEquals(0f, b[0], 0.0001f, "left is the anchor")
+        assertEquals(50f, b[2], 0.0001f, "width is the box, not the longest line")
+        assertEquals(100f - 10f, b[1], 0.0001f, "top = baseline - fontSize")
+        assertEquals(100f + 1 * 10f * 1.2f, b[3], 0.0001f, "two lines")
+    }
+
+    @Test
+    fun `latin words are not split mid-word`() {
+        assertEquals(listOf("hello", "world"), TextMetrics.wrapLines("hello world", 10f, 45f))
+    }
+
+    @Test
+    fun `alignment offsets sit inside the box`() {
+        assertEquals(0f, TextMetrics.alignOffset(20f, 100f, 0), 0.0001f)
+        assertEquals(40f, TextMetrics.alignOffset(20f, 100f, 1), 0.0001f)
+        assertEquals(80f, TextMetrics.alignOffset(20f, 100f, 2), 0.0001f)
+        // A line wider than its box must not push text left of the box.
+        assertEquals(0f, TextMetrics.alignOffset(120f, 100f, 2), 0.0001f)
+    }
+
+    @Test
+    fun `legacy note without a box keeps hugging its content`() {
+        val b = TextMetrics.bounds(0f, 100f, "ab\n中文", 16f, boxWidth = null)
+        assertNotNull(b)
+        assertEquals(32f, b[2], 0.0001f, "widest line = 中文 = 2em")
+    }
+
+    @Test
+    fun `boundsFor carries the annotation's box width`() {
+        val note = TextAnnotationEntity(
+            documentUri = "u", pageIndex = 0, text = "hi",
+            modelX = 5f, modelY = 50f, fontSize = 16f, boxWidth = 120f
+        )
+        val b = TextMetrics.boundsFor(note)
+        assertNotNull(b)
+        assertEquals(5f, b[0], 0.0001f)
+        assertEquals(125f, b[2], 0.0001f)
+    }
 }

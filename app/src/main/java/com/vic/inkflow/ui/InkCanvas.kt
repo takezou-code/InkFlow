@@ -27,6 +27,14 @@ import androidx.compose.foundation.gestures.awaitDragOrCancellation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.material3.Text
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Row
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.luminance
+import com.vic.inkflow.ui.theme.ShapeMd
+import com.vic.inkflow.ui.theme.GlassSelectionInk
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -149,11 +157,14 @@ internal data class PendingTextSettle(
     val modelX: Float,
     val modelY: Float,
     val fontSize: Float,
+    /** 框寬（model pt）；null = 舊資料（無框）。 */
+    val boxWidth: Float? = null,
 ) {
     fun matches(ann: TextAnnotationEntity): Boolean =
         ann.id == id &&
             near(ann.modelX, modelX) && near(ann.modelY, modelY) &&
-            near(ann.fontSize, fontSize)
+            near(ann.fontSize, fontSize) &&
+            near(ann.boxWidth ?: 0f, boxWidth ?: 0f)
 }
 
 /**
@@ -333,6 +344,8 @@ fun InkCanvas(
     var selectedTextAnnotationId by remember { mutableStateOf<String?>(null) }
     var textMoveDelta by remember { mutableStateOf(Offset.Zero) }
     var textFontSizeDelta by remember { mutableFloatStateOf(0f) }
+    // 拖曳「寬度把手」時的框寬預覽（model pt）；落定後歸零（見 PendingTextSettle）。
+    var textBoxWidthDelta by remember { mutableFloatStateOf(0f) }
 
     // Latest snapshot of text annotations for use inside pointer-input coroutines
     val textAnnotationsRef = rememberUpdatedState(textAnnotations)
@@ -385,6 +398,7 @@ fun InkCanvas(
             if (now != null && txt.matches(now)) {
                 textMoveDelta = Offset.Zero
                 textFontSizeDelta = 0f
+                textBoxWidthDelta = 0f
                 pendingTextSettle = null
             }
         }
@@ -493,7 +507,10 @@ fun InkCanvas(
         }
     }
     val textLines = remember(textAnnotations) {
-        textAnnotations.associate { it.id to it.text.split("\n") }
+        textAnnotations.associate { ann ->
+            val bw = ann.boxWidth?.takeIf { it > 0f }
+            ann.id to if (bw != null) wrapTextLines(ann.text, ann.fontSize, bw) else ann.text.split("\n")
+        }
     }
     // 螢光筆作用中預覽共用 Paint：每幀只換色，不再 new
     val hlPreviewPaint = remember {
@@ -528,6 +545,7 @@ fun InkCanvas(
             selectedTextAnnotationId = null
             textMoveDelta = Offset.Zero
             textFontSizeDelta = 0f
+            textBoxWidthDelta = 0f
             pendingTextSettle = null
         }
         if (activeTool != Tool.IMAGE) {
@@ -910,13 +928,59 @@ fun InkCanvas(
                     val selAnn = if (selId != null) annotations.firstOrNull { it.id == selId } else null
 
                     if (selAnn != null) {
-                        val currentTextRect = textAnnotationHitRect(selAnn, sx, sy).translate(textMoveDelta)
-                        val handleRect = textResizeHandleRect(currentTextRect, handleHitRadiusPx)
+                        val currentTextRect = textAnnotationHitRect(
+                            selAnn, sx, sy, boxWidthDelta = textBoxWidthDelta
+                        ).translate(textMoveDelta)
+                        // 兩顆把手：右下角＝字級、右緣中點＝框寬。用「最近優先」挑，
+                        // 短框時兩顆的 48dp 命中圈必然重疊（同圖片把手的理由）。
+                        val cornerHandle = Offset(currentTextRect.right, currentTextRect.bottom)
+                        val widthHandle = if (selAnn.boxWidth != null)
+                            Offset(currentTextRect.right, currentTextRect.center.y) else null
+                        val handleCandidates =
+                            if (widthHandle != null) listOf(cornerHandle, widthHandle) else listOf(cornerHandle)
+                        val handleHit = nearestHandleIndex(startOffset, handleCandidates, handleHitRadiusPx)
 
-                        // Resize handle hit
-                        if (handleRect.contains(startOffset)) {
+                        // 寬度把手（框右緣中點）：拖曳改框寬 → 立即重排。只有文字框（boxWidth 有值）有。
+                        if (handleHit == 1 && widthHandle != null) {
                             down.consume()
-                            pressedHandleCenter = handleRect.center
+                            pressedHandleCenter = widthHandle
+                            val startBoxW = selAnn.boxWidth!!
+                            var accW = 0f
+                            var drag = awaitDragOrCancellation(down.id)
+                            while (drag != null && drag.pressed) {
+                                if (pinchActive) {
+                                    val w = (startBoxW + accW).coerceAtLeast(TEXT_BOX_MIN_WIDTH)
+                                    viewModel.commitTextAnnotationWidth(selAnn.id, w)
+                                    pendingTextSettle = PendingTextSettle(
+                                        id = selAnn.id, modelX = selAnn.modelX, modelY = selAnn.modelY,
+                                        fontSize = selAnn.fontSize, boxWidth = w
+                                    )
+                                    activePathVersion++
+                                    pressedHandleCenter = null
+                                    return@awaitEachGesture
+                                }
+                                accW += drag.positionChange().x * viewModel.modelWidth / cs.width.coerceAtLeast(1f)
+                                textBoxWidthDelta = accW
+                                activePathVersion++
+                                drag.consume()
+                                drag = awaitDragOrCancellation(drag.id)
+                            }
+                            val newW = (startBoxW + accW).coerceAtLeast(TEXT_BOX_MIN_WIDTH)
+                            viewModel.commitTextAnnotationWidth(selAnn.id, newW)
+                            // 不歸零 textBoxWidthDelta：等熱流回報新框寬才清（見 PendingTextSettle）
+                            pendingTextSettle = PendingTextSettle(
+                                id = selAnn.id, modelX = selAnn.modelX, modelY = selAnn.modelY,
+                                fontSize = selAnn.fontSize, boxWidth = newW
+                            )
+                            activePathVersion++
+                            pressedHandleCenter = null
+                            return@awaitEachGesture
+                        }
+
+                        // Resize handle hit（右下角＝字級）
+                        if (handleHit == 0) {
+                            down.consume()
+                            pressedHandleCenter = cornerHandle
                             var accModelDelta = 0f
                             var drag = awaitDragOrCancellation(down.id)
                             while (drag != null && drag.pressed) {
@@ -926,7 +990,8 @@ fun InkCanvas(
                                         id = selAnn.id,
                                         modelX = selAnn.modelX,
                                         modelY = selAnn.modelY,
-                                        fontSize = selAnn.fontSize + accModelDelta
+                                        fontSize = selAnn.fontSize + accModelDelta,
+                                        boxWidth = selAnn.boxWidth
                                     )
                                     activePathVersion++
                                     pressedHandleCenter = null
@@ -947,7 +1012,8 @@ fun InkCanvas(
                                 id = selAnn.id,
                                 modelX = selAnn.modelX,
                                 modelY = selAnn.modelY,
-                                fontSize = selAnn.fontSize + accModelDelta
+                                fontSize = selAnn.fontSize + accModelDelta,
+                                boxWidth = selAnn.boxWidth
                             )
                             activePathVersion++
                             pressedHandleCenter = null
@@ -1019,7 +1085,8 @@ fun InkCanvas(
                                     id = selAnn.id,
                                     modelX = selAnn.modelX + totalDelta.x * scaleX,
                                     modelY = selAnn.modelY + totalDelta.y * scaleY,
-                                    fontSize = selAnn.fontSize
+                                    fontSize = selAnn.fontSize,
+                                    boxWidth = selAnn.boxWidth
                                 )
                                 activePathVersion++
                                 return@awaitEachGesture
@@ -1030,14 +1097,15 @@ fun InkCanvas(
                         }
                     }
 
-                    // Tap on any annotation to select it
+                    // Tap on any annotation to select it（用「內容」框，見 textAnnotationContentRect）
                     val hitAnn = annotations.firstOrNull { ann ->
-                        textAnnotationHitRect(ann, sx, sy).contains(startOffset)
+                        textAnnotationContentRect(ann, sx, sy).contains(startOffset)
                     }
                     if (hitAnn != null) {
                         selectedTextAnnotationId = hitAnn.id
                         textMoveDelta = Offset.Zero
                         textFontSizeDelta = 0f
+                        textBoxWidthDelta = 0f
                         down.consume()
                         activePathVersion++
                         return@awaitEachGesture
@@ -2370,15 +2438,23 @@ fun InkCanvas(
                         val dx = if (isSelected && !txtSettled) textMoveDelta.x else 0f
                         val dy = if (isSelected && !txtSettled) textMoveDelta.y else 0f
                         val fsDelta = if (isSelected && !txtSettled) textFontSizeDelta else 0f
-                        textPaint.textSize = if (isSelected)
-                            (ann.fontSize + fsDelta).coerceAtLeast(4f) * sy
-                        else ann.fontSize * sy
+                        val bwDelta = if (isSelected && !txtSettled) textBoxWidthDelta else 0f
+                        val effFont = (ann.fontSize + fsDelta).coerceAtLeast(4f)
+                        textPaint.textSize = effFont * sy
                         textPaint.color = ann.colorArgb
+                        // 文字框：框寬（＋拖曳預覽）決定折行與對齊；舊資料（boxWidth null）維持逐 `\n` 行。
+                        val boxW = ann.boxWidth?.takeIf { it > 0f }?.plus(bwDelta)
+                        val lines = if (boxW != null && (boxW != ann.boxWidth || fsDelta != 0f))
+                            wrapTextLines(ann.text, effFont, boxW)
+                        else textLines[ann.id].orEmpty()
                         // Multiline: modelY is the first-line baseline (matches PDF export).
                         val lineHeight = with(textPaint.fontMetrics) { -ascent + descent + leading }
-                        textLines[ann.id].orEmpty().forEachIndexed { i, line ->
+                        lines.forEachIndexed { i, line ->
+                            val alignOffPx = if (boxW != null)
+                                textAlignOffsetModel(measureTextWidth(line, effFont), boxW, ann.alignment) * sx
+                            else 0f
                             composeCanvas.nativeCanvas.drawText(
-                                line, ann.modelX * sx + dx, ann.modelY * sy + dy + i * lineHeight, textPaint
+                                line, ann.modelX * sx + dx + alignOffPx, ann.modelY * sy + dy + i * lineHeight, textPaint
                             )
                         }
                     }
@@ -2410,17 +2486,30 @@ fun InkCanvas(
                     val tS = pendingTextSettleRef.value
                     val txtSelSettled = tS != null && tS.id == selTextAnn.id && tS.matches(selTextAnn)
                     val fsDelta   = if (txtSelSettled) 0f else textFontSizeDelta
+                    val bwDelta   = if (txtSelSettled) 0f else textBoxWidthDelta
                     val mvDelta   = if (txtSelSettled) Offset.Zero else textMoveDelta
-                    val textRect  = textAnnotationHitRect(selTextAnn, sx, sy, fsDelta).translate(mvDelta)
+                    val textRect  = textAnnotationHitRect(selTextAnn, sx, sy, fsDelta, bwDelta).translate(mvDelta)
                     val textHandle = Offset(textRect.right, textRect.bottom)
+                    val handleVisuals = ArrayList<HandleVisual>(2)
+                    handleVisuals.add(
+                        HandleVisual(
+                            center = textHandle,
+                            pressed = if (pressedHandleCenter == textHandle) 1f else 0f
+                        )
+                    )
+                    // 框右緣中點的寬度把手（僅文字框）
+                    if (selTextAnn.boxWidth != null) {
+                        val wHandle = Offset(textRect.right, textRect.center.y)
+                        handleVisuals.add(
+                            HandleVisual(
+                                center = wHandle,
+                                pressed = if (pressedHandleCenter == wHandle) 1f else 0f
+                            )
+                        )
+                    }
                     drawLiquidGlassSelectionFrame(
                         rect = textRect,
-                        handles = listOf(
-                            HandleVisual(
-                                center = textHandle,
-                                pressed = if (pressedHandleCenter == textHandle) 1f else 0f
-                            )
-                        ),
+                        handles = handleVisuals,
                         visualRadiusPx = handleVisualRadiusPx,
                         haloRadiusPx = handleHaloRadiusPx,
                         strokeScale = if (pressedHandleCenter != null)
@@ -2566,6 +2655,10 @@ fun InkCanvas(
             val osx = if (cs.width > 0f) cs.width / viewModel.modelWidth else 1f
             val osy = if (cs.height > 0f) cs.height / viewModel.modelHeight else 1f
             val editAnn = inlineTextEditId?.let { id -> textAnnotations.firstOrNull { it.id == id } }
+            // 新建時的預覽框寬＝落點到右邊距（與 commitInlineText 的預設框寬一致）
+            val newBoxW = inlineTextNewPos?.let { p ->
+                (cs.width - p.x - TEXT_BOX_DEFAULT_MARGIN * osx).coerceAtLeast(TEXT_BOX_MIN_WIDTH * osx)
+            }
             InlineTextEditor(
                 value = inlineTextValue,
                 onValueChange = { inlineTextValue = it },
@@ -2577,8 +2670,53 @@ fun InkCanvas(
                 scaleX = osx,
                 scaleY = osy,
                 defaultFontPx = defaultTextFontPx,
-                cursorColorArgb = inlineTextColor.toArgb()
+                cursorColorArgb = inlineTextColor.toArgb(),
+                boxWidthPx = editAnn?.boxWidth?.let { it * osx } ?: newBoxW,
+                alignment = editAnn?.alignment ?: TEXT_ALIGN_LEFT
             )
+        }
+
+        // 對齊浮動小工具列：選中文字框、且不在打字時出現（左/中/右）
+        val floatSelId = selectedTextAnnotationId
+        val floatSelAnn = if (activeTool == Tool.TEXT && !inlineOpen && floatSelId != null)
+            textAnnotations.firstOrNull { it.id == floatSelId } else null
+        if (floatSelAnn != null && canvasPixelSize != Size.Zero) {
+            val cs = canvasPixelSize
+            val fsx = if (cs.width > 0f) cs.width / viewModel.modelWidth else 1f
+            val fsy = if (cs.height > 0f) cs.height / viewModel.modelHeight else 1f
+            val tb = textAnnotationHitRect(floatSelAnn, fsx, fsy)
+            val barH = with(density) { 40.dp.toPx() }
+            val barWPx = with(density) { 172.dp.toPx() }
+            val gapPx = with(density) { 8.dp.toPx() }
+            val barX = tb.left.coerceIn(0f, (cs.width - barWPx).coerceAtLeast(0f))
+            val barY = (tb.top - barH - gapPx).coerceAtLeast(0f)
+            val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
+            Row(
+                modifier = Modifier
+                    .offset { IntOffset(barX.toInt(), barY.toInt()) }
+                    .fauxGlassPanel(isDark, ShapeMd)
+                    .padding(horizontal = 4.dp, vertical = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                listOf(
+                    "左" to TEXT_ALIGN_LEFT,
+                    "中" to TEXT_ALIGN_CENTER,
+                    "右" to TEXT_ALIGN_RIGHT
+                ).forEach { (label, value) ->
+                    val selected = floatSelAnn.alignment == value
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (selected) GlassSelectionInk else MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier
+                            .clip(ShapeMd)
+                            .clickable { viewModel.commitTextAnnotationAlignment(floatSelAnn.id, value) }
+                            .then(if (selected) Modifier.glassSelectionPill(ShapeMd) else Modifier)
+                            .padding(horizontal = 14.dp, vertical = 8.dp)
+                    )
+                }
+            }
         }
     }
 }

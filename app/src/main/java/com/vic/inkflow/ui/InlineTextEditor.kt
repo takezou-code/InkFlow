@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -20,6 +21,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -56,7 +58,11 @@ internal fun InlineTextEditor(
     /** 新建時的字級（像素）；編輯既有標註時用 [editing] 的 fontSize。 */
     defaultFontPx: Float,
     /** 游標/文字色（ARGB），新建時使用。 */
-    cursorColorArgb: Int
+    cursorColorArgb: Int,
+    /** 文字框寬（像素）；null = 舊資料（貼合內容、最寬到畫布右緣）。 */
+    boxWidthPx: Float? = null,
+    /** 對齊 0=左 1=中 2=右。 */
+    alignment: Int = 0
 ) {
     val density = LocalDensity.current
     val anchorPx = when {
@@ -69,13 +75,25 @@ internal fun InlineTextEditor(
     // anchorPx 是第一行基線；輸入框頂端往上讓一行
     val boxY = (anchorPx.y - fontPx - 8f).coerceAtLeast(0f)
     val maxBoxW = with(density) { (canvasWidthPx - boxX - 8f).coerceAtLeast(120f).toDp() }
+    // 文字框：固定寬（與 commit 後的框寬一致，所見即所得）；舊資料才用貼合內容的寬。
+    val fixedBoxW = boxWidthPx?.let {
+        with(density) { it.coerceAtMost((canvasWidthPx - boxX - 8f).coerceAtLeast(60f)).toDp() }
+    }
+    val textAlign = when (alignment) {
+        1 -> TextAlign.Center
+        2 -> TextAlign.End
+        else -> TextAlign.Start
+    }
 
     BasicTextField(
         value = value,
         onValueChange = onValueChange,
         modifier = Modifier
             .offset { IntOffset(boxX.toInt(), boxY.toInt()) }
-            .widthIn(min = 140.dp, max = maxBoxW)
+            .then(
+                if (fixedBoxW != null) Modifier.width(fixedBoxW)
+                else Modifier.widthIn(min = 140.dp, max = maxBoxW)
+            )
             .background(Color.White, RoundedCornerShape(6.dp))
             .border(1.5.dp, BrandIndigo, RoundedCornerShape(6.dp))
             .padding(6.dp)
@@ -83,7 +101,8 @@ internal fun InlineTextEditor(
         textStyle = TextStyle(
             fontSize = with(density) { fontPx.toSp() },
             fontWeight = FontWeight.Bold,
-            color = Color(editing?.colorArgb ?: cursorColorArgb)
+            color = Color(editing?.colorArgb ?: cursorColorArgb),
+            textAlign = textAlign
         ),
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
         keyboardActions = KeyboardActions(onDone = { onDone() }),

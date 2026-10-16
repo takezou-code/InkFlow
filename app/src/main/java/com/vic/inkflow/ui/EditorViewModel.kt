@@ -1018,17 +1018,23 @@ class EditorViewModel(
         if (text.isBlank()) return
         val textPage = targetPage ?: pageIndex.value
         val textModelY = canvasY * DocTransform.invScaleYUnchecked(canvasH, modelHeight)
+        val textModelX = canvasX * DocTransform.invScaleXUnchecked(canvasW, modelWidth)
+        // 文字框化：預設框寬＝落點到右邊距，超過就折行（見 ui/TextWrapping.kt）。
+        val textBoxWidth = (modelWidth - textModelX - TEXT_BOX_DEFAULT_MARGIN)
+            .coerceAtLeast(TEXT_BOX_MIN_WIDTH)
         val ann = TextAnnotationEntity(
             documentUri = documentUri,
             pageIndex = textPage,
             // S1 雙寫：docY 錨點同步存。
             docY = textPage * docStride + textModelY,
             text = text,
-            modelX = canvasX * DocTransform.invScaleXUnchecked(canvasW, modelWidth),
+            modelX = textModelX,
             modelY = textModelY,
             fontSize = fontSize * DocTransform.invScaleXUnchecked(canvasW, modelWidth),
             colorArgb = color.toArgb(),
-            isStamp = isStamp
+            isStamp = isStamp,
+            // 圖章（超大 emoji）不進文字框：折行會把它拆成好幾行。
+            boxWidth = if (isStamp) null else textBoxWidth
         )
         viewModelScope.launch(Dispatchers.IO) {
             repos.texts.insert(ann)
@@ -1156,6 +1162,30 @@ class EditorViewModel(
         viewModelScope.launch(Dispatchers.IO) {
             repos.texts.updateAndBump(updated)
             withContext(Dispatchers.Main) { pushUndo(DrawCommand.ResizeTextAnnotation(old, updated)) }
+        }
+    }
+
+    /** 文字框寬調整（拖曳右緣把手）：重排框內文字。undo 走 ResizeTextAnnotation（同為幾何變更）。 */
+    fun commitTextAnnotationWidth(id: String, newBoxWidthModel: Float) {
+        val old = findTextAnnotation(id) ?: return
+        val clamped = newBoxWidthModel.coerceAtLeast(TEXT_BOX_MIN_WIDTH)
+        if (kotlin.math.abs((old.boxWidth ?: 0f) - clamped) < 0.01f) return
+        val updated = old.copy(boxWidth = clamped)
+        viewModelScope.launch(Dispatchers.IO) {
+            repos.texts.updateAndBump(updated)
+            withContext(Dispatchers.Main) { pushUndo(DrawCommand.ResizeTextAnnotation(old, updated)) }
+        }
+    }
+
+    /** 對齊變更（左/中/右）：只影響 render/hit/export，不改座標。undo 走 EditTextAnnotation。 */
+    fun commitTextAnnotationAlignment(id: String, alignment: Int) {
+        val old = findTextAnnotation(id) ?: return
+        val a = alignment.coerceIn(TEXT_ALIGN_LEFT, TEXT_ALIGN_RIGHT)
+        if (old.alignment == a) return
+        val updated = old.copy(alignment = a)
+        viewModelScope.launch(Dispatchers.IO) {
+            repos.texts.updateAndBump(updated)
+            withContext(Dispatchers.Main) { pushUndo(DrawCommand.EditTextAnnotation(old, updated)) }
         }
     }
 
@@ -2463,9 +2493,14 @@ class EditorViewModel(
         for (txt in sourceTextAnnotations) {
             textPaint.textSize = txt.fontSize
             textPaint.color = txt.colorArgb
+            val boxW = txt.boxWidth?.takeIf { it > 0f }
+            val lines = if (boxW != null) wrapTextLines(txt.text, txt.fontSize, boxW)
+                        else txt.text.split("\n")
             var y = txt.modelY + txt.fontSize
-            txt.text.split("\n").forEach { line ->
-                fullCanvas.drawText(line, txt.modelX, y, textPaint)
+            lines.forEach { line ->
+                val off = if (boxW != null)
+                    textAlignOffsetModel(measureTextWidth(line, txt.fontSize), boxW, txt.alignment) else 0f
+                fullCanvas.drawText(line, txt.modelX + off, y, textPaint)
                 y += txt.fontSize * 1.2f
             }
         }
