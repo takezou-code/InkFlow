@@ -46,6 +46,17 @@ data class StrokeEntity(
     val isHighlighter: Boolean = false,
 
     /**
+     * 筆種欄（DB v28 起存在）。**本版 App 已無蠟筆工具**，這一欄純粹是為了讓
+     * schema 與平板上既有的 v30 資料庫一致而保留：少了它 Room 的 schema identity
+     * check 會失敗，而 AppDatabase 只在「降版」才 destructive migration —— 結果
+     * 不是 App 開不起來就是舊資料被清掉（2026-10-16 的教訓）。
+     *
+     * 本版程式不讀它；既有列可能是 beta 時期寫入的 "CRAYON"/"PENCIL"，一律以
+     * 一般筆跡渲染。新增的筆只會是 "PEN"/"HIGHLIGHTER"。
+     */
+    val toolKind: String = "PEN",
+
+    /**
      * null = freehand stroke.
      * "RECT" | "CIRCLE" | "LINE" | "ARROW" = geometric shape.
      * Points: RECT/CIRCLE use bounds; LINE/ARROW use first & last PointEntity.
