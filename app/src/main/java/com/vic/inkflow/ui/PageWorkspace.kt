@@ -1141,15 +1141,19 @@ private fun DragPreviewOverlay(
             if (ann.pageIndex != pageIndex) return@forEach
             textPaint.textSize = ann.fontSize * sy
             textPaint.color = ann.colorArgb
-            val lines = ann.text.split("\n")
+            val boxW = ann.boxWidth?.takeIf { it > 0f }
+            val lines = if (boxW != null) wrapTextLines(ann.text, ann.fontSize, boxW)
+                        else ann.text.split("\n")
             val lineHeight = with(textPaint.fontMetrics) { -ascent + descent + leading }
             val dx = moveOffset.x * sx
             val dy = moveOffset.y * sy
             drawIntoCanvas { cvs ->
                 lines.forEachIndexed { i, line ->
+                    val off = if (boxW != null)
+                        textAlignOffsetModel(measureTextWidth(line, ann.fontSize), boxW, ann.alignment) * sx else 0f
                     cvs.nativeCanvas.drawText(
                         line,
-                        ann.modelX * sx + dx,
+                        ann.modelX * sx + dx + off,
                         ann.modelY * sy + dy + i * lineHeight,
                         textPaint
                     )

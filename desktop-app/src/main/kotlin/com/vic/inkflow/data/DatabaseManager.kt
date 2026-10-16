@@ -184,6 +184,8 @@ class DatabaseManager(private val dbPath: String) {
                     fontSize REAL NOT NULL DEFAULT 16,
                     colorArgb INTEGER NOT NULL,
                     isStamp INTEGER NOT NULL DEFAULT 0,
+                    boxWidth REAL,
+                    alignment INTEGER NOT NULL DEFAULT 0,
                     version INTEGER NOT NULL DEFAULT 1,
                     versionNonce INTEGER NOT NULL DEFAULT 0,
                     deletedAt INTEGER
@@ -311,6 +313,23 @@ class DatabaseManager(private val dbPath: String) {
             logger.info { "Schema v4 -> v5: merge columns added" }
         }
 
+        if (version < 6) {
+            // Text boxes (tablet DB v30): wrap width + alignment on text_annotations.
+            // Additive and idempotent, same rule as v5. NULL boxWidth keeps the old
+            // "hug the content" behaviour for rows the tablet has not boxed.
+            if (tableExists(stmt, "text_annotations")) {
+                if (!columnExists(stmt, "text_annotations", "boxWidth")) {
+                    stmt.execute("ALTER TABLE text_annotations ADD COLUMN boxWidth REAL")
+                }
+                if (!columnExists(stmt, "text_annotations", "alignment")) {
+                    stmt.execute("ALTER TABLE text_annotations ADD COLUMN alignment INTEGER NOT NULL DEFAULT 0")
+                }
+                logger.info { "Schema v5 -> v6: text box columns added" }
+            } else {
+                logger.warn { "Schema v5 -> v6: text_annotations missing after init" }
+            }
+        }
+
         // sync_meta / sync_docs are created by initializeDatabase()'s CREATE TABLE IF NOT
         // EXISTS statements, so nothing to do here for them.
 
@@ -338,7 +357,7 @@ class DatabaseManager(private val dbPath: String) {
     }
 
     companion object {
-        const val SCHEMA_VERSION = 5
+        const val SCHEMA_VERSION = 6
 
         /**
          * Exposed for tests only: `TextAnnotationDbTest` asserts that a legacy
@@ -1034,8 +1053,8 @@ class DatabaseManager(private val dbPath: String) {
         connection?.prepareStatement(
             """
             INSERT INTO text_annotations
-                (id, documentUri, pageIndex, docY, text, modelX, modelY, fontSize, colorArgb, isStamp, version, versionNonce, deletedAt)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, documentUri, pageIndex, docY, text, modelX, modelY, fontSize, colorArgb, isStamp, boxWidth, alignment, version, versionNonce, deletedAt)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 documentUri = excluded.documentUri,
                 pageIndex = excluded.pageIndex,
@@ -1046,6 +1065,8 @@ class DatabaseManager(private val dbPath: String) {
                 fontSize = excluded.fontSize,
                 colorArgb = excluded.colorArgb,
                 isStamp = excluded.isStamp,
+                boxWidth = excluded.boxWidth,
+                alignment = excluded.alignment,
                 version = excluded.version,
                 versionNonce = excluded.versionNonce,
                 deletedAt = excluded.deletedAt
@@ -1061,9 +1082,11 @@ class DatabaseManager(private val dbPath: String) {
             stmt.setFloat(8, annotation.fontSize)
             stmt.setInt(9, annotation.colorArgb)
             stmt.setBoolean(10, annotation.isStamp)
-            stmt.setInt(11, nextVersion)
-            stmt.setInt(12, nextNonce)
-            if (annotation.deletedAt == null) stmt.setNull(13, java.sql.Types.BIGINT) else stmt.setLong(13, annotation.deletedAt!!)
+            if (annotation.boxWidth == null) stmt.setNull(11, java.sql.Types.REAL) else stmt.setFloat(11, annotation.boxWidth)
+            stmt.setInt(12, annotation.alignment)
+            stmt.setInt(13, nextVersion)
+            stmt.setInt(14, nextNonce)
+            if (annotation.deletedAt == null) stmt.setNull(15, java.sql.Types.BIGINT) else stmt.setLong(15, annotation.deletedAt!!)
             stmt.executeUpdate()
         }
         Unit
@@ -1160,6 +1183,8 @@ class DatabaseManager(private val dbPath: String) {
                             fontSize = rs.getFloat("fontSize"),
                             colorArgb = rs.getInt("colorArgb"),
                             isStamp = rs.getBoolean("isStamp"),
+                            boxWidth = rs.getObject("boxWidth")?.let { (it as Number).toFloat() },
+                            alignment = rs.getInt("alignment"),
                             // v6: see queryStrokes — the base version must survive a load.
                             version = rs.getInt("version"),
                             versionNonce = rs.getInt("versionNonce"),

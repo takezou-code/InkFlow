@@ -32,6 +32,18 @@ data class TextAnnotationEntity(
     val fontSize: Float = 16f,
     val colorArgb: Int = 0xFF000000.toInt(),
     val isStamp: Boolean = false,
+    /**
+     * Text-box wrap width in model units, or NULL for pre-v30 rows that predate
+     * the tablet's text-box feature (those keep the old "hug the content, break
+     * only on \n" behaviour).
+     *
+     * Carried so a tablet-authored box survives a desktop sync round-trip. The
+     * desktop does not yet wrap its own rendering to this width — it stores and
+     * forwards the field so the tablet does not silently lose the box.
+     */
+    val boxWidth: Float? = null,
+    /** 0 = left, 1 = centre, 2 = right (matches the tablet's `alignment` column). */
+    val alignment: Int = 0,
     // ── v6 merge columns: identical semantics to StrokeEntity (§15.1) ────────
     val version: Int = 1,
     val versionNonce: Int = 0,
@@ -71,19 +83,23 @@ object TextMetrics {
      * Bounding box of a text annotation in model units.
      *
      * Top edge is the baseline minus one font size; height adds 1.2em per
-     * additional line. Returns null for blank text — an empty annotation has no
-     * box, so it cannot be hit-tested and should not be drawn.
+     * additional line. When [boxWidth] is set the annotation is a text box — the
+     * box is that wide and the lines are the wrapped ones, matching the tablet's
+     * `textAnnotationHitRect`. Returns null for blank text — an empty annotation
+     * has no box, so it cannot be hit-tested and should not be drawn.
      */
     fun bounds(
         modelX: Float,
         modelY: Float,
         text: String,
         fontSize: Float,
+        boxWidth: Float? = null,
         measurer: ((String, Float) -> Float)? = null
     ): FloatArray? {
         if (text.isBlank()) return null
-        val lines = text.split('\n')
-        val width = lines.maxOf { measureWidth(it, fontSize, measurer) }
+        val boxed = boxWidth != null && boxWidth > 0f
+        val lines = if (boxed) wrapLines(text, fontSize, boxWidth!!, measurer) else text.split('\n')
+        val width = if (boxed) boxWidth!! else lines.maxOf { measureWidth(it, fontSize, measurer) }
         // [modelY] is the first baseline. Height covers that line plus 1.2em for
         // every extra line, so the box grows downward from the first line only.
         val extraLines = lines.size - 1
@@ -93,6 +109,99 @@ object TextMetrics {
             modelX + width,
             modelY + extraLines * fontSize * LINE_SPACING
         )
+    }
+
+    /** [bounds] for a whole annotation, including its text-box width. */
+    fun boundsFor(ann: TextAnnotationEntity, measurer: ((String, Float) -> Float)? = null): FloatArray? =
+        bounds(ann.modelX, ann.modelY, ann.text, ann.fontSize, ann.boxWidth, measurer)
+
+    /**
+     * Wrap [text] to [boxWidth] model units — the same algorithm as the tablet's
+     * `wrapTextLines`, so the two apps agree on where a box breaks. `\n` is
+     * always a hard break; CJK breaks per character; a Latin run moves whole
+     * unless it is wider than the box.
+     */
+    fun wrapLines(
+        text: String,
+        fontSize: Float,
+        boxWidth: Float,
+        measurer: ((String, Float) -> Float)? = null
+    ): List<String> {
+        if (text.isEmpty()) return emptyList()
+        if (boxWidth <= 0f || fontSize <= 0f) return text.split('\n')
+        val out = ArrayList<String>()
+        for (paragraph in text.split('\n')) out.addAll(wrapParagraph(paragraph, fontSize, boxWidth, measurer))
+        return out
+    }
+
+    /** Horizontal offset of a line inside its box, in model units (left/centre/right). */
+    fun alignOffset(lineWidth: Float, boxWidth: Float, alignment: Int): Float = when (alignment) {
+        1 -> ((boxWidth - lineWidth) / 2f).coerceAtLeast(0f)
+        2 -> (boxWidth - lineWidth).coerceAtLeast(0f)
+        else -> 0f
+    }
+
+    private fun wrapParagraph(
+        paragraph: String,
+        fontSize: Float,
+        boxWidth: Float,
+        measurer: ((String, Float) -> Float)?
+    ): List<String> {
+        if (paragraph.isEmpty()) return listOf("")
+        val lines = ArrayList<String>()
+        val line = StringBuilder()
+        var lineW = 0f
+        fun flush() {
+            lines.add(line.toString().trimEnd())
+            line.setLength(0)
+            lineW = 0f
+        }
+        for (tok in tokenize(paragraph)) {
+            if (tok.isBlank()) {
+                if (line.isNotEmpty()) {
+                    line.append(tok)
+                    lineW += measureWidth(tok, fontSize, measurer)
+                }
+                continue
+            }
+            val w = measureWidth(tok, fontSize, measurer)
+            if (lineW > 0f && lineW + w > boxWidth) flush()
+            if (w > boxWidth) {
+                // A single word wider than the box: split it per character.
+                for (ch in tok) {
+                    val cw = measureWidth(ch.toString(), fontSize, measurer)
+                    if (lineW > 0f && lineW + cw > boxWidth) flush()
+                    line.append(ch)
+                    lineW += cw
+                }
+            } else {
+                line.append(tok)
+                lineW += w
+            }
+        }
+        lines.add(line.toString().trimEnd())
+        return lines
+    }
+
+    /** CJK per character, a Latin run as one token, whitespace separate. */
+    private fun tokenize(text: String): List<String> {
+        val tokens = ArrayList<String>()
+        val word = StringBuilder()
+        fun flushWord() {
+            if (word.isNotEmpty()) {
+                tokens.add(word.toString())
+                word.setLength(0)
+            }
+        }
+        for (ch in text) {
+            when {
+                ch.isWhitespace() -> { flushWord(); tokens.add(ch.toString()) }
+                ch.isWideChar() -> { flushWord(); tokens.add(ch.toString()) }
+                else -> word.append(ch)
+            }
+        }
+        flushWord()
+        return tokens
     }
 }
 

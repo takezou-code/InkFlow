@@ -400,9 +400,14 @@ class DocumentViewModel(
                 for (txt in texts) {
                     textPaint.textSize = txt.fontSize
                     textPaint.color = txt.colorArgb
+                    val boxW = txt.boxWidth?.takeIf { it > 0f }
+                    val lines = if (boxW != null) wrapTextLines(txt.text, txt.fontSize, boxW)
+                                else txt.text.split("\n")
                     var y = txt.modelY + txt.fontSize
-                    txt.text.split("\n").forEach { line ->
-                        canvas.drawText(line, txt.modelX, y, textPaint)
+                    lines.forEach { line ->
+                        val off = if (boxW != null)
+                            textAlignOffsetModel(measureTextWidth(line, txt.fontSize), boxW, txt.alignment) else 0f
+                        canvas.drawText(line, txt.modelX + off, y, textPaint)
                         y += txt.fontSize * 1.2f
                     }
                 }

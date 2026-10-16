@@ -521,11 +521,20 @@ object PdfExporter {
         // PDF's text matrix has y growing upward from the baseline, so a baseline at
         // model y maps to pageH - y*ry and each later line drops further. `modelY` is
         // the FIRST baseline, not the top — the same convention the hit box uses.
+        // Text box (boxWidth set) wraps to the box and aligns inside it, matching the
+        // tablet and the desktop viewer.
+        val boxW = note.boxWidth?.takeIf { it > 0f }
+        val lines = if (boxW != null) com.vic.inkflow.data.TextMetrics.wrapLines(note.text, note.fontSize, boxW)
+                    else note.text.split('\n')
         var baseline = note.modelY
-        note.text.split('\n').forEach { line ->
+        lines.forEach { line ->
             if (line.isNotBlank()) {
+                val off = if (boxW != null) {
+                    val lw = com.vic.inkflow.data.TextMetrics.measureWidth(line, note.fontSize)
+                    com.vic.inkflow.data.TextMetrics.alignOffset(lw, boxW, note.alignment)
+                } else 0f
                 cs.setTextMatrix(
-                    org.apache.pdfbox.util.Matrix(1f, 0f, 0f, 1f, note.modelX * rx, pageH - baseline * ry)
+                    org.apache.pdfbox.util.Matrix(1f, 0f, 0f, 1f, (note.modelX + off) * rx, pageH - baseline * ry)
                 )
                 cs.showText(line)
             }

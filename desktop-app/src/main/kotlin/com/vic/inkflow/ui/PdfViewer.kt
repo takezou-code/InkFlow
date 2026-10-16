@@ -94,6 +94,7 @@ import androidx.compose.ui.text.font.FontWeight
 import kotlin.math.abs
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.vic.inkflow.data.DatabaseManager
@@ -893,7 +894,7 @@ private fun PageView(
      * visible and still refuse to be selected.
      */
     fun textsIntersecting(r: Rect): List<TextAnnotationEntity> = texts.filter { t ->
-        val tb = TextMetrics.bounds(t.modelX, t.modelY, t.text, t.fontSize) ?: return@filter false
+        val tb = TextMetrics.boundsFor(t) ?: return@filter false
         r.left <= tb[2] && r.right >= tb[0] && r.top <= tb[3] && r.bottom >= tb[1]
     }
 
@@ -926,7 +927,7 @@ private fun PageView(
             )
         }
         selText.forEach { t ->
-            TextMetrics.bounds(t.modelX, t.modelY, t.text, t.fontSize)?.let { b ->
+            TextMetrics.boundsFor(t)?.let { b ->
                 boxes += Rect(b[0], b[1], b[2], b[3])
             }
         }
@@ -1345,7 +1346,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
         // Notes are erased by ink too, matching the tablet: an eraser should not be able
         // to pass straight through a word and leave it behind.
         val hitText = texts.filter { t ->
-            val tb = TextMetrics.bounds(t.modelX, t.modelY, t.text, t.fontSize) ?: return@filter false
+            val tb = TextMetrics.boundsFor(t) ?: return@filter false
             pts.any { p -> p.x >= tb[0] && p.x <= tb[2] && p.y >= tb[1] && p.y <= tb[3] }
         }
         if (hit.isEmpty() && hitText.isEmpty()) return
@@ -2075,22 +2076,37 @@ color = Color(inkColour).copy(
         val noteBox = box
         if (noteBox != null && texts.isNotEmpty()) {
             texts.forEach { t ->
-                val tb = TextMetrics.bounds(t.modelX, t.modelY, t.text, t.fontSize)
+                val tb = TextMetrics.boundsFor(t)
                     ?: return@forEach
+                // Text box (boxWidth set): wrap to the box and align inside it, so a
+                // tablet-authored box looks the same here. Legacy notes (boxWidth
+                // null) keep their own width and only break on explicit newlines.
+                val boxW = t.boxWidth?.takeIf { it > 0f }
+                val display = if (boxW != null)
+                    TextMetrics.wrapLines(t.text, t.fontSize, boxW).joinToString("\n")
+                else t.text
                 Text(
-                    text = t.text,
+                    text = display,
                     modifier = Modifier.offset {
                         IntOffset(
                             (tb[0] * scale + (originX - noteBox.originX * scale)).roundToInt(),
                             (tb[1] * scale + (originY - noteBox.originY * scale)).roundToInt()
                         )
-                    },
+                    }.then(
+                        if (boxW != null) Modifier.width(with(density) { (boxW * scale).toDp() })
+                        else Modifier
+                    ),
                     color = Color(t.colorArgb),
                     fontSize = with(density) { (t.fontSize * scale).toSp() },
-                    // No width cap: the note's own width IS its model width, and
-                    // wrapping it here would desynchronise the drawn text from the
-                    // box used for hit-testing and for syncing.
+                    // No width cap for legacy notes: the note's own width IS its model
+                    // width, and wrapping it here would desynchronise the drawn text
+                    // from the box used for hit-testing and for syncing.
                     softWrap = false,
+                    textAlign = when (t.alignment) {
+                        1 -> TextAlign.Center
+                        2 -> TextAlign.End
+                        else -> TextAlign.Start
+                    },
                     lineHeight = androidx.compose.ui.unit.TextUnit.Unspecified
                 )
             }

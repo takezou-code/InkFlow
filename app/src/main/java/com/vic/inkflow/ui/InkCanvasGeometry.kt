@@ -37,15 +37,22 @@ internal const val TEXT_HIT_PAD_PX = 10f
  * 遇到比較差的那個；所以這裡只保留一個真相來源。
  */
 internal fun textAnnotationHitRect(
-    ann: TextAnnotationEntity, sx: Float, sy: Float, fontSizeDelta: Float = 0f
+    ann: TextAnnotationEntity, sx: Float, sy: Float, fontSizeDelta: Float = 0f,
+    boxWidthDelta: Float = 0f
 ): Rect {
     val canvasX         = ann.modelX * sx
     val canvasY         = ann.modelY * sy
-    val effectiveFontPx = (ann.fontSize + fontSizeDelta).coerceAtLeast(4f) * sy
-    // Multiline bounds: modelY is the first-line baseline; each extra line adds one line-height.
-    val lines           = ann.text.split("\n")
-    val textWidth       = lines.maxOfOrNull { measureTextWidth(it, effectiveFontPx) } ?: 0f
-    val textHeight      = effectiveFontPx + (lines.size - 1) * effectiveFontPx * 1.2f
+    val effectiveFont   = (ann.fontSize + fontSizeDelta).coerceAtLeast(4f)
+    val effectiveFontPx = effectiveFont * sy
+    // 文字框（boxWidth 有值）：寬度就是框，行數用同一套折行算（與繪製同一口徑）。
+    // 舊資料（boxWidth null）：維持「貼合內容」的量法，行為不變。
+    val boxWidthModel   = ann.boxWidth?.takeIf { it > 0f }?.plus(boxWidthDelta)
+    val lines           = if (boxWidthModel != null) wrapTextLines(ann.text, effectiveFont, boxWidthModel)
+                          else ann.text.split("\n")
+    val lineCount       = lines.size.coerceAtLeast(1)
+    val textWidth       = if (boxWidthModel != null) boxWidthModel * sx
+                          else (lines.maxOfOrNull { measureTextWidth(it, effectiveFontPx) } ?: 0f)
+    val textHeight      = effectiveFontPx + (lineCount - 1) * effectiveFontPx * 1.2f
     // 四邊同一個墊片：以前左 4 右 8 是不對稱且沒寫下來的原因，現在明示。
     // 對稱的好處是命中框與選取框的外觀跟觸控目標是同一個東西，不會出現
     // 「框畫在這裡、但手指得按旁邊才選得到」。
@@ -57,11 +64,42 @@ internal fun textAnnotationHitRect(
     )
 }
 
-/** Returns the resize-handle hit rect anchored to the bottom-right of [textRect], centered on that corner. */
-internal fun textResizeHandleRect(textRect: Rect, hitRadiusPx: Float): Rect {
-    val h = hitRadiusPx * 2f
-    return Rect(textRect.right - h / 2f, textRect.bottom - h / 2f, textRect.right + h / 2f, textRect.bottom + h / 2f)
+/**
+ * 文字框「內容」命中框：只包住**實際畫出來的字**（含對齊位移），不含框的空白。
+ *
+ * 選字用這個，不用整個框：框寬預設是「滿版扣邊距」，若拿整個框當命中區，
+ * 一條滿版寬的短標籤會讓它右邊整條空白都變成它的選取區，使用者連第二個標籤
+ * 都放不下去（點右邊只會選到左邊那個）。選取框／移動／框寬把手仍用
+ * [textAnnotationHitRect]（整個框），所以選中後框與把手的位置還是清楚的。
+ */
+internal fun textAnnotationContentRect(
+    ann: TextAnnotationEntity, sx: Float, sy: Float, fontSizeDelta: Float = 0f
+): Rect {
+    val canvasX    = ann.modelX * sx
+    val canvasY    = ann.modelY * sy
+    val effFont    = (ann.fontSize + fontSizeDelta).coerceAtLeast(4f)
+    val effFontPx  = effFont * sy
+    val boxWidth   = ann.boxWidth?.takeIf { it > 0f }
+    val lines      = if (boxWidth != null) wrapTextLines(ann.text, effFont, boxWidth)
+                     else ann.text.split("\n")
+    val lineOffsets = if (boxWidth != null)
+        lines.map { textAlignOffsetModel(measureTextWidth(it, effFont), boxWidth, ann.alignment) }
+    else
+        lines.map { 0f }
+    val leftOffset = lineOffsets.minOrNull() ?: 0f
+    val rightMost  = lines.indices.maxOfOrNull { i -> lineOffsets[i] + measureTextWidth(lines[i], effFont) } ?: 0f
+    val textHeight = effFontPx + (lines.size.coerceAtLeast(1) - 1) * effFontPx * 1.2f
+    return Rect(
+        canvasX + leftOffset * sx - TEXT_HIT_PAD_PX,
+        canvasY - effFontPx - TEXT_HIT_PAD_PX,
+        canvasX + rightMost * sx + TEXT_HIT_PAD_PX,
+        canvasY - effFontPx + textHeight + TEXT_HIT_PAD_PX
+    )
 }
+
+// 文字框把手（右下角＝字級、右緣中點＝框寬）不在這裡用 Rect 表示：
+// 兩顆的 48dp 命中圈在短框時必然重疊，改用 nearestHandleIndex 做「最近優先」
+// （呼叫端在 InkCanvas 的 TEXT 分支組 candidates）。見 nearestHandleIndex 的註解。
 
 // ---- Image annotation hit-testing helpers ----
 

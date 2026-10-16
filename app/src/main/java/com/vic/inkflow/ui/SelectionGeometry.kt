@@ -197,8 +197,10 @@ internal fun measureTextWidth(text: String, fontSize: Float): Float {
  * 套索命中＋選取框＋大綱共用，單一真相（canvas 層的 ±4px 觸控墊片是另一回事，不在此）。
  */
 internal fun textEstimatedBounds(ann: com.vic.inkflow.data.TextAnnotationEntity): Rect {
-    val lines = ann.text.split("\n")
-    val w = lines.maxOfOrNull { measureTextWidth(it, ann.fontSize) } ?: 0f
+    // 文字框：寬度就是框、行數用同一套折行；舊資料維持貼合內容。
+    val boxW = ann.boxWidth?.takeIf { it > 0f }
+    val lines = if (boxW != null) wrapTextLines(ann.text, ann.fontSize, boxW) else ann.text.split("\n")
+    val w = boxW ?: (lines.maxOfOrNull { measureTextWidth(it, ann.fontSize) } ?: 0f)
     val h = ann.fontSize + (lines.size - 1).coerceAtLeast(0) * ann.fontSize * 1.2f
     return Rect(ann.modelX, ann.modelY - h, ann.modelX + w, ann.modelY)
 }

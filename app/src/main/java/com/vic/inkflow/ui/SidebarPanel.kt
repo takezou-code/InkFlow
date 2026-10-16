@@ -868,10 +868,15 @@ internal fun PageThumbnail(
                                 typeface    = android.graphics.Typeface.DEFAULT_BOLD
                             }
                             // Multiline：與 InkCanvas 同畫法，否則 \n 疊成一行
+                            val boxW = ann.boxWidth?.takeIf { it > 0f }
+                            val lines = if (boxW != null) wrapTextLines(ann.text, ann.fontSize, boxW)
+                                        else ann.text.split("\n")
                             val lineHeight = with(paint.fontMetrics) { -ascent + descent + leading }
-                            ann.text.split("\n").forEachIndexed { i, line ->
+                            lines.forEachIndexed { i, line ->
+                                val off = if (boxW != null)
+                                    textAlignOffsetModel(measureTextWidth(line, ann.fontSize), boxW, ann.alignment) * sx else 0f
                                 composeCanvas.nativeCanvas.drawText(
-                                    line, ann.modelX * sx, ann.modelY * sy + i * lineHeight, paint
+                                    line, ann.modelX * sx + off, ann.modelY * sy + i * lineHeight, paint
                                 )
                             }
                         }
