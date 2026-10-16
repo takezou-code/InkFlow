@@ -31,6 +31,13 @@ data class TextAnnotationEntity(
     val colorArgb: Int = android.graphics.Color.BLACK,
     /** true = oversized emoji stamp, false = regular text label */
     val isStamp: Boolean = false,
+    /**
+     * 文字框寬（DB v30 起存在）。本版沒有文字框功能，欄位只為 schema 相容保留
+     * （理由見 StrokeEntity.toolKind）：讀寫都不碰，舊值原樣留在資料庫。
+     */
+    val boxWidth: Float? = null,
+    /** 對齊 0=左 1=中 2=右（DB v30 起存在，同上：只為 schema 相容保留）。 */
+    val alignment: Int = 0,
 
     // ── v6 併發合併（SYNC_PROTOCOL.md §15.1，與 StrokeEntity 同一套）─────
     // 欄位語意逐字對齊筆跡：version 計數器、versionNonce 打平時的決定性 tiebreak、

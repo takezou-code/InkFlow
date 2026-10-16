@@ -30,12 +30,22 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 // v26: 補 document_preferences.palmThresholdDp 的 migration（見 MIGRATION_25_26 註解）。
 // v27: 併發合併的 per-object 版本欄（strokes/text_annotations 各加
 //      version/versionNonce/deletedAt，見 MIGRATION_26_27 註解）。
+// v28: strokes 加 toolKind（筆種，見 MIGRATION_27_28 註解）。
+// v29: PENCIL 改名 CRAYON 存量回填（見 MIGRATION_28_29 註解；未發布前的改名）。
+// v30: text_annotations 加 boxWidth ＋ alignment（文字框化，見 MIGRATION_29_30 註解）。
+//
+// ⚠️ v28～v30 這三條 migration **與 App 功能無關，不可以拿掉**。本版 App 已經沒有
+// 蠟筆與文字框（2026-10-16 由 beta reset 回 1.6.1 的決定），但平板上既有的資料庫
+// 已經是 v30。少任何一條：
+//   • 舊 APK 升上來（v27 起）→ schema identity check 失敗，App 開不起來；
+//   • 直接降到 v27 → 走 fallbackToDestructiveMigrationOnDowngrade，**整個資料庫被清空**。
+// 所以欄位留著、值留著，程式只是不再使用它們（見 StrokeEntity.toolKind 註解）。
 @Database(
     entities = [StrokeEntity::class, PointEntity::class, DocumentEntity::class, FolderEntity::class,
                 TextAnnotationEntity::class, ImageAnnotationEntity::class,
                 DocumentPreferenceEntity::class, BookmarkEntity::class,
                 MathSourceEntity::class],
-    version = 27
+    version = 30
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun strokeDao(): StrokeDao
@@ -623,6 +633,62 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v28：筆種欄 `strokes.toolKind`。**本版 App 已無蠟筆**，這條 migration 與
+         * MIGRATION_28_29／29_30 都只為 schema 相容保留（見檔頭 ⚠️ 說明），SQL 與
+         * beta 當初寫入平板 v30 的那份逐字相同——不一致就會在 identity check 爆掉。
+         *
+         * 只加欄＋回填舊筆：isHighlighter=1 → HIGHLIGHTER，其餘 → PEN（DEFAULT）。
+         * 讀取端不讀這個欄位；未知值（beta 留下的 CRAYON/PENCIL）按一般筆跡畫，不炸。
+         *
+         * **必須冪等**（同 v26/v27 教訓）：先讀 PRAGMA table_info，只補缺的；
+         * 回填 UPDATE 可重跑（值已對的列重寫同一值，無損）。
+         */
+        private val MIGRATION_27_28 = object : Migration(27, 28) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                val existing = mutableSetOf<String>()
+                db.query("PRAGMA table_info(strokes)").use { c ->
+                    val nameIdx = c.getColumnIndexOrThrow("name")
+                    while (c.moveToNext()) existing.add(c.getString(nameIdx))
+                }
+                if ("toolKind" !in existing) {
+                    db.execSQL("ALTER TABLE strokes ADD COLUMN toolKind TEXT NOT NULL DEFAULT 'PEN'")
+                }
+                db.execSQL("UPDATE strokes SET toolKind = 'HIGHLIGHTER' WHERE isHighlighter = 1 AND (toolKind IS NULL OR toolKind = 'PEN')")
+            }
+        }
+
+        /**
+         * v29：PENCIL 改名 CRAYON 存量回填（改名發生在發布前，線上無此欄舊資料；
+         * beta 手上的平板可能已有 PENCIL 列，一次 UPDATE 收斂。可重跑，冪等）。
+         */
+        private val MIGRATION_28_29 = object : Migration(28, 29) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("UPDATE strokes SET toolKind = 'CRAYON' WHERE toolKind = 'PENCIL'")
+            }
+        }
+
+        /**
+         * v30：文字框化（只加欄、不回填具體寬）。本版 App 沒有文字框功能，這條同樣
+         * 只為 schema 相容保留；SQL 必須與平板既有的 v30 一致。
+         * boxWidth NULL = 舊資料；alignment 預設 0（左）。冪等：先讀 PRAGMA table_info。
+         */
+        private val MIGRATION_29_30 = object : Migration(29, 30) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                val existing = mutableSetOf<String>()
+                db.query("PRAGMA table_info(text_annotations)").use { c ->
+                    val nameIdx = c.getColumnIndexOrThrow("name")
+                    while (c.moveToNext()) existing.add(c.getString(nameIdx))
+                }
+                if ("boxWidth" !in existing) {
+                    db.execSQL("ALTER TABLE text_annotations ADD COLUMN boxWidth REAL DEFAULT NULL")
+                }
+                if ("alignment" !in existing) {
+                    db.execSQL("ALTER TABLE text_annotations ADD COLUMN alignment INTEGER NOT NULL DEFAULT 0")
+                }
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val appContext = context.applicationContext
@@ -658,7 +724,11 @@ abstract class AppDatabase : RoomDatabase() {
                     MIGRATION_23_24,
                     MIGRATION_24_25,
                     MIGRATION_25_26,
-                    MIGRATION_26_27
+                    MIGRATION_26_27,
+                    // v28～v30 只為與平板既有資料庫相容而保留，App 本身不用這些欄位。
+                    MIGRATION_27_28,
+                    MIGRATION_28_29,
+                    MIGRATION_29_30
                 )
                 // Only allow destructive migration on downgrade (e.g. user reverts to an
                 // older APK). Unknown *upgrade* paths surface as a hard crash rather than
