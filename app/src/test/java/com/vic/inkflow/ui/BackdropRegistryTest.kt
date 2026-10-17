@@ -55,4 +55,24 @@ class BackdropRegistryTest {
         assertEquals(DuneScene, backdropSceneOf(""))
         assertEquals(DuneScene, backdropSceneOf(null))
     }
+
+    /**
+     * 色系主題（暖沙／森綠）靠色票活著：色票空掉或給了透明色，症狀是「整片背景不見了」。
+     * 這個失敗模式很安靜（不會當、不會報錯），所以釘住。
+     */
+    @Test
+    fun everyThemeHasUsablePaletteInBothThemes() {
+        BackdropTheme.values().forEach { theme ->
+            listOf(true, false).forEach { dark ->
+                val palette = backdropPalette(theme, dark)
+                val where = "$theme dark=$dark"
+                assertTrue("$where: 色票少於 4 色，泡泡會擠在同一色系", palette.size >= 4)
+                assertTrue(
+                    "$where: 有色票是透明的（泡泡會消失）",
+                    palette.all { it.alpha > 0.5f }
+                )
+                assertTrue("$where: 色票有重複色", palette.distinct().size == palette.size)
+            }
+        }
+    }
 }
