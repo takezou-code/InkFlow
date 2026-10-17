@@ -626,20 +626,27 @@ class EditorViewModel(
         val pointEntities = normalizedPoints.map {
             PointEntity(strokeId = strokeId, x = it.x, y = it.y, width = it.width)
         }
-        // 存檔法醫線（debug only）：下次再看到「筆偏移」，直接對這行——
-        // cW/cH 是落庫當下的畫布尺寸，modelW/H 是紙尺寸，bounds 是算出來的結果。
-        // 若某筆的 model 座標除回去對不上手指位置，看這行就知道是哪個輸入錯了
-        //（画布尺寸 stale／紙尺寸剛換／點列本身 NaN），不用重猜整條管線。
-        if (com.vic.inkflow.BuildConfig.DEBUG) {
-            val first = normalizedPoints.firstOrNull()
-            android.util.Log.d(
-                "InkFlowDbg",
-                "SAVE id=${strokeId.take(8)} n=${normalizedPoints.size} " +
-                    "canvas=${cW.toInt()}x${cH.toInt()} model=${modelWidth.toInt()}x${modelHeight.toInt()} " +
-                    "first=(${first?.x?.toInt()},${first?.y?.toInt()}) " +
-                    "bounds=[${bounds.left.toInt()},${bounds.top.toInt()},${bounds.right.toInt()},${bounds.bottom.toInt()}]"
-            )
-        }
+        // 存檔護欄（release 也可見，不是 Log.d——優化版 release 會把 Log.d/Log.v 拿掉，
+        // 之前那行法醫線在平板上根本看不到）。這行是「提筆偏移」的判定線：
+        // 落點＝手指位置 ×(繪製當下 size.width / 這裡的 canvas)，比值≠1 就是整筆等比偏移。
+        // over＝正規化後超出紙面的量（用錯框架時會整片越界，只是筆寬造成的貼邊不算）。
+        val firstPt = normalizedPoints.first()
+        val lastPt = normalizedPoints.last()
+        val overX = maxOf(-bounds.left, bounds.right - modelWidth, 0f)
+        val overY = maxOf(-bounds.top, bounds.bottom - modelHeight, 0f)
+        android.util.Log.w(
+            "InkFlowDiag",
+            "SAVE id=${strokeId.take(8)} n=${normalizedPoints.size} " +
+                "canvas=${cW.toInt()}x${cH.toInt()} model=${modelWidth.toInt()}x${modelHeight.toInt()} " +
+                "zoom=${_docZoom.value} page=$strokePage " +
+                "px=[${points.first().x.toInt()},${points.first().y.toInt()}" +
+                "..${points.last().x.toInt()},${points.last().y.toInt()}] " +
+                "model=[${firstPt.x.toInt()},${firstPt.y.toInt()}" +
+                "..${lastPt.x.toInt()},${lastPt.y.toInt()}] " +
+                "bounds=[${bounds.left.toInt()},${bounds.top.toInt()}," +
+                "${bounds.right.toInt()},${bounds.bottom.toInt()}] " +
+                "over=[${overX.toInt()},${overY.toInt()}]"
+        )
         val pendingStroke = StrokeWithPoints(strokeEntity, pointEntities)
         _pendingStrokes.value = _pendingStrokes.value + (strokeId to pendingStroke)
 

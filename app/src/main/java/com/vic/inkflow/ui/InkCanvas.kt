@@ -597,6 +597,9 @@ fun InkCanvas(
 
     // 手勢凍結槽：draw 階段讀寫普通物件（非 State），不觸發重組
     val pinchReuse = remember { object { var bmp: ImageBitmap? = null } }
+    // 上次建墨跡快取用的比例（同上，普通物件不觸發重組）。比例一變就必須全量重建：
+    // 增量只補髒區，髒區外的像素會留著舊比例＝紙面與墨跡對不上（縮放才自愈的那個病）。
+    val lastInkScale = remember { object { var sx = Float.NaN; var sy = Float.NaN } }
     val drawModifier = Modifier.fillMaxSize()
         .onSizeChanged { size ->
             canvasPixelSize = Size(size.width.toFloat(), size.height.toFloat())
@@ -1539,6 +1542,9 @@ fun InkCanvas(
                 var lastPointTime = down.uptimeMillis
                 val gestureStartTime = down.uptimeMillis
                 val zoomAtStrokeStart = viewModel.docZoom.value
+                // 本筆累積點列當下所屬的畫布框架。中途若 relayout 改變畫布尺寸，舊點屬舊框架、
+                // 提筆卻用新 canvasW 正規化 → 整筆等比偏移（預覽仍在筆尖，所以看不出來）。
+                var frameOfPoints = canvasPixelSizeState.value
                 val quickSwipeTrace = mutableListOf(startOffset)
                 val supportsQuickSwipeEraser = quickSwipeEraserEnabled &&
                     (activeTool == Tool.PEN || activeTool == Tool.HIGHLIGHTER)
@@ -1614,6 +1620,44 @@ fun InkCanvas(
                             activePathVersion++
                             viewModel.setPageLock(false)
                             return@awaitEachGesture
+                        }
+                        // 框架中途改變（relayout／視窗或紙面尺寸變）：已收的點屬舊畫布框架，
+                        // 全部按尺寸比例換算到新框架再續畫。已收點與續畫點同框架，
+                        // 提筆才不會「舊點 × 新係數」＝整筆偏移。
+                        val frameNow = canvasPixelSizeState.value
+                        val frameWas = frameOfPoints
+                        if (frameWas.width > 0f && frameWas.height > 0f &&
+                            (frameNow.width != frameWas.width || frameNow.height != frameWas.height)
+                        ) {
+                            val kx = frameNow.width / frameWas.width
+                            val ky = frameNow.height / frameWas.height
+                            for (i in currentPathPoints.indices) {
+                                val p = currentPathPoints[i]
+                                currentPathPoints[i] = p.copy(x = p.x * kx, y = p.y * ky)
+                            }
+                            for (i in quickSwipeTrace.indices) {
+                                val q = quickSwipeTrace[i]
+                                quickSwipeTrace[i] = Offset(q.x * kx, q.y * ky)
+                            }
+                            // 中心線重畫（LASSO/ERASER 的視覺）；PEN 的包絡在下一個點就會重算。
+                            activePath.reset()
+                            if (currentPathPoints.isNotEmpty()) {
+                                activePath.moveTo(currentPathPoints[0].x, currentPathPoints[0].y)
+                                for (i in 1 until currentPathPoints.size) {
+                                    val a = currentPathPoints[i - 1]
+                                    val b = currentPathPoints[i]
+                                    activePath.quadraticTo(a.x, a.y, (a.x + b.x) / 2f, (a.y + b.y) / 2f)
+                                }
+                            }
+                            activePathVersion++
+                            frameOfPoints = frameNow
+                            android.util.Log.w(
+                                "InkFlowDiag",
+                                "FRAMECHANGE page=${pageIndexRef.value} " +
+                                    "was=${frameWas.width.toInt()}x${frameWas.height.toInt()} " +
+                                    "now=${frameNow.width.toInt()}x${frameNow.height.toInt()} " +
+                                    "kx=${kx} ky=${ky} pts=${currentPathPoints.size} tool=$activeTool"
+                            )
                         }
                         // Track peak pressure for outcome log
                         maxPressureDuring = maxOf(maxPressureDuring, drag.pressure)
@@ -1963,8 +2007,16 @@ fun InkCanvas(
             }
         }
         .drawWithCache {
-            val sx = DocTransform.scaleX(size.width, viewModel.modelWidth)
-            val sy = DocTransform.scaleY(size.height, viewModel.modelHeight)
+            // 紙尺寸改從 collectAsState 的 paperStyle 讀（Compose State）：讀了才建立訂閱，
+            // 紙尺寸變更才會讓這張墨跡快取失效。原本讀 viewModel.modelWidth 是普通 getter
+            // （_paperStyle.value），不訂閱 → 改紙尺寸時背景重畫、墨跡留在舊比例。
+            val paper = paperStyle
+            val modelW = paper.widthPt
+            val modelH = paper.heightPt
+            val sx = DocTransform.scaleX(size.width, modelW)
+            val sy = DocTransform.scaleY(size.height, modelH)
+            // 建圖比例變了就必須全量重建（增量只補髒區，會留下舊比例的像素）。
+            val scaleChanged = lastInkScale.sx != sx || lastInkScale.sy != sy
 
             val strokes = committedStrokes
             val preview = commitPreview
@@ -2007,12 +2059,13 @@ fun InkCanvas(
 
             // 凍結中連畫都跳過：整塊重建是捏合卡頓的最大頭
             if (!frozen) {
+                // 記下這次建圖用的比例（凍結中不記 → 放開必定視為比例變更＝全量重建）
+                lastInkScale.sx = sx
+                lastInkScale.sy = sy
                 // ── 髒矩形增量重建 ──
                 // 全量（清空整張＋重畫全筆）是擦除卡頓的最大頭（實測 draw 17.6ms/幀）。
                 // 只清髒區、只重畫相交的筆：重繪成本跟著變化量走。髒區過大／新圖／
                 // 尺寸變 → 走全量（舊行為原樣保留當 fallback）。
-                val modelW = viewModel.modelWidth
-                val modelH = viewModel.modelHeight
                 val pageRect = Rect(0f, 0f, modelW, modelH)
                 fun strokeRect(swp: StrokeWithPoints) = Rect(
                     swp.stroke.boundsLeft, swp.stroke.boundsTop,
@@ -2079,7 +2132,7 @@ fun InkCanvas(
                 // 不另開一輪）：退化輸入的包絡數學可能產出 NaN/Inf；minOf/maxOf
                 // 會靜默吞掉 NaN，髒區算小、相交全 false，該畫的全被跳過
                 // （無崩潰無 log 的純隱形）。看到一個就走全量：無條件重畫一定對。
-                val fullRebuild = boundsBroken || dirty == null ||
+                val fullRebuild = scaleChanged || boundsBroken || dirty == null ||
                     damageCoverage(dirty, pageRect) >= INK_FULL_REBUILD_COVERAGE
                 cacheCanvas.save()
                 cacheCanvas.scale(sx * cacheScale, sy * cacheScale)
@@ -2497,13 +2550,14 @@ fun InkCanvas(
                             pressed = if (pressedHandleCenter == textHandle) 1f else 0f
                         )
                     )
-                    // 框右緣中點的寬度把手（僅文字框）
+                    // 框右緣中點的寬度把手（僅文字框）：橫向膠囊＝形狀本身就說「橫向拉」。
                     if (selTextAnn.boxWidth != null) {
                         val wHandle = Offset(textRect.right, textRect.center.y)
                         handleVisuals.add(
                             HandleVisual(
                                 center = wHandle,
-                                pressed = if (pressedHandleCenter == wHandle) 1f else 0f
+                                pressed = if (pressedHandleCenter == wHandle) 1f else 0f,
+                                isCapsule = true
                             )
                         )
                     }

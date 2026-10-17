@@ -250,6 +250,17 @@ internal val SEL_FRAME_EDGE_LIGHT = Color.White.copy(alpha = 0.25f)
 internal val SEL_DASH_PATTERN = floatArrayOf(12f, 8f)
 internal const val SEL_HANDLE_RING_PX = 2f
 
+/**
+ * 文字框「框寬」把手畫成橫向膠囊時的長度（＝把手視覺半徑的幾倍）。
+ *
+ * 2.5 讓膠囊成為 2.5:1 的橫長條（半徑 4dp → 20dp × 8dp），形狀本身就說明
+ * 「只能橫向拉」；與角落的圓點（字級）用**形狀**分家，不動色票——
+ * 跟旋轉把手用空心環分家是同一套作法（見 [HandleVisual.isRotation] 的註解）。
+ *
+ * 刻意不做圖示：從前把旋轉箭頭塞進白色實心圓，實機回報「看起來像雜質」已移除。
+ */
+internal const val SEL_HANDLE_CAPSULE_LEN_MULT = 2.5f
+
 // 把手尺寸不在這裡換算：紙面放大是「layout 尺寸變大」（PageWorkspace 的
 // listWdp = viewportWpx * max(docZoom,1) + Surface.fillMaxWidth(docZoom)），
 // **不是**對畫布做像素縮放——畫布鏈路上沒有任何 graphicsLayer（只在 overlay 用）。
@@ -303,6 +314,11 @@ internal data class HandleVisual(
     val pressed: Float = 0f,
     /** 旋轉把手畫成缺口環＋箭頭（跟四角的實心點區分）。 */
     val isRotation: Boolean = false,
+    /**
+     * 橫向膠囊把手（文字框的「框寬」）：跟圓點用形狀分家，一眼看出哪顆只能橫向拉。
+     * 與 [isRotation] 互斥；兩者都 false ＝ 一般圓點。
+     */
+    val isCapsule: Boolean = false,
 )
 
 /** 依 [Handles.PressedScale](ui/theme/Handles.kt) 由 pressed(0→1) 插出的放大倍率。 */
@@ -373,7 +389,7 @@ internal fun DrawScope.drawLiquidGlassSelectionFrame(
     }
     handles.forEach { h ->
         drawHandle(
-            h.center, visualRadiusPx, haloRadiusPx, h.pressed, h.isRotation
+            h.center, visualRadiusPx, haloRadiusPx, h.pressed, h.isRotation, h.isCapsule
         )
     }
 }
@@ -381,6 +397,7 @@ internal fun DrawScope.drawLiquidGlassSelectionFrame(
 /**
  * 單顆把手。靜置＝halo + 白色實心點 + indigo 環 + 高光點（同原設計）；
  * 旋轉＝外圈加粗成環、中心挖空畫箭頭，一眼跟四角分開；
+ * 橫向膠囊＝文字框的框寬把手，**形狀**本身就說「只能橫向拉」（見 SEL_HANDLE_CAPSULE_LEN_MULT）；
  * 按住＝整顆放大（Handles.PressedScale）且 halo 加亮＝「抓到了」。
  */
 private fun DrawScope.drawHandle(
@@ -389,12 +406,47 @@ private fun DrawScope.drawHandle(
     haloRadiusPx: Float,
     pressed: Float,
     isRotation: Boolean,
+    isCapsule: Boolean = false,
 ) {
     val maxScale = com.vic.inkflow.ui.theme.Handles.PressedScale
     val s = handlePressedScale(pressed, maxScale)
     val r = visualRadiusPx * s
     val halo = haloRadiusPx * s
     val haloAlpha = if (pressed > 0.01f) 0.22f + 0.22f * pressed else 0.22f
+
+    if (isCapsule) {
+        // 橫向膠囊：同 halo/白心/indigo 環/高光的玻璃語言，只是外形拉長。
+        val halfW = r * SEL_HANDLE_CAPSULE_LEN_MULT
+        val halfH = r
+        // halo 與點一致：往外擴 (haloRadiusPx - visualRadiusPx)。
+        val inflate = halo - r
+        val haloTopLeft = Offset(center.x - halfW - inflate, center.y - halfH - inflate)
+        val haloSize = Size(halfW * 2f + inflate * 2f, halfH * 2f + inflate * 2f)
+        drawRoundRect(
+            color = SEL_FRAME_HALO.copy(alpha = haloAlpha),
+            topLeft = haloTopLeft,
+            size = haloSize,
+            cornerRadius = CornerRadius(halfH + inflate, halfH + inflate)
+        )
+        val topLeft = Offset(center.x - halfW, center.y - halfH)
+        val size = Size(halfW * 2f, halfH * 2f)
+        val corner = CornerRadius(halfH, halfH)
+        drawRoundRect(color = Color.White.copy(alpha = 0.85f), topLeft = topLeft, size = size, cornerRadius = corner)
+        drawRoundRect(
+            color = BrandIndigo,
+            topLeft = topLeft,
+            size = size,
+            cornerRadius = corner,
+            style = Stroke(width = SEL_HANDLE_RING_PX * s)
+        )
+        // Specular dot: sells the glass (往左上偏，同圓點那顆)。
+        drawCircle(
+            color = Color.White,
+            radius = r * 0.3f,
+            center = Offset(center.x - halfW * 0.5f, center.y - halfH * 0.35f)
+        )
+        return
+    }
 
     drawCircle(color = SEL_FRAME_HALO.copy(alpha = haloAlpha), radius = halo, center = center)
     if (isRotation) {
