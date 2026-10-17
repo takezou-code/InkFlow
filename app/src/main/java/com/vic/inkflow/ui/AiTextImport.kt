@@ -338,9 +338,13 @@ fun textMetricsOf(fontSize: Float): Pair<Float, Float> {
 
 /**
  * 量 contentBottom（model pt）。null = 不接續（stamp 高度算不準／metrics 異常）。
- * 筆用快取 boundsBottom；字 = 首行 baseline＋(n-1)行高＋descent
- * （螢幕本來就不折行，\n 行數即行數，免 StaticLayout）；
+ * 筆用快取 boundsBottom；字 = 首行 baseline＋(n-1)行高＋descent；
  * 圖用 modelY＋H（rotation 極少，安全墊吸收）。
+ *
+ * `n` ＝**畫面上真正的行數**：文字框（`boxWidth` 有值）走與畫面／匯出同一支
+ * [wrapTextLines]，舊資料（`boxWidth` null）才是逐 `\n` 行數。
+ * 這裡曾寫死 `text.split("\n").size`，前提是「螢幕不折行」——文字框上線後該前提
+ * 不再成立，折了行的框若仍照 `\n` 數算，量到的底會**偏小**，接著寫的 AI 文字會疊上去。
  */
 fun measureContentBottom(
     strokes: List<com.vic.inkflow.data.StrokeEntity>,
@@ -361,9 +365,12 @@ fun measureContentBottom(
     for ((i, t) in texts.withIndex()) {
         val (lineH, descent) = metrics(t.fontSize)
         if (lineH <= 0f) return null
-        val n = t.text.split("\n").size.coerceAtLeast(1)
+        // 行數 = 畫面真正的行數：有框用 wrapTextLines（同渲染／匯出），沒框才是 \n 行數。
+        val boxW = t.boxWidth?.takeIf { it > 0f }
+        val n = if (boxW != null) wrapTextLines(t.text, t.fontSize, boxW).size.coerceAtLeast(1)
+                else t.text.split("\n").size.coerceAtLeast(1)
         val tb = t.modelY + (n - 1) * lineH + descent
-        trace?.add("text[$i] modelY=${t.modelY} n=$n fontSize=${t.fontSize} lineH=$lineH descent=$descent bottom=$tb")
+        trace?.add("text[$i] modelY=${t.modelY} n=$n boxW=$boxW fontSize=${t.fontSize} lineH=$lineH descent=$descent bottom=$tb")
         textB = maxOf(textB, tb)
     }
     bottom = maxOf(bottom, textB)

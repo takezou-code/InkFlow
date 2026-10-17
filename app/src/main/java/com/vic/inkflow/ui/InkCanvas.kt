@@ -2730,10 +2730,13 @@ fun InkCanvas(
             )
         }
 
-        // 對齊浮動小工具列：選中文字框、且不在打字時出現（左/中/右）
+        // 對齊浮動小工具列：選中文字框、且不在打字時出現（左/中/右）。
+        // 只對「有框」的文字出現：舊資料／AI 匯入文字的 boxWidth 是 null，渲染端
+        // 對它們完全忽略 alignment（InkCanvas 折行渲染 `if (boxW != null)` else 0f），
+        // 若不設此閘，工具列會浮出來但點左/中/右毫無反應＝死按鈕。
         val floatSelId = selectedTextAnnotationId
         val floatSelAnn = if (activeTool == Tool.TEXT && !inlineOpen && floatSelId != null)
-            textAnnotations.firstOrNull { it.id == floatSelId } else null
+            textAnnotations.firstOrNull { it.id == floatSelId && it.boxWidth != null } else null
         if (floatSelAnn != null && canvasPixelSize != Size.Zero) {
             val cs = canvasPixelSize
             val fsx = if (cs.width > 0f) cs.width / viewModel.modelWidth else 1f

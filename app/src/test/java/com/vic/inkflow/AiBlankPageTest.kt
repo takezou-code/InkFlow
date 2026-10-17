@@ -8,6 +8,7 @@ import com.vic.inkflow.ui.isBlankPage
 import com.vic.inkflow.ui.isSelfPage
 import com.vic.inkflow.ui.measureContentBottom
 import com.vic.inkflow.ui.whiteRatioOfPixels
+import com.vic.inkflow.ui.wrapTextLines
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -78,8 +79,8 @@ class AiBlankPageTest {
     private fun stroke(bottom: Float) =
         StrokeEntity(documentUri = "d", pageIndex = 0, color = 0, strokeWidth = 2f, boundsBottom = bottom)
 
-    private fun text(y: Float, body: String, size: Float = 20f, stamp: Boolean = false) =
-        TextAnnotationEntity(documentUri = "d", pageIndex = 0, text = body, modelX = 48f, modelY = y, fontSize = size, isStamp = stamp)
+    private fun text(y: Float, body: String, size: Float = 20f, stamp: Boolean = false, boxW: Float? = null) =
+        TextAnnotationEntity(documentUri = "d", pageIndex = 0, text = body, modelX = 48f, modelY = y, fontSize = size, isStamp = stamp, boxWidth = boxW)
 
     private fun image(y: Float, h: Float) =
         ImageAnnotationEntity(documentUri = "d", pageIndex = 0, uri = "u", modelX = 48f, modelY = y, modelWidth = 100f, modelHeight = h)
@@ -102,6 +103,28 @@ class AiBlankPageTest {
     @Test fun measure_emptyZero_badMetrics() {
         assertEquals(0f, measureContentBottom(emptyList(), emptyList(), emptyList(), fakeMetrics)!!)
         assertNull(measureContentBottom(emptyList(), listOf(text(100f, "hi")), emptyList(), metrics = { _ -> 0f to 0f }))
+    }
+
+    @Test fun measure_boxedTextCountsWrappedLinesNotNewlines() {
+        // 二十個全形字、boxWidth=100、fontSize=20 → 每行 5 字、折成多行。
+        // 修好前：n = split("\n").size = 1 → 底只量到 105（單行高），
+        // 「接續前頁同頁續寫」會把 AI 文字疊在這個折了行的框上。
+        // 用碼點造字，不寫罕見 CJK 字面量（工具鏈吞字節，血淚）。
+        val wide = String(CharArray(20) { 0x4E2D.toChar() })
+        val boxed = text(100f, wide, boxW = 100f)
+        val lines = wrapTextLines(wide, 20f, 100f)
+        assertTrue("boxWidth=100/fontSize=20 應該折成多行，實際 ${lines.size}", lines.size > 1)
+        // 合約：量到的底 ＝ 用「畫面／匯出同一支折行」算出的行數（兩邊同源，不各算各的）。
+        val measured = measureContentBottom(emptyList(), listOf(boxed), emptyList(), fakeMetrics)!!
+        assertEquals(100f + (lines.size - 1) * 24f + 5f, measured)
+        // 舊的 \n 口徑（1 行 → 105）會少算——這條就是回歸護欄。
+        assertTrue("折行的框不能被量成單行高（$measured 應 > 105）", measured > 105f)
+    }
+
+    @Test fun measure_legacyTextStillCountsNewlines() {
+        // boxWidth=null（舊資料／AI 匯入文字）行為必須與以前完全相同：逐 \n 行數。
+        assertEquals(105f, measureContentBottom(emptyList(), listOf(text(100f, "hi")), emptyList(), fakeMetrics)!!)
+        assertEquals(153f, measureContentBottom(emptyList(), listOf(text(100f, "a\nb\nc")), emptyList(), fakeMetrics)!!)
     }
 
     @Test fun continueTop_room() {
