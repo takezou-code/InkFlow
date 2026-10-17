@@ -211,6 +211,8 @@ import com.vic.inkflow.data.FolderEntity
 import com.vic.inkflow.data.ImageAnnotationEntity
 import com.vic.inkflow.data.StrokeWithPoints
 import com.vic.inkflow.data.TextAnnotationEntity
+import com.vic.inkflow.ui.backdrop.BackdropScene
+import com.vic.inkflow.ui.backdrop.DuneScene
 import com.vic.inkflow.ui.theme.InkFlowTheme
 
 
@@ -245,7 +247,7 @@ fun TabletEditorScreen(
     isPowerSaver: Boolean = false,
     backdropTheme: BackdropTheme = BackdropTheme.SOFT,
     backdropKind: BackdropKind = BackdropKind.ORB,
-    backdropScene: BackdropScene = BackdropScene.DUNE,
+    backdropScene: BackdropScene = DuneScene,
     backdropImageUri: android.net.Uri? = null,
     onTogglePowerSaver: () -> Unit = {}
 ) {

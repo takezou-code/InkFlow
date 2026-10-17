@@ -2,6 +2,9 @@
 
 import com.vic.inkflow.ui.theme.ShapeSm
 import com.vic.inkflow.ui.theme.ShapeLg
+import com.vic.inkflow.ui.backdrop.BackdropScene
+import com.vic.inkflow.ui.backdrop.DuneScene
+import com.vic.inkflow.ui.backdrop.backdropScenes
 import android.content.SharedPreferences
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
@@ -99,7 +102,7 @@ fun GlobalSettingsScreen(
     onBackdropThemeChanged: (BackdropTheme) -> Unit = {},
     backdropKind: BackdropKind = BackdropKind.ORB,
     onBackdropKindChanged: (BackdropKind) -> Unit = {},
-    backdropScene: BackdropScene = BackdropScene.DUNE,
+    backdropScene: BackdropScene = DuneScene,
     onBackdropSceneChanged: (BackdropScene) -> Unit = {},
     backdropImageUri: android.net.Uri? = null,
     onBackdropImageChanged: (android.net.Uri?) -> Unit = {}
@@ -217,13 +220,7 @@ fun GlobalSettingsScreen(
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
                 )
                 GlassSegmentedBar(
-                    options = BackdropKind.values().map {
-                        when (it) {
-                            BackdropKind.ORB -> "泡泡"
-                            BackdropKind.SCENE -> "特效"
-                            BackdropKind.IMAGE -> "圖片"
-                        }
-                    },
+                    options = BackdropKind.values().map { it.label },
                     selectedIndex = BackdropKind.values().indexOf(kind).coerceAtLeast(0),
                     onSelect = { idx ->
                         val k = BackdropKind.values()[idx]
@@ -235,14 +232,7 @@ fun GlobalSettingsScreen(
                 )
                 if (kind == BackdropKind.ORB) {
                     GlassSegmentedBar(
-                        options = BackdropTheme.values().map {
-                            when (it) {
-                                BackdropTheme.SOFT -> "柔光"
-                                BackdropTheme.VIVID -> "熾霞"
-                                BackdropTheme.NIGHT -> "墨夜"
-                                BackdropTheme.CLEAN -> "素"
-                            }
-                        },
+                        options = BackdropTheme.values().map { it.label },
                         selectedIndex = BackdropTheme.values().indexOf(backdrop).coerceAtLeast(0),
                         onSelect = { idx ->
                             val t = BackdropTheme.values()[idx]
@@ -254,18 +244,14 @@ fun GlobalSettingsScreen(
                     )
                 }
                 if (kind == BackdropKind.SCENE) {
+                    // 場景清單來自 :shared 註冊表：加場景不用改這一頁
                     GlassSegmentedBar(
-                        options = BackdropScene.values().map {
-                            when (it) {
-                                BackdropScene.DUNE -> "沙丘"
-                                BackdropScene.TIDE -> "汐"
-                            }
-                        },
-                        selectedIndex = BackdropScene.values().indexOf(scene).coerceAtLeast(0),
+                        options = backdropScenes.map { it.label },
+                        selectedIndex = backdropScenes.indexOfFirst { it.id == scene.id }.coerceAtLeast(0),
                         onSelect = { idx ->
-                            val s = BackdropScene.values()[idx]
+                            val s = backdropScenes[idx]
                             scene = s
-                            prefs.edit().putString("backdrop_scene", s.name).apply()
+                            prefs.edit().putString("backdrop_scene", s.id).apply()
                             onBackdropSceneChanged(s)
                         },
                         modifier = Modifier.padding(horizontal = 16.dp)
