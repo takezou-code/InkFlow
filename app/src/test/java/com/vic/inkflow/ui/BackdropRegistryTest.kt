@@ -44,7 +44,7 @@ class BackdropRegistryTest {
     /** 已發布的 id：**不准改**。要改就先寫相容對照，否則使用者的設定會靜默失去。 */
     @Test
     fun publishedIdsStillResolve() {
-        listOf("DUNE", "TIDE", "SNOW", "STARFIELD", "EMBER").forEach { id ->
+        listOf("DUNE", "TIDE", "SNOW", "STARFIELD", "EMBER", "PETAL", "SUNSETSEA").forEach { id ->
             assertEquals("id '$id' 認不出來了（舊設定會靜默失效）", id, backdropSceneOf(id).id)
         }
     }
