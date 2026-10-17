@@ -150,13 +150,7 @@ object InkThemeState {
             .getOrNull() ?: BackdropTheme.SOFT
     )
 
-/** Human-facing labels, in the tablet's terms. */
-    val backdropLabels: Map<BackdropTheme, String> = mapOf(
-        BackdropTheme.SOFT to "柔和",
-        BackdropTheme.VIVID to "鮮明",
-        BackdropTheme.NIGHT to "夜色",
-        BackdropTheme.CLEAN to "純淨"
-    )
+/** Human-facing labels live on the enum itself (`:shared`) — one source for both ends. */
 }
 
 /** The aurora-like accent used for brand marks and the empty-state glyph. */

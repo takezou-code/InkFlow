@@ -611,7 +611,7 @@ private fun SettingsView(
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
-                            InkThemeState.backdropLabels[t] ?: t.name,
+                            t.label,
                             style = MaterialTheme.typography.labelMedium,
                             color = if (selected) MaterialTheme.colorScheme.onSurface
                             else MaterialTheme.colorScheme.onSurfaceVariant

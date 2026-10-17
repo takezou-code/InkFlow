@@ -4,19 +4,14 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import com.vic.inkflow.ui.backdrop.rememberBackdropClock
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -60,8 +55,18 @@ enum class BubbleRegion {
     Custom
 }
 
-/** 背景主題：柔光＝現行預設；熾霞＝高對比高飽和（給折射鋪路）；墨夜＝少而暗；素＝近乎平坦。 */
-enum class BackdropTheme { SOFT, VIVID, NIGHT, CLEAN }
+/**
+ * 背景主題：柔光＝現行預設；熾霞＝高對比高飽和（給折射鋪路）；墨夜＝少而暗；素＝近乎平坦。
+ *
+ * [label] 是唯一的使用者可見名稱：平板與桌機共用同一份，不准各自再寫對照表
+ * （之前兩端各留一份 map，結果平板叫「柔光」、桌機叫「柔和」）。
+ */
+enum class BackdropTheme(val label: String) {
+    SOFT("柔光"),
+    VIVID("熾霞"),
+    NIGHT("墨夜"),
+    CLEAN("素")
+}
 
 private data class BackdropTune(
     val countScale: Float,
@@ -140,19 +145,10 @@ fun AuroraBackground(
 
     // 45 幀上限：delay 驅動（不對齊 vsync、不喚醒每一幀，最省電），
     // 泡泡慢動作 45fps 綽綽有餘，GPU 少畫七成。t 取真實秒數，速度不變。
-    // 噪點圖已刪除（當初給退役折射做牙齒的；泡泡要清晰，沙子不留）。
+    // 噪音圖已刪除（當初給退役折射做牙齒的；泡泡要清晰，沙子不留）。
+    // 時鐘與場景共用（見 :shared backdrop/BackdropClock）——一支 tick，不是每個背景各一份。
 
-    val tick = remember { mutableLongStateOf(0L) }
-    val t0 = remember { System.nanoTime() }
-    LaunchedEffect(static) {
-        if (!static) {
-            while (true) {
-                kotlinx.coroutines.delay(22)
-                tick.longValue += 1
-            }
-        }
-        // static＝true 時不啟動迴圈，tick 永遠 0 → 背景凍結在首幀。
-    }
+    val clock = rememberBackdropClock(static)
 
     BoxWithConstraints(modifier) {
         val w = constraints.maxWidth.toFloat().coerceAtLeast(1f)
@@ -169,9 +165,9 @@ fun AuroraBackground(
                     }
                 }
         ) {
-            // 讀 tick 只排重繪不重組；t 取真實秒數（tick 降頻後位置不受影響）
-            tick.longValue
-            val t = (System.nanoTime() - t0) / 1_000_000_000f
+            // 讀 frame 只排重繪不重組；t 取真實秒數（tick 降頻後位置不受影響）
+            clock.frame
+            val t = clock.seconds()
 
             // 深空底：縱向微漸層，避免純平一塊死黑
             if (isDarkTheme) {

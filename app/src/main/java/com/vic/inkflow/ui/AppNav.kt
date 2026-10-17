@@ -205,6 +205,9 @@ import com.vic.inkflow.data.FolderEntity
 import com.vic.inkflow.data.ImageAnnotationEntity
 import com.vic.inkflow.data.StrokeWithPoints
 import com.vic.inkflow.data.TextAnnotationEntity
+import com.vic.inkflow.ui.backdrop.BackdropScene
+import com.vic.inkflow.ui.backdrop.DuneScene
+import com.vic.inkflow.ui.backdrop.backdropSceneOf
 import com.vic.inkflow.ui.theme.InkFlowTheme
 
 
@@ -334,13 +337,14 @@ fun InkLayerApp(db: AppDatabase) {
         backdropKindStr = k.name
         prefs.edit().putString("backdrop_kind", k.name).apply()
     }
-    var backdropSceneStr by rememberSaveable(prefs) {
-        mutableStateOf(prefs.getString("backdrop_scene", BackdropScene.DUNE.name) ?: BackdropScene.DUNE.name)
+    // 場景存的是 spec 的 id（不是 enum ordinal）：加場景安全，認不得的值回預設
+    var backdropSceneId by rememberSaveable(prefs) {
+        mutableStateOf(prefs.getString("backdrop_scene", DuneScene.id) ?: DuneScene.id)
     }
-    val backdropScene = BackdropScene.values().find { it.name == backdropSceneStr } ?: BackdropScene.DUNE
+    val backdropScene = backdropSceneOf(backdropSceneId)
     fun setBackdropScene(s: BackdropScene) {
-        backdropSceneStr = s.name
-        prefs.edit().putString("backdrop_scene", s.name).apply()
+        backdropSceneId = s.id
+        prefs.edit().putString("backdrop_scene", s.id).apply()
     }
     var backdropImageStr by rememberSaveable(prefs) {
         mutableStateOf(prefs.getString("backdrop_image", "") ?: "")
