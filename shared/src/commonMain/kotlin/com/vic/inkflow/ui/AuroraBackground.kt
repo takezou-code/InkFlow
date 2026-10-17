@@ -65,7 +65,70 @@ enum class BackdropTheme(val label: String) {
     SOFT("柔光"),
     VIVID("熾霞"),
     NIGHT("墨夜"),
-    CLEAN("素")
+    CLEAN("素"),
+    AMBER("暖沙"),
+    FOREST("森綠")
+}
+
+/** 預設色票（靛紫）：SOFT/VIVID/NIGHT/CLEAN 用的就是這組，逐像素與舊版一致。 */
+private val PaletteDarkDefault = listOf(
+    Color(0xFF7C6CFF),
+    Color(0xFFA855F7),
+    Color(0xFF22D3EE),
+    Color(0xFF6366F1),
+    Color(0xFFEC6FF7),
+    Color(0xFF3B9DFF)
+)
+private val PaletteLightDefault = listOf(
+    Color(0xFF4F46E5),
+    Color(0xFF7C3AED),
+    Color(0xFF0E7490),
+    Color(0xFF9333EA),
+    Color(0xFF2563EB),
+    Color(0xFF38BDF8)
+)
+private val PaletteDarkAmber = listOf(
+    Color(0xFFFFB86B),
+    Color(0xFFF59E0B),
+    Color(0xFFEF4444),
+    Color(0xFFFB923C),
+    Color(0xFFFDE68A),
+    Color(0xFFEC4899)
+)
+private val PaletteLightAmber = listOf(
+    Color(0xFFD97706),
+    Color(0xFFEA580C),
+    Color(0xFFB45309),
+    Color(0xFFE11D48),
+    Color(0xFFF59E0B),
+    Color(0xFFC2410C)
+)
+private val PaletteDarkForest = listOf(
+    Color(0xFF34D399),
+    Color(0xFF10B981),
+    Color(0xFF14B8A6),
+    Color(0xFFA3E635),
+    Color(0xFF059669),
+    Color(0xFF22D3EE)
+)
+private val PaletteLightForest = listOf(
+    Color(0xFF047857),
+    Color(0xFF0F766E),
+    Color(0xFF15803D),
+    Color(0xFF4D7C0F),
+    Color(0xFF0891B2),
+    Color(0xFF065F46)
+)
+
+/**
+ * 主題色票的唯一入口（AuroraBackground 與測試共用）。
+ * 強度主題沿用預設靛紫；色系主題整組換色——同一組旋鈕，只換料。
+ */
+fun backdropPalette(theme: BackdropTheme, dark: Boolean): List<Color> = when (theme) {
+    BackdropTheme.SOFT, BackdropTheme.VIVID, BackdropTheme.NIGHT, BackdropTheme.CLEAN ->
+        if (dark) PaletteDarkDefault else PaletteLightDefault
+    BackdropTheme.AMBER -> if (dark) PaletteDarkAmber else PaletteLightAmber
+    BackdropTheme.FOREST -> if (dark) PaletteDarkForest else PaletteLightForest
 }
 
 private data class BackdropTune(
@@ -75,11 +138,15 @@ private data class BackdropTune(
     val radiusScale: Float
 )
 
+private val SoftTune = BackdropTune(1f, 1f, 1f, 1f)
+
+/** 強度主題調四個旋鈕；色系主題不改旋鈕（＝SOFT 的節奏），只換 [backdropPalette] 的料。 */
 private fun tuneFor(theme: BackdropTheme) = when (theme) {
-    BackdropTheme.SOFT -> BackdropTune(1f, 1f, 1f, 1f)
+    BackdropTheme.SOFT -> SoftTune
     BackdropTheme.VIVID -> BackdropTune(1.5f, 1.35f, 1.5f, 1.2f)
     BackdropTheme.NIGHT -> BackdropTune(0.6f, 0.7f, 0.8f, 0.9f)
     BackdropTheme.CLEAN -> BackdropTune(0.25f, 0.5f, 0.6f, 0.8f)
+    BackdropTheme.AMBER, BackdropTheme.FOREST -> SoftTune
 }
 
 @Composable
@@ -91,7 +158,7 @@ fun AuroraBackground(
     bubbleRegion: BubbleRegion = BubbleRegion.Full,
     // 靜模式：凍結在首幀，不跑 tick 迴圈（t 取真實秒數，切回流光自動續行）
     static: Boolean = false,
-    // 背景主題：SOFT 與舊行為逐像素一致，其他三套只調數量/透明/速度/半徑四個旋鈕
+    // 背景主題：強度主題只調數量/透明/速度/半徑四個旋鈕；色系主題（暖沙／森綠）不改旋鈕、只換色票
     theme: BackdropTheme = BackdropTheme.SOFT,
 ) {
     val tune = tuneFor(theme)
@@ -99,25 +166,7 @@ fun AuroraBackground(
     // 高級感配方：小而多、柔而慢。alpha 由繪製 stops 控制，這裡存純色。
     // S1 預飽和：haze/RenderEffect 鏈塞不進 saturation 節點，玻璃會吃掉彩度，
     // 所以源頭直接給更鮮的色，透出來剛好（零成本替代 saturation boost 1.5x）。
-    val palette = if (isDarkTheme) {
-        listOf(
-            Color(0xFF7C6CFF),
-            Color(0xFFA855F7),
-            Color(0xFF22D3EE),
-            Color(0xFF6366F1),
-            Color(0xFFEC6FF7),
-            Color(0xFF3B9DFF)
-        )
-    } else {
-        listOf(
-            Color(0xFF4F46E5),
-            Color(0xFF7C3AED),
-            Color(0xFF0E7490),
-            Color(0xFF9333EA),
-            Color(0xFF2563EB),
-            Color(0xFF38BDF8)
-        )
-    }
+    val palette = backdropPalette(theme, isDarkTheme)
 
     // 全屏分佈、小半徑、慢速：避免探照燈式大光斑
     val yBase = 0.12f
@@ -125,8 +174,9 @@ fun AuroraBackground(
     val radiusMin = 0.045f
     val radiusRange = 0.075f
 
-    // 規格只算一次：普通 List，不是 State，永不觸發重組
-    val orbs = remember(effectiveCount, isDarkTheme) {
+    // 規格只算一次：普通 List，不是 State，永不觸發重組。
+    // palette 一定要進 key：泡泡的顏色是在這裡挑的，漏了它換色系主題不會重挑色。
+    val orbs = remember(effectiveCount, isDarkTheme, palette) {
         List(effectiveCount) { i ->
             val rnd = Random(0x5A5A5A5AL + i)
             OrbSpec(
