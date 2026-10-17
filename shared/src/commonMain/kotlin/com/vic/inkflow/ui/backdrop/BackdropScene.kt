@@ -26,7 +26,8 @@ interface BackdropScene {
  * 場景註冊表：順序＝設定頁選擇條的順序。
  * 加場景＝寫一個檔＋在這裡加一行，設定頁與預覽端零改動。
  */
-val backdropScenes: List<BackdropScene> = listOf(DuneScene, TideScene, SnowScene)
+val backdropScenes: List<BackdropScene> =
+    listOf(DuneScene, TideScene, SnowScene, StarfieldScene, EmberScene)
 
 /** 認不得的 id（含已刪除的霓城）一律回預設，不留黑洞。 */
 fun backdropSceneOf(id: String?): BackdropScene =

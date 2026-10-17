@@ -69,6 +69,42 @@ fun DrawScope.skyVertical(dark: Boolean, darkColors: List<Color>, lightColors: L
     drawRect(brush = Brush.verticalGradient(colors = if (dark) darkColors else lightColors))
 }
 
+/**
+ * 定點閃爍粒子（星空／螢火）：位置固定、只有亮度在呼吸。
+ * 跟 [DriftParticle] 分開是因為運動模型不同——硬塞進同一型別只會讓兩邊都難讀。
+ */
+data class Twinkle(
+    val x: Float,
+    val y: Float,
+    val depth: Float,
+    val alpha: Float,
+    val speed: Float,
+    val phase: Float
+) {
+    /** 呼吸：0.45～1.0 倍，不是 0～1（全暗會讓滿天星輪流消失，看起來像壞掉）。 */
+    fun alphaAt(t: Float): Float =
+        (0.45f + 0.55f * (0.5f + 0.5f * sin(t * speed + phase))) * alpha
+}
+
+fun twinkles(
+    count: Int,
+    seed: Long,
+    alpha: ClosedFloatingPointRange<Float>,
+    speed: ClosedFloatingPointRange<Float>
+): List<Twinkle> {
+    val rnd = Random(seed)
+    return List(count) {
+        Twinkle(
+            x = rnd.nextFloat(),
+            y = rnd.nextFloat(),
+            depth = rnd.nextFloat(),
+            alpha = alpha.start + rnd.nextFloat() * (alpha.endInclusive - alpha.start),
+            speed = speed.start + rnd.nextFloat() * (speed.endInclusive - speed.start),
+            phase = rnd.nextFloat() * 6.28f
+        )
+    }
+}
+
 /** 圓形柔光（月暈／日暈／光源）：中心 alpha 到邊緣歸零。 */
 fun DrawScope.softGlow(center: Offset, radius: Float, color: Color) {
     drawCircle(
