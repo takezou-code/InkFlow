@@ -1,8 +1,10 @@
 package com.vic.inkflow
 
 import androidx.compose.ui.geometry.Offset
+import com.vic.inkflow.ui.SEL_HANDLE_CAPSULE_LEN_MULT
 import com.vic.inkflow.ui.handlePressedScale
 import com.vic.inkflow.ui.nearestHandleIndex
+import com.vic.inkflow.ui.theme.Handles
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -115,5 +117,24 @@ class HandleHitTest {
         // 動畫值理論上在 0..1，但摻1次 overshoot 或髒值不該讓把手爆掉。
         assertEquals(1.35f, handlePressedScale(5f, 1.35f), 1e-4f)
         assertEquals(1f, handlePressedScale(-3f, 1.35f), 1e-4f)
+    }
+
+    // ── 文字框「框寬」把手（橫向膠囊） ──
+
+    @Test
+    fun capsuleHandleFitsInsideItsTouchTarget() {
+        // 膠囊半長 = VisualRadius * LEN_MULT。它必須 ≤ TouchRadius，否則膠囊兩端
+        // 「看得見卻點不到」——正是這個 repo 反覆踩的那個坑（標籤看得見、點不到右半邊）。
+        val halfLen = Handles.VisualRadius * SEL_HANDLE_CAPSULE_LEN_MULT
+        assertTrue(
+            "膠囊半長 $halfLen 超過觸控半徑 ${Handles.TouchRadius}",
+            halfLen <= Handles.TouchRadius
+        )
+    }
+
+    @Test
+    fun capsuleIsWiderThanTallSoTheShapeReadsAsHorizontal() {
+        // 形狀區分的全部依據：>1 才是膠囊（＝橫長），=1 就退回圓點、跟字級把手撞臉。
+        assertTrue(SEL_HANDLE_CAPSULE_LEN_MULT > 1f)
     }
 }
