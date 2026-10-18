@@ -7,7 +7,10 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
@@ -29,6 +32,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.vic.inkflow.data.TextAnnotationEntity
 import com.vic.inkflow.ui.theme.BrandIndigo
+import kotlin.math.roundToInt
 
 /**
  * 行內文字編輯器（P4 從 InkCanvas 抽出）。
@@ -89,7 +93,7 @@ internal fun InlineTextEditor(
         else -> Offset.Zero
     }
     val fontPx = (editing?.fontSize?.times(scaleY) ?: defaultFontPx).coerceAtLeast(1f)
-    // 與畫布同一顆字體度量：行高、首位基線都由它算（見類別註解）。
+    // 與畫布同一顆字體度量：行高由它算（見類別註解）。
     val (lineHeightPx, ascentPx) = remember(fontPx) {
         val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
             typeface = android.graphics.Typeface.DEFAULT_BOLD
@@ -98,15 +102,24 @@ internal fun InlineTextEditor(
         val fm = p.fontMetrics
         (-fm.ascent + fm.descent + fm.leading) to fm.ascent
     }
+    // 首位基線的**實測值**（相對輸入框頂端）。null = 還沒量到，先用 Paint 估。
+    //
+    // 為什麼不直接用 Paint 的 ascent 定位：Compose 的行盒語意（lineHeightStyle 把多出來的
+    // leading 放哪、第一個行盒頂端對齊誰）與 `Paint.fontMetrics` 不會剛好一致，**用估的就會
+    // 差幾 px**——實機回報「文字往左上飄一點點，不是真正實際的位置」。
+    // 改成量了再對位（`boxY = 基線 − 實測基線`），就**保證**首位基線落在 anchorPx.y，
+    // 不論 Compose 內部怎麼排。字級/縮放變了會重新量（remember key = fontPx）。
+    var measuredBaselinePx by remember(fontPx) { mutableStateOf<Float?>(null) }
     // 文字框：內容寬＝成品的折行寬。**不再**扣內距與邊框（以前扣了，斷行點就與成品不同）。
     val fixedBoxW = boxWidthPx?.let { w -> with(density) { w.coerceAtLeast(1f).toDp() } }
     // 有框時左緣就是框左緣（框本來就在紙內）；舊資料（貼合內容）才需要夾住不超出右緣。
     val boxX = if (fixedBoxW != null) anchorPx.x.coerceAtLeast(0f)
     else anchorPx.x.coerceIn(0f, (canvasWidthPx - 160f).coerceAtLeast(0f))
     val maxBoxW = with(density) { (canvasWidthPx - boxX - 8f).coerceAtLeast(120f).toDp() }
-    // anchorPx 是第一行基線：頂端 = 基線 −(基線距頂端) = 基線 + ascent（ascent 為負）。
-    // 舊算法 `-fontPx - 8f` 是「扣掉一行再多退 8」，整塊因此偏低（實機回報位置不同）。
-    val boxY = (anchorPx.y + ascentPx).coerceAtLeast(0f)
+    // anchorPx 是第一行基線。頂端 = 基線 −（基線距頂端）：量到就用**實測值**（保證對齊），
+    // 還沒量到才退回 Paint 的估法（-ascent）。舊算法 `-fontPx - 8f` 是「扣掉一行再退 8」，
+    // 整塊因此偏低（實機回報位置不同）。
+    val boxY = (anchorPx.y - (measuredBaselinePx ?: -ascentPx)).coerceAtLeast(0f)
     val textAlign = when (alignment) {
         1 -> TextAlign.Center
         2 -> TextAlign.End
@@ -117,7 +130,8 @@ internal fun InlineTextEditor(
         value = value,
         onValueChange = onValueChange,
         modifier = Modifier
-            .offset { IntOffset(boxX.toInt(), boxY.toInt()) }
+            // roundToInt 不是 toInt：toInt 對正數是無條件捨去，輸入框會比成品偏左上約 1px。
+            .offset { IntOffset(boxX.roundToInt(), boxY.roundToInt()) }
             .then(
                 if (fixedBoxW != null) Modifier.width(fixedBoxW)
                 else Modifier.widthIn(min = 140.dp, max = maxBoxW)
@@ -147,6 +161,13 @@ internal fun InlineTextEditor(
         ),
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
         keyboardActions = KeyboardActions(onDone = { onDone() }),
+        // 量 Compose 真正把第一行基線放在哪裡（見 measuredBaselinePx 的註解）。
+        onTextLayout = { layout ->
+            if (layout.lineCount > 0) {
+                val b = layout.getLineBaseline(0)
+                if (measuredBaselinePx != b) measuredBaselinePx = b
+            }
+        },
         singleLine = false,
         // 不設上限：以前 maxLines=8，打超過 8 行就看不到自己打的字，送出後才全部冒出來。
         maxLines = Int.MAX_VALUE,
