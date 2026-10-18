@@ -27,6 +27,75 @@ object WebCrop {
     /** CSS px 框（getBoundingClientRect 原值，viewport 相對）。 */
     data class CssBox(val x: Float, val y: Float, val w: Float, val h: Float)
 
+    /** 捲動後重量的結果：新框＋當下 viewport 尺寸（CSS px）。 */
+    data class PrepareRect(val box: CssBox, val viewW: Float, val viewH: Float)
+
+    /**
+     * 捲動定位腳本：用 collect 階段留下的 `__inkcropEls[i]` 找出目標本尊，
+     * `scrollIntoView` 捲到畫面中央，回傳**捲動後**的 rect 與 viewport 尺寸。
+     *
+     * 為什麼是節點索引而不是座標：rect 出界時座標本身沒有意義（見 cropWindowPx 註解），
+     * 必須回到節點重新量。字串回傳格式刻意用 `OK:x,y,w,h,vw,vh` 而非 JSON——
+     * evaluateJavascript 的結果本身會被 JSON 編碼一次，JSON 疊 JSON 只是徒增解碼陷阱。
+     */
+    internal fun prepareJs(idx: Int): String = """
+        (function() {
+            try {
+                var els = window.__inkcropEls || [];
+                var el = els[$idx];
+                if (!el) return 'NONE';
+                if (el.isConnected === false) return 'DETACHED';
+                try { el.scrollIntoView({block:'center', inline:'center'}); }
+                catch(e) { try { el.scrollIntoView(); } catch(e2) { return 'SCROLL_FAIL'; } }
+                var r = el.getBoundingClientRect();
+                return 'OK:' + [r.x, r.y, r.width, r.height, window.innerWidth, window.innerHeight].join(',');
+            } catch (e) { return 'ERR'; }
+        })();
+    """.trimIndent()
+
+    /** 整批裁圖結束後捲回使用者的原位（避免匯入完面板停在最後一個 shot）。 */
+    internal fun restoreScrollJs(): String = """
+        (function() {
+            try {
+                if (window.__inkcropY == null) return 'NOOP';
+                window.scrollTo(0, window.__inkcropY);
+                window.__inkcropY = null;
+                return 'OK';
+            } catch (e) { return 'ERR'; }
+        })();
+    """.trimIndent()
+
+    /** 記下目前捲動位置（批次開始前呼叫一次；重複呼叫不覆蓋）。 */
+    internal fun saveScrollJs(): String = """
+        (function() {
+            try {
+                if (window.__inkcropY == null) window.__inkcropY = window.scrollY;
+                return 'OK';
+            } catch (e) { return 'ERR'; }
+        })();
+    """.trimIndent()
+
+    /**
+     * 解析 [prepareJs] 的回傳字串（evaluateJavascript 會把字串值再包一層引號）。
+     * 純函數，可單測。
+     */
+    fun parsePrepare(raw: String?): PrepareRect? {
+        val s0 = raw?.trim() ?: return null
+        if (s0 == "null" || s0.isEmpty()) return null
+        val s = s0.removeSurrounding("\"").replace("\\\"", "\"")
+        if (!s.startsWith("OK:")) return null
+        val nums = s.removePrefix("OK:").split(',')
+        if (nums.size < 6) return null
+        val f = nums.take(6).map { it.trim().toFloatOrNull() ?: return null }
+        if (f[2] <= 0f || f[3] <= 0f || f[4] <= 0f || f[5] <= 0f) return null
+        return PrepareRect(CssBox(f[0], f[1], f[2], f[3]), f[4], f[5])
+    }
+
+    /** 框是否完整落在回報的 viewport 內（容差 1px）。框比視窗大 → 捲也救不了，必須退文字。 */
+    fun insideViewport(box: CssBox, viewW: Float, viewH: Float, tol: Float = 1f): Boolean =
+        box.x >= -tol && box.y >= -tol &&
+            box.x + box.w <= viewW + tol && box.y + box.h <= viewH + tol
+
     /** Window 像素裁剪矩（純資料，可單測）。 */
     data class CropPx(val l: Int, val t: Int, val r: Int, val b: Int)
 
@@ -34,7 +103,16 @@ object WebCrop {
     fun cssToDevice(v: Float, scale: Float): Int = (v * scale).roundToInt()
 
     /**
-     * 算出在 window 點陣圖上的裁剪矩形；框無效/完全在窗外/過小/過大回 null。
+     * 算出在 window 點陣圖上的裁剪矩形；框無效/任何一邊出界/過小/過大回 null。
+     *
+     * ## 為什麼出界必須回 null，不能 clamp（踩過的坑）
+     *
+     * 這裡原本把出界座標 `coerceIn` 掰回視窗內。但 `captureWindow` 只有「當下螢幕」
+     * 的像素：框頂超出螢幕時 clamp 到 0 → 裁到頁面標題/工具列；框底超出螢幕時 clamp
+     * 到視窗底 → 裁到 AI 輸入框。**部分出界完全沒被擋掉，垃圾就從這裡進來。**
+     *
+     * 正確做法是裁之前先 `scrollIntoView` 把目標捲進畫面（見 [prepareJs]），
+     * 捲不動（框比視窗大）就回 null 退回文字／KaTeX 路徑。
      * 純函數（可單測），呼叫方再包成 android.graphics.Rect。
      */
     fun cropWindowPx(
@@ -51,18 +129,16 @@ object WebCrop {
         val t = locY + cssToDevice(box.y, scale) + insetPx
         val r = locX + cssToDevice(box.x + box.w, scale) - insetPx
         val b = locY + cssToDevice(box.y + box.h, scale) - insetPx
-        val cl = l.coerceIn(0, winW)
-        val ct = t.coerceIn(0, winH)
-        val cr = r.coerceIn(0, winW)
-        val cb = b.coerceIn(0, winH)
-        if (cr <= cl || cb <= ct) return null
-        val w = cr - cl
-        val h = cb - ct
+        // 出界一律拒收（不再 clamp 硬裁）：寧可退文字，也不要把工具列/輸入框裁進筆記。
+        if (l < 0 || t < 0 || r > winW || b > winH) return null
+        if (r <= l || b <= t) return null
+        val w = r - l
+        val h = b - t
         // 太小的大概率是 UI 殘件不是公式
         if (w < 24 || h < 24) return null
         // 太大的整頁誤裁（>80% 窗）也不要
         if (w.toLong() * h > winW.toLong() * winH * 8 / 10) return null
-        return CropPx(cl, ct, cr, cb)
+        return CropPx(l, t, r, b)
     }
 
     /**
@@ -80,6 +156,66 @@ object WebCrop {
     ): Rect? {
         val c = cropWindowPx(box, scale, locX, locY, winW, winH, insetPx) ?: return null
         return Rect(c.l, c.t, c.r, c.b)
+    }
+
+    /**
+     * 捲動到目標元素並重量 rect；任何一步失敗回 null（上層退文字路）。Main thread only。
+     *
+     * 找不到節點（SPA 重繪把節點換掉）或節點已離線一律回 null：
+     * 寧可退文字，也不要拿失效座標去裁一張垃圾圖。
+     */
+    suspend fun measureAfterScroll(
+        webView: WebView,
+        idx: Int,
+        timeoutMs: Long = 1200
+    ): PrepareRect? {
+        if (Looper.myLooper() != Looper.getMainLooper()) return null
+        val ret = CompletableDeferred<String?>()
+        try {
+            webView.evaluateJavascript(prepareJs(idx)) { v -> ret.complete(v) }
+        } catch (t: Throwable) {
+            Log.w(TAG, "measureAfterScroll eval failed: $t")
+            return null
+        }
+        val s = withTimeoutOrNull(timeoutMs) { ret.await() } ?: run {
+            Log.w(TAG, "measureAfterScroll timeout idx=$idx")
+            return null
+        }
+        return parsePrepare(s)
+    }
+
+    private var frameId = 1L
+
+    /** 等 WebView 把捲動後的重繪落地（postVisualStateCallback 一幀）。逾時回 false。 */
+    suspend fun waitFrame(webView: WebView, timeoutMs: Long = 1500): Boolean {
+        if (Looper.myLooper() != Looper.getMainLooper()) return false
+        val done = CompletableDeferred<Boolean>()
+        try {
+            webView.postVisualStateCallback(frameId++, object : WebView.VisualStateCallback() {
+                override fun onComplete(requestId: Long) {
+                    done.complete(true)
+                }
+            })
+        } catch (t: Throwable) {
+            Log.w(TAG, "waitFrame failed: $t")
+            done.complete(false)
+        }
+        return withTimeoutOrNull(timeoutMs) { done.await() } == true
+    }
+
+    /** 批次開始前記下捲動位置；結束後捲回。皆為 fire-and-forget，失敗不影響匯入。 */
+    fun saveScroll(webView: WebView) {
+        if (Looper.myLooper() != Looper.getMainLooper()) return
+        try {
+            webView.evaluateJavascript(saveScrollJs(), null)
+        } catch (_: Throwable) { }
+    }
+
+    fun restoreScroll(webView: WebView) {
+        if (Looper.myLooper() != Looper.getMainLooper()) return
+        try {
+            webView.evaluateJavascript(restoreScrollJs(), null)
+        } catch (_: Throwable) { }
     }
 
     /** 整窗截圖（Main thread 呼叫；PixelCopy API 26+，minSdk 32）。 */
@@ -248,13 +384,17 @@ object WebCrop {
     }
 
     /**
-     * 裁一個公式框：整窗截圖 → 裁剪 → 反白 → 自檢 → 存檔。
-     * @return RenderedMath（file/px尺寸）或 null（任一步失敗→上層退文字路）
+     * 裁一個公式框：**捲到畫面內 → 等重繪 → 整窗截圖 → 裁剪 → 反白 → 自檢 → 存檔**。
+     *
+     * @param idx collect 階段留下的節點索引（`__inkcropEls[i]`）。>= 0 時先用它捲動定位；
+     *   < 0（沒有索引）才退回用 [fallbackBox] 直接裁，但仍受窗內檢查保護。
+     * @return RenderedMath（file/px尺寸）或 null（任一步失敗→上層退文字／KaTeX 路）
      */
     suspend fun cropFormula(
         activity: Activity,
         webView: WebView,
-        box: CssBox,
+        idx: Int,
+        fallbackBox: CssBox,
         tag: String
     ): RenderedMath? {
         if (Looper.myLooper() != Looper.getMainLooper()) return null
@@ -267,6 +407,22 @@ object WebCrop {
             val decor = activity.window?.decorView ?: return null
             val winW = decor.width
             val winH = decor.height
+            // 1) 捲到畫面中央後重量：出界框在這裡被救回來，捲不動的（比視窗大）則退文字。
+            var box = fallbackBox
+            if (idx >= 0) {
+                val pr = measureAfterScroll(webView, idx)
+                if (pr == null) {
+                    Log.w(TAG, "crop skipped no-element idx=$idx tag=$tag")
+                    return null
+                }
+                if (!insideViewport(pr.box, pr.viewW, pr.viewH)) {
+                    Log.w(TAG, "crop skipped oversize idx=$idx box=${pr.box} vw=${pr.viewW} vh=${pr.viewH}")
+                    return null
+                }
+                box = pr.box
+                // 2) 等捲動後的重繪落地；不等就 PixelCopy 會截到捲動前的畫面。
+                waitFrame(webView)
+            }
             val rect = cropWindowRect(box, scale, loc[0], loc[1], winW, winH)
             if (rect == null) {
                 Log.w(TAG, "crop skipped box=$box scale=$scale win=${winW}x$winH")

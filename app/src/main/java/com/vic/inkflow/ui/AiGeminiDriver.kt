@@ -484,8 +484,15 @@ fun collectJs(replyChain: List<String> = REPLY_CHAIN): String {
             var census = {};
             var censusMath = 0, censusDataMath = 0, censusAnno = 0;
             var rects = [];
+            // 裁圖定位表：把節點「本尊」留在這裡，picks 的 i 指向它。
+            // 為什麼不能只用 rect：rect 是「收集當下」量的，框若在畫面外就是出界值；
+            // 裁圖前要 scrollIntoView 到畫面內再重量，這需要節點參考而不是座標猜。
+            // 只存參考、不動 DOM、不改文字/TeX 還原（那是已驗收行為）。
+            window.__inkcropEls = [];
             roots.forEach(function(el) {
                 try {
+                    var cropIdx = -1;
+                    try { window.__inkcropEls.push(el); cropIdx = window.__inkcropEls.length - 1; } catch(e){}
                     var tn = (el.tagName || '?').toLowerCase();
                     census[tn] = (census[tn] || 0) + 1;
                     var hasMath = false;
@@ -504,9 +511,9 @@ fun collectJs(replyChain: List<String> = REPLY_CHAIN): String {
                     mathB += cc.b; mathI += cc.i;
                     var t = clone.innerText || '';
                     if (hasMath) {
-                        picks.push({k:'m', r:r, t:t.trim().slice(0, 20000)});
+                        picks.push({k:'m', i:cropIdx, r:r, t:t.trim().slice(0, 20000)});
                     } else if (t.trim().length > 0) {
-                        picks.push({k:'t', r:r, t:t.trim().slice(0, 20000)});
+                        picks.push({k:'t', i:cropIdx, r:r, t:t.trim().slice(0, 20000)});
                     }
                 } catch(e){}
             });

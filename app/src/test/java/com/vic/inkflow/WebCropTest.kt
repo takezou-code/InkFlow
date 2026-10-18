@@ -40,14 +40,54 @@ class WebCropTest {
     }
 
     @Test fun crop_tooBig_null() {
-        // 全窗 1000x1000 的 80% = 800000；2000x2000 框 clamp 後超標
-        assertNull(WebCrop.cropWindowPx(WebCrop.CssBox(0f, 0f, 2000f, 2000f), 1f, 0, 0, 1000, 1000))
+        // 窗內但面積超全窗 80%（896x896 = 802816 > 800000）→ 視為整頁誤裁
+        assertNull(WebCrop.cropWindowPx(WebCrop.CssBox(0f, 0f, 900f, 900f), 1f, 0, 0, 1000, 1000))
     }
 
-    @Test fun crop_partialOverlap_clamped() {
-        // 左上溢出：clamp 後 0,0,98,98 → 有效
-        val c = WebCrop.cropWindowPx(WebCrop.CssBox(-50f, -50f, 150f, 150f), 1f, 0, 0, 1000, 1000)
-        assertEquals(WebCrop.CropPx(0, 0, 98, 98), c)
+    @Test fun crop_partialOverlap_null() {
+        // 左上溢出**不再 clamp 硬裁**：clamp 會把頁面標題／AI 輸入框裁進來（實機踩過）。
+        // 正確路徑是裁前先 scrollIntoView 重量（見 prepareJs），捲不動就退文字／KaTeX。
+        assertNull(WebCrop.cropWindowPx(WebCrop.CssBox(-50f, -50f, 150f, 150f), 1f, 0, 0, 1000, 1000))
+        // 右下溢出同理
+        assertNull(WebCrop.cropWindowPx(WebCrop.CssBox(900f, 900f, 300f, 300f), 1f, 0, 0, 1000, 1000))
+        // 貼齊邊界（含 inset 的合法情形）仍要能裁
+        val c = WebCrop.cropWindowPx(WebCrop.CssBox(100f, 100f, 200f, 200f), 1f, 0, 0, 1000, 1000)
+        assertEquals(WebCrop.CropPx(102, 102, 298, 298), c)
+    }
+
+    @Test fun prepareJs_pointsAtElementAndScrolls() {
+        val js = WebCrop.prepareJs(3)
+        assertTrue("要用 collect 留下的節點表", js.contains("__inkcropEls"))
+        assertTrue("要指名第 3 個節點", js.contains("els[3]"))
+        assertTrue("要捲進畫面", js.contains("scrollIntoView"))
+        assertTrue("要置中才不會又貼邊", js.contains("block:'center'"))
+        assertTrue("要回報捲動後的新框與 viewport", js.contains("innerWidth") && js.contains("innerHeight"))
+    }
+
+    @Test fun parsePrepare_readsEvaluatedString() {
+        // evaluateJavascript 對字串值會再包一層引號，解析要吃得下
+        val pr = WebCrop.parsePrepare("\"OK:10,20,100,50,800,600\"")!!
+        assertEquals(WebCrop.CssBox(10f, 20f, 100f, 50f), pr.box)
+        assertEquals(800f, pr.viewW)
+        assertEquals(600f, pr.viewH)
+        assertNull(WebCrop.parsePrepare("null"))
+        assertNull(WebCrop.parsePrepare("\"NONE\""))
+        assertNull(WebCrop.parsePrepare("\"DETACHED\""))
+        assertNull(WebCrop.parsePrepare("\"OK:1,2\""))
+        assertNull(WebCrop.parsePrepare(null))
+        // 零尺寸（節點離線後 getBoundingClientRect 回 0）視為失敗
+        assertNull(WebCrop.parsePrepare("\"OK:0,0,0,0,800,600\""))
+    }
+
+    @Test fun insideViewport_rejectsOversize() {
+        val vw = 800f
+        val vh = 600f
+        assertTrue(WebCrop.insideViewport(WebCrop.CssBox(0f, 0f, 800f, 600f), vw, vh))
+        assertTrue(WebCrop.insideViewport(WebCrop.CssBox(-0.5f, -0.5f, 700f, 500f), vw, vh))
+        // 比視窗寬 → 捲也救不了，必須退文字
+        assertTrue(!WebCrop.insideViewport(WebCrop.CssBox(0f, 0f, 1400f, 200f), vw, vh))
+        assertTrue(!WebCrop.insideViewport(WebCrop.CssBox(0f, 0f, 200f, 900f), vw, vh))
+        assertTrue(!WebCrop.insideViewport(WebCrop.CssBox(-30f, 0f, 200f, 200f), vw, vh))
     }
 
     @Test fun fit_fullWidthRender_unchanged() {

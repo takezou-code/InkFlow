@@ -103,7 +103,7 @@ fun CoroutineScope.importPickedJson(
     }
 }
 
-private data class Pick(val kind: Char, val text: String, val rect: WebCrop.CssBox?)
+private data class Pick(val kind: Char, val text: String, val rect: WebCrop.CssBox?, val idx: Int)
 
 private fun parsePicks(json: String): List<Pick> {
     val out = mutableListOf<Pick>()
@@ -113,6 +113,8 @@ private fun parsePicks(json: String): List<Pick> {
             val o = arr.optJSONObject(i) ?: continue
             val k = o.optString("k", "t").firstOrNull() ?: 't'
             val t = o.optString("t", "").take(20000)
+            // 裁圖定位索引（collect 腳本留下的 __inkcropEls 位置）；舊資料沒這個欄位＝-1。
+            val idx = o.optInt("i", -1)
             var box: WebCrop.CssBox? = null
             try {
                 val r = o.optJSONArray("r")
@@ -123,7 +125,7 @@ private fun parsePicks(json: String): List<Pick> {
                     )
                 }
             } catch (_: Throwable) { }
-            out.add(Pick(if (k == 'm') 'm' else 't', t, box))
+            out.add(Pick(if (k == 'm') 'm' else 't', t, box, idx))
         }
     } catch (_: Throwable) { }
     return out
@@ -150,20 +152,20 @@ suspend fun importPickedJsonInner(
     }
     // 保序拼塊：文字切分，含公式節點走像素裁圖（Main；失敗退文字路）
     val blocks = mutableListOf<AiBlock>()
-    data class Shot(val id: String, val box: WebCrop.CssBox, val fallback: String)
+    data class Shot(val id: String, val box: WebCrop.CssBox, val idx: Int, val fallback: String)
     val shots = mutableListOf<Shot>()
     var si = 0
     for (p in picks) {
         if (p.kind == 'm' && p.rect != null) {
             val id = "s${si++}"
             blocks.add(AiMathBlock(id, html = "", display = true, fallback = p.text))
-            shots.add(Shot(id, p.rect, p.text))
+            shots.add(Shot(id, p.rect, p.idx, p.text))
         } else if (p.text.isNotBlank()) {
             // 數學味文字塊：整塊截圖（徽章會變，內容不會變）；截不到退文字路
             if (p.rect != null && hasMathScent(p.text)) {
                 val id = "s${si++}"
                 blocks.add(AiMathBlock(id, html = "", display = false, fallback = p.text))
-                shots.add(Shot(id, p.rect, p.text))
+                shots.add(Shot(id, p.rect, p.idx, p.text))
             } else {
                 blocks.addAll(withContext(Dispatchers.Default) { splitAiBlocks(p.text) })
             }
@@ -178,14 +180,20 @@ suspend fun importPickedJsonInner(
     if (shots.isNotEmpty() && activity != null && webView != null) {
         // F1：等一幀，讓圈選高亮殘影先退（否則裁到藍 tint，反白後變米黃）
         kotlinx.coroutines.delay(600)
-        for (s in shots) {
-            try {
-                val rm = WebCrop.cropFormula(activity, webView, s.box, s.id)
-                if (rm != null) rendered[s.id] = rm else cropFail++
-            } catch (t: Throwable) {
-                Log.w("InkFlowDbg", "crop failed ${s.id}: $t")
-                cropFail++
+        // 批次前記下捲動位置：裁圖要把每個 shot 捲進畫面，結束後捲回原位。
+        WebCrop.saveScroll(webView)
+        try {
+            for (s in shots) {
+                try {
+                    val rm = WebCrop.cropFormula(activity, webView, s.idx, s.box, s.id)
+                    if (rm != null) rendered[s.id] = rm else cropFail++
+                } catch (t: Throwable) {
+                    Log.w("InkFlowDbg", "crop failed ${s.id}: $t")
+                    cropFail++
+                }
             }
+        } finally {
+            WebCrop.restoreScroll(webView)
         }
     } else if (shots.isNotEmpty()) {
         cropFail = shots.size
