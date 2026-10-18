@@ -144,4 +144,55 @@ class TextWrappingTest {
         val r = textAnnotationContentRect(ann("hi"), 1f, 1f)
         assertEquals(13f + TEXT_HIT_PAD_PX, r.right, 0.001f)
     }
+
+    // ---- 冪等：AI 文字與 v31 回填都靠這條 ----
+    //
+    // 「存進去的行再用同一個框寬折一次，必須一模一樣」。有了這條，折行才能只留一個權威：
+    // AI 匯入（先折好、帶框寬存）與舊資料回填（框寬＝貼合內容）都不會改變外觀。
+
+    @Test
+    fun wrappingIsIdempotent() {
+        val text = "中文段落 mixed with English words 混排\nsecond line 12345"
+        val lines = wrapTextLines(text, 10f, 60f)
+        assertEquals(lines, wrapTextLines(lines.joinToString("\n"), 10f, 60f))
+    }
+
+    @Test
+    fun wrappingIsIdempotentForOversizedWords() {
+        val lines = wrapTextLines("abcdefghij", 10f, 30f)
+        assertEquals(lines, wrapTextLines(lines.joinToString("\n"), 10f, 30f))
+    }
+
+    @Test
+    fun hugWidthNeverRebreaksExistingLines() {
+        val text = "這是一段中文標籤\nmixed Latin words here\n短行"
+        val hug = hugBoxWidthForLines(text, 10f)
+        assertEquals(text.split("\n"), wrapTextLines(text, 10f, hug))
+    }
+
+    @Test
+    fun hugWidthIsTheWidestLine() {
+        // @30pt：'中文' = 60、'abc' = 58.5 → 取 60（也必須高於 40pt 的地板才測得到）。
+        assertEquals(60f, hugBoxWidthForLines("中文\nabc", 30f), 0.001f)
+    }
+
+    @Test
+    fun hugWidthHasAFloor() {
+        assertEquals(TEXT_BOX_MIN_WIDTH, hugBoxWidthForLines("", 10f), 0.001f)
+        assertEquals(TEXT_BOX_MIN_WIDTH, hugBoxWidthForLines("a", 0f), 0.001f)
+    }
+
+    @Test
+    fun hugWidthKeepsTheContentRectIdenticalToLegacy() {
+        // 回填的驗收條件：轉成文字框之後，命中框與舊資料一模一樣（外觀不變）。
+        val text = "中文字\nabc def"
+        val legacy = textAnnotationContentRect(ann(text), 1f, 1f)
+        val boxed = textAnnotationContentRect(
+            ann(text, boxWidth = hugBoxWidthForLines(text, 10f)), 1f, 1f
+        )
+        assertEquals(legacy.left, boxed.left, 0.001f)
+        assertEquals(legacy.right, boxed.right, 0.001f)
+        assertEquals(legacy.top, boxed.top, 0.001f)
+        assertEquals(legacy.bottom, boxed.bottom, 0.001f)
+    }
 }

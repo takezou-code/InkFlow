@@ -32,11 +32,11 @@ data class TextAnnotationEntity(
     /** true = oversized emoji stamp, false = regular text label */
     val isStamp: Boolean = false,
     /**
-     * 文字框寬（DB v30 起存在）。本版沒有文字框功能，欄位只為 schema 相容保留
-     * （理由見 StrokeEntity.toolKind）：讀寫都不碰，舊值原樣留在資料庫。
+     * 文字框寬（DB v30 起）。null = 舊資料（逐 `\n` 印）；有值 = 文字框，折行由
+     * [com.vic.inkflow.ui.wrapTextLines] 負責（v31 起舊資料也回填成框）。
      */
     val boxWidth: Float? = null,
-    /** 對齊 0=左 1=中 2=右（DB v30 起存在，同上：只為 schema 相容保留）。 */
+    /** 對齊 0=左 1=中 2=右（DB v30 起；框內水平對齊）。 */
     val alignment: Int = 0,
 
     // ── v6 併發合併（SYNC_PROTOCOL.md §15.1，與 StrokeEntity 同一套）─────

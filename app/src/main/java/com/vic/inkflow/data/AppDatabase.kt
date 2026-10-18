@@ -33,19 +33,20 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 // v28: strokes 加 toolKind（筆種，見 MIGRATION_27_28 註解）。
 // v29: PENCIL 改名 CRAYON 存量回填（見 MIGRATION_28_29 註解；未發布前的改名）。
 // v30: text_annotations 加 boxWidth ＋ alignment（文字框化，見 MIGRATION_29_30 註解）。
+// v31: 舊文字的 boxWidth 回填成「貼合內容」寬（折行收斂成一個權威，見 MIGRATION_30_31）。
 //
-// ⚠️ v28～v30 這三條 migration **與 App 功能無關，不可以拿掉**。本版 App 已經沒有
-// 蠟筆與文字框（2026-10-16 由 beta reset 回 1.6.1 的決定），但平板上既有的資料庫
-// 已經是 v30。少任何一條：
+// ⚠️ v28～v31 這幾條 migration **不可以拿掉**。beta 曾在 2026-10-16 reset 回 1.6.1
+// （拿掉蠟筆；文字框後來又加回來，但 boxWidth 欄位從 v30 就在），而平板上既有的
+// 資料庫已經是 v31。少任何一條：
 //   • 舊 APK 升上來（v27 起）→ schema identity check 失敗，App 開不起來；
 //   • 直接降到 v27 → 走 fallbackToDestructiveMigrationOnDowngrade，**整個資料庫被清空**。
-// 所以欄位留著、值留著，程式只是不再使用它們（見 StrokeEntity.toolKind 註解）。
+// 所以欄位留著、值留著（見 StrokeEntity.toolKind 註解）。
 @Database(
     entities = [StrokeEntity::class, PointEntity::class, DocumentEntity::class, FolderEntity::class,
                 TextAnnotationEntity::class, ImageAnnotationEntity::class,
                 DocumentPreferenceEntity::class, BookmarkEntity::class,
                 MathSourceEntity::class],
-    version = 30
+    version = 31
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun strokeDao(): StrokeDao
@@ -669,8 +670,7 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         /**
-         * v30：文字框化（只加欄、不回填具體寬）。本版 App 沒有文字框功能，這條同樣
-         * 只為 schema 相容保留；SQL 必須與平板既有的 v30 一致。
+         * v30：文字框化（只加欄、不回填具體寬；回填由 v31 做）。
          * boxWidth NULL = 舊資料；alignment 預設 0（左）。冪等：先讀 PRAGMA table_info。
          */
         private val MIGRATION_29_30 = object : Migration(29, 30) {
@@ -685,6 +685,46 @@ abstract class AppDatabase : RoomDatabase() {
                 }
                 if ("alignment" !in existing) {
                     db.execSQL("ALTER TABLE text_annotations ADD COLUMN alignment INTEGER NOT NULL DEFAULT 0")
+                }
+            }
+        }
+
+        /**
+         * v31：舊文字回填框寬，一次收斂成「文字框」——折行從此只有一個權威。
+         *
+         * 框寬刻意取「貼合內容」（[com.vic.inkflow.ui.hugBoxWidthForLines]：現有每個 `\\n`
+         * 行，用渲染器同一支量寬量出來的最大值）。因為渲染器折行用的就是同一支量寬，每行的
+         * 寬度都 ≤ 這個值 → **回填後不會重折**，畫面與回填前一模一樣，只是文字從此可以改寬／
+         * 對齊。若改成給「內容寬」（例如 499），StaticLayout 當年折好的行會被估算式再折一次
+         * → 出現折了又折的短行。
+         *
+         * - 圖章（isStamp=1）不給框：折行會把大 emoji 拆成好幾行。
+         * - 不碰 version／versionNonce：那是同步層的欄位，資料搬遷不該動它（同步是整頁
+         *   全量拉 `getForPageSync`，值會自然帶到桌面端）。
+         * - 冪等：只碰框寬為 NULL 或 <= 0 的列，跑第二次沒有列可碰。
+         */
+        private val MIGRATION_30_31 = object : Migration(30, 31) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                val pending = ArrayList<Triple<String, String, Float>>()
+                db.query(
+                    "SELECT id, text, fontSize FROM text_annotations " +
+                        "WHERE isStamp = 0 AND (boxWidth IS NULL OR boxWidth <= 0)"
+                ).use { c ->
+                    val idIdx = c.getColumnIndexOrThrow("id")
+                    val textIdx = c.getColumnIndexOrThrow("text")
+                    val fsIdx = c.getColumnIndexOrThrow("fontSize")
+                    while (c.moveToNext()) {
+                        val id = c.getString(idIdx) ?: continue
+                        pending.add(Triple(id, c.getString(textIdx) ?: "", c.getFloat(fsIdx)))
+                    }
+                }
+                for ((id, text, fontSize) in pending) {
+                    // 唯一真相：寬度規則住在 ui（com.vic.inkflow.ui），與渲染器同一支。
+                    val w = com.vic.inkflow.ui.hugBoxWidthForLines(text, fontSize)
+                    db.execSQL(
+                        "UPDATE text_annotations SET boxWidth = ? WHERE id = ?",
+                        arrayOf<Any>(w, id)
+                    )
                 }
             }
         }
@@ -725,10 +765,11 @@ abstract class AppDatabase : RoomDatabase() {
                     MIGRATION_24_25,
                     MIGRATION_25_26,
                     MIGRATION_26_27,
-                    // v28～v30 只為與平板既有資料庫相容而保留，App 本身不用這些欄位。
+                    // v28～v30 只為與平板既有資料庫相容而保留。
                     MIGRATION_27_28,
                     MIGRATION_28_29,
-                    MIGRATION_29_30
+                    MIGRATION_29_30,
+                    MIGRATION_30_31
                 )
                 // Only allow destructive migration on downgrade (e.g. user reverts to an
                 // older APK). Unknown *upgrade* paths surface as a hard crash rather than

@@ -13,6 +13,24 @@ data class AiTextChunk(
 
 private const val AI_CHUNK_MAX_CHARS = 300
 
+/**
+ * AI 排版的水平邊距（model pt）：文字框左緣＝此值，內容寬＝`modelW − 2×此值`。
+ *
+ * `EditorViewModel.insertImportedText` 也用它算文字框寬——**兩邊必須是同一個數字**，
+ * 否則 AI 文字的框寬與它的排版寬不一致，畫面會多折一次。
+ */
+internal const val AI_MARGIN_H = 48f
+
+/**
+ * AI 文字的文字框寬（model pt）＝排版內容寬。**唯一算法**：
+ * [paginateAiBlocks] 用它排版，`EditorViewModel.insertImportedText` 用它寫 `boxWidth`。
+ *
+ * 兩邊若各算各的（例如只改了一邊的邊距），AI 文字存的行就會比框寬、畫面多折一次
+ * ——AiPaginationTest 把這個等式釘住了。
+ */
+internal fun aiTextContentWidth(modelW: Float): Float =
+    (modelW - AI_MARGIN_H * 2f).coerceAtLeast(TEXT_BOX_MIN_WIDTH)
+
 private fun splitProse(seg: String, maxChars: Int, out: MutableList<String>) {
     for (para in seg.split(Regex("\n\\s*\n"))) {
         val p = para.trim()
@@ -43,27 +61,34 @@ private fun splitProse(seg: String, maxChars: Int, out: MutableList<String>) {
     }
 }
 
-/** M3：排版輸出（一塊 = 一個 TextAnnotationEntity，文字已按寬折好行，modelY=首行 baseline）。 */
+/** M3：排版輸出（一塊 = 一個 TextAnnotationEntity，modelY=首行 baseline）。 */
 data class PlacedText(
     val text: String,
     val modelX: Float,
     val modelY: Float,
-    val fontSize: Float
+    val fontSize: Float,
+    /**
+     * 文字框寬（model pt）。
+     *
+     * AI 文字與手打的文字走**同一條路**：存的是折行結果＋框寬，之後折行由渲染器
+     * （[wrapTextLines]）負責。因為折行用的就是同一支，這裡存的行再折一次會得到
+     * 一模一樣的行（冪等，見 TextWrappingTest），所以畫面完全一致。
+     */
+    val boxWidth: Float
 )
 
 /**
- * M3/M5 文字量測：StaticLayout 只取斷行，行高用渲染器 fontMetrics 公式，保證量畫一致。
+ * M3/M5 文字折行：**與畫面同一支 [wrapTextLines]**（不再用 StaticLayout）。
+ *
+ * 為什麼要換掉 StaticLayout：折行只允許有一個權威。以前 AI 用 StaticLayout 折（真實字寬），
+ * 畫面用 [wrapTextLines] 折（全形感知估算）——同一段文字兩邊折在不同地方；而且估算偏保守
+ * （半形按 0.65em，比真實寬約三成），StaticLayout 折好的行一旦帶上 `boxWidth`，畫面就會把
+ * 它**再折一次**。改用同一支之後三件事同時成立：折行結果冪等、AI 文字能跟手打的共用同一條
+ * 路、分頁引擎變成可單測（StaticLayout 在 JVM 單測跑不動）。
  */
-private fun layoutLines(body: String, textPaint: android.text.TextPaint, contentW: Int): List<String> {
+private fun layoutLines(body: String, fontSize: Float, contentWpt: Float): List<String> {
     if (body.isEmpty()) return emptyList()
-    val layout = android.text.StaticLayout.Builder.obtain(body, 0, body.length, textPaint, contentW)
-        .setAlignment(android.text.Layout.Alignment.ALIGN_NORMAL)
-        .setLineSpacing(0f, 1f)
-        .setIncludePad(false)
-        .build()
-    return (0 until layout.lineCount).map { i ->
-        body.substring(layout.getLineStart(i), layout.getLineEnd(i)).trimEnd()
-    }.filter { it.isNotEmpty() }
+    return wrapTextLines(body, fontSize, contentWpt).filter { it.isNotEmpty() }
 }
 
 // ---- M5：圖文混合排版（文字 + KaTeX 數學圖） ----
@@ -230,9 +255,20 @@ fun resolveAiBlocks(blocks: List<AiBlock>, rendered: Map<String, RenderedMath>, 
     return out
 }
 
+/** 裝置量測（DEFAULT_BOLD）：回傳 `[ascent, descent, leading]`。 */
+private fun androidFontMetrics(fontSize: Float): FloatArray {
+    val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        typeface = android.graphics.Typeface.DEFAULT_BOLD
+        textSize = fontSize
+    }
+    val fm = paint.fontMetrics
+    return floatArrayOf(fm.ascent, fm.descent, fm.leading)
+}
+
 /**
- * M3/M5 流式分頁（圖文混合）：文字用 StaticLayout 折行，數學圖按寬等比，
- * 由上往下放，放不下就開新頁。全部放新頁 → 與原文/墨水零重疊（永不疊字）。
+ * M3/M5 流式分頁（圖文混合）：文字用 [wrapTextLines] 折行（**與畫面同一支**），
+ * 數學圖按寬等比，由上往下放，放不下就開新頁。全部放新頁 → 與原文/墨水零重疊（永不疊字）。
+ * 每個文字段落的 annotation 都帶 `boxWidth`，所以它是一般的文字框（可改寬、可對齊）。
  */
 fun paginateAiBlocks(
     blocks: List<AiBlock>,
@@ -240,25 +276,28 @@ fun paginateAiBlocks(
     modelW: Float,
     modelH: Float,
     fontSize: Float = 16f,
-    marginH: Float = 48f,
+    marginH: Float = AI_MARGIN_H,
     marginTop: Float = 64f,
     marginBottom: Float = 64f,
     blockGap: Float = 14f,
     // 接續前頁：首頁游標起始高度（預設 marginTop = 舊行為，從空白頁頂開始排）
-    startTop: Float = marginTop
+    startTop: Float = marginTop,
+    /**
+     * 字型量測注入點：回傳 `[ascent, descent, leading]`（model pt），預設用裝置字型量。
+     *
+     * 抽出來是為了讓本函數能在 JVM 單測跑（[android.graphics.Paint] 在單測是 stub，
+     * `fontMetrics` 回 null）。除了這三根數字，整個分頁都是純 Kotlin。
+     */
+    fontMetrics: (Float) -> FloatArray = ::androidFontMetrics
 ): List<List<Placed>> {
     // 與 InkCanvas 同字體/字號量測（DEFAULT_BOLD），行高公式與渲染器一致
-    val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-        typeface = android.graphics.Typeface.DEFAULT_BOLD
-        textSize = fontSize
-    }
-    val fm = paint.fontMetrics
-    val lineH = -fm.ascent + fm.descent + fm.leading
+    val m = fontMetrics(fontSize)
+    val lineH = -m[0] + m[1] + m[2]
+    val ascent = m[0]
     if (lineH <= 0f) return emptyList()
     val contentWpt = modelW - marginH * 2
+    // 預設邊距下 contentWpt == aiTextContentWidth(modelW)：分頁寬與 VM 寫的 boxWidth 同源。
     if (contentWpt <= 100f) return emptyList()
-    val contentW = contentWpt.toInt().coerceAtLeast(1)
-    val textPaint = android.text.TextPaint(paint)
 
     val pages = mutableListOf<MutableList<Placed>>()
     var cur = mutableListOf<Placed>()
@@ -285,8 +324,9 @@ fun paginateAiBlocks(
                     PlacedText(
                         text = seg.joinToString("\n") { it.trimEnd() },
                         modelX = marginH,
-                        modelY = cursorTop - fm.ascent,
-                        fontSize = fontSize
+                        modelY = cursorTop - ascent,
+                        fontSize = fontSize,
+                        boxWidth = contentWpt
                     )
                 )
             )
@@ -305,7 +345,7 @@ fun paginateAiBlocks(
     for (b in blocks) {
         when (b) {
             is AiTextBlock -> {
-                val lines = layoutLines(b.chunk.body.trim(), textPaint, contentW)
+                val lines = layoutLines(b.chunk.body.trim(), fontSize, contentWpt)
                 if (lines.isNotEmpty()) emitLines(lines)
             }
             is AiMathBlock -> {

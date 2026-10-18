@@ -111,3 +111,17 @@ internal fun textAlignOffsetModel(lineWidth: Float, boxWidth: Float, alignment: 
     TEXT_ALIGN_RIGHT -> (boxWidth - lineWidth).coerceAtLeast(0f)
     else -> 0f
 }
+
+/**
+ * 「貼合內容」的框寬（model pt）：舊文字（`boxWidth == null`）要轉成文字框時，給這個寬度
+ * **保證不會把現有的行重折**。
+ *
+ * 取的是「現有每一個 `\n` 行，用 [measureTextWidth] 量出來的最大值」。因為 [wrapTextLines]
+ * 折行用的就是同一支量寬，每一行的寬度都 ≤ 這個值 → 再折一次得到一模一樣的行。
+ * 所以回填後畫面與回填前完全相同，只是文字從此可以改寬／對齊。
+ */
+internal fun hugBoxWidthForLines(text: String, fontSize: Float): Float {
+    if (fontSize <= 0f) return TEXT_BOX_MIN_WIDTH
+    val widest = text.split("\n").maxOfOrNull { measureTextWidth(it, fontSize) } ?: 0f
+    return widest.coerceAtLeast(TEXT_BOX_MIN_WIDTH)
+}

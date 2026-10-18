@@ -1052,6 +1052,9 @@ class EditorViewModel(
     /** M3：引入文字寫入 — 直接給 model 座標與目標頁（排版引擎已算好，不經 canvas 換算）。 */
     fun insertImportedText(docUri: String, targetPage: Int, text: String, modelX: Float, modelY: Float, fontSize: Float) {
         if (text.isBlank()) return
+        // 框寬＝AI 排版的內容寬（同一支 aiTextContentWidth）。有了它，AI 文字就是一般文字框：
+        // 折行交給渲染器、可以改寬、可以對齊；存的行再折一次是冪等，所以外觀與匯入時一致。
+        val boxWidth = aiTextContentWidth(modelWidth)
         val ann = TextAnnotationEntity(
             documentUri = docUri,
             pageIndex = targetPage,
@@ -1060,7 +1063,8 @@ class EditorViewModel(
             text = text,
             modelX = modelX,
             modelY = modelY,
-            fontSize = fontSize
+            fontSize = fontSize,
+            boxWidth = boxWidth
         )
         viewModelScope.launch(Dispatchers.IO) {
             repos.texts.insert(ann)
