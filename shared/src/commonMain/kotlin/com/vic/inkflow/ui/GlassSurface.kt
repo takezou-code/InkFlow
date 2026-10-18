@@ -20,10 +20,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.Text
+import androidx.compose.material3.Typography
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
@@ -33,11 +35,13 @@ import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -79,6 +83,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextStyle
 
 /**
  * Liquid-glass material: real-time backdrop blur (haze/RenderEffect) +
@@ -107,14 +113,15 @@ val LocalQuietMode = androidx.compose.runtime.staticCompositionLocalOf { false }
  * 全 App 玻璃「模糊半徑」的唯一來源：真折射（[glassStyle]）與靜模式（[glassPanel]）
  * 共用同一個數字，呼叫端與其他檔案禁再寫第二次 blurRadius。
  *
- * 為什麼幾乎不模糊（1dp）：
+ * 現值 3dp（使用者實機驗收後指定）：
  *  - 模糊是全片平均，半徑一旦大於折射位移量，位移造成的細節差異會被平均掉 → 折射看不見，
  *    玻璃退化成一片奶霧（「模糊會把折射吃掉」，見下方配方說明）。
- *  - 官方 [GlassStyle.clear] 是 1.25dp，我們原本刻意寫 7dp（想壓掉雜訊），實機看起來
- *    像不透明的霧面玻璃而不是「液態玻璃」。
+ *  - 因為這條界線，值只能小：1dp 幾乎不模糊、折射細節最完整，實機看偏「銳」；
+ *    3dp 多一點柔霧感，仍遠低於折射位移量（[glassStyle] 的 56dp），折射不會被吃掉。
+ *  - 刻意寫 7dp 的舊值（想壓掉雜訊）實機像不透明霧面玻璃，已淘汰。
  *  - 要調「玻璃要多糊」只改這一個數字（0dp 最銳、往上越霧）。
  */
-val GlassBlurRadius: Dp = 1.dp
+val GlassBlurRadius: Dp = 3.dp
 
 /**
  * 真折射玻璃配方（唯一）。
@@ -583,6 +590,50 @@ fun GlassDialogCustom(
     )
 }
 
+/**
+ * 彈窗文字色：純黑。
+ *
+ * 灰字（[ColorScheme.onSurfaceVariant]）壓在玻璃上對比不穩：卡片透出白紙時還行，
+ * 透出深色桌面那半邊整行幾乎消失（實機看過）。彈窗一律黑字。
+ */
+val GlassPopupTextColor: Color = Color.Black
+
+/** 彈窗文字白暈的半徑（dp）：白色墊在字下面，黑字在任何底色上都讀得清。 */
+val GlassTextGlowRadius: Dp = 4.dp
+
+private fun TextStyle.withGlassGlow(shadow: Shadow): TextStyle = copy(shadow = shadow)
+
+/**
+ * 全套字階掛白暈。
+ *
+ * 為什麼要動字階而不是只給 LocalTextStyle：呼叫端幾乎都自己寫了
+ * `style = MaterialTheme.typography.bodySmall`，Text 有 style 就不繼承 LocalTextStyle，
+ * 逐個呼叫端補 shadow 一定漏（彈窗散在 app 與 shared 十幾處）。
+ */
+private fun Typography.withGlassGlow(shadow: Shadow): Typography = Typography(
+    displayLarge = displayLarge.withGlassGlow(shadow),
+    displayMedium = displayMedium.withGlassGlow(shadow),
+    displaySmall = displaySmall.withGlassGlow(shadow),
+    headlineLarge = headlineLarge.withGlassGlow(shadow),
+    headlineMedium = headlineMedium.withGlassGlow(shadow),
+    headlineSmall = headlineSmall.withGlassGlow(shadow),
+    titleLarge = titleLarge.withGlassGlow(shadow),
+    titleMedium = titleMedium.withGlassGlow(shadow),
+    titleSmall = titleSmall.withGlassGlow(shadow),
+    bodyLarge = bodyLarge.withGlassGlow(shadow),
+    bodyMedium = bodyMedium.withGlassGlow(shadow),
+    bodySmall = bodySmall.withGlassGlow(shadow),
+    labelLarge = labelLarge.withGlassGlow(shadow),
+    labelMedium = labelMedium.withGlassGlow(shadow),
+    labelSmall = labelSmall.withGlassGlow(shadow)
+)
+
+/** 彈窗色票：只把兩個「字色」色票轉黑，主色／分隔線／錯誤色一律不動。 */
+private fun ColorScheme.withBlackPopupText(): ColorScheme = copy(
+    onSurface = GlassPopupTextColor,
+    onSurfaceVariant = GlassPopupTextColor
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun GlassDialogFrame(
@@ -639,24 +690,38 @@ private fun GlassDialogFrame(
                     },
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                // M3 AlertDialog 同款字階：標題 headlineSmall/onSurface、內文 bodyMedium/onSurfaceVariant；
-                // 呼叫端有寫 style/color 的照樣覆蓋，只影響沒寫的 Text。
-                CompositionLocalProvider(
-                    LocalContentColor provides MaterialTheme.colorScheme.onSurface,
-                    LocalTextStyle provides MaterialTheme.typography.headlineSmall
-                ) { title() }
-                if (text != null) {
-                    CompositionLocalProvider(
-                        LocalContentColor provides MaterialTheme.colorScheme.onSurfaceVariant,
-                        LocalTextStyle provides MaterialTheme.typography.bodyMedium
-                    ) { text() }
+                // 彈窗文字統一配方：黑字＋白暈（唯一入口 [GlassPopupTextColor]／[GlassTextGlowRadius]）。
+                // 這裡覆寫整個子樹的色票與字階，所以連「自己寫了 style/color 的 Text」也一起轉黑發光；
+                // 標題／內文／按鈕全在這一層裡（按鈕的取消色 onSurfaceVariant 也一併轉黑）。
+                val glowBlur = with(LocalDensity.current) { GlassTextGlowRadius.toPx() }
+                val baseScheme = MaterialTheme.colorScheme
+                val baseTypography = MaterialTheme.typography
+                val popupScheme = remember(baseScheme) { baseScheme.withBlackPopupText() }
+                val popupTypography = remember(baseTypography, glowBlur) {
+                    baseTypography.withGlassGlow(Shadow(Color.White, Offset.Zero, glowBlur))
                 }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End,
-                    verticalAlignment = Alignment.CenterVertically,
-                    content = buttons
-                )
+                MaterialTheme(
+                    colorScheme = popupScheme,
+                    typography = popupTypography
+                ) {
+                    // M3 AlertDialog 同款字階：標題 headlineSmall、內文 bodyMedium，顏色一律黑。
+                    CompositionLocalProvider(
+                        LocalContentColor provides GlassPopupTextColor,
+                        LocalTextStyle provides popupTypography.headlineSmall
+                    ) { title() }
+                    if (text != null) {
+                        CompositionLocalProvider(
+                            LocalContentColor provides GlassPopupTextColor,
+                            LocalTextStyle provides popupTypography.bodyMedium
+                        ) { text() }
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically,
+                        content = buttons
+                    )
+                }
             }
         }
     }
