@@ -1498,7 +1498,14 @@ fun InkCanvas(
                                 } else {
                                     listOf(startOffset, end)
                                 }
-                                viewModel.deleteStrokesIntersecting(points, page = pageIndexRef.value)
+                                // 形狀工具的快滑擦除是「手勢結束才刪一次」＝本來就一格 undo。
+                                // markEraseHit 必須明示 false：預設 true 會把切筆旗標留給下一次
+                                // 真正的橡皮擦手勢，讓它沒擦到東西也自動切回畫筆。
+                                viewModel.deleteStrokesIntersecting(
+                                    points,
+                                    page = pageIndexRef.value,
+                                    markEraseHit = false
+                                )
                             } else {
                                 viewModel.saveShape(
                                     startOffset, end, selectedColor, strokeWidth,
@@ -1549,6 +1556,10 @@ fun InkCanvas(
                 val supportsQuickSwipeEraser = quickSwipeEraserEnabled &&
                     (activeTool == Tool.PEN || activeTool == Tool.HIGHLIGHTER)
                 var quickSwipeTriggered = false
+                // R1：本次手勢是否已開「擦除累積器」。橡皮擦在落筆時就開（見下方 begin）；
+                // 快滑擦除是手勢中途才判出來的，在觸發那一刻才開。
+                // 兩條路徑共用這一個旗標 → 不可能一條走累積、另一條又退回「每批一格」。
+                var eraseGestureBegan = activeTool == Tool.ERASER
                 var lastEraserDispatchTime = down.uptimeMillis
                 // F1：共享預覽去重（點數不變不重發，避免每幀垃圾）。
                 var lastPublishedSize = -1
@@ -1618,6 +1629,10 @@ fun InkCanvas(
                             activeEnvelopePath.reset()
                             currentPathPoints.clear()
                             activePathVersion++
+                            // R1：擦除累積器必須結算——雙指是手勢中途才出現，前面已經
+                            // 刪掉的東西（墓碑已提交）不能被靜默丟掉，否則那些筆再也回不來。
+                            if (activeTool == Tool.ERASER) viewModel.clearEraseHitPending()
+                            if (eraseGestureBegan) viewModel.discardEraseGesture()
                             viewModel.setPageLock(false)
                             return@awaitEachGesture
                         }
@@ -1744,6 +1759,14 @@ fun InkCanvas(
                                 activeEnvelopePath.reset()
                                 // reset 後補 moveTo，否則後續筆段以原點起筆（同左上角怪線）。
                                 activePath.moveTo(drag.position.x, drag.position.y)
+                                // R1：快滑擦除走跟橡皮擦同一條管線。此刻才開累積器，
+                                // 整段快滑（live 批次＋final）才會合併成「一格」undo。
+                                // 舊碼沒開 → 每個 24ms 批次各推一格 RemoveStrokes，
+                                // 一次快滑＝十幾格，undo/redo 就壞了。
+                                if (!eraseGestureBegan) {
+                                    viewModel.beginEraseGesture()
+                                    eraseGestureBegan = true
+                                }
                             }
                         }
                         
@@ -1803,8 +1826,8 @@ fun InkCanvas(
                                     // 手勢中途只記命中不切筆（切筆留到手勢結尾，
                                     // 避免 pointerInput key 變化中途重啟打斷手勢）。
                                     // quick-swipe 本來就是筆：不記旗不切筆。
-                                    // 跨頁擦除：擦過紙界時鄰頁一起擦（各頁分段，undo 按頁記）。
-                                    // R1：命中進手勢累積器，結尾合併一格。
+                                    // 跨頁擦除：擦過紙界時鄰頁一起擦（各頁分段，累積器按頁收）。
+                                    // R1：命中進手勢累積器（橡皮擦與快滑同一條），結尾合併一格。
                                     viewModel.deleteStrokesIntersectingAcrossPages(
                                         eraserPointsCanvas = points,
                                         srcPage = pageIndexRef.value,
@@ -1812,7 +1835,7 @@ fun InkCanvas(
                                         gapPx = pageGapPxRef.value,
                                         pageCount = pageCountRef.value,
                                         markEraseHit = activeTool == Tool.ERASER,
-                                        accumulateToGesture = activeTool == Tool.ERASER
+                                        accumulateToGesture = eraseGestureBegan
                                     )
                                     lastEraserDispatchTime = drag.uptimeMillis
                                 }
@@ -1842,8 +1865,9 @@ fun InkCanvas(
                     bridgingIds = null
                     viewModel.publishInFlight(null)
                     if (activeTool == Tool.ERASER) viewModel.clearEraseHitPending()
-                    // R1：累積作廢，不留復原格
-                    if (activeTool == Tool.ERASER) viewModel.discardEraseGesture()
+                    // R1：手勢作廢＝結算累積器（已提交的墓碑仍要能 undo，見 discardEraseGesture），
+                    // 快滑擦除同樣走這裡（它的門在觸發那一刻開）。
+                    if (eraseGestureBegan) viewModel.discardEraseGesture()
                     viewModel.setPageLock(false)
                     return@awaitEachGesture
                 }
@@ -1857,8 +1881,9 @@ fun InkCanvas(
                     bridgingIds = null
                     viewModel.publishInFlight(null)
                     if (activeTool == Tool.ERASER) viewModel.clearEraseHitPending()
-                    // R1：累積作廢，不留復原格
-                    if (activeTool == Tool.ERASER) viewModel.discardEraseGesture()
+                    // R1：手勢作廢＝結算累積器（已提交的墓碑仍要能 undo，見 discardEraseGesture），
+                    // 快滑擦除同樣走這裡（它的門在觸發那一刻開）。
+                    if (eraseGestureBegan) viewModel.discardEraseGesture()
                     viewModel.setPageLock(false)
                     return@awaitEachGesture
                 }
@@ -1886,7 +1911,9 @@ fun InkCanvas(
                                 canvasH = canvasPixelSizeState.value.height,
                                 gapPx = pageGapPxRef.value,
                                 pageCount = pageCountRef.value,
-                                markEraseHit = false
+                                markEraseHit = false,
+                                // R1：快滑擦除的 final 也進累積器（跟 live 批次合併成一格）。
+                                accumulateToGesture = eraseGestureBegan
                             )
                         } else {
                             // A single-point tap produces no drag points; duplicate it so
@@ -2000,8 +2027,9 @@ fun InkCanvas(
                     currentPathPoints.clear()
                     viewModel.publishInFlight(null)
                 }
-                // R1：橡皮擦手勢關門（合併推一格；畫筆是空操作）
-                if (activeTool == Tool.ERASER) viewModel.endEraseGesture()
+                // R1：擦除手勢關門（合併推一格）。橡皮擦與「已觸發的快滑擦除」都開過門，
+                // 所以這裡看旗標而不是看工具——看工具的話快滑那條永遠關不了門。
+                if (eraseGestureBegan) viewModel.endEraseGesture()
                 // 兜底：自由筆各提交路徑在此統一清鎖（PEN/HL 已在分支內清過，重複無害）
                 viewModel.setPageLock(false)
             }

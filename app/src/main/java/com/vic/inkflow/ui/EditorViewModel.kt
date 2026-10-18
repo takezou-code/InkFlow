@@ -788,7 +788,9 @@ class EditorViewModel(
         page: Int? = null,
         /**
          * R1：true = 命中只進手勢累積器、不推復原格（結尾由 endEraseGesture 一次記）。
-         * 橡皮擦 live/final 傳 true；quick-swipe（自成一格）傳 false。
+         * 「一個擦除手勢一格 undo」的唯一入口：橡皮擦與快滑擦除都傳 true
+         *（快滑的門在手勢中途觸發那一刻才開，見 ui/InkCanvas.kt 的 eraseGestureBegan）。
+         * false 只留給「手勢結束才刪一次、本來就一格」的形狀工具快滑。
          */
         accumulateToGesture: Boolean = false
     ) {        val cW = canvasW
@@ -929,7 +931,7 @@ class EditorViewModel(
         pageCount: Int,
         markEraseHit: Boolean = true,
         switchToPenAfterEraseHit: Boolean = false,
-        /** R1：橡皮擦 live/final 傳 true（結尾合併一格）；quick-swipe 傳 false 自成一格。 */
+        /** R1：見 [deleteStrokesIntersecting]——橡皮擦與快滑擦除都傳 true（結尾合併一格）。 */
         accumulateToGesture: Boolean = false,
     ) {
         val segs = com.vic.inkflow.util.DocLayout.splitByPage(
