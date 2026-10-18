@@ -46,7 +46,6 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.draganddrop.dragAndDropSource
 import androidx.compose.foundation.draganddrop.dragAndDropTarget
 import androidx.compose.foundation.gestures.animateScrollBy
@@ -521,21 +520,32 @@ internal fun Sidebar(
                             repos.texts.getForPage(documentUri, index)
                         }
                         val texts by textsFlow.collectAsState(initial = emptyList())
+                        // 按壓節點＝看得到的那塊東西本身，形狀也跟它一致
+                        // （不再是外圍那個 48×64 的矩形：M3 漣漪是方的，按在釘死畫面中央
+                        // 那顆玻璃圓上會冒出一個方框，跟圓形搭不上邊——實機回報）。
+                        val selectThisPage: () -> Unit = {
+                            coroutineScope.launch { listState.animateScrollToCenter(index) }
+                            onPageSelected(index)
+                        }
+                        val requestDelete: () -> Unit = {
+                            if (pageCount > 1 && !isPageOperationInProgress) deleteConfirmIndices = listOf(index)
+                        }
                         Box(
-                            modifier = Modifier
-                                .padding(vertical = 8.dp)
-                                .combinedClickable(
-                                    onClick = { coroutineScope.launch { listState.animateScrollToCenter(index) }; onPageSelected(index) },
-                                    onLongClick = { if (pageCount > 1 && !isPageOperationInProgress) deleteConfirmIndices = listOf(index) }
-                                ),
+                            modifier = Modifier.padding(vertical = 8.dp),
                             contentAlignment = Alignment.Center
                         ) {
                             if (sidebarStage == SidebarStage.PANEL) {
                                 // 外層玻璃容器（跟全展開網格卡片同語言）：faux 打底＋6dp 內襯，
                                 // 縮圖白紙嵌在裡面；選中框由 PageThumbnail 內部上（共用珍珠外框）。
+                                // 按壓框＝卡片形狀（ShapeLg），走共用玻璃按壓（掃光＋無漣漪）。
                                 Box(
                                     modifier = Modifier
                                         .fauxGlassPanel(isDarkTheme, ShapeLg)
+                                        .glassClickable(
+                                            onClick = selectThisPage,
+                                            onLongClick = requestDelete,
+                                            shape = ShapeLg
+                                        )
                                         .padding(6.dp)
                                 ) {
                                     PageThumbnail(
@@ -553,12 +563,22 @@ internal fun Sidebar(
                                     )
                                 }
                             } else {
-                                PageIcon(
-                                    pageIndex = index,
-                                    isSelected = index == currentPageIndex,
-                                    hazeState = hazeState,
-                                    isDarkTheme = isDarkTheme
-                                )
+                                // 頁碼丸：按壓框＝圓，尺寸＝中央那顆玻璃丸（48dp），
+                                // 按下去是圓形掃光而不是方框。
+                                Box(
+                                    modifier = Modifier.glassClickable(
+                                        onClick = selectThisPage,
+                                        onLongClick = requestDelete,
+                                        shape = CircleShape
+                                    )
+                                ) {
+                                    PageIcon(
+                                        pageIndex = index,
+                                        isSelected = index == currentPageIndex,
+                                        hazeState = hazeState,
+                                        isDarkTheme = isDarkTheme
+                                    )
+                                }
                             }
                         }
                     }

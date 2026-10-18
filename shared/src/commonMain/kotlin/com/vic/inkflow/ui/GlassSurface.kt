@@ -4,6 +4,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -103,6 +104,19 @@ fun glassContentColor(isDark: Boolean): Color =
 val LocalQuietMode = androidx.compose.runtime.staticCompositionLocalOf { false }
 
 /**
+ * 全 App 玻璃「模糊半徑」的唯一來源：真折射（[glassStyle]）與靜模式（[glassPanel]）
+ * 共用同一個數字，呼叫端與其他檔案禁再寫第二次 blurRadius。
+ *
+ * 為什麼幾乎不模糊（1dp）：
+ *  - 模糊是全片平均，半徑一旦大於折射位移量，位移造成的細節差異會被平均掉 → 折射看不見，
+ *    玻璃退化成一片奶霧（「模糊會把折射吃掉」，見下方配方說明）。
+ *  - 官方 [GlassStyle.clear] 是 1.25dp，我們原本刻意寫 7dp（想壓掉雜訊），實機看起來
+ *    像不透明的霧面玻璃而不是「液態玻璃」。
+ *  - 要調「玻璃要多糊」只改這一個數字（0dp 最銳、往上越霧）。
+ */
+val GlassBlurRadius: Dp = 1.dp
+
+/**
  * 真折射玻璃配方（唯一）。
  *
  * 原則：**以 [GlassStyle.clear] 為基準，只做刻意的覆寫**，不要逐項自創數值。
@@ -112,7 +126,7 @@ val LocalQuietMode = androidx.compose.runtime.staticCompositionLocalOf { false }
  * 於是黑玻璃與折射都看不見（症狀：黑玻璃消失、只剩一片糊）。
  *
  * 刻意覆寫只有四項（其餘全部沿用 clear／clearDark 官方值）：
- *  1. blurRadius 7dp ＋ 折射加強（見下方「模糊 vs 折射的取捨」）
+ *  1. blurRadius 收到 [GlassBlurRadius]（幾乎不模糊）＋ 折射加強（見下方「模糊 vs 折射的取捨」）
  *  2. chromaticAberrationStrength 0.3f（clear 只有 0.04f，等於沒色散）
  *  3. tint 用 App 的 veil 色票（唯一色票來源）
  *  4. shape 跟呼叫端走
@@ -120,6 +134,7 @@ val LocalQuietMode = androidx.compose.runtime.staticCompositionLocalOf { false }
  * 【模糊 vs 折射的取捨】模糊是全片平均，折射是位移採樣。當 blurRadius > 位移量，
  * 位移差異被平均掉 → 折射看不見。所以要「折射明顯」就必須模糊夠淺，
  * 通透感改由 refractionStrength／displacement／detailIntensity 拿。
+ * 現值已是「幾乎不模糊」（見 [GlassBlurRadius]），折射不會被吃掉。
  */
 @OptIn(ExperimentalHazeApi::class)
 fun glassStyle(isDark: Boolean, shape: Shape = ShapeLg): GlassStyle =
@@ -127,10 +142,10 @@ fun glassStyle(isDark: Boolean, shape: Shape = ShapeLg): GlassStyle =
         backgroundColor(Color.Transparent)
         tint(if (isDark) com.vic.inkflow.ui.theme.GlassVeilDark else com.vic.inkflow.ui.theme.GlassVeilLight)
         optics(
-            // 模糊保持「淺」（官方 clear 是 1.25dp）。原因：模糊半徑一旦大於折射位移量，
+            // 模糊只留一點點（唯一來源 [GlassBlurRadius]）：模糊半徑大於折射位移量時，
             // 位移產生的細節差異會被平均掉，折射就看不見了（模糊會把折射「吃掉」）。
-            // 所以模糊收淺，改用「折射本身加強」來拿通透感。
-            blurRadius = 7.dp,
+            // 所以模糊收到底，改用「折射本身加強」來拿通透感。
+            blurRadius = GlassBlurRadius,
             // 折射加強補償模糊減少：位移與細節拉高，邊緣彎曲更明顯。
             refractionStrength = 1f,
             refractionDisplacement = 56.dp,
@@ -161,7 +176,8 @@ fun Modifier.glassPanel(
 ): Modifier {
     val quiet = LocalQuietMode.current
     val base = this.clip(shape)
-    // 靜模式：同樣的 veil 與 rim，只把折射/色散拿掉，模糊留著
+    // 靜模式：同樣的 veil 與 rim，只把折射/色散拿掉，模糊沿用同一個值（不再另寫 24dp，
+    // 否則靜模式會比正常模式糊一大截，切換時玻璃像換了一片）。
     if (quiet) {
         return base
             .hazeBlur(
@@ -169,7 +185,7 @@ fun Modifier.glassPanel(
                 style = HazeBlurStyle {
                     backgroundColor(Color.Transparent)
                     colorEffects(listOf(HazeColorEffect.tint(if (isDark) GlassVeilDark else GlassVeilLight)))
-                    blurRadius(24.dp)
+                    blurRadius(GlassBlurRadius)
                     noiseFactor(0.02f)
                 }
             )
@@ -338,22 +354,37 @@ private fun Modifier.sweepLayer(sweep: Float, shape: Shape): Modifier = this.the
 /**
  * 按壓統一入口：掃光＋縮放＋觸感＋無漣漪點擊一次包好。
  * 以後新增可壓玻璃一律走這裡，不各自拼 source/clickable。
+ *
+ * [onLongClick] 給了就改走 M3 `combinedClickable`，但**按壓源與形狀照舊共用**。
+ * 為什麼需要這個參數：M3 `combinedClickable` 的預設漣漪鋪滿「節點矩形」，
+ * 圓形玻璃按下去會在圓上冒出一個方框（與圓形搭不上邊；側欄頁碼列踩過）。
+ * 走這裡就保證「按壓框＝按鈕形狀」，也才不用為了長按退回 M3 原味。
  */
 @Composable
 fun Modifier.glassClickable(
     onClick: () -> Unit,
     shape: Shape = ShapeLg,
     enabled: Boolean = true,
+    onLongClick: (() -> Unit)? = null,
 ): Modifier {
     val source = remember { MutableInteractionSource() }
-    return this
-        .pressableGlass(source, shape)
-        .clickable(
+    val pressable = this.pressableGlass(source, shape)
+    return if (onLongClick == null) {
+        pressable.clickable(
             interactionSource = source,
             indication = null,
             enabled = enabled,
             onClick = onClick
         )
+    } else {
+        pressable.combinedClickable(
+            interactionSource = source,
+            indication = null,
+            enabled = enabled,
+            onClick = onClick,
+            onLongClick = onLongClick
+        )
+    }
 }
 
 /**
