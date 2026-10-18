@@ -1,26 +1,28 @@
 package com.vic.inkflow.ui
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -38,6 +40,22 @@ import com.vic.inkflow.ui.theme.BrandIndigo
  * 座標換算**刻意全部留在呼叫端**（model 空間 → 像素空間的比例是那裡的語意，
  * 依賴 viewModel.modelWidth/modelHeight）。這個元件對 model 空間完全無知，
  * 也就更不可能在重構中把換算搞錯——這正是原本把它留在 InkCanvas 的隱含理由。
+ *
+ * ## 所見即所得（打字時看到的＝送出後的樣子）
+ *
+ * 這塊以前長成一張**白底靛框卡片**，跟成品的裸字差很多（實機回報「大小也不一樣」）。
+ * 三個原因，現已逐一對齊：
+ *  - 白底是為了蓋住底下那段已提交的舊文字——因為畫布當時並沒有把被編輯的標註藏起來。
+ *    現在 InkCanvas 在編輯時跳過那一段，所以不需要再遮，也就拿掉白底與內距。
+ *  - 內距（6dp）與邊框讓文字內縮，位置與成品差一截 → 改成**不佔版面**的 `drawBehind` 淡框。
+ *  - 行高與首位基線以前由 Compose 預設行高決定 → 改成與畫布同一顆 `Paint`（DEFAULT_BOLD）
+ *    的 `fontMetrics`：行高 = `-ascent + descent + leading`，首位基線落在 `anchorPx.y`。
+ *
+ * `includeFontPadding` 不需要自己關：Compose BOM ≥ 2024.01.01 起預設已是 `false`，
+ * 與 `Paint.fontMetrics` 同口徑；`PlatformTextStyle` 已棄用，不要再加回來。
+ *
+ * 殘留差異：Compose 文字排版與 `Paint.drawText` 不可能完全同一（半形字寬的估算、
+ * 少數斷行規則）。CJK 每字 1em、兩邊同寬，斷行點一致；拉丁文偶爾會差一個字。
  */
 @Composable
 internal fun InlineTextEditor(
@@ -70,15 +88,25 @@ internal fun InlineTextEditor(
         newAnchorPx != null -> newAnchorPx
         else -> Offset.Zero
     }
-    val fontPx = editing?.fontSize?.times(scaleY) ?: defaultFontPx
-    val boxX = anchorPx.x.coerceIn(0f, (canvasWidthPx - 160f).coerceAtLeast(0f))
-    // anchorPx 是第一行基線；輸入框頂端往上讓一行
-    val boxY = (anchorPx.y - fontPx - 8f).coerceAtLeast(0f)
-    val maxBoxW = with(density) { (canvasWidthPx - boxX - 8f).coerceAtLeast(120f).toDp() }
-    // 文字框：固定寬（與 commit 後的框寬一致，所見即所得）；舊資料才用貼合內容的寬。
-    val fixedBoxW = boxWidthPx?.let {
-        with(density) { it.coerceAtMost((canvasWidthPx - boxX - 8f).coerceAtLeast(60f)).toDp() }
+    val fontPx = (editing?.fontSize?.times(scaleY) ?: defaultFontPx).coerceAtLeast(1f)
+    // 與畫布同一顆字體度量：行高、首位基線都由它算（見類別註解）。
+    val (lineHeightPx, ascentPx) = remember(fontPx) {
+        val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            textSize = fontPx
+        }
+        val fm = p.fontMetrics
+        (-fm.ascent + fm.descent + fm.leading) to fm.ascent
     }
+    // 文字框：內容寬＝成品的折行寬。**不再**扣內距與邊框（以前扣了，斷行點就與成品不同）。
+    val fixedBoxW = boxWidthPx?.let { w -> with(density) { w.coerceAtLeast(1f).toDp() } }
+    // 有框時左緣就是框左緣（框本來就在紙內）；舊資料（貼合內容）才需要夾住不超出右緣。
+    val boxX = if (fixedBoxW != null) anchorPx.x.coerceAtLeast(0f)
+    else anchorPx.x.coerceIn(0f, (canvasWidthPx - 160f).coerceAtLeast(0f))
+    val maxBoxW = with(density) { (canvasWidthPx - boxX - 8f).coerceAtLeast(120f).toDp() }
+    // anchorPx 是第一行基線：頂端 = 基線 −(基線距頂端) = 基線 + ascent（ascent 為負）。
+    // 舊算法 `-fontPx - 8f` 是「扣掉一行再多退 8」，整塊因此偏低（實機回報位置不同）。
+    val boxY = (anchorPx.y + ascentPx).coerceAtLeast(0f)
     val textAlign = when (alignment) {
         1 -> TextAlign.Center
         2 -> TextAlign.End
@@ -94,20 +122,34 @@ internal fun InlineTextEditor(
                 if (fixedBoxW != null) Modifier.width(fixedBoxW)
                 else Modifier.widthIn(min = 140.dp, max = maxBoxW)
             )
-            .background(Color.White, RoundedCornerShape(6.dp))
-            .border(1.5.dp, BrandIndigo, RoundedCornerShape(6.dp))
-            .padding(6.dp)
+            // 「正在輸入」提示：不佔版面的淡框。沒有內距、沒有白底，
+            // 所以文字位置與成品一致（白底已由「畫布不畫被編輯的標註」取代）。
+            .drawBehind {
+                drawRoundRect(
+                    color = BrandIndigo.copy(alpha = 0.40f),
+                    cornerRadius = CornerRadius(with(density) { 6.dp.toPx() }),
+                    style = Stroke(width = with(density) { 1.5.dp.toPx() })
+                )
+            }
             .focusRequester(focusRequester),
         textStyle = TextStyle(
             fontSize = with(density) { fontPx.toSp() },
+            fontFamily = FontFamily.SansSerif,
             fontWeight = FontWeight.Bold,
+            lineHeight = with(density) { lineHeightPx.toSp() },
+            // 第一行的字貼齊行盒頂端，首位基線才會正好落在 anchorPx.y。
+            lineHeightStyle = LineHeightStyle(
+                alignment = LineHeightStyle.Alignment.Top,
+                trim = LineHeightStyle.Trim.None
+            ),
             color = Color(editing?.colorArgb ?: cursorColorArgb),
             textAlign = textAlign
         ),
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
         keyboardActions = KeyboardActions(onDone = { onDone() }),
         singleLine = false,
-        maxLines = 8,
+        // 不設上限：以前 maxLines=8，打超過 8 行就看不到自己打的字，送出後才全部冒出來。
+        maxLines = Int.MAX_VALUE,
         cursorBrush = SolidColor(BrandIndigo)
     )
 }

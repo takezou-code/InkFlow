@@ -2483,6 +2483,9 @@ fun InkCanvas(
                 // Text annotations — apply move/resize delta for the selected annotation
                 drawIntoCanvas { composeCanvas ->
                     textAnnotations.forEach { ann ->
+                        // 打字中的那一段不畫，位置由輸入框獨佔（否則新舊兩份文字疊在一起）。
+                        // 以前是靠輸入框的白底卡片蓋住它——所以輸入框才長得跟成品完全不同。
+                        if (ann.id == inlineTextEditId) return@forEach
                         val isSelected = ann.id == selectedTextAnnotationId
                         // 同圖片：落定後 DB 已含新值，不再疊預覽（否則閃一下）。見 PendingTextSettle。
                         val tSettle = pendingTextSettleRef.value
@@ -2530,10 +2533,13 @@ fun InkCanvas(
                     }
                 }
 
-                // Selection handles for the currently selected text annotation
+                // Selection handles for the currently selected text annotation.
+                // 打字中不畫選取框與把手：框是照「舊內容」的行數算的，而舊內容已經被藏起來，
+                // 留著只會浮出一個與眼前文字對不上的框；輸入時的身分提示由輸入框自己的淡框負責。
                 val selTextId  = selectedTextAnnotationId
-                val selTextAnn = if (selTextId != null && activeTool == Tool.TEXT)
-                    textAnnotations.firstOrNull { it.id == selTextId } else null
+                val selTextAnn =
+                    if (selTextId != null && selTextId != inlineTextEditId && activeTool == Tool.TEXT)
+                        textAnnotations.firstOrNull { it.id == selTextId } else null
                 if (selTextAnn != null) {
                     // 選取框跟著落定（否則框先跳、內容後跳 → 框脫節＋二次閃）。
                     val tS = pendingTextSettleRef.value
