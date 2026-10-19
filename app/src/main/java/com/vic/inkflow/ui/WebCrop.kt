@@ -40,7 +40,12 @@ object WebCrop {
         /** 是否有任何非目標元素命中（含版面重疊，不一定遮得住）。 */
         val rawCovered: Boolean = false,
         /** 遮擋者描述（診斷用，例如 `DIV.input-area@fixed[0/470/420x228]`）。 */
-        val occluder: String? = null
+        val occluder: String? = null,
+        /** 目標是否完整落在「視窗 ∩ 祖先捲動/裁切容器」內（JS 端算好）。 */
+        val fit: Boolean = true,
+        /** 祖先裁切容器的可見帶（CSS px，診斷用）。 */
+        val clipTop: Float = 0f,
+        val clipBottom: Float = 0f
     )
 
     /**
@@ -62,13 +67,21 @@ object WebCrop {
                 if (!el) return 'NONE';
                 if (el.isConnected === false) return 'DETACHED';
                 var r = el.getBoundingClientRect();
+                function up(n) {
+                    var q = n.parentElement;
+                    if (!q && n.getRootNode) {
+                        var rt = n.getRootNode();
+                        if (rt && rt.host) q = rt.host;
+                    }
+                    return q;
+                }
                 function floatRoot(n) {
                     var p = n, d = 0;
-                    while (p && p.nodeType === 1 && d < 15) {
+                    while (p && p.nodeType === 1 && d < 20) {
                         if (p === el || p.contains(el)) return null;
                         var s = getComputedStyle(p);
                         if (s.position === 'fixed' || s.position === 'sticky') return p;
-                        p = p.parentElement; d++;
+                        p = up(p); d++;
                     }
                     return null;
                 }
@@ -101,9 +114,28 @@ object WebCrop {
                     var root = floatRoot(t);
                     if (root) { cov = 1; if (!who) who = describe(root); }
                 }
+                // 真正的可見區＝視窗 ∩ 所有祖先「捲動/裁切」容器的框。
+                // Gemini 的對話區是 overflow 容器，輸入列是同一個 flex 直欄的普通子元素：
+                // 塊的座標在 innerHeight 內，卻落在對話區被裁掉的下方 → 拍到輸入列（實機踩過）。
+                var ct = 0, cb = window.innerHeight;
+                var p = el.parentElement;
+                while (p && p.nodeType === 1) {
+                    var st = getComputedStyle(p);
+                    if (/(hidden|auto|scroll|clip)/.test(st.overflowY) ||
+                        /(hidden|auto|scroll|clip)/.test(st.overflowX)) {
+                        var q = p.getBoundingClientRect();
+                        if (q.height > 0) {
+                            ct = Math.max(ct, q.top);
+                            cb = Math.min(cb, q.bottom);
+                        }
+                    }
+                    p = p.parentElement;
+                }
+                var fit = (r.top >= ct - 1 && r.bottom <= cb + 1 &&
+                    r.left >= -1 && r.right <= window.innerWidth + 1) ? 1 : 0;
                 return 'OK:' + [r.x, r.y, r.width, r.height,
-                    window.innerWidth, window.innerHeight, cov, window.scrollY, raw].join(',') +
-                    '|' + who;
+                    window.innerWidth, window.innerHeight, cov, window.scrollY, raw, fit,
+                    Math.round(ct), Math.round(cb)].join(',') + '|' + who;
             } catch (e) { return 'ERR'; }
         })();
     """.trimIndent()
@@ -124,13 +156,21 @@ object WebCrop {
                 var el = els[$idx];
                 if (!el) return 'NONE';
                 var r = el.getBoundingClientRect();
+                function up(n) {
+                    var q = n.parentElement;
+                    if (!q && n.getRootNode) {
+                        var rt = n.getRootNode();
+                        if (rt && rt.host) q = rt.host;
+                    }
+                    return q;
+                }
                 function floatRoot(n) {
                     var p = n, d = 0;
-                    while (p && p.nodeType === 1 && d < 15) {
+                    while (p && p.nodeType === 1 && d < 20) {
                         if (p === el || p.contains(el)) return null;
                         var s = getComputedStyle(p);
                         if (s.position === 'fixed' || s.position === 'sticky') return p;
-                        p = p.parentElement; d++;
+                        p = up(p); d++;
                     }
                     return null;
                 }
@@ -231,8 +271,8 @@ object WebCrop {
     /**
      * 解析 [prepareJs]／[probeJs] 的回傳字串（evaluateJavascript 會把字串值再包一層引號）。
      *
-     * 欄位：`OK:x,y,w,h,vw,vh[,cov[,sy[,raw]]]|遮擋者描述`。
-     * 舊格式（6 欄、無 `|`）仍吃，cov/raw 預設 false。純函數，可單測。
+     * 欄位：`OK:x,y,w,h,vw,vh[,cov[,sy[,raw[,fit[,ct[,cb]]]]]]|遮擋者描述`。
+     * 舊格式（6 欄、無 `|`）仍吃，cov/raw 預設 false、fit 預設 true。純函數，可單測。
      */
     fun parsePrepare(raw: String?): PrepareRect? {
         val s0 = raw?.trim() ?: return null
@@ -245,7 +285,7 @@ object WebCrop {
         val occluder = if (cut >= 0) body.substring(cut + 1).trim().takeIf { it.isNotEmpty() } else null
         val nums = numsPart.split(',')
         if (nums.size < 6) return null
-        val f = nums.take(9).map { it.trim().toFloatOrNull() ?: return null }
+        val f = nums.take(13).map { it.trim().toFloatOrNull() ?: return null }
         if (f[2] <= 0f || f[3] <= 0f || f[4] <= 0f || f[5] <= 0f) return null
         return PrepareRect(
             box = CssBox(f[0], f[1], f[2], f[3]),
@@ -254,7 +294,10 @@ object WebCrop {
             covered = f.getOrElse(6) { 0f } >= 0.5f,
             scrollY = f.getOrElse(7) { 0f },
             rawCovered = f.getOrElse(8) { 0f } >= 0.5f,
-            occluder = occluder
+            occluder = occluder,
+            fit = f.getOrElse(9) { 1f } >= 0.5f,
+            clipTop = f.getOrElse(10) { 0f },
+            clipBottom = f.getOrElse(11) { 0f }
         )
     }
 
@@ -262,6 +305,15 @@ object WebCrop {
     fun insideViewport(box: CssBox, viewW: Float, viewH: Float, tol: Float = 1f): Boolean =
         box.x >= -tol && box.y >= -tol &&
             box.x + box.w <= viewW + tol && box.y + box.h <= viewH + tol
+
+    /**
+     * 目標是否**真的看得見**：JS 端的 fit（視窗 ∩ 祖先捲動/裁切容器）＋ Kotlin 端視窗邊界雙重確認。
+     *
+     * 只看 innerHeight 不夠（實機踩過）：Gemini 的對話區是 overflow 容器，輸入列是同一個
+     * flex 直欄的普通子元素，塊的座標在 innerHeight 內、卻落在被裁掉的下方 → 拍到輸入列。
+     */
+    fun fits(pr: PrepareRect): Boolean =
+        pr.fit && insideViewport(pr.box, pr.viewW, pr.viewH)
 
     /** Window 像素裁剪矩（純資料，可單測）。 */
     data class CropPx(val l: Int, val t: Int, val r: Int, val b: Int)
@@ -422,6 +474,7 @@ object WebCrop {
             }
             if (cur != null && prev != null &&
                 cur.scrollY == prev.scrollY &&
+                cur.fit == prev.fit &&
                 cur.box.y == prev.box.y &&
                 cur.box.h == prev.box.h &&
                 cur.box.w == prev.box.w
@@ -681,9 +734,11 @@ object WebCrop {
                         "loc=(${loc[0]},${loc[1]}) view=${webView.width}x${webView.height} " +
                         "vis=${"%.1f".format(visW)}x${"%.1f".format(visH)} " +
                         "inner=${"%.1f".format(before.viewW)}x${"%.1f".format(before.viewH)} " +
-                        "sy=${"%.1f".format(before.scrollY)} covered=${before.covered} box=${before.box}"
+                        "clip=${"%.1f".format(before.clipTop)}..${"%.1f".format(before.clipBottom)} " +
+                        "fit=${before.fit} sy=${"%.1f".format(before.scrollY)} " +
+                        "covered=${before.covered} box=${before.box}"
                 )
-                if (insideViewport(before.box, minOf(visW, before.viewW), minOf(visH, before.viewH))) {
+                if (fits(before)) {
                     Log.d(TAG, "already-visible idx=$idx -> skip scroll")
                     box = before.box
                 } else {
@@ -698,11 +753,11 @@ object WebCrop {
                     waitFrame(webView)
                     // 3) 捲動後再量最後一次：這是唯一可信的裁切依據。
                     val after = probe(webView, idx) ?: settled
-                    if (!insideViewport(after.box, minOf(visW, after.viewW), minOf(visH, after.viewH))) {
+                    if (!fits(after)) {
                         Log.w(
                             TAG,
                             "crop skipped oversize idx=$idx box=${after.box} " +
-                                "vis=${"%.1f".format(visW)}x${"%.1f".format(visH)} " +
+                                "clip=${after.clipTop}..${after.clipBottom} fit=${after.fit} " +
                                 "inner=${after.viewW}x${after.viewH} sy=${after.scrollY}"
                         )
                         return null
@@ -732,9 +787,7 @@ object WebCrop {
                         awaitSettled(webView, idx)
                         waitFrame(webView)
                         val chk = probe(webView, idx)
-                        if (chk == null || chk.covered ||
-                            !insideViewport(chk.box, minOf(visW, chk.viewW), minOf(visH, chk.viewH))
-                        ) {
+                        if (chk == null || chk.covered || !fits(chk)) {
                             Log.w(
                                 TAG,
                                 "crop skipped still-covered idx=$idx tag=$tag " +
@@ -752,7 +805,7 @@ object WebCrop {
                             return null
                         }
                         // sticky 會佔版面流：隱藏後可能位移，重新確認仍在可見區內。
-                        if (!insideViewport(clear.box, minOf(visW, clear.viewW), minOf(visH, clear.viewH))) {
+                        if (!fits(clear)) {
                             Log.w(TAG, "crop skipped shifted-out idx=$idx box=${clear.box}")
                             return null
                         }

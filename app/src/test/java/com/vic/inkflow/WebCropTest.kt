@@ -94,6 +94,17 @@ class WebCropTest {
         assertTrue("要往祖先鏈找 float root", js.contains("parentElement"))
         assertTrue("要回報遮擋者描述", js.contains("describe"))
         assertTrue("描述要能分辨 fixed/sticky", js.contains("s.position"))
+        assertTrue("要算祖先裁切容器", js.contains("overflowY"))
+        assertTrue("要回報 fit", js.contains("var fit"))
+    }
+
+    @Test fun fits_requiresBothJsFitAndWindowBounds() {
+        val inside = WebCrop.PrepareRect(WebCrop.CssBox(0f, 100f, 400f, 100f), 420f, 698f)
+        assertTrue(WebCrop.fits(inside))
+        // JS 說 fit=false（被祖先容器裁掉）→ 即使座標在視窗內也不可裁
+        assertFalse(WebCrop.fits(inside.copy(fit = false)))
+        // 超出視窗底部 → 不可裁
+        assertFalse(WebCrop.fits(inside.copy(box = WebCrop.CssBox(0f, 650f, 400f, 100f))))
     }
 
     @Test fun parsePrepare_readsEvaluatedString() {
@@ -122,6 +133,11 @@ class WebCropTest {
         assertFalse(prRaw.covered)
         assertTrue(prRaw.rawCovered)
         assertNull(prRaw.occluder)
+        // 十二欄：fit ＋ 祖先裁切帶（對話區被輸入列切掉的情況）
+        val prClip = WebCrop.parsePrepare("\"OK:10,649,100,43,800,698,0,0,0,0,0,470|\"")!!
+        assertFalse("框在裁切帶外 → fit=false", prClip.fit)
+        assertEquals(470f, prClip.clipBottom)
+        assertFalse("fit=false 時 fits() 必須擋下", WebCrop.fits(prClip))
         assertNull(WebCrop.parsePrepare("null"))
         assertNull(WebCrop.parsePrepare("\"NONE\""))
         assertNull(WebCrop.parsePrepare("\"DETACHED\""))
