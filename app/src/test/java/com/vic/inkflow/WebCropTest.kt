@@ -71,7 +71,21 @@ class WebCropTest {
         assertTrue("要用節點表", js.contains("__inkcropEls"))
         assertTrue("要指名第 2 個節點", js.contains("els[2]"))
         assertTrue("要回報 scrollY", js.contains("scrollY"))
+        assertTrue("要偵測浮動層遮擋", js.contains("elementFromPoint"))
         assertFalse("探針不可捲動（否則穩定性判定會自己製造位移）", js.contains("scrollIntoView"))
+    }
+
+    @Test fun hideOverlays_onlyTouchesFloatingLayers() {
+        val js = WebCrop.hideOverlaysJs(1)
+        assertTrue("要有節點表", js.contains("__inkcropEls"))
+        assertTrue("要看整疊命中元素", js.contains("elementsFromPoint"))
+        assertTrue("只處理 fixed", js.contains("'fixed'"))
+        assertTrue("只處理 sticky", js.contains("'sticky'"))
+        assertTrue("要記下還原清單", js.contains("__inkcropHidden"))
+        assertTrue("要先存原值", js.contains("__inkVis"))
+        val back = WebCrop.restoreOverlaysJs()
+        assertTrue("要從同一份清單還原", back.contains("__inkcropHidden"))
+        assertTrue("要還原 visibility", back.contains("visibility"))
     }
 
     @Test fun parsePrepare_readsEvaluatedString() {
@@ -81,9 +95,13 @@ class WebCropTest {
         assertEquals(800f, pr.viewW)
         assertEquals(600f, pr.viewH)
         assertEquals(0f, pr.scrollY)
-        // 七欄（probe/prepare 現行格式）要吃到 scrollY
-        val pr7 = WebCrop.parsePrepare("\"OK:10,20,100,50,800,600,1234.5\"")!!
-        assertEquals(1234.5f, pr7.scrollY)
+        // 七欄：cov（1＝被浮動層蓋住）
+        val prCov = WebCrop.parsePrepare("\"OK:10,20,100,50,800,600,1\"")!!
+        assertTrue("cov=1 要判定為被遮擋", prCov.covered)
+        // 八欄：cov＋scrollY
+        val pr8 = WebCrop.parsePrepare("\"OK:10,20,100,50,800,600,0,1234.5\"")!!
+        assertFalse(pr8.covered)
+        assertEquals(1234.5f, pr8.scrollY)
         assertNull(WebCrop.parsePrepare("null"))
         assertNull(WebCrop.parsePrepare("\"NONE\""))
         assertNull(WebCrop.parsePrepare("\"DETACHED\""))
