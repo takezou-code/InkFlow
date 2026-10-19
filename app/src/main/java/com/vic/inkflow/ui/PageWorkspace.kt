@@ -646,7 +646,9 @@ val allowSinglePan = startedBlank || fingerPanOnPaperAllowed(
             }
             // 頁鎖期間（跨頁手勢中）：忽略自動捲帶來的頁面切換，避免中途換頁斷筆；
             // 全活頁下各頁本來就活著，手勢結束也無需激活跳轉。
-            if (!viewModel.isPageLocked() && idx in 0 until pageCount) onScrollPage(idx)
+            if (!viewModel.isPageLocked() && idx in 0 until pageCount) {
+                onScrollPage(idx)
+            }
             // 落定：0.5s 無新排放才開渲。只渲 5 頁：當前頁±2，
             // 順序本頁→下一頁→上一頁→下兩頁→上兩頁（3 → 3,4,2,5,1）。
             settleJob = launch {

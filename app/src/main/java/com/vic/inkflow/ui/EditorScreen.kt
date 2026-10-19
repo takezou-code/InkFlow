@@ -239,6 +239,27 @@ import kotlinx.coroutines.withTimeoutOrNull
 // --- 3. Editor Screen ---
 // 側欄階段定義在 SidebarStage.kt（含狀態機與單元測試），這裡不再重複定義。
 
+/**
+ * 換頁來源。只決定「頁碼語意」與「捲動方式」，不決定誰能換頁——
+ * 所有來源都走 TabletEditorScreen 裡唯一的 goToPage()。
+ */
+enum class PageNavSource {
+    /** 使用者直接點選：側欄頁碼、網格卡片、AI 匯入跳頁。 */
+    Tap,
+
+    /** 側欄拖動預覽：紙跟手指走，不提交。 */
+    Preview,
+
+    /** 插頁後自動前往新頁。 */
+    Insert,
+
+    /** 刪頁後矯正到合法頁。 */
+    Delete,
+
+    /** 還原：初次開檔、第 3 階返回。 */
+    Restore,
+}
+
 @Composable
 fun TabletEditorScreen(
     navController: NavController,
@@ -357,7 +378,7 @@ fun TabletEditorScreen(
     val sidebarListState = rememberLazyListState()
     val mainListState = rememberLazyListState()
     val pinchActive by viewModel.pinchActive.collectAsState()
-    // 頁數訂閱提前到當前頁狀態機之前：applyCommit／previewNavigate／settle 都要夾取，
+    // 頁數訂閱提前到當前頁狀態機之前：applyCommit／goToPage／settle 都要夾取，
     // 詞法作用域要求先宣告。只是 State 訂閱，提前無副作用。
     val pageCount by pdfViewModel.pageCount.collectAsState()
     // 初次捲到位旗標：PDF 載入前主列表停在第 0 頁，此時 PageWorkspace 的跟隨回報必須忽略，
@@ -369,6 +390,8 @@ fun TabletEditorScreen(
     // 這裡取代舊的 programmaticTarget＋2.5s 超時：預期／接管／超時規則寫死在狀態機裡，用單測釘住。
     val pageOwner = remember { CurrentPageOwner() }
     var previewPage by remember { mutableStateOf<Int?>(null) }
+    // 側欄帶頭時間戳：側欄／網格點選蓋章，1 秒內跟隨 effect 不回拉，讓 fling 飛完。
+    var lastSidebarDriveMs by remember { mutableStateOf(0L) }
     val settleGen = remember { java.util.concurrent.atomic.AtomicInteger(0) }
     var previewNavJob by remember { mutableStateOf<Job?>(null) }
     // 單一提交點：全編輯器只有這裡能寫 currentPageIndex＋setActivePage。
@@ -390,41 +413,119 @@ fun TabletEditorScreen(
             pageOwner.settle(currentPageIndex, pageCount, now)?.let { applyCommit(it, prefetch = false) }
         }
     }
-    // 預覽導航（側欄拖動／scrub 中）：紙跟著手指走，但不提交；
-    // 到位回報經 onScrollPage→owner 判為 arrival 才提交，放手也會結算。
-    fun previewNavigate(index: Int) {
-        val target = pageOwner.clamp(index, pageCount)
-        if (target == currentPageIndex && previewPage == null) return
-        previewPage = target
-        pageOwner.expectTarget(target, pageCount, android.os.SystemClock.uptimeMillis())
-        previewNavJob?.cancel()
-        previewNavJob = scope.launch {
-            kotlinx.coroutines.delay(80)
-            runCatching { mainListState.animateScrollToItem(target) }
+    // ── 換頁唯一入口 ────────────────────────────────────────────────
+    // 所有「去第 N 頁」都只能從 goToPage 進來：側欄點選、網格點選、拖動預覽、
+    // 插頁／刪頁矯正、初次開檔與第 3 階返回的還原、AI 匯入跳頁。
+    // 其他地方不准再直接呼叫 scrollToItem / animateScrollToItem。
+    //
+    // 分成固定兩段：
+    //   ① 頁碼：commit / expect（預覽不提交）
+    //   ② 捲動：紙面在不在、要不要動畫，只在這裡判斷
+    var programmaticScrollJob by remember { mutableStateOf<Job?>(null) }
+    var restoreJob by remember { mutableStateOf<Job?>(null) }
+    // 還原期：紙面剛掛回、正在定位到目標頁。這段期間主紙可能先回報
+    // 「過渡的第 1 頁」，若照常走穩定門就會把 currentPageIndex 真的寫成 0
+    // （實測 cur 由 2 變 0），下一輪就回不去了。
+    var restoringPage by remember { mutableStateOf(false) }
+
+    fun cancelPaperScroll() {
+        programmaticScrollJob?.cancel()
+        programmaticScrollJob = null
+        restoreJob?.cancel()
+        restoreJob = null
+    }
+
+    fun goToPage(index: Int, source: PageNavSource) {
+        val now = SystemClock.uptimeMillis()
+        val page = pageOwner.clamp(index, pageCount)
+
+        // ① 頁碼
+        if (source == PageNavSource.Preview) {
+            // 預覽：只跟手指，不提交；到位／放手由 onScrollPage→owner 接手。
+            if (page != currentPageIndex || previewPage != null) {
+                previewPage = page
+                pageOwner.expectTarget(page, pageCount, now)
+            }
+        } else {
+            val owner = when (source) {
+                PageNavSource.Insert, PageNavSource.Delete -> PageOwner.StructuralOp
+                PageNavSource.Restore -> PageOwner.Restore
+                else -> PageOwner.ProgrammaticNav
+            }
+            val commit = pageOwner.commitNow(page, owner, pageCount)
+            applyCommit(commit, prefetch = true)
+            if (source != PageNavSource.Restore) {
+                pageOwner.expectTarget(commit.page, pageCount, now)
+                initialScrollDone = true
+            }
+            if (source == PageNavSource.Tap) lastSidebarDriveMs = now
+        }
+
+        // ② 捲動
+        // 第 3 階期間紙面被移出 composition：對 LazyColumn 的任何指令都不會生效，
+        // 剛掛回時還會卡在沒有節點的 MutatorMutex 上。這裡只提交頁碼，
+        // 等掛回時由 Restore 一次定位——這是唯一允許延後捲動的情況。
+        if (sidebarStage == SidebarStage.GRID) return
+        if (pageCount <= 0) return
+
+        if (source == PageNavSource.Preview) {
+            previewNavJob?.cancel()
+            previewNavJob = scope.launch {
+                kotlinx.coroutines.delay(80)
+                runCatching { mainListState.animateScrollToItem(page) }
+            }
+            return
+        }
+
+        if (source == PageNavSource.Restore) {
+            // 還原：紙面可能才剛掛回。不用 scrollToItem —— 它要先拿
+            // ScrollableState 的 MutatorMutex；卸載瞬間若有慣性捲動沒收尾，
+            // 那把鎖會卡在沒有節點、沒有 frame 的殘留 mutation 上，呼叫永遠
+            // 排不到（實測：立刻返回、firstVisibleItemIndex 仍是 0）。
+            // requestScrollToItem 不碰鎖：同步寫 scrollPosition，下一量測生效。
+            cancelPaperScroll()
+            restoringPage = true
+            pageOwner.expectTarget(page, pageCount, now)
+            scope.launch { runCatching { sidebarListState.scrollToCenter(page) } }
+            restoreJob = scope.launch {
+                try {
+                    repeat(6) {
+                        mainListState.requestScrollToItem(page, 0)
+                        androidx.compose.runtime.withFrameNanos { }
+                        if (mainListState.firstVisibleItemIndex == page &&
+                            mainListState.firstVisibleItemScrollOffset == 0
+                        ) return@launch
+                    }
+                } finally {
+                    restoringPage = false
+                }
+            }
+            return
+        }
+
+        // Tap / Insert / Delete
+        cancelPaperScroll()
+        programmaticScrollJob = scope.launch {
+            runCatching {
+                // Delete：索引已位移，動畫會從不存在的頁起算，用瞬時定位。
+                if (source == PageNavSource.Delete) mainListState.scrollToItem(page)
+                else mainListState.animateScrollToItem(page)
+            }
         }
     }
-    // 程式化捲動的命：手勢一接管（pinchActive）立刻取消，未跑完的動畫不許在手勢中/手勢後
-    // 把紙拽回舊目標（反方向回彈主因）。owner 的預期跟著清。
-    var programmaticScrollJob by remember { mutableStateOf<Job?>(null) }
+
+    // AI 匯入管線只認得「跳到某頁」，沿用同一個入口。
+    val onRequestPage: (Int) -> Unit = { goToPage(it, PageNavSource.Tap) }
+
+    // 手勢一接管（pinchActive）立刻取消程式化捲動：未跑完的動畫不許在手勢中／
+    // 手勢後把紙拽回舊目標（反方向回彈主因）。owner 的預期跟著清。
     androidx.compose.runtime.LaunchedEffect(pinchActive) {
         if (pinchActive) {
-            programmaticScrollJob?.cancel()
-            programmaticScrollJob = null
+            cancelPaperScroll()
             previewNavJob?.cancel()
             previewNavJob = null
             pageOwner.cancelExpected()
         }
-    }
-    // 點選意圖（側欄點選／網格點選／放手結算）：立刻提交＋設預期，過渡頁忽略。
-    // 用戶親自點了 = 接管，初次捲動不再搶回去。
-    val onRequestPage: (Int) -> Unit = { index ->
-        initialScrollDone = true
-        val commit = pageOwner.commitNow(index, PageOwner.ProgrammaticNav, pageCount)
-        pageOwner.expectTarget(commit.page, pageCount, android.os.SystemClock.uptimeMillis())
-        applyCommit(commit, prefetch = true)
-        previewNavJob?.cancel()
-        programmaticScrollJob?.cancel()
-        programmaticScrollJob = scope.launch { runCatching { mainListState.animateScrollToItem(commit.page) } }
     }
     // R3：提取整組撤銷的頁操作接線（VM 碰不到 PdfViewModel/Context，由這層提供；
     // model 尺寸每次現讀，避免閉包陳舊）。
@@ -519,7 +620,7 @@ fun TabletEditorScreen(
     // 卷動跟隨：主列表的最大可見頁先當候選（不直接寫），穩定門／到位／接管由 pageOwner 判。
     // 不捲主列表（避免打架）；側欄置中與 DB 補寫由下方 committed effect 做。
     val onScrollPage: (Int) -> Unit = { index ->
-        if (initialScrollDone && index != currentPageIndex) {
+        if (!restoringPage && initialScrollDone && index != currentPageIndex) {
             val now = android.os.SystemClock.uptimeMillis()
             val arrival = pageOwner.onCandidate(PageOwner.MainScroll, index, pageCount, now)
             if (arrival != null) {
@@ -574,8 +675,6 @@ fun TabletEditorScreen(
     // 跟隨門衛：主列表推側欄時舉旗，側欄推主列表的那條看到旗就讓路，
     // 否則兩邊互推、底端來回彈（4↔5跳不停）。State 寫一天幾次，重組成本忽略。
     var sidebarFollowActive by remember { mutableStateOf(false) }
-    // 側欄帶頭時間戳：側欄點選/轉頁蓋章，1 秒內跟隨不回拉，讓 fling 飛完。
-    var lastSidebarDriveMs by remember { mutableStateOf(0L) }
     androidx.compose.runtime.LaunchedEffect(currentPageIndex, sidebarStage) {
         // 旗子從 effect 一進來就舉（涵蓋防抖等待期），結束/取消才放下——
         // 之前只包著 animate，等待期有洞，迴圈從洞裡鑽。
@@ -598,12 +697,17 @@ fun TabletEditorScreen(
                 // 注意：用 scrollToCenter 不是 scrollToItem —— scrollToItem 只把頁碼對齊
                 // viewport「起點」，不置中。收合模式 contentPadding 幾乎半個視窗高，
                 // 用 scrollToItem 會把當前頁留在很靠上＝中央丸子那裡是空的（置中跑掉）。
-                if (pdfViewModel.isScrollingFast.value) {
-                    // scrollToCenter 本身已對陳舊 index 做邊界檢查，這裡直接呼叫
-                    // （runCatching 的 block 不是 suspend lambda，會編譯不過）
-                    sidebarListState.scrollToCenter(currentPageIndex)
-                } else {
-                    sidebarListState.animateScrollToCenter(currentPageIndex)
+                // 第 3 階期間側欄不在 composition：對它下捲動指令會卡在沒有節點的
+                // 互斥鎖上（與紙面同一個坑）。掛回時這個 effect 會因 sidebarStage
+                // 變回 PANEL/RAIL 再跑一次，屆時才定位。
+                if (sidebarStage != SidebarStage.GRID) {
+                    if (pdfViewModel.isScrollingFast.value) {
+                        // scrollToCenter 本身已對陳舊 index 做邊界檢查，這裡直接呼叫
+                        // （runCatching 的 block 不是 suspend lambda，會編譯不過）
+                        sidebarListState.scrollToCenter(currentPageIndex)
+                    } else {
+                        sidebarListState.animateScrollToCenter(currentPageIndex)
+                    }
                 }
             }
         } finally {
@@ -631,10 +735,7 @@ fun TabletEditorScreen(
     // 之後頁數變化（增刪頁）不再亂捲，只做夾取。門由 initialScrollDone 擋跟隨回寫。
     androidx.compose.runtime.LaunchedEffect(pageCount, initialPageRestored) {
         if (initialPageRestored && !initialScrollDone && pageCount > 0) {
-            val safe = pageOwner.clamp(currentPageIndex, pageCount)
-            applyCommit(pageOwner.commitNow(safe, PageOwner.Restore, pageCount), prefetch = true)
-            runCatching { mainListState.scrollToItem(safe) }
-            runCatching { sidebarListState.scrollToCenter(safe) }
+            goToPage(currentPageIndex, PageNavSource.Restore)
             initialScrollDone = true
         }
     }
@@ -1064,12 +1165,7 @@ fun TabletEditorScreen(
                 return@LaunchedEffect
             }
             if (initialPageRestored) {
-                val commit = pageOwner.commitNow(idx, PageOwner.StructuralOp, pageCount)
-                pageOwner.expectTarget(commit.page, pageCount, android.os.SystemClock.uptimeMillis())
-                applyCommit(commit, prefetch = true)
-                sidebarListState.animateScrollToCenter(commit.page)
-                programmaticScrollJob?.cancel()
-                programmaticScrollJob = scope.launch { runCatching { mainListState.animateScrollToItem(commit.page) } }
+                goToPage(idx, PageNavSource.Insert)
                 pdfViewModel.consumeInsertedPageEvent()
             }
         }
@@ -1083,11 +1179,7 @@ fun TabletEditorScreen(
                 deletedIndices = lastDeletedPages,
                 pageCountAfter = pageCount
             )
-            val commit = pageOwner.commitNow(clamped, PageOwner.StructuralOp, pageCount)
-            pageOwner.expectTarget(commit.page, pageCount, android.os.SystemClock.uptimeMillis())
-            applyCommit(commit, prefetch = true)
-            sidebarListState.animateScrollToCenter(commit.page)
-            runCatching { mainListState.scrollToItem(commit.page) }
+            goToPage(clamped, PageNavSource.Delete)
             pdfViewModel.consumeDeletedPageEvent()
         }
 
@@ -1190,27 +1282,24 @@ fun TabletEditorScreen(
                 // 0.98 而不是 1.0：此時紙張 alpha 已剩 0.02（不可見），
                 // 移除不會造成跳動，進出都走同一條淡入淡出。
                 //
-                // 工作區重新掛上時補捾到「當前頁」：
-                // 第 3 階期間紙張被移出 composition，LazyColumn 不存在，
-                // 這期間任何 scrollToItem/animateScrollToItem 全部落空（對著
-                // 脫離的狀態物件呼叫）。症狀＝在全展開點第 N 頁：頁碼狀態有更新
-                // （側欄選取框跟著動），但回到第 2 階紙面永遠停在第 1 頁。
+                // 第 3 階 = 內容暫時移出 composition（見上方理由）。因此它的進出
+                // 只需要做兩件事，而且都走換頁唯一入口 goToPage：
+                //   進：作廢未結算候選、取消會握著互斥鎖的捲動（紙要走了）。
+                //   出：Restore 定位回 currentPageIndex（點過網格頁就是點的那頁）。
                 //
                 // key 用「掛上與否」的布林而不是 gridOverlayProgress 本身：
-                // 後者在淡入淡出期間每幀都變，拿它當 key 會每幀重跑這個捲動，
+                // 後者在淡入淡出期間每幀都變，拿它當 key 會每幀重跑捲動，
                 // 直接跟使用者的捲動搶方向。只在掛上那一次轉折觸發。
                 val workspaceMounted = gridOverlayProgress < 0.98f
                 androidx.compose.runtime.LaunchedEffect(workspaceMounted, pageCount) {
-                    if (workspaceMounted && pageCount > 0) {
-                        // 等 LazyColumn 真的量好再捾：LaunchedEffect 在 composition
-                        // 之後、layout 之前跑，此刻 layoutInfo 還是空的，
-                        // 直接 scrollToItem 會靜默失敗（症狀正是「紙停在第 1 頁」）。
-                        androidx.compose.runtime.snapshotFlow {
-                            mainListState.layoutInfo.totalItemsCount
-                        }.first { it > 0 }
-                        val target = pageOwner.clamp(currentPageIndex, pageCount)
-                        runCatching { mainListState.scrollToItem(target) }
+                    if (!workspaceMounted) {
+                        settleGen.incrementAndGet()
+                        cancelPaperScroll()
+                        previewNavJob?.cancel()
+                        previewNavJob = null
+                        return@LaunchedEffect
                     }
+                    if (pageCount > 0) goToPage(currentPageIndex, PageNavSource.Restore)
                 }
                 if (gridOverlayProgress < 0.98f) {
                 // ── 紙：整屏最底層 ────────────────────────────────────────────
@@ -1288,12 +1377,9 @@ fun TabletEditorScreen(
                 documentUri = uri.toString(),
                 modelWidth = viewModel.modelWidth,
                 modelHeight = viewModel.modelHeight,
-                onPageSelected = { index ->
-                    lastSidebarDriveMs = SystemClock.uptimeMillis()
-                    onRequestPage(index)
-                },
+                onPageSelected = { index -> goToPage(index, PageNavSource.Tap) },
                 // RAIL 拖動中只報預覽（紙跟走、不提交）；放手／點選才經 onPageSelected 提交。
-                onPagePreview = { previewNavigate(it) },
+                onPagePreview = { goToPage(it, PageNavSource.Preview) },
                 onAddPage = { afterIndex ->
                     // R2：結構操作超出復原範圍——先清棧，杜絕舊命令錯位寫入。
                     viewModel.clearUndoStacks()
@@ -1556,10 +1642,7 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                     isDarkTheme = isEditorDark,
                     onBack = { goToStage(SidebarStage.PANEL) },
                     onCollapse = { goToStage(SidebarStage.RAIL) },
-                    onPageSelected = { index ->
-                        lastSidebarDriveMs = SystemClock.uptimeMillis()
-                        onRequestPage(index)
-                    },
+                    onPageSelected = { index -> goToPage(index, PageNavSource.Tap) },
                     onDeletePages = { indices ->
                         // R2：同上，清棧。
                         viewModel.clearUndoStacks()
