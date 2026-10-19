@@ -2,12 +2,16 @@ package com.vic.inkflow
 
 import com.vic.inkflow.ui.AiMathBlock
 import com.vic.inkflow.ui.AiTextBlock
+import com.vic.inkflow.ui.RenderedMath
 import com.vic.inkflow.ui.convertLatexInProse
 import com.vic.inkflow.ui.convertLatexMath
 import com.vic.inkflow.ui.escHtml
 import com.vic.inkflow.ui.hasMathScent
+import com.vic.inkflow.ui.katexSourceOf
+import com.vic.inkflow.ui.katexTargets
 import com.vic.inkflow.ui.looksLikeInlineMath
 import com.vic.inkflow.ui.normalizeDollarMath
+import com.vic.inkflow.ui.resolveAiBlocks
 import com.vic.inkflow.ui.splitAiBlocks
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -161,6 +165,38 @@ class AiMathCorpusTest {
         assertEquals("解 \\(f(x)\\) 得", normalizeDollarMath("解 \$f(x)\$ 得"))
         assertEquals("價格 \$100 不變", normalizeDollarMath("價格 \$100 不變"))
         assertEquals("&lt;a&gt;&amp;&quot;", escHtml("<a>&\""))
+    }
+
+    @Test fun normalize_leavesDisplayMathIntact() {
+        // 第二引擎把整塊 display TeX 餵進 KaTeX：`$$…$$` 不能被拆成 $ + \\(…\\) + $
+        assertEquals("\$\$x^2 + y^2 = r^2\$\$", normalizeDollarMath("\$\$x^2 + y^2 = r^2\$\$"))
+        assertEquals("\$\$\\frac{1}{2}\$\$ 與 \\(x\\)", normalizeDollarMath("\$\$\\frac{1}{2}\$\$ 與 \$x\$"))
+        // 單 $ 仍要轉，否則 auto-render 不認
+        assertEquals("\\(E=mc^2\\)", normalizeDollarMath("\$E=mc^2\$"))
+    }
+
+    @Test fun katexSecondEngineTargets() {
+        // 裁圖失敗：rendered 沒有它 → 目標；有圖 → 不是目標
+        val montage = AiMathBlock("s0", html = "", display = true, fallback = "\$\$\\int_0^1 x\\,dx\$\$")
+        val split = AiMathBlock("m1", html = "\$\$y=mx+b\$\$", display = true, fallback = "y=mx+b")
+        val t = katexTargets(listOf(montage, split), emptyMap())
+        assertEquals(listOf("s0", "m1"), t.map { it.id })
+        assertEquals(1, katexTargets(listOf(montage, split), mapOf("s0" to RenderedMath(java.io.File("x"), 10, 10))).size)
+        // 原文優先；裁圖塊退回 fallback（TeX 在這裡）
+        assertEquals("\$\$y=mx+b\$\$", katexSourceOf(split))
+        assertEquals("\$\$\\int_0^1 x\\,dx\$\$", katexSourceOf(montage))
+        // 沒有任何原文 → 不進第二引擎（避免白跑一次 WebView）
+        assertEquals(0, katexTargets(listOf(AiMathBlock("s9", "", true, "")), emptyMap()).size)
+    }
+
+    @Test fun resolve_keepsBlocksThatGotAnImage() {
+        // 第二引擎在 resolve 之前跑：有圖的塊不能被換成文字
+        val b = AiMathBlock("s0", html = "", display = true, fallback = "\$\$x\$\$")
+        val kept = resolveAiBlocks(listOf(b), mapOf("s0" to RenderedMath(java.io.File("x"), 10, 10)))
+        assertEquals(1, kept.size)
+        assertTrue(kept.first() is AiMathBlock)
+        // 沒圖的照舊退文字（保底）
+        assertTrue(resolveAiBlocks(listOf(b), emptyMap()).first() is AiTextBlock)
     }
 
     @Test fun prose_money_untouched() {

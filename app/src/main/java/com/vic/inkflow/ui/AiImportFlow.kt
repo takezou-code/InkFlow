@@ -28,20 +28,28 @@ import java.io.FileOutputStream
 /**
  * KaTeX 第二引擎：有 TeX 源的數學塊渲染成圖（Main thread；失敗回空，上層退文字）。
  * 回傳 blockId → RenderedMath 與失敗計數。
+ *
+ * 上限 [MAX_RENDER]：渲染序列化在主執行緒（MathSnapshot 用隱藏 WebView），
+ * 一批全失敗時不能讓 UI 卡到分鐘級；超過的算失敗，照樣退文字。
  */
 suspend fun renderMathBlocks(
     context: Context,
-    mathBlocks: List<AiMathBlock>
+    mathBlocks: List<AiMathBlock>,
+    maxRender: Int = MAX_RENDER
 ): Pair<Map<String, RenderedMath>, Int> {
     val rendered = mutableMapOf<String, RenderedMath>()
     var renderFail = 0
     if (mathBlocks.isNotEmpty()) {
         val act = context as? Activity
         if (act != null) MathSnapshot.ensure(act)
-        for (mb in mathBlocks) {
+        for ((i, mb) in mathBlocks.withIndex()) {
             var ok = false
+            if (i >= maxRender) {
+                renderFail++
+                continue
+            }
             try {
-                val bmp = MathSnapshot.render(mathBlockHtml(mb.html))
+                val bmp = MathSnapshot.render(mathBlockHtml(katexSourceOf(mb)))
                 if (bmp != null) {
                     // 經 PdfManager 漏斗落 workingDir：跟圖庫/相機圖同一種命。
                     // 舊碼寫 filesDir 根，還原不斷不斷（見漏斗註解）。
@@ -61,6 +69,8 @@ suspend fun renderMathBlocks(
     }
     return rendered to renderFail
 }
+
+private const val MAX_RENDER = 12
 
 /** 勾選混排插入：一批勾選＝文字切分＋公式像素裁圖（Main），放置與純文字路共用。 */
 // 同文件同時只跑一批：管線含 600ms 截圖等待＋渲染，不加鎖兩批會互踩接續游標與頁碼。
@@ -198,15 +208,18 @@ suspend fun importPickedJsonInner(
     } else if (shots.isNotEmpty()) {
         cropFail = shots.size
     }
-    val resolved = resolveAiBlocks(blocks, rendered)
-    // 第二引擎：fallback 文字裡殘留的 $TeX$（data-math 還原的）走 KaTeX 渲染
-    val katexTargets = resolved.filterIsInstance<AiMathBlock>().filter { it.id !in rendered }
+    // 第二引擎：裁圖失敗但還有 TeX 的塊走離線 KaTeX（MathSnapshot）。
+    // 必須在 resolveAiBlocks 之前：那一步會把沒有圖的數學塊換成文字。
     var katexFail = 0
-    if (katexTargets.isNotEmpty()) {
-        val (km, kf) = renderMathBlocks(context, katexTargets)
+    val katexTodo = katexTargets(blocks, rendered)
+    if (katexTodo.isNotEmpty()) {
+        Log.d("InkFlowDbg", "KATEX begin n=${katexTodo.size} cropFail=$cropFail")
+        val (km, kf) = renderMathBlocks(context, katexTodo)
         rendered.putAll(km)
         katexFail = kf
+        Log.d("InkFlowDbg", "KATEX end ok=${km.size} fail=$kf")
     }
+    val resolved = resolveAiBlocks(blocks, rendered)
     val mathById = resolved.filterIsInstance<AiMathBlock>().associateBy { it.id }
     // 錨定：寫入前一刻重讀已提交當前頁（600ms 截圖等待＋渲染期間使用者可能已翻頁）。
     // 有空位就接著寫，沒空位就在錨定頁後面開新頁；不再掃全文件空白頁（舊行為會把一批回覆打散到文件頭）。

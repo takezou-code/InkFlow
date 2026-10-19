@@ -238,6 +238,26 @@ fun escHtml(s: String): String =
 /** 數學塊轉渲染用 HTML（原文 delimiter 保留，auto-render 處理）。 */
 fun mathBlockHtml(source: String): String = "<div>" + escHtml(normalizeDollarMath(source)) + "</div>"
 
+/**
+ * 第二引擎要餵給 KaTeX 的原文。
+ *
+ * 兩種塊的來源不同：`splitAiBlocks` 產生的塊把 TeX 放在 [AiMathBlock.html]；
+ * 裁圖路徑（collect 撿到的塊）`html` 是空的，TeX 留在 [AiMathBlock.fallback]
+ * （`AiGeminiDriver` 的 texify 會把 data-math / annotation 還原成 `$…$`、`$$…$$`）。
+ */
+fun katexSourceOf(mb: AiMathBlock): String =
+    if (mb.html.isNotBlank()) mb.html else mb.fallback
+
+/**
+ * 第二引擎的目標：**還沒拿到圖**、且有原文可渲染的數學塊。
+ *
+ * 必須在 [resolveAiBlocks] **之前**呼叫：那一步會把沒有圖的數學塊換成文字，
+ * 之後再篩「id 不在 rendered」永遠是空集合（原本的死碼就是這樣來的）。
+ */
+fun katexTargets(blocks: List<AiBlock>, rendered: Map<String, RenderedMath>): List<AiMathBlock> =
+    blocks.filterIsInstance<AiMathBlock>()
+        .filter { it.id !in rendered && katexSourceOf(it).isNotBlank() }
+
 /** 未渲染成功的數學塊退回 Unicode 文字塊（保序 splice 用）。 */
 fun mathFallbackBlocks(b: AiMathBlock, maxChars: Int = AI_CHUNK_MAX_CHARS): List<AiTextBlock> {
     val bodies = mutableListOf<String>()
@@ -570,7 +590,9 @@ fun convertLatexMath(m0: String): String {
 private val DISPLAY_DOLLAR = Regex("\\$\\$([\\s\\S]*?)\\$\\$")
 private val DISPLAY_BRACK = Regex("\\\\\\[([\\s\\S]*?)\\\\\\]")
 private val INLINE_PAREN = Regex("\\\\\\(([\\s\\S]*?)\\\\\\)")
-private val INLINE_DOLLAR = Regex("\\$([^\\$\n]+?)\\$")
+// 前後各夾一個負向斷言：`$$…$$`（display）不能被拆成 `$` + `\(…\)` + `$`。
+// 少了它，第二引擎把整塊 display TeX 餵進 KaTeX 時會留下兩個錢字號（實測會）。
+private val INLINE_DOLLAR = Regex("(?<!\\$)\\$(?!\\$)([^\\$\\n]+?)\\$(?!\\$)")
 
 /**
  * 散文區 LaTeX 轉換：$$..$$ 與 \[..\] 獨立成段，\(..\) 行內轉，
