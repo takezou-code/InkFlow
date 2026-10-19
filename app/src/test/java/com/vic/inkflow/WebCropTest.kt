@@ -97,6 +97,7 @@ class WebCropTest {
         assertTrue("要算祖先裁切容器", js.contains("overflowY"))
         assertTrue("要回報 fit", js.contains("var fit"))
         assertTrue("要網格取樣（小浮動件會漏）", js.contains("stepY"))
+        assertTrue("貼底緣的短塊要留邊距（淡出＋↓）", js.contains("bandH"))
     }
 
     @Test fun fits_requiresBothJsFitAndWindowBounds() {

@@ -136,8 +136,13 @@ object WebCrop {
                     }
                     p = p.parentElement;
                 }
-                var fit = (r.top >= ct - 1 && r.bottom <= cb + 1 &&
-                    r.left >= -1 && r.right <= window.innerWidth + 1) ? 1 : 0;
+                var fit = 0;
+                var bandH = cb - ct;
+                // Gemini 在可見帶底部有一層漸層淡出＋「↓」按鈕：短塊留 36px 邊距，
+                // 讓它被捲到淡出區上方；比可見帶還高的塊只能貼滿（留邊距會永遠不合格）。
+                var margin = (r.height <= bandH - 36) ? 36 : 0;
+                if (r.top >= ct - 1 && r.bottom <= cb - 1 - margin &&
+                    r.left >= -1 && r.right <= window.innerWidth + 1) fit = 1;
                 return 'OK:' + [r.x, r.y, r.width, r.height,
                     window.innerWidth, window.innerHeight, cov, window.scrollY, raw, fit,
                     Math.round(ct), Math.round(cb)].join(',') + '|' + who;
