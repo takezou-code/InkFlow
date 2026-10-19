@@ -99,13 +99,18 @@ object WebCrop {
                     } catch (e) { return '?'; }
                 }
                 var cx = Math.min(Math.max(r.left + r.width / 2, 1), window.innerWidth - 2);
-                var pts = [
-                    [cx, r.top + 3],
-                    [cx, r.top + r.height / 2],
-                    [cx, r.bottom - 3],
-                    [r.left + 3, r.top + r.height / 2],
-                    [r.right - 3, r.top + r.height / 2]
-                ];
+                // 網格取樣：小浮動件（「↓ 回到底部」約 36px）用 5 個點會擦邊漏掉（實機踩過），
+                // 每 14px 一列 × 左/中/右三欄，任何蓋在目標上的東西都會被踩到。
+                var pts = [];
+                var stepY = Math.max(14, r.height / 20);
+                for (var yy = r.top + 4; yy <= r.bottom - 4; yy += stepY) {
+                    pts.push([r.left + 6, yy]);
+                    pts.push([cx, yy]);
+                    pts.push([r.right - 6, yy]);
+                }
+                if (pts.length === 0) {
+                    pts.push([cx, r.top + 3], [cx, r.top + r.height / 2], [cx, r.bottom - 3]);
+                }
                 var raw = 0, cov = 0, who = '';
                 for (var i = 0; i < pts.length; i++) {
                     var t = document.elementFromPoint(pts[i][0], pts[i][1]);
@@ -175,11 +180,17 @@ object WebCrop {
                     return null;
                 }
                 var cx = Math.min(Math.max(r.left + r.width / 2, 1), window.innerWidth - 2);
-                var pts = [
-                    [cx, r.top + 3],
-                    [cx, r.top + r.height / 2],
-                    [cx, r.bottom - 3]
-                ];
+                // 與 probeJs 用同一套網格：只取 3 點會漏掉小的浮動按鈕。
+                var pts = [];
+                var stepY = Math.max(14, r.height / 20);
+                for (var yy = r.top + 4; yy <= r.bottom - 4; yy += stepY) {
+                    pts.push([r.left + 6, yy]);
+                    pts.push([cx, yy]);
+                    pts.push([r.right - 6, yy]);
+                }
+                if (pts.length === 0) {
+                    pts.push([cx, r.top + 3], [cx, r.top + r.height / 2], [cx, r.bottom - 3]);
+                }
                 var found = [];
                 for (var i = 0; i < pts.length; i++) {
                     var stack = document.elementsFromPoint(pts[i][0], pts[i][1]) || [];
