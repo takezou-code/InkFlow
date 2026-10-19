@@ -8,10 +8,12 @@ import android.graphics.Rect
 import android.view.PixelCopy
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.View
 import android.webkit.WebView
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.FileOutputStream
 import kotlin.math.roundToInt
@@ -27,15 +29,39 @@ object WebCrop {
     /** CSS px 框（getBoundingClientRect 原值，viewport 相對）。 */
     data class CssBox(val x: Float, val y: Float, val w: Float, val h: Float)
 
-    /** 捲動後重量的結果：新框＋當下 viewport 尺寸（CSS px）。 */
-    data class PrepareRect(val box: CssBox, val viewW: Float, val viewH: Float)
+    /** 捲動後重量的結果：新框＋當下 viewport 尺寸（CSS px）＋當前捲動位置。 */
+    data class PrepareRect(
+        val box: CssBox,
+        val viewW: Float,
+        val viewH: Float,
+        val scrollY: Float = 0f
+    )
+
+    /**
+     * 只量測、不捲動：回傳目標目前的 rect、viewport 尺寸與 scrollY。
+     *
+     * 用途有兩個：①裁圖前判斷「本來就在畫面內」→ 不必捲（使用者抱怨連在畫面內的塊也被捲動）；
+     * ②捲動後輪詢，直到 rect 與 scrollY 連續兩次不變，才確認捲動真的停了。
+     */
+    internal fun probeJs(idx: Int): String = """
+        (function() {
+            try {
+                var els = window.__inkcropEls || [];
+                var el = els[$idx];
+                if (!el) return 'NONE';
+                if (el.isConnected === false) return 'DETACHED';
+                var r = el.getBoundingClientRect();
+                return 'OK:' + [r.x, r.y, r.width, r.height, window.innerWidth, window.innerHeight, window.scrollY].join(',');
+            } catch (e) { return 'ERR'; }
+        })();
+    """.trimIndent()
 
     /**
      * 捲動定位腳本：用 collect 階段留下的 `__inkcropEls[i]` 找出目標本尊，
      * `scrollIntoView` 捲到畫面中央，回傳**捲動後**的 rect 與 viewport 尺寸。
      *
      * 為什麼是節點索引而不是座標：rect 出界時座標本身沒有意義（見 cropWindowPx 註解），
-     * 必須回到節點重新量。字串回傳格式刻意用 `OK:x,y,w,h,vw,vh` 而非 JSON——
+     * 必須回到節點重新量。字串回傳格式刻意用 `OK:x,y,w,h,vw,vh,sy` 而非 JSON——
      * evaluateJavascript 的結果本身會被 JSON 編碼一次，JSON 疊 JSON 只是徒增解碼陷阱。
      */
     internal fun prepareJs(idx: Int): String = """
@@ -48,7 +74,7 @@ object WebCrop {
                 try { el.scrollIntoView({block:'center', inline:'center'}); }
                 catch(e) { try { el.scrollIntoView(); } catch(e2) { return 'SCROLL_FAIL'; } }
                 var r = el.getBoundingClientRect();
-                return 'OK:' + [r.x, r.y, r.width, r.height, window.innerWidth, window.innerHeight].join(',');
+                return 'OK:' + [r.x, r.y, r.width, r.height, window.innerWidth, window.innerHeight, window.scrollY].join(',');
             } catch (e) { return 'ERR'; }
         })();
     """.trimIndent()
@@ -76,8 +102,8 @@ object WebCrop {
     """.trimIndent()
 
     /**
-     * 解析 [prepareJs] 的回傳字串（evaluateJavascript 會把字串值再包一層引號）。
-     * 純函數，可單測。
+     * 解析 [prepareJs]／[probeJs] 的回傳字串（evaluateJavascript 會把字串值再包一層引號）。
+     * 六欄（舊格式，無 scrollY）與七欄都吃。純函數，可單測。
      */
     fun parsePrepare(raw: String?): PrepareRect? {
         val s0 = raw?.trim() ?: return null
@@ -86,9 +112,9 @@ object WebCrop {
         if (!s.startsWith("OK:")) return null
         val nums = s.removePrefix("OK:").split(',')
         if (nums.size < 6) return null
-        val f = nums.take(6).map { it.trim().toFloatOrNull() ?: return null }
+        val f = nums.take(7).map { it.trim().toFloatOrNull() ?: return null }
         if (f[2] <= 0f || f[3] <= 0f || f[4] <= 0f || f[5] <= 0f) return null
-        return PrepareRect(CssBox(f[0], f[1], f[2], f[3]), f[4], f[5])
+        return PrepareRect(CssBox(f[0], f[1], f[2], f[3]), f[4], f[5], f.getOrElse(6) { 0f })
     }
 
     /** 框是否完整落在回報的 viewport 內（容差 1px）。框比視窗大 → 捲也救不了，必須退文字。 */
@@ -168,20 +194,76 @@ object WebCrop {
         webView: WebView,
         idx: Int,
         timeoutMs: Long = 1200
+    ): PrepareRect? = evalRect(webView, prepareJs(idx), idx, timeoutMs, "scroll")
+
+    /** 只量測、不捲動（見 [probeJs]）。 */
+    suspend fun probe(webView: WebView, idx: Int, timeoutMs: Long = 1200): PrepareRect? =
+        evalRect(webView, probeJs(idx), idx, timeoutMs, "probe")
+
+    private suspend fun evalRect(
+        webView: WebView,
+        js: String,
+        idx: Int,
+        timeoutMs: Long,
+        tag: String
     ): PrepareRect? {
         if (Looper.myLooper() != Looper.getMainLooper()) return null
         val ret = CompletableDeferred<String?>()
         try {
-            webView.evaluateJavascript(prepareJs(idx)) { v -> ret.complete(v) }
+            webView.evaluateJavascript(js) { v -> ret.complete(v) }
         } catch (t: Throwable) {
-            Log.w(TAG, "measureAfterScroll eval failed: $t")
+            Log.w(TAG, "$tag eval failed idx=$idx: $t")
             return null
         }
         val s = withTimeoutOrNull(timeoutMs) { ret.await() } ?: run {
-            Log.w(TAG, "measureAfterScroll timeout idx=$idx")
+            Log.w(TAG, "$tag timeout idx=$idx")
             return null
         }
         return parsePrepare(s)
+    }
+
+    /**
+     * 等捲動真的停下來：輪詢 rect（含 y）與 scrollY，**連續 3 次完全相同**才放行。
+     *
+     * ## 為什麼不能只等一幀（實機踩過）
+     *
+     * `scrollIntoView` 遇到 `scroll-behavior:smooth`（Gemini／ChatGPT 都有）是動畫：
+     * `postVisualStateCallback` 只保證「畫了一幀」，不保證「捲動結束」。
+     * 動畫途中截圖 → 畫面位置與量到的 rect 不一致 → 裁出來上下錯位、
+     * 甚至把輸入框或頁首帶進來。輪詢 scrollY＋rect 是唯一看得到「停了沒」的訊號。
+     */
+    suspend fun awaitSettled(
+        webView: WebView,
+        idx: Int,
+        timeoutMs: Long = 2000
+    ): PrepareRect? {
+        val t0 = SystemClock.uptimeMillis()
+        var prev: PrepareRect? = null
+        var stable = 0
+        var samples = 0
+        while (SystemClock.uptimeMillis() - t0 <= timeoutMs) {
+            val cur = probe(webView, idx)
+            samples++
+            if (cur != null) {
+                Log.d(TAG, "settle#$samples idx=$idx y=${cur.box.y} h=${cur.box.h} sy=${cur.scrollY}")
+            }
+            if (cur != null && prev != null &&
+                cur.scrollY == prev.scrollY &&
+                cur.box.y == prev.box.y &&
+                cur.box.h == prev.box.h &&
+                cur.box.w == prev.box.w
+            ) {
+                stable++
+                if (stable >= 2) {
+                    Log.d(TAG, "settled idx=$idx after ${samples} samples (${SystemClock.uptimeMillis() - t0}ms)")
+                    return cur
+                }
+            } else stable = 0
+            prev = cur
+            delay(60)
+        }
+        Log.w(TAG, "settle timeout idx=$idx after ${samples} samples, using last=$prev")
+        return prev
     }
 
     private var frameId = 1L
@@ -407,20 +489,52 @@ object WebCrop {
             val decor = activity.window?.decorView ?: return null
             val winW = decor.width
             val winH = decor.height
-            // 1) 捲到畫面中央後重量：出界框在這裡被救回來，捲不動的（比視窗大）則退文字。
+            // 0) 先量一次「現況」：本來就完整可見就不捲（使用者抱怨連頁面內的塊也被捲動）。
+            //    診斷同時記下 JS 的 innerHeight 與 WebView 實際可見高（device px / scale），
+            //    兩者不一致時，「比內文視窗矮、卻比可見區高」的塊會躲過檢查而被截斷。
             var box = fallbackBox
             if (idx >= 0) {
-                val pr = measureAfterScroll(webView, idx)
-                if (pr == null) {
+                val before = probe(webView, idx)
+                if (before == null) {
                     Log.w(TAG, "crop skipped no-element idx=$idx tag=$tag")
                     return null
                 }
-                if (!insideViewport(pr.box, pr.viewW, pr.viewH)) {
-                    Log.w(TAG, "crop skipped oversize idx=$idx box=${pr.box} vw=${pr.viewW} vh=${pr.viewH}")
-                    return null
+                val visH = if (webView.height > 0) webView.height / scale else before.viewH
+                val visW = if (webView.width > 0) webView.width / scale else before.viewW
+                Log.d(
+                    TAG,
+                    "DIAG idx=$idx tag=$tag scale=$scale win=${winW}x$winH " +
+                        "loc=(${loc[0]},${loc[1]}) view=${webView.width}x${webView.height} " +
+                        "vis=${"%.1f".format(visW)}x${"%.1f".format(visH)} " +
+                        "inner=${"%.1f".format(before.viewW)}x${"%.1f".format(before.viewH)} " +
+                        "sy=${"%.1f".format(before.scrollY)} box=${before.box}"
+                )
+                if (insideViewport(before.box, minOf(visW, before.viewW), minOf(visH, before.viewH))) {
+                    Log.d(TAG, "already-visible idx=$idx -> skip scroll")
+                    box = before.box
+                } else {
+                    // 1) 捲到畫面中央後重量：出界框在這裡被救回來，捲不動的（比可見區大）則退文字。
+                    val scrolled = measureAfterScroll(webView, idx)
+                    if (scrolled == null) {
+                        Log.w(TAG, "crop skipped scroll-noop idx=$idx tag=$tag")
+                        return null
+                    }
+                    // 2) 等捲動動畫真的停（smooth scroll 會讓「畫了一幀」≠「捲動結束」）。
+                    val settled = awaitSettled(webView, idx) ?: scrolled
+                    waitFrame(webView)
+                    // 3) 捲動後再量最後一次：這是唯一可信的裁切依據。
+                    val after = probe(webView, idx) ?: settled
+                    if (!insideViewport(after.box, minOf(visW, after.viewW), minOf(visH, after.viewH))) {
+                        Log.w(
+                            TAG,
+                            "crop skipped oversize idx=$idx box=${after.box} " +
+                                "vis=${"%.1f".format(visW)}x${"%.1f".format(visH)} " +
+                                "inner=${after.viewW}x${after.viewH} sy=${after.scrollY}"
+                        )
+                        return null
+                    }
+                    box = after.box
                 }
-                box = pr.box
-                // 2) 等捲動後的重繪落地；不等就 PixelCopy 會截到捲動前的畫面。
                 waitFrame(webView)
             }
             val rect = cropWindowRect(box, scale, loc[0], loc[1], winW, winH)
@@ -428,6 +542,7 @@ object WebCrop {
                 Log.w(TAG, "crop skipped box=$box scale=$scale win=${winW}x$winH")
                 return null
             }
+            Log.d(TAG, "crop-rect idx=$idx tag=$tag box=$box rect=$rect")
             val full = captureWindow(activity) ?: return null
             var bmp = Bitmap.createBitmap(full, rect.left, rect.top, rect.width(), rect.height())
             full.recycle()

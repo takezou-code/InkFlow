@@ -3,6 +3,7 @@ package com.vic.inkflow
 import com.vic.inkflow.ui.WebCrop
 import com.vic.inkflow.ui.fitMathSize
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -62,6 +63,15 @@ class WebCropTest {
         assertTrue("要捲進畫面", js.contains("scrollIntoView"))
         assertTrue("要置中才不會又貼邊", js.contains("block:'center'"))
         assertTrue("要回報捲動後的新框與 viewport", js.contains("innerWidth") && js.contains("innerHeight"))
+        assertTrue("要回報 scrollY 供穩定判定", js.contains("scrollY"))
+    }
+
+    @Test fun probeJs_measuresWithoutScrolling() {
+        val js = WebCrop.probeJs(2)
+        assertTrue("要用節點表", js.contains("__inkcropEls"))
+        assertTrue("要指名第 2 個節點", js.contains("els[2]"))
+        assertTrue("要回報 scrollY", js.contains("scrollY"))
+        assertFalse("探針不可捲動（否則穩定性判定會自己製造位移）", js.contains("scrollIntoView"))
     }
 
     @Test fun parsePrepare_readsEvaluatedString() {
@@ -70,6 +80,10 @@ class WebCropTest {
         assertEquals(WebCrop.CssBox(10f, 20f, 100f, 50f), pr.box)
         assertEquals(800f, pr.viewW)
         assertEquals(600f, pr.viewH)
+        assertEquals(0f, pr.scrollY)
+        // 七欄（probe/prepare 現行格式）要吃到 scrollY
+        val pr7 = WebCrop.parsePrepare("\"OK:10,20,100,50,800,600,1234.5\"")!!
+        assertEquals(1234.5f, pr7.scrollY)
         assertNull(WebCrop.parsePrepare("null"))
         assertNull(WebCrop.parsePrepare("\"NONE\""))
         assertNull(WebCrop.parsePrepare("\"DETACHED\""))
