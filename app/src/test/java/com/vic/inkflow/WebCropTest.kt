@@ -81,11 +81,19 @@ class WebCropTest {
         assertTrue("要看整疊命中元素", js.contains("elementsFromPoint"))
         assertTrue("只處理 fixed", js.contains("'fixed'"))
         assertTrue("只處理 sticky", js.contains("'sticky'"))
+        assertTrue("往祖先鏈找 float root", js.contains("parentElement"))
         assertTrue("要記下還原清單", js.contains("__inkcropHidden"))
         assertTrue("要先存原值", js.contains("__inkVis"))
         val back = WebCrop.restoreOverlaysJs()
         assertTrue("要從同一份清單還原", back.contains("__inkcropHidden"))
         assertTrue("要還原 visibility", back.contains("visibility"))
+    }
+
+    @Test fun probeJs_reportsOccluderDescription() {
+        val js = WebCrop.probeJs(0)
+        assertTrue("要往祖先鏈找 float root", js.contains("parentElement"))
+        assertTrue("要回報遮擋者描述", js.contains("describe"))
+        assertTrue("描述要能分辨 fixed/sticky", js.contains("s.position"))
     }
 
     @Test fun parsePrepare_readsEvaluatedString() {
@@ -102,6 +110,18 @@ class WebCropTest {
         val pr8 = WebCrop.parsePrepare("\"OK:10,20,100,50,800,600,0,1234.5\"")!!
         assertFalse(pr8.covered)
         assertEquals(1234.5f, pr8.scrollY)
+        // 九欄＋`|` 遮擋者描述
+        val pr9 = WebCrop.parsePrepare(
+            "\"OK:10,20,100,50,800,600,1,0,1|DIV.input-area@fixed[0/470/420x228]\""
+        )!!
+        assertTrue(pr9.covered)
+        assertTrue(pr9.rawCovered)
+        assertEquals("DIV.input-area@fixed[0/470/420x228]", pr9.occluder)
+        // 只有 raw（版面重疊、沒有浮動層）
+        val prRaw = WebCrop.parsePrepare("\"OK:10,20,100,50,800,600,0,0,1|\"")!!
+        assertFalse(prRaw.covered)
+        assertTrue(prRaw.rawCovered)
+        assertNull(prRaw.occluder)
         assertNull(WebCrop.parsePrepare("null"))
         assertNull(WebCrop.parsePrepare("\"NONE\""))
         assertNull(WebCrop.parsePrepare("\"DETACHED\""))

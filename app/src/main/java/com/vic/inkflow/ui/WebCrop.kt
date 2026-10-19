@@ -29,23 +29,30 @@ object WebCrop {
     /** CSS px 框（getBoundingClientRect 原值，viewport 相對）。 */
     data class CssBox(val x: Float, val y: Float, val w: Float, val h: Float)
 
-    /** 捲動後重量的結果：新框＋當下 viewport 尺寸（CSS px）＋是否被浮動層遮擋＋捲動位置。 */
+    /** 捲動後重量的結果：新框＋當下 viewport 尺寸（CSS px）＋遮擋資訊＋捲動位置。 */
     data class PrepareRect(
         val box: CssBox,
         val viewW: Float,
         val viewH: Float,
         /** 目標是否被 fixed/sticky 浮動層蓋住（座標在框內、畫面卻是別人的）。 */
         val covered: Boolean = false,
-        val scrollY: Float = 0f
+        val scrollY: Float = 0f,
+        /** 是否有任何非目標元素命中（含版面重疊，不一定遮得住）。 */
+        val rawCovered: Boolean = false,
+        /** 遮擋者描述（診斷用，例如 `DIV.input-area@fixed[0/470/420x228]`）。 */
+        val occluder: String? = null
     )
 
     /**
-     * 只量測、不捲動：回傳目標目前的 rect、viewport 尺寸、**是否被浮動層遮擋**與 scrollY。
+     * 只量測、不捲動：回傳目標目前的 rect、viewport 尺寸、**是否被浮動層遮擋**、遮擋者與 scrollY。
      *
      * 用途有三個：①裁圖前判斷「本來就在畫面內」→ 不必捲（使用者抱怨連在畫面內的塊也被捲動）；
      * ②捲動後輪詢，直到 rect 連續不變，才確認捲動真的停了；
      * ③抓「座標在視窗內、畫面卻被蓋住」——Gemini／ChatGPT 的輸入列是 `position:fixed`，
      * `getBoundingClientRect` 看不到它，PixelCopy 卻只拍到它（實機踩過：裁到「問問 Gemini」輸入框）。
+     *
+     * 遮擋判定要**往祖先鏈找** float root：實測命中的是輸入列內層的 static div，
+     * 只看命中元素本身會回報「有遮擋但找不到浮動層」而全部退文字。
      */
     internal fun probeJs(idx: Int): String = """
         (function() {
@@ -55,15 +62,28 @@ object WebCrop {
                 if (!el) return 'NONE';
                 if (el.isConnected === false) return 'DETACHED';
                 var r = el.getBoundingClientRect();
-                function covered(x, y) {
+                function floatRoot(n) {
+                    var p = n, d = 0;
+                    while (p && p.nodeType === 1 && d < 15) {
+                        if (p === el || p.contains(el)) return null;
+                        var s = getComputedStyle(p);
+                        if (s.position === 'fixed' || s.position === 'sticky') return p;
+                        p = p.parentElement; d++;
+                    }
+                    return null;
+                }
+                function describe(n) {
                     try {
-                        var t = document.elementFromPoint(x, y);
-                        if (!t) return 0;
-                        if (t === el || el.contains(t)) return 0;
-                        var s = getComputedStyle(t);
-                        if (s.pointerEvents === 'none') return 0;
-                        return 1;
-                    } catch (e) { return 0; }
+                        var s = getComputedStyle(n), q = n.getBoundingClientRect();
+                        var cls = '';
+                        if (n.className && typeof n.className === 'string') {
+                            var parts = n.className.trim().split(/\s+/).slice(0, 2);
+                            if (parts.length && parts[0]) cls = '.' + parts.join('.');
+                        }
+                        return (n.tagName || '?') + cls + (n.id ? ('#' + n.id) : '') +
+                            '@' + s.position + '[' + Math.round(q.left) + '/' + Math.round(q.top) +
+                            '/' + Math.round(q.width) + 'x' + Math.round(q.height) + ']';
+                    } catch (e) { return '?'; }
                 }
                 var cx = Math.min(Math.max(r.left + r.width / 2, 1), window.innerWidth - 2);
                 var pts = [
@@ -73,12 +93,17 @@ object WebCrop {
                     [r.left + 3, r.top + r.height / 2],
                     [r.right - 3, r.top + r.height / 2]
                 ];
-                var cov = 0;
+                var raw = 0, cov = 0, who = '';
                 for (var i = 0; i < pts.length; i++) {
-                    if (covered(pts[i][0], pts[i][1])) { cov = 1; break; }
+                    var t = document.elementFromPoint(pts[i][0], pts[i][1]);
+                    if (!t || t === el || el.contains(t)) continue;
+                    raw = 1;
+                    var root = floatRoot(t);
+                    if (root) { cov = 1; if (!who) who = describe(root); }
                 }
                 return 'OK:' + [r.x, r.y, r.width, r.height,
-                    window.innerWidth, window.innerHeight, cov, window.scrollY].join(',');
+                    window.innerWidth, window.innerHeight, cov, window.scrollY, raw].join(',') +
+                    '|' + who;
             } catch (e) { return 'ERR'; }
         })();
     """.trimIndent()
@@ -87,7 +112,10 @@ object WebCrop {
      * 暫時隱藏遮住目標的 fixed/sticky 浮動層（輸入列、頁首、浮動工具列），回傳隱藏數量。
      *
      * 為什麼可以這樣做：fixed/sticky 不佔版面流，隱藏不會推動內容，目標底下的像素本來就在；
-     * 拍完由 [restoreOverlaysJs] 還原。非浮動層的遮擋（真的疊在一起的內容）不處理，直接退文字。
+     * 拍完由 [restoreOverlaysJs] 還原。非浮動層的遮擋（真的疊在一起的內容）不處理。
+     *
+     * 關鍵：隱藏的是**祖先鏈上的 float root**（例：`input-area` 外框），不是命中的內層 div
+     * ——內層多半是 static，只認命中元素本身會一個都找不到（實機踩過）。
      */
     internal fun hideOverlaysJs(idx: Int): String = """
         (function() {
@@ -96,6 +124,16 @@ object WebCrop {
                 var el = els[$idx];
                 if (!el) return 'NONE';
                 var r = el.getBoundingClientRect();
+                function floatRoot(n) {
+                    var p = n, d = 0;
+                    while (p && p.nodeType === 1 && d < 15) {
+                        if (p === el || p.contains(el)) return null;
+                        var s = getComputedStyle(p);
+                        if (s.position === 'fixed' || s.position === 'sticky') return p;
+                        p = p.parentElement; d++;
+                    }
+                    return null;
+                }
                 var cx = Math.min(Math.max(r.left + r.width / 2, 1), window.innerWidth - 2);
                 var pts = [
                     [cx, r.top + 3],
@@ -108,10 +146,8 @@ object WebCrop {
                     for (var j = 0; j < stack.length; j++) {
                         var n = stack[j];
                         if (n === el || el.contains(n)) break;
-                        var s = getComputedStyle(n);
-                        if (s.position === 'fixed' || s.position === 'sticky') {
-                            if (found.indexOf(n) < 0) found.push(n);
-                        }
+                        var root = floatRoot(n);
+                        if (root && found.indexOf(root) < 0) found.push(root);
                     }
                 }
                 window.__inkcropHidden = found;
@@ -155,14 +191,14 @@ object WebCrop {
      * 必須回到節點重新量。字串回傳格式刻意用 `OK:x,y,w,h,vw,vh,sy` 而非 JSON——
      * evaluateJavascript 的結果本身會被 JSON 編碼一次，JSON 疊 JSON 只是徒增解碼陷阱。
      */
-    internal fun prepareJs(idx: Int): String = """
+    internal fun prepareJs(idx: Int, block: String = "center"): String = """
         (function() {
             try {
                 var els = window.__inkcropEls || [];
                 var el = els[$idx];
                 if (!el) return 'NONE';
                 if (el.isConnected === false) return 'DETACHED';
-                try { el.scrollIntoView({block:'center', inline:'center'}); }
+                try { el.scrollIntoView({block:'$block', inline:'center'}); }
                 catch(e) { try { el.scrollIntoView(); } catch(e2) { return 'SCROLL_FAIL'; } }
                 var r = el.getBoundingClientRect();
                 return 'OK:' + [r.x, r.y, r.width, r.height, window.innerWidth, window.innerHeight, window.scrollY].join(',');
@@ -195,24 +231,30 @@ object WebCrop {
     /**
      * 解析 [prepareJs]／[probeJs] 的回傳字串（evaluateJavascript 會把字串值再包一層引號）。
      *
-     * 欄位：`OK:x,y,w,h,vw,vh[,cov[,sy]]`。舊格式（6 欄）仍吃，cov 預設 false。
-     * 純函數，可單測。
+     * 欄位：`OK:x,y,w,h,vw,vh[,cov[,sy[,raw]]]|遮擋者描述`。
+     * 舊格式（6 欄、無 `|`）仍吃，cov/raw 預設 false。純函數，可單測。
      */
     fun parsePrepare(raw: String?): PrepareRect? {
         val s0 = raw?.trim() ?: return null
         if (s0 == "null" || s0.isEmpty()) return null
         val s = s0.removeSurrounding("\"").replace("\\\"", "\"")
         if (!s.startsWith("OK:")) return null
-        val nums = s.removePrefix("OK:").split(',')
+        val body = s.removePrefix("OK:")
+        val cut = body.indexOf('|')
+        val numsPart = if (cut >= 0) body.substring(0, cut) else body
+        val occluder = if (cut >= 0) body.substring(cut + 1).trim().takeIf { it.isNotEmpty() } else null
+        val nums = numsPart.split(',')
         if (nums.size < 6) return null
-        val f = nums.take(8).map { it.trim().toFloatOrNull() ?: return null }
+        val f = nums.take(9).map { it.trim().toFloatOrNull() ?: return null }
         if (f[2] <= 0f || f[3] <= 0f || f[4] <= 0f || f[5] <= 0f) return null
         return PrepareRect(
             box = CssBox(f[0], f[1], f[2], f[3]),
             viewW = f[4],
             viewH = f[5],
             covered = f.getOrElse(6) { 0f } >= 0.5f,
-            scrollY = f.getOrElse(7) { 0f }
+            scrollY = f.getOrElse(7) { 0f },
+            rawCovered = f.getOrElse(8) { 0f } >= 0.5f,
+            occluder = occluder
         )
     }
 
@@ -292,8 +334,9 @@ object WebCrop {
     suspend fun measureAfterScroll(
         webView: WebView,
         idx: Int,
-        timeoutMs: Long = 1200
-    ): PrepareRect? = evalRect(webView, prepareJs(idx), idx, timeoutMs, "scroll")
+        timeoutMs: Long = 1200,
+        block: String = "center"
+    ): PrepareRect? = evalRect(webView, prepareJs(idx, block), idx, timeoutMs, "scroll-$block")
 
     /** 只量測、不捲動（見 [probeJs]）。 */
     suspend fun probe(webView: WebView, idx: Int, timeoutMs: Long = 1200): PrepareRect? =
@@ -671,20 +714,54 @@ object WebCrop {
                 //    暫時隱藏遮擋層再拍，拍完在 finally 還原。隱不掉（不是浮動層）就退文字。
                 val cov = probe(webView, idx)
                 if (cov != null && cov.covered) {
+                    Log.d(
+                        TAG,
+                        "covered idx=$idx by=${cov.occluder ?: "?"} box=${cov.box}"
+                    )
                     hiddenOverlays = hideOverlays(webView, idx)
                     Log.d(TAG, "covered idx=$idx hidden=$hiddenOverlays")
                     if (hiddenOverlays <= 0) {
-                        Log.w(TAG, "crop skipped covered-unfixable idx=$idx tag=$tag")
-                        return null
+                        // 找不到浮動層可藏：改用「對齊頂端」再試一次（被底部輸入列蓋住的塊
+                        // 通常捲到頂端就露出來），仍被蓋才退文字。
+                        Log.w(TAG, "covered-no-floating idx=$idx -> retry top-align")
+                        val re = measureAfterScroll(webView, idx, block = "start")
+                        if (re == null) {
+                            Log.w(TAG, "crop skipped retry-failed idx=$idx tag=$tag")
+                            return null
+                        }
+                        awaitSettled(webView, idx)
+                        waitFrame(webView)
+                        val chk = probe(webView, idx)
+                        if (chk == null || chk.covered ||
+                            !insideViewport(chk.box, minOf(visW, chk.viewW), minOf(visH, chk.viewH))
+                        ) {
+                            Log.w(
+                                TAG,
+                                "crop skipped still-covered idx=$idx tag=$tag " +
+                                    "by=${chk?.occluder ?: "?"} box=${chk?.box}"
+                            )
+                            return null
+                        }
+                        box = chk.box
+                        waitFrame(webView)
+                    } else {
+                        waitFrame(webView)
+                        val clear = probe(webView, idx)
+                        if (clear == null || clear.covered) {
+                            Log.w(TAG, "crop skipped still-covered idx=$idx tag=$tag")
+                            return null
+                        }
+                        // sticky 會佔版面流：隱藏後可能位移，重新確認仍在可見區內。
+                        if (!insideViewport(clear.box, minOf(visW, clear.viewW), minOf(visH, clear.viewH))) {
+                            Log.w(TAG, "crop skipped shifted-out idx=$idx box=${clear.box}")
+                            return null
+                        }
+                        box = clear.box
+                        waitFrame(webView)
                     }
-                    waitFrame(webView)
-                    val clear = probe(webView, idx)
-                    if (clear == null || clear.covered) {
-                        Log.w(TAG, "crop skipped still-covered idx=$idx tag=$tag")
-                        return null
-                    }
-                    box = clear.box
-                    waitFrame(webView)
+                } else if (cov != null && cov.rawCovered) {
+                    // 版面本來就重疊、但沒有浮動層：照拍，留紀錄。
+                    Log.d(TAG, "in-flow overlap idx=$idx, cropping anyway box=${cov.box}")
                 }
             }
             val rect = cropWindowRect(box, scale, loc[0], loc[1], winW, winH)
