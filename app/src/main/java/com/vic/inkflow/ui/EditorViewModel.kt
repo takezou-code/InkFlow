@@ -32,6 +32,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -224,36 +225,9 @@ class EditorViewModel(
     // 擦除分兩個階段：命中＋樂觀隱藏（eraserMutex 串行，毫秒級）與背景墓碑（鎖外）。
     // 舊碼把 tombstone（UPDATE＋DELETE points＋fsync）包在同一把鎖裡，下一批擦除
     // 因此排在磁碟後面——連續快擦時畫面會落後手指。
-    // 手勢結算不再只等鎖：DB 已移出鎖，用 eraseBatchesInFlight 等「最後一批真的寫完」。
-    // final 不會搶先消費舊旗標：final 在同手勢 live 之後才可能命中。
+    // 手勢結算不看鎖，看「這一個手勢自己的批次」是否寫完（EraseGestureAccumulator）。
     private val eraserMutex = Mutex()
     private val eraseHitPending = java.util.concurrent.atomic.AtomicBoolean(false)
-
-    /**
-     * 進行中的擦除批次計數（含命中、樂觀隱藏、背景墓碑）。
-     *
-     * 為什麼不用 eraserMutex 排空：DB 寫入已移出鎖，鎖只保證「命中＋隱藏」的順序；
-     * endEraseGesture 要的是「最後一批墓碑真的落盤」。+1 在呼叫端（Main）同步發生，
-     * -1 在協程 finally；跨頁 N 批也不會漏。
-     */
-    private val eraseBatchesInFlight = java.util.concurrent.atomic.AtomicInteger(0)
-    private val eraseIdle = MutableStateFlow(true)
-
-    private fun beginEraseBatch() {
-        eraseBatchesInFlight.incrementAndGet()
-        eraseIdle.value = false
-    }
-
-    private fun finishEraseBatch() {
-        if (eraseBatchesInFlight.decrementAndGet() == 0) eraseIdle.value = true
-    }
-
-    /** 等所有擦除批次（含背景墓碑）落定。鎖必配超時：DB 卡死不能讓 undo 永不結算。 */
-    private suspend fun awaitEraseIdle() {
-        if (withTimeoutOrNull(5_000) { eraseIdle.first { it } } == null) {
-            android.util.Log.w("EditorViewModel", "erase batches still in flight after 5s; snapshotting anyway")
-        }
-    }
 
     private val _strokeSpeedSensitivity = MutableStateFlow(1f)
     val strokeSpeedSensitivity: StateFlow<Float> = _strokeSpeedSensitivity.asStateFlow()
@@ -416,6 +390,13 @@ class EditorViewModel(
     private val undoStack: ArrayDeque<DrawCommand> = ArrayDeque()
     private val redoStack: ArrayDeque<DrawCommand> = ArrayDeque()
 
+    /**
+     * 結構操作（清棧）的世代號。飛行中的擦除結算會晚幾毫秒才 pushUndo，
+     * 若期間清了棧，那一格帶著舊 pageIndex 進來就是幽靈資料；用世代號擋掉。
+     */
+    @Volatile
+    private var undoGeneration = 0
+
     private val _canUndo = MutableStateFlow(false)
     val canUndo: StateFlow<Boolean> = _canUndo.asStateFlow()
 
@@ -436,6 +417,7 @@ class EditorViewModel(
      * 否則舊命令的 pageIndex 已錯位，復原會寫出幽靈資料。
      */
     fun clearUndoStacks() {
+        undoGeneration++
         undoStack.clear()
         redoStack.clear()
         _canUndo.value = false
@@ -520,14 +502,14 @@ class EditorViewModel(
             repos.strokes.getStrokesForPage(documentUri, page),
             repos.texts.getForPage(documentUri, page),
             repos.images.getForPage(documentUri, page),
-            // 第四路：樂觀隱藏集。任一路變化都重組，但這裡只是三個 list filter
-            //（O(n)，相對點陣重建可忽略），DB 真相不受影響。
-            _hiddenIds
-        ) { s, t, i, hidden ->
+            // 第四路：樂觀隱藏集的版本號。隱藏集本身是 concurrent set，
+            // 這裡不複製、只讀；版本號變一次就重組一次（同一批多個 id 只發一幀）。
+            hiddenVersion
+        ) { s, t, i, _ ->
             NeighborPageData(
-                strokes = if (hidden.isEmpty()) s else s.filter { it.stroke.id !in hidden },
-                texts = if (hidden.isEmpty()) t else t.filter { it.id !in hidden },
-                images = if (hidden.isEmpty()) i else i.filter { it.id !in hidden }
+                strokes = if (hiddenIds.isEmpty()) s else s.filter { it.stroke.id !in hiddenIds },
+                texts = if (hiddenIds.isEmpty()) t else t.filter { it.id !in hiddenIds },
+                images = if (hiddenIds.isEmpty()) i else i.filter { it.id !in hiddenIds }
             )
         }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), cachedNeighbor(page) ?: NeighborPageData())
@@ -701,10 +683,38 @@ class EditorViewModel(
     fun clearEraseHitPending() { eraseHitPending.set(false) }
 
     // ── R1 手勢級合併：單次擦除手勢內只刪不記，結尾一次記一格 ──────────────
-    // 累積器只在手勢線程（Main 調用序列）碰觸；讀寫都在 Main 或單次 end 調用內，無競態。
-    private val eraseGestureStrokes = mutableListOf<StrokeWithPoints>()
-    private val eraseGestureTexts = mutableListOf<TextAnnotationEntity>()
-    private var eraseGestureOpen = false
+    /**
+     * 一次擦除手勢的累積器（每個手勢一個物件）。
+     *
+     * 為什麼不是共享 MutableList＋begin 清空：手勢結算要等背景墓碑，等待期間使用者
+     * 可能已經開始下一個手勢；共享 list 會被下一個 begin 清掉，上一手勢尚未 append
+     * 的戰果就靜默消失。批次在呼叫當下（Main）捕獲自己的 acc，結算只等這一個。
+     */
+    private class EraseGestureAccumulator(val undoGeneration: Int) {
+        val strokes = mutableListOf<StrokeWithPoints>()
+        val texts = mutableListOf<TextAnnotationEntity>()
+        private val pending = java.util.concurrent.atomic.AtomicInteger(0)
+        private val idle = MutableStateFlow(true)
+
+        fun beginBatch() {
+            pending.incrementAndGet()
+            idle.value = false
+        }
+
+        fun endBatch() {
+            if (pending.decrementAndGet() == 0) idle.value = true
+        }
+
+        /** 等這個手勢的所有批次（含背景墓碑）落定。鎖必配超時。 */
+        suspend fun awaitIdle() {
+            if (withTimeoutOrNull(5_000) { idle.first { it } } == null) {
+                android.util.Log.w("EditorViewModel", "erase batches still in flight after 5s; snapshotting anyway")
+            }
+        }
+    }
+
+    @Volatile
+    private var eraseAccumulator: EraseGestureAccumulator? = null
 
     /**
      * 樂觀隱藏：使用者可見的刪除先從畫面拿掉，DB 慢慢跟上。
@@ -718,47 +728,40 @@ class EditorViewModel(
      *  1. id 永不重用（UUID），跨文件也不會撞 —— 隱藏集不會誤傷別的列。
      *  2. undo 恢復同 id 前必先 showIds（否則復活的墨永遠隱形）。
      *  3. 刪除提交後不清集合（不清＝留在裡面無害；清了＝Flow 還沒重發時閃回一幀）。
-     * 代價：一天的重度擦寫最多幾千個 36 字串（~100KB），可接受。
+     * 用 ConcurrentHashMap 的 set ＋ 版本號，而不是每批複製整個 Set：連續快擦時
+     * 集合可能有上萬個 id，每 24ms 複製一次只會把剛修掉的延遲從 DB 搬回 CPU。
      */
-    private val _hiddenIds = MutableStateFlow<Set<String>>(emptySet())
+    private val hiddenIds: MutableSet<String> = java.util.Collections.newSetFromMap(
+        java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+    )
+    private val hiddenVersion = MutableStateFlow(0L)
 
     /** 從畫面拿掉（刪除／redo 刪除時先呼叫，DB 隨後跟上）。執行緒安全，隨處可呼叫。 */
     internal fun hideIds(ids: Collection<String>) {
-        if (ids.isNotEmpty()) _hiddenIds.value += ids
+        if (ids.isEmpty()) return
+        var changed = false
+        for (id in ids) if (hiddenIds.add(id)) changed = true
+        if (changed) hiddenVersion.update { it + 1 }
     }
 
     /** 放回畫面（undo 恢復時先呼叫，DB 隨後跟上）。 */
     internal fun showIds(ids: Collection<String>) {
-        if (ids.isNotEmpty()) _hiddenIds.value -= ids.toSet()
+        if (ids.isEmpty()) return
+        var changed = false
+        for (id in ids) if (hiddenIds.remove(id)) changed = true
+        if (changed) hiddenVersion.update { it + 1 }
     }
 
     /** 擦除手勢起手呼叫（InkCanvas 橡皮擦接管處）。 */
     fun beginEraseGesture() {
-        eraseGestureStrokes.clear()
-        eraseGestureTexts.clear()
-        eraseGestureOpen = true
+        eraseAccumulator = EraseGestureAccumulator(undoGeneration)
     }
 
     /** 擦除手勢正常結束呼叫：等同手勢所有 async 寫入落定後，有戰果則合併推一格，否則不留痕。 */
     fun endEraseGesture() {
-        if (!eraseGestureOpen) return
-        eraseGestureOpen = false
-        viewModelScope.launch(Dispatchers.Default) {
-            awaitEraseIdle() // 排空：含背景墓碑的所有批次都落定才結算
-            val (strokes, texts) = withContext(Dispatchers.Main) {
-                // 去重防禦：同一筆若被兩批都命中（Flow 尚未重發），累積器裡也只留一份。
-                val s = eraseGestureStrokes.distinctBy { it.stroke.id }
-                val t = eraseGestureTexts.distinctBy { it.id }
-                eraseGestureStrokes.clear()
-                eraseGestureTexts.clear()
-                s to t
-            }
-            if (strokes.isNotEmpty() || texts.isNotEmpty()) {
-                withContext(Dispatchers.Main) {
-                    pushUndo(DrawCommand.EraseGesture(strokes, texts))
-                }
-            }
-        }
+        val acc = eraseAccumulator ?: return
+        eraseAccumulator = null
+        finishEraseGesture(acc)
     }
 
     /**
@@ -770,15 +773,34 @@ class EditorViewModel(
      * 「取消」只決定手勢本身不繼續，不決定已發生的刪除要不要負責。
      */
     fun discardEraseGesture() {
-        if (!eraseGestureOpen) return
-        eraseGestureOpen = false
+        // 丟棄＝這一手勢沒有 final 會消費切筆旗標，先清掉避免污染下一次手勢。
+        eraseHitPending.set(false)
+        val acc = eraseAccumulator ?: return
+        eraseAccumulator = null
+        finishEraseGesture(acc)
+    }
+
+    /**
+     * 結算單一手勢：等「這個 acc 的」批次全部落盤才快照。
+     *
+     * 關鍵是 acc 已經從欄位卸下：使用者可以立刻開始下一個手勢（新的 acc），
+     * 這裡的 append 不會被清掉，也不會把下一手勢的命中算進這一格 undo。
+     */
+    private fun finishEraseGesture(acc: EraseGestureAccumulator) {
         viewModelScope.launch(Dispatchers.Default) {
-            awaitEraseIdle() // 排空：同 endEraseGesture（含背景墓碑）
+            acc.awaitIdle()
+            // 等待期間可能發生結構操作（增刪移頁）→ 棧已清，這一格 pageIndex 已錯位。
+            // 跟 clearUndoStacks 的語意一致：結構操作後不接受舊手勢的 undo。
+            if (acc.undoGeneration != undoGeneration) {
+                android.util.Log.w("EditorViewModel", "erase gesture outlived clearUndoStacks; undo step dropped")
+                return@launch
+            }
             val (strokes, texts) = withContext(Dispatchers.Main) {
-                val s = eraseGestureStrokes.distinctBy { it.stroke.id }
-                val t = eraseGestureTexts.distinctBy { it.id }
-                eraseGestureStrokes.clear()
-                eraseGestureTexts.clear()
+                // 去重防禦：同一筆若被兩批都命中（Flow 尚未重發），累積器裡也只留一份。
+                val s = acc.strokes.distinctBy { it.stroke.id }
+                val t = acc.texts.distinctBy { it.id }
+                acc.strokes.clear()
+                acc.texts.clear()
                 s to t
             }
             if (strokes.isNotEmpty() || texts.isNotEmpty()) {
@@ -829,7 +851,10 @@ class EditorViewModel(
         // Pass the snapshot of eraser points to the coroutine
         val pointsCopy = eraserPointsCanvas.toList()
 
-        beginEraseBatch()
+        // 手勢累積器在「呼叫當下」捕獲（Main 序列）：之後就算使用者立刻放開、
+        // end 卸下欄位，這批仍會 append 到正確的那一格 undo。
+        val gestureAcc = if (accumulateToGesture) eraseAccumulator else null
+        gestureAcc?.beginBatch()
         viewModelScope.launch(Dispatchers.Default) {
             try {
                 // ── 快路徑：命中＋樂觀隱藏，絕不碰 DB ──────────────────────────
@@ -838,11 +863,10 @@ class EditorViewModel(
                 // 現在鎖只保護「命中＋隱藏」這個毫秒級區段，DB 在鎖外背景完成。
                 val hits = eraserMutex.withLock {
                     // 已被前一批隱藏的筆不再命中：省一次 fsync，也不會產生重複 undo。
-                    val hiddenNow = _hiddenIds.value
-                    val visibleStrokes = if (hiddenNow.isEmpty()) targetData.strokes
-                        else targetData.strokes.filter { it.stroke.id !in hiddenNow }
-                    val visibleTexts = if (hiddenNow.isEmpty()) targetData.texts
-                        else targetData.texts.filter { it.id !in hiddenNow }
+                    val visibleStrokes = if (hiddenIds.isEmpty()) targetData.strokes
+                        else targetData.strokes.filter { it.stroke.id !in hiddenIds }
+                    val visibleTexts = if (hiddenIds.isEmpty()) targetData.texts
+                        else targetData.texts.filter { it.id !in hiddenIds }
 
                     // Scale eraser points from canvas-pixel space to model space before comparing.
                     val scaleX = DocTransform.invScaleXUnchecked(cW, modelWidth)
@@ -931,11 +955,11 @@ class EditorViewModel(
                 // 只有真的落盤成功才進 undo 累積器：寫失敗卻先記 undo，之後
                 // undo→redo 會把從沒刪過的筆寫墓碑（幽靈刪除＝真的刪資料）。
                 withContext(Dispatchers.Main) {
-                    if (accumulateToGesture) {
-                        // 無條件累積：eraseBatchesInFlight 的排空保證所有 append
-                        // 都在 endEraseGesture 快照之前跑完（旗標只管開關手勢）。
-                        eraseGestureStrokes += hits.strokes
-                        eraseGestureTexts += hits.texts
+                    if (gestureAcc != null) {
+                        // 無條件累積：這個手勢的結算會等 acc.pending 歸零，
+                        // 所有 append 都保證在快照之前跑完。
+                        gestureAcc.strokes += hits.strokes
+                        gestureAcc.texts += hits.texts
                     } else {
                         if (hits.strokes.isNotEmpty()) {
                             pushUndo(DrawCommand.RemoveStrokes(hits.strokes))
@@ -948,7 +972,7 @@ class EditorViewModel(
                     maybeSwitchToPenAfterErase(switchToPenAfterEraseHit)
                 }
             } finally {
-                finishEraseBatch()
+                gestureAcc?.endBatch()
             }
         }
     }
@@ -1639,14 +1663,28 @@ class EditorViewModel(
                 is DrawCommand.EraseGesture -> {
                     hideIds(command.strokes.map { it.stroke.id })
                     hideIds(command.texts.map { it.id })
-                    // 筆＋字同一個交易：redo 中途失敗不會留下半套狀態。
-                    repos.transaction {
-                        if (command.strokes.isNotEmpty()) {
-                            repos.strokes.tombstoneStrokesByIds(command.strokes.map { it.stroke.id })
+                    try {
+                        // 筆＋字同一個交易：redo 中途失敗不會留下半套狀態。
+                        repos.transaction {
+                            if (command.strokes.isNotEmpty()) {
+                                repos.strokes.tombstoneStrokesByIds(command.strokes.map { it.stroke.id })
+                            }
+                            if (command.texts.isNotEmpty()) {
+                                repos.texts.tombstoneByIds(command.texts.map { it.id })
+                            }
                         }
-                        if (command.texts.isNotEmpty()) {
-                            repos.texts.tombstoneByIds(command.texts.map { it.id })
-                        }
+                    } catch (e: CancellationException) {
+                        showIds(command.strokes.map { it.stroke.id })
+                        showIds(command.texts.map { it.id })
+                        throw e
+                    } catch (e: Exception) {
+                        // 寫失敗就把畫面放回來：hid 了但 DB 沒刪＝這批墨本 session 永久隱形，
+                        // 連重擦都擦不到（命中讀的是過濾後流）。跟 undo 失敗的處置對稱。
+                        showIds(command.strokes.map { it.stroke.id })
+                        showIds(command.texts.map { it.id })
+                        withContext(Dispatchers.Main) { _canRedo.value = redoStack.isNotEmpty() }
+                        android.util.Log.e("EditorViewModel", "redo of erase failed, unhidden", e)
+                        return@launch
                     }
                 }
                 is DrawCommand.MoveStrokes -> {
