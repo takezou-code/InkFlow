@@ -877,20 +877,7 @@ class EditorViewModel(
                         strokes = visibleStrokes
                     )
 
-                    // Also erase text annotations whose model coords fall within the eraser bounds.
-                    var eMinX = Float.POSITIVE_INFINITY
-                    var eMinY = Float.POSITIVE_INFINITY
-                    var eMaxX = Float.NEGATIVE_INFINITY
-                    var eMaxY = Float.NEGATIVE_INFINITY
-                    for (p in modelEraserPoints) {
-                        if (p.x < eMinX) eMinX = p.x
-                        if (p.x > eMaxX) eMaxX = p.x
-                        if (p.y < eMinY) eMinY = p.y
-                        if (p.y > eMaxY) eMaxY = p.y
-                    }
-                    // 10f is eraser radius
-                    val eraserBounds = android.graphics.RectF(eMinX - 10f, eMinY - 10f, eMaxX + 10f, eMaxY + 10f)
-
+                    // Also erase text annotations whose box the path actually touches.
                     val hitTexts = visibleTexts.filter { ann ->
                         // Estimate the bounding box of the text in model space.
                         // isStamp = oversized emoji: treat as a square of fontSize × fontSize.
@@ -898,13 +885,15 @@ class EditorViewModel(
                         // Y-axis: modelY is the text baseline, so the top edge is (modelY - height).
                         val estimatedW = if (ann.isStamp) ann.fontSize else ann.text.length * ann.fontSize * 0.6f
                         val estimatedH = if (ann.isStamp) ann.fontSize else ann.fontSize * 1.2f
-                        val annBounds = android.graphics.RectF(
-                            ann.modelX,
-                            ann.modelY - estimatedH,
-                            ann.modelX + estimatedW,
-                            ann.modelY
+                        // 逐段判相交，不用整條路徑的 bbox：斜線的 bbox 會誤擦路徑兩側的字。
+                        IntersectionUtils.polylineIntersectsRect(
+                            points = modelEraserPoints,
+                            rectLeft = ann.modelX,
+                            rectTop = ann.modelY - estimatedH,
+                            rectRight = ann.modelX + estimatedW,
+                            rectBottom = ann.modelY,
+                            radius = 10f
                         )
-                        android.graphics.RectF.intersects(eraserBounds, annBounds)
                     }
 
                     // 樂觀隱藏先行：畫面下一幀就不見，不等 DB 交易＋Flow 重發整條鏈。

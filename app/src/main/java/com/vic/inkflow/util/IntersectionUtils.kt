@@ -174,6 +174,80 @@ object IntersectionUtils {
     }
 
     /**
+     * True if an eraser polyline (model space) comes within [radius] of the box
+     * ([rectLeft], [rectTop], [rectRight], [rectBottom]).
+     *
+     * 為什麼不是「擦除路徑的總 bbox 與文字框相交」：一條斜穿頁面的路徑，bbox 會
+     * 覆蓋整塊區域，路徑兩側沒碰到的文字也會被擦掉。這裡逐段判相交（tap 則是
+     * 單點落在擴張後矩形內），只擦真的碰到的字。
+     */
+    fun polylineIntersectsRect(
+        points: List<Offset>,
+        rectLeft: Float,
+        rectTop: Float,
+        rectRight: Float,
+        rectBottom: Float,
+        radius: Float
+    ): Boolean {
+        if (points.isEmpty()) return false
+        val left = rectLeft - radius
+        val top = rectTop - radius
+        val right = rectRight + radius
+        val bottom = rectBottom + radius
+        for (p in points) {
+            if (p.x >= left && p.x <= right && p.y >= top && p.y <= bottom) return true
+        }
+        if (points.size < 2) return false
+        for (i in 0 until points.size - 1) {
+            val a = points[i]
+            val b = points[i + 1]
+            if (segmentIntersectsBox(a.x, a.y, b.x, b.y, left, top, right, bottom)) return true
+        }
+        return false
+    }
+
+    /** Segment vs AABB (Liang–Barsky-style edge tests, no allocations). */
+    private fun segmentIntersectsBox(
+        x0: Float, y0: Float, x1: Float, y1: Float,
+        left: Float, top: Float, right: Float, bottom: Float
+    ): Boolean {
+        if (x0 >= left && x0 <= right && y0 >= top && y0 <= bottom) return true
+        if (x1 >= left && x1 <= right && y1 >= top && y1 <= bottom) return true
+        return crossesVertical(x0, y0, x1, y1, left, top, bottom) ||
+            crossesVertical(x0, y0, x1, y1, right, top, bottom) ||
+            crossesHorizontal(x0, y0, x1, y1, top, left, right) ||
+            crossesHorizontal(x0, y0, x1, y1, bottom, left, right)
+    }
+
+    private fun crossesVertical(
+        x0: Float, y0: Float, x1: Float, y1: Float,
+        x: Float, yMin: Float, yMax: Float
+    ): Boolean {
+        val dx = x1 - x0
+        if (dx == 0f) {
+            return x0 == x && maxOf(y0, y1) >= yMin && minOf(y0, y1) <= yMax
+        }
+        val t = (x - x0) / dx
+        if (t < 0f || t > 1f) return false
+        val y = y0 + t * (y1 - y0)
+        return y >= yMin && y <= yMax
+    }
+
+    private fun crossesHorizontal(
+        x0: Float, y0: Float, x1: Float, y1: Float,
+        y: Float, xMin: Float, xMax: Float
+    ): Boolean {
+        val dy = y1 - y0
+        if (dy == 0f) {
+            return y0 == y && maxOf(x0, x1) >= xMin && minOf(x0, x1) <= xMax
+        }
+        val t = (y - y0) / dy
+        if (t < 0f || t > 1f) return false
+        val x = x0 + t * (x1 - x0)
+        return x >= xMin && x <= xMax
+    }
+
+    /**
      * Lasso: Ray-casting (Even-Odd Rule) to find strokes whose centroid lies inside the polygon.
      * [polygon] is the ordered list of lasso vertices in model coordinates.
      */
