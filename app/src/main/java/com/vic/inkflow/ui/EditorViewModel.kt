@@ -36,6 +36,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -220,14 +221,39 @@ class EditorViewModel(
     private val _autoSwitchToPenAfterErase = MutableStateFlow(false)
     val autoSwitchToPenAfterErase: StateFlow<Boolean> = _autoSwitchToPenAfterErase.asStateFlow()
 
-    // 擦除手勢級命中旗標 + 串行鎖：
-    // Live erase（拖曳中每 24ms 一次）和手勢結尾的 final erase 是兩個併發協程，
-    // live 先把墨刪光時 final 會看到「沒東西可刪」→ erasedAnything=false → 不切筆（偶發失效）。
-    // 改手勢級累積：同手勢內任何一次命中都記旗，final 結束時再一次性判定切筆，
-    // 切筆只發生在手勢結束（pointerInput key 不變，手勢不被中途重啟打斷）。
-    // Mutex 保證 final 排在所有 live 之後執行，避免 final 搶先消費舊旗標。
+    // 擦除分兩個階段：命中＋樂觀隱藏（eraserMutex 串行，毫秒級）與背景墓碑（鎖外）。
+    // 舊碼把 tombstone（UPDATE＋DELETE points＋fsync）包在同一把鎖裡，下一批擦除
+    // 因此排在磁碟後面——連續快擦時畫面會落後手指。
+    // 手勢結算不再只等鎖：DB 已移出鎖，用 eraseBatchesInFlight 等「最後一批真的寫完」。
+    // final 不會搶先消費舊旗標：final 在同手勢 live 之後才可能命中。
     private val eraserMutex = Mutex()
     private val eraseHitPending = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * 進行中的擦除批次計數（含命中、樂觀隱藏、背景墓碑）。
+     *
+     * 為什麼不用 eraserMutex 排空：DB 寫入已移出鎖，鎖只保證「命中＋隱藏」的順序；
+     * endEraseGesture 要的是「最後一批墓碑真的落盤」。+1 在呼叫端（Main）同步發生，
+     * -1 在協程 finally；跨頁 N 批也不會漏。
+     */
+    private val eraseBatchesInFlight = java.util.concurrent.atomic.AtomicInteger(0)
+    private val eraseIdle = MutableStateFlow(true)
+
+    private fun beginEraseBatch() {
+        eraseBatchesInFlight.incrementAndGet()
+        eraseIdle.value = false
+    }
+
+    private fun finishEraseBatch() {
+        if (eraseBatchesInFlight.decrementAndGet() == 0) eraseIdle.value = true
+    }
+
+    /** 等所有擦除批次（含背景墓碑）落定。鎖必配超時：DB 卡死不能讓 undo 永不結算。 */
+    private suspend fun awaitEraseIdle() {
+        if (withTimeoutOrNull(5_000) { eraseIdle.first { it } } == null) {
+            android.util.Log.w("EditorViewModel", "erase batches still in flight after 5s; snapshotting anyway")
+        }
+    }
 
     private val _strokeSpeedSensitivity = MutableStateFlow(1f)
     val strokeSpeedSensitivity: StateFlow<Float> = _strokeSpeedSensitivity.asStateFlow()
@@ -718,10 +744,11 @@ class EditorViewModel(
         if (!eraseGestureOpen) return
         eraseGestureOpen = false
         viewModelScope.launch(Dispatchers.Default) {
-            eraserMutex.withLock { } // 排空：等 live/final 寫入全部落定才結算
+            awaitEraseIdle() // 排空：含背景墓碑的所有批次都落定才結算
             val (strokes, texts) = withContext(Dispatchers.Main) {
-                val s = eraseGestureStrokes.toList()
-                val t = eraseGestureTexts.toList()
+                // 去重防禦：同一筆若被兩批都命中（Flow 尚未重發），累積器裡也只留一份。
+                val s = eraseGestureStrokes.distinctBy { it.stroke.id }
+                val t = eraseGestureTexts.distinctBy { it.id }
                 eraseGestureStrokes.clear()
                 eraseGestureTexts.clear()
                 s to t
@@ -746,10 +773,10 @@ class EditorViewModel(
         if (!eraseGestureOpen) return
         eraseGestureOpen = false
         viewModelScope.launch(Dispatchers.Default) {
-            eraserMutex.withLock { } // 排空：同 endEraseGesture
+            awaitEraseIdle() // 排空：同 endEraseGesture（含背景墓碑）
             val (strokes, texts) = withContext(Dispatchers.Main) {
-                val s = eraseGestureStrokes.toList()
-                val t = eraseGestureTexts.toList()
+                val s = eraseGestureStrokes.distinctBy { it.stroke.id }
+                val t = eraseGestureTexts.distinctBy { it.id }
                 eraseGestureStrokes.clear()
                 eraseGestureTexts.clear()
                 s to t
@@ -793,128 +820,158 @@ class EditorViewModel(
          * false 只留給「手勢結束才刪一次、本來就一格」的形狀工具快滑。
          */
         accumulateToGesture: Boolean = false
-    ) {        val cW = canvasW
+    ) {
+        val cW = canvasW
         val cH = canvasH
         val targetPage = page ?: pageIndex.value
         // 主線程一次快照：熱流建流（動 map）+ 讀值都在這裡，協程內只用快照
         val targetData = pageDataFlow(targetPage).value
         // Pass the snapshot of eraser points to the coroutine
         val pointsCopy = eraserPointsCanvas.toList()
+
+        beginEraseBatch()
         viewModelScope.launch(Dispatchers.Default) {
-            eraserMutex.withLock {
-            // Scale eraser points from canvas-pixel space to model space before comparing.
-            val scaleX = DocTransform.invScaleXUnchecked(cW, modelWidth)
-            val scaleY = DocTransform.invScaleYUnchecked(cH, modelHeight)
-            val modelEraserPoints = pointsCopy.map { Offset(it.x * scaleX, it.y * scaleY) }
-            val intersectingStrokes = IntersectionUtils.findIntersectingStrokes(
-                eraserPoints = modelEraserPoints,
-                strokes = targetData.strokes
-            )
-            var erasedAnything = false
-            if (intersectingStrokes.isNotEmpty()) {
-                // 樂觀隱藏先行：畫面下一幀就不見，不等 DB 交易＋Flow 重發整條鏈。
-                val erasedIds = intersectingStrokes.map { it.stroke.id }
-                hideIds(erasedIds)
+            try {
+                // ── 快路徑：命中＋樂觀隱藏，絕不碰 DB ──────────────────────────
+                // 舊碼把 tombstone（UPDATE＋DELETE points＋fsync）包在同一把鎖裡，
+                // 下一批擦除因此排在磁碟後面——連續快擦時畫面會落後手指。
+                // 現在鎖只保護「命中＋隱藏」這個毫秒級區段，DB 在鎖外背景完成。
+                val hits = eraserMutex.withLock {
+                    // 已被前一批隱藏的筆不再命中：省一次 fsync，也不會產生重複 undo。
+                    val hiddenNow = _hiddenIds.value
+                    val visibleStrokes = if (hiddenNow.isEmpty()) targetData.strokes
+                        else targetData.strokes.filter { it.stroke.id !in hiddenNow }
+                    val visibleTexts = if (hiddenNow.isEmpty()) targetData.texts
+                        else targetData.texts.filter { it.id !in hiddenNow }
+
+                    // Scale eraser points from canvas-pixel space to model space before comparing.
+                    val scaleX = DocTransform.invScaleXUnchecked(cW, modelWidth)
+                    val scaleY = DocTransform.invScaleYUnchecked(cH, modelHeight)
+                    val modelEraserPoints = pointsCopy.map { Offset(it.x * scaleX, it.y * scaleY) }
+                    val intersectingStrokes = IntersectionUtils.findIntersectingStrokes(
+                        eraserPoints = modelEraserPoints,
+                        strokes = visibleStrokes
+                    )
+
+                    // Also erase text annotations whose model coords fall within the eraser bounds.
+                    var eMinX = Float.POSITIVE_INFINITY
+                    var eMinY = Float.POSITIVE_INFINITY
+                    var eMaxX = Float.NEGATIVE_INFINITY
+                    var eMaxY = Float.NEGATIVE_INFINITY
+                    for (p in modelEraserPoints) {
+                        if (p.x < eMinX) eMinX = p.x
+                        if (p.x > eMaxX) eMaxX = p.x
+                        if (p.y < eMinY) eMinY = p.y
+                        if (p.y > eMaxY) eMaxY = p.y
+                    }
+                    // 10f is eraser radius
+                    val eraserBounds = android.graphics.RectF(eMinX - 10f, eMinY - 10f, eMaxX + 10f, eMaxY + 10f)
+
+                    val hitTexts = visibleTexts.filter { ann ->
+                        // Estimate the bounding box of the text in model space.
+                        // isStamp = oversized emoji: treat as a square of fontSize × fontSize.
+                        // Regular text: width ≈ charCount × fontSize × 0.6, height ≈ fontSize × 1.2.
+                        // Y-axis: modelY is the text baseline, so the top edge is (modelY - height).
+                        val estimatedW = if (ann.isStamp) ann.fontSize else ann.text.length * ann.fontSize * 0.6f
+                        val estimatedH = if (ann.isStamp) ann.fontSize else ann.fontSize * 1.2f
+                        val annBounds = android.graphics.RectF(
+                            ann.modelX,
+                            ann.modelY - estimatedH,
+                            ann.modelX + estimatedW,
+                            ann.modelY
+                        )
+                        android.graphics.RectF.intersects(eraserBounds, annBounds)
+                    }
+
+                    // 樂觀隱藏先行：畫面下一幀就不見，不等 DB 交易＋Flow 重發整條鏈。
+                    if (intersectingStrokes.isNotEmpty()) hideIds(intersectingStrokes.map { it.stroke.id })
+                    if (hitTexts.isNotEmpty()) hideIds(hitTexts.map { it.id })
+                    EraseHits(intersectingStrokes, hitTexts)
+                }
+
+                if (hits.strokes.isEmpty() && hits.texts.isEmpty()) {
+                    // 沒有新命中也要消費切筆旗標：稍早的 live 命中可能已立旗，
+                    // 而 final 是唯一會消費它的地方（否則舊旗標污染下次手勢）。
+                    maybeSwitchToPenAfterErase(switchToPenAfterEraseHit)
+                    return@launch
+                }
+
+                val strokeIds = hits.strokes.map { it.stroke.id }
+                val textIds = hits.texts.map { it.id }
+
+                // ── 慢路徑：背景墓碑；筆跡＋文字同一個交易，不會只擦半套 ────────
                 try {
                     withContext(Dispatchers.IO) {
                         // 走墓碑而非硬刪除：橡皮擦刪掉的是使用者看得到的筆跡，平板與桌面
                         // 各自獨立工作時，桌面端可能同時在改同一筆。留墓碑讓
                         // 「刪除 vs 修改」有狀態可比（§15.4 修改勝），硬刪除則會讓對端
                         // 無從得知這裡曾經刪過東西。
-                        repos.strokes.tombstoneStrokesByIds(erasedIds)
+                        repos.transaction {
+                            if (strokeIds.isNotEmpty()) repos.strokes.tombstoneStrokesByIds(strokeIds)
+                            if (textIds.isNotEmpty()) repos.texts.tombstoneByIds(textIds)
+                        }
                     }
                 } catch (e: CancellationException) {
+                    // 取消也要收畫面：否則這筆 DB 還在、畫面本 session 永久隱形。
+                    showIds(strokeIds)
+                    showIds(textIds)
                     throw e
                 } catch (e: Exception) {
                     // 寫失敗回滾：DB 裡還在、畫面沒了的話，這批墨連重擦都擦不到
                     //（命中讀的是過濾後流）。放回來讓使用者重試。
                     // 之前這裡無 catch：異常會一路炸掉整個 viewModelScope。
-                    showIds(erasedIds)
+                    showIds(strokeIds)
+                    showIds(textIds)
+                    // 寫失敗就沒有戰果，清掉可能來自更早批次的旗標，避免誤切筆。
+                    if (switchToPenAfterEraseHit) eraseHitPending.set(false)
                     android.util.Log.e("EditorViewModel", "erase tombstone failed, unhidden", e)
+                    return@launch
                 }
-                if (accumulateToGesture) {
-                    withContext(Dispatchers.Main) {
-                        // 無條件累積：這個 append 跑在 eraserMutex 持有區間內，
-                        // endEraseGesture 的排空（drain）保證所有 append 都先跑完才快照。
-                        // 舊碼在這裡檢查 eraseGestureOpen——提筆瞬間落定的批次會撞上
-                        // 已關的旗標而被丟棄，但它的墓碑已經提交了：undo 快照裡永遠
-                        // 缺那幾筆＝「刪了很多筆、回來只有一些」。旗標只管開關手勢，
-                        // 不管累積完整性。
-                        eraseGestureStrokes += intersectingStrokes
-                    }
-                } else {
-                    val command = DrawCommand.RemoveStrokes(intersectingStrokes)
-                    withContext(Dispatchers.Main) { pushUndo(command) }
-                }
-                erasedAnything = true
-            }
-            // Also erase text annotations whose model coords fall within the eraser bounds.
-            var eMinX = Float.POSITIVE_INFINITY
-            var eMinY = Float.POSITIVE_INFINITY
-            var eMaxX = Float.NEGATIVE_INFINITY
-            var eMaxY = Float.NEGATIVE_INFINITY
-            for (p in modelEraserPoints) {
-                if (p.x < eMinX) eMinX = p.x
-                if (p.x > eMaxX) eMaxX = p.x
-                if (p.y < eMinY) eMinY = p.y
-                if (p.y > eMaxY) eMaxY = p.y
-            }
-            // 10f is eraser radius
-            val eraserBounds = android.graphics.RectF(eMinX - 10f, eMinY - 10f, eMaxX + 10f, eMaxY + 10f)
 
-            val hitTexts = targetData.texts.filter { ann ->
-                // Estimate the bounding box of the text in model space.
-                // isStamp = oversized emoji: treat as a square of fontSize × fontSize.
-                // Regular text: width ≈ charCount × fontSize × 0.6, height ≈ fontSize × 1.2.
-                // Y-axis: modelY is the text baseline, so the top edge is (modelY - height).
-                val estimatedW = if (ann.isStamp) ann.fontSize else ann.text.length * ann.fontSize * 0.6f
-                val estimatedH = if (ann.isStamp) ann.fontSize else ann.fontSize * 1.2f
-                val annBounds = android.graphics.RectF(
-                    ann.modelX,
-                    ann.modelY - estimatedH,
-                    ann.modelX + estimatedW,
-                    ann.modelY
-                )
-                android.graphics.RectF.intersects(eraserBounds, annBounds)
-            }
-            hitTexts.forEach { ann ->
-                hideIds(listOf(ann.id))
-                try {
-                    withContext(Dispatchers.IO) { repos.texts.tombstoneByIds(listOf(ann.id)) }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    showIds(listOf(ann.id))
-                    android.util.Log.e("EditorViewModel", "erase text tombstone failed, unhidden", e)
-                }
-                if (accumulateToGesture) {
-                    withContext(Dispatchers.Main) {
-                        // 同筆跡：無條件累積，drain 保證順序。
-                        eraseGestureTexts += ann
-                    }
-                } else {
-                    withContext(Dispatchers.Main) { pushUndo(DrawCommand.RemoveTextAnnotation(ann)) }
-                }
-                erasedAnything = true
-            }
-
-            // 手勢級累積：本次命中先記旗（quick-swipe 不記，避免污染下次手勢）
-            if (erasedAnything && markEraseHit) eraseHitPending.set(true)
-
-            // 切筆只在手勢結尾判定一次：本次命中 或 同手勢稍早的 live 命中（Mutex 保證
-            // final 最後執行，旗標一定已就位）。判定完即清旗，不留給下次手勢。
-            if (switchToPenAfterEraseHit && _autoSwitchToPenAfterErase.value) {
-                val hit = eraseHitPending.getAndSet(false)
-                if (hit) {
-                    withContext(Dispatchers.Main) {
-                        // Do not override temporary stylus-button eraser state.
-                        if (_selectedTool.value == Tool.ERASER && toolBeforeStylusButton == null) {
-                            onToolSelected(Tool.PEN)
+                // 只有真的落盤成功才進 undo 累積器：寫失敗卻先記 undo，之後
+                // undo→redo 會把從沒刪過的筆寫墓碑（幽靈刪除＝真的刪資料）。
+                withContext(Dispatchers.Main) {
+                    if (accumulateToGesture) {
+                        // 無條件累積：eraseBatchesInFlight 的排空保證所有 append
+                        // 都在 endEraseGesture 快照之前跑完（旗標只管開關手勢）。
+                        eraseGestureStrokes += hits.strokes
+                        eraseGestureTexts += hits.texts
+                    } else {
+                        if (hits.strokes.isNotEmpty()) {
+                            pushUndo(DrawCommand.RemoveStrokes(hits.strokes))
                         }
+                        // 非手勢路徑（形狀工具快滑）本來就是一次一格，逐字記。
+                        hits.texts.forEach { pushUndo(DrawCommand.RemoveTextAnnotation(it)) }
                     }
+                    // 手勢級累積：本次命中記旗（quick-swipe 不記，避免污染下次手勢）
+                    if (markEraseHit) eraseHitPending.set(true)
+                    maybeSwitchToPenAfterErase(switchToPenAfterEraseHit)
                 }
+            } finally {
+                finishEraseBatch()
             }
-            } // eraserMutex
+        }
+    }
+
+    /** 一次擦除批次命中的墨＋字（快路徑結果，供背景墓碑使用）。 */
+    private data class EraseHits(
+        val strokes: List<StrokeWithPoints>,
+        val texts: List<TextAnnotationEntity>
+    )
+
+    /**
+     * 手勢結尾的切筆判定：只有「本手勢曾有成功命中」且設定開啟才切回筆。
+     * 旗標消費一次即清；quick-swipe 傳 false 直接不參與（不污染下一次手勢）。
+     */
+    private suspend fun maybeSwitchToPenAfterErase(switchToPenAfterEraseHit: Boolean) {
+        if (!switchToPenAfterEraseHit || !_autoSwitchToPenAfterErase.value) return
+        val hit = eraseHitPending.getAndSet(false)
+        if (!hit) return
+        withContext(Dispatchers.Main) {
+            // Do not override temporary stylus-button eraser state.
+            if (_selectedTool.value == Tool.ERASER && toolBeforeStylusButton == null) {
+                onToolSelected(Tool.PEN)
+            }
         }
     }
 
@@ -1445,12 +1502,22 @@ class EditorViewModel(
                     // R1：一筆擦的整包戰果一次還原（墨＋字）。
                     showIds(command.strokes.map { it.stroke.id })
                     showIds(command.texts.map { it.id })
-                    repos.transaction {
-                        repos.strokes.replaceStrokeSnapshots(command.strokes)
-                        command.texts.forEach {
-                            repos.texts.insert(it)
-                            repos.texts.bumpTextVersion(it.id)
+                    try {
+                        repos.transaction {
+                            repos.strokes.replaceStrokeSnapshots(command.strokes)
+                            command.texts.forEach {
+                                repos.texts.insert(it)
+                                repos.texts.bumpTextVersion(it.id)
+                            }
                         }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // 還原失敗：畫面不能留著「復活了但 DB 沒有」的墨——下一次 Flow
+                        // 重發就閃一下不見。藏回去，undo 格已彈出但內容還在，可重試。
+                        hideIds(command.strokes.map { it.stroke.id })
+                        hideIds(command.texts.map { it.id })
+                        android.util.Log.e("EditorViewModel", "undo of erase failed, re-hidden", e)
                     }
                 }
                 is DrawCommand.MoveStrokes -> {
@@ -1572,10 +1639,15 @@ class EditorViewModel(
                 is DrawCommand.EraseGesture -> {
                     hideIds(command.strokes.map { it.stroke.id })
                     hideIds(command.texts.map { it.id })
-                    if (command.strokes.isNotEmpty()) {
-                        repos.strokes.tombstoneStrokesByIds(command.strokes.map { it.stroke.id })
+                    // 筆＋字同一個交易：redo 中途失敗不會留下半套狀態。
+                    repos.transaction {
+                        if (command.strokes.isNotEmpty()) {
+                            repos.strokes.tombstoneStrokesByIds(command.strokes.map { it.stroke.id })
+                        }
+                        if (command.texts.isNotEmpty()) {
+                            repos.texts.tombstoneByIds(command.texts.map { it.id })
+                        }
                     }
-                    command.texts.let { repos.texts.tombstoneByIds(it.map { t -> t.id }) }
                 }
                 is DrawCommand.MoveStrokes -> {
                     // 跨頁移動：updated 帶新 pageIndex，直接恢復快照；
