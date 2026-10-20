@@ -879,19 +879,16 @@ class EditorViewModel(
 
                     // Also erase text annotations whose box the path actually touches.
                     val hitTexts = visibleTexts.filter { ann ->
-                        // Estimate the bounding box of the text in model space.
-                        // isStamp = oversized emoji: treat as a square of fontSize × fontSize.
-                        // Regular text: width ≈ charCount × fontSize × 0.6, height ≈ fontSize × 1.2.
-                        // Y-axis: modelY is the text baseline, so the top edge is (modelY - height).
-                        val estimatedW = if (ann.isStamp) ann.fontSize else ann.text.length * ann.fontSize * 0.6f
-                        val estimatedH = if (ann.isStamp) ann.fontSize else ann.fontSize * 1.2f
+                        // 與套索／選取框共用同一個估算框（全形感知、多行、boxWidth）；
+                        // 舊碼自己算 charCount×0.6，中文永遠窄一截，右半邊擦不到。
+                        val b = textEstimatedBounds(ann)
                         // 逐段判相交，不用整條路徑的 bbox：斜線的 bbox 會誤擦路徑兩側的字。
                         IntersectionUtils.polylineIntersectsRect(
                             points = modelEraserPoints,
-                            rectLeft = ann.modelX,
-                            rectTop = ann.modelY - estimatedH,
-                            rectRight = ann.modelX + estimatedW,
-                            rectBottom = ann.modelY,
+                            rectLeft = b.left,
+                            rectTop = b.top,
+                            rectRight = b.right,
+                            rectBottom = b.bottom,
                             radius = 10f
                         )
                     }
