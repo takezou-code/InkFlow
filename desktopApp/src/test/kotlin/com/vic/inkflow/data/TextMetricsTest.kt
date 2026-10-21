@@ -17,23 +17,23 @@ import kotlin.test.assertTrue
  */
 class TextMetricsTest {
 
-    /** Reference implementation copied from the tablet's `SelectionGeometry`. */
-    private fun tabletWidth(text: String, fontSize: Float): Float {
-        var ems = 0f
-        text.forEach { c ->
-            ems += if (c.code in 0x2E80..0x9FFF ||
-                c.code in 0xAC00..0xD7AF ||
-                c.code in 0xF900..0xFAFF ||
-                c.code in 0xFF00..0xFF60 ||
-                c.code in 0xFFE0..0xFFE6 ||
-                c.code in 0x3000..0x303E
-            ) 1.0f else 0.65f
-        }
-        return ems * fontSize
-    }
+    /**
+     * The reference is now the **shared rule** (`:shared`'s `com.vic.inkflow.ui.measureTextWidth`),
+     * not a third copy of it.
+     *
+     * This file used to carry its own transcription of the tablet's rule — and the
+     * transcription had drifted: the desktop's ranges and the tablet's ranges
+     * disagreed on `0x3000..0x303E`, `0xFFE0..0xFFE6`, `0xFE30..0xFE4F` and
+     * everything above `0x9FFF`. The samples below did not happen to contain any
+     * of those characters, so the divergence was invisible: a note written with a
+     * full-width space was measured wider on one device than on the other, and
+     * the hit box is drawn from that measurement.
+     */
+    private fun sharedWidth(text: String, fontSize: Float): Float =
+        com.vic.inkflow.ui.measureTextWidth(text, fontSize)
 
     @Test
-    fun `desktop width matches the tablet for a range of strings`() {
+    fun `desktop width matches the shared rule for a range of strings`() {
         val samples = listOf(
             "", "a", "hello", "abc def",
             "中", "中文", "繁體中文測試",
@@ -42,8 +42,23 @@ class TextMetricsTest {
         )
         samples.forEach { s ->
             assertEquals(
-                tabletWidth(s, 16f), TextMetrics.measureWidth(s, 16f), 0.0001f,
+                sharedWidth(s, 16f), TextMetrics.measureWidth(s, 16f), 0.0001f,
                 "width disagrees for \"$s\""
+            )
+        }
+    }
+
+    @Test
+    fun `the characters the two copies used to disagree on are now measured the same way`() {
+        // 　(full-width space) ｱ(half-width katakana) Ａ(full-width A)
+        // ＋(full-width plus) and a Yi syllable. Each of these fell in exactly one
+        // of the two old range sets, so one device measured it full-width and the
+        // other half-width.
+        val samples = listOf("　", "ｱ", "Ａ", "＋", "ꀀ")
+        samples.forEach { s ->
+            assertEquals(
+                sharedWidth(s, 16f), TextMetrics.measureWidth(s, 16f), 0.0001f,
+                "width disagrees for ${s.map { it.code.toString(16) }}"
             )
         }
     }

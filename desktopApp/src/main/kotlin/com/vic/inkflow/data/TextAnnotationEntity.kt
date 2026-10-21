@@ -206,18 +206,18 @@ object TextMetrics {
 }
 
 /**
- * CJK / full-width test, matching the tablet's `SelectionGeometry.isWideChar`.
+ * CJK / full-width test — **the shared rule**, not a second copy of it.
  *
- * Covers the CJK blocks the tablet treats as full-width and treats everything
- * else — including emoji outside those ranges — as half-width, which is the
- * tablet's behaviour and therefore the contract.
+ * The two apps used to disagree here, and the disagreement was invisible: the
+ * desktop's copy covered `0x3000..0x303E`, `0xFFE0..0xFFE6` and stopped at
+ * `0x9FFF`; the tablet's covered `0x2E80..0xA4CF`, `0xFE30..0xFE4F` and
+ * `0xFF00..0xFFEF`. So a note containing "　" (full-width space), "ｱ" (half-width
+ * katakana) or a Yi syllable measured **wider on one device than on the other** —
+ * and the hit box is drawn from that measurement, so the label is visible and
+ * cannot be grabbed.
+ *
+ * The rule now lives in one place (`:shared`'s `com.vic.inkflow.ui.isWideChar`,
+ * which is the tablet's, because the tablet is the writer), and the desktop asks
+ * it. Emoji outside those ranges stay half-width, on both sides.
  */
-fun Char.isWideChar(): Boolean {
-    val c = code
-    return c in 0x2E80..0x9FFF ||
-        c in 0xAC00..0xD7AF ||
-        c in 0xF900..0xFAFF ||
-        c in 0xFF00..0xFF60 ||
-        c in 0xFFE0..0xFFE6 ||
-        c in 0x3000..0x303E
-}
+fun Char.isWideChar(): Boolean = com.vic.inkflow.ui.isWideChar(this)
