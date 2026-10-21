@@ -1,4 +1,4 @@
-﻿package com.vic.inkflow.ui
+package com.vic.inkflow.ui
 
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeSource
@@ -206,11 +206,11 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.vic.inkflow.R
 import com.vic.inkflow.data.repository.InkFlowRepositories
-import com.vic.inkflow.data.DocumentEntity
-import com.vic.inkflow.data.FolderEntity
-import com.vic.inkflow.data.ImageAnnotationEntity
-import com.vic.inkflow.data.StrokeWithPoints
-import com.vic.inkflow.data.TextAnnotationEntity
+import com.vic.inkflow.data.Document
+import com.vic.inkflow.data.Folder
+import com.vic.inkflow.data.ImageAnnotation
+import com.vic.inkflow.data.StrokeWithSamples
+import com.vic.inkflow.data.TextAnnotation
 import com.vic.inkflow.ui.theme.InkFlowTheme
 
 
@@ -717,9 +717,9 @@ private fun railSpineButton(
 internal fun PageThumbnail(
     pageIndex: Int,
     bitmap: android.graphics.Bitmap?,
-    strokes: List<StrokeWithPoints>,
-    imageAnnotations: List<ImageAnnotationEntity>,
-    textAnnotations: List<TextAnnotationEntity>,
+    strokes: List<StrokeWithSamples>,
+    imageAnnotations: List<ImageAnnotation>,
+    textAnnotations: List<TextAnnotation>,
     isSelected: Boolean,
     isBookmarked: Boolean = false,
     onBookmarkToggle: ((Boolean) -> Unit)? = null,

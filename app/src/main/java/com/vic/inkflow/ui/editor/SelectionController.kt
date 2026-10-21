@@ -2,9 +2,9 @@ package com.vic.inkflow.ui.editor
 
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
-import com.vic.inkflow.data.ImageAnnotationEntity
-import com.vic.inkflow.data.StrokeWithPoints
-import com.vic.inkflow.data.TextAnnotationEntity
+import com.vic.inkflow.data.ImageAnnotation
+import com.vic.inkflow.data.StrokeWithSamples
+import com.vic.inkflow.data.TextAnnotation
 import com.vic.inkflow.data.repository.InkFlowRepositories
 import com.vic.inkflow.ui.EditorViewModel
 import com.vic.inkflow.ui.DrawCommand
@@ -52,19 +52,19 @@ internal class SelectionController(
     private val docStride: () -> Float,
     private val pageDataFlow: (Int) -> StateFlow<EditorViewModel.NeighborPageData>,
     private val pageFlows: () -> Map<Int, StateFlow<EditorViewModel.NeighborPageData>>,
-    private val currentImageAnnotations: () -> StateFlow<List<ImageAnnotationEntity>>,
-    private val currentTextAnnotations: () -> StateFlow<List<TextAnnotationEntity>>,
+    private val currentImageAnnotations: () -> StateFlow<List<ImageAnnotation>>,
+    private val currentTextAnnotations: () -> StateFlow<List<TextAnnotation>>,
     private val pageIndex: () -> Int,
     private val pushUndo: (DrawCommand) -> Unit,
     /** è½åº«çš„å”¯ä¸€ chokeï¼šè¦†è“‹ï¼‹bump åœ¨åŒä¸€äº¤æ˜“è£¡ï¼ˆè¦‹ EditorViewModel çš„èªªæ˜Žï¼‰ã€‚ */
-    private val replaceStrokeSnapshots: suspend (List<StrokeWithPoints>) -> Unit,
+    private val replaceStrokeSnapshots: suspend (List<StrokeWithSamples>) -> Unit,
     private val hideIds: (Collection<String>) -> Unit,
     private val showIds: (Collection<String>) -> Unit
 ) {
 
     // Lasso selection state
-    private val _selectedStrokes = MutableStateFlow<List<StrokeWithPoints>>(emptyList())
-    val selectedStrokes: StateFlow<List<StrokeWithPoints>> = _selectedStrokes.asStateFlow()
+    private val _selectedStrokes = MutableStateFlow<List<StrokeWithSamples>>(emptyList())
+    val selectedStrokes: StateFlow<List<StrokeWithSamples>> = _selectedStrokes.asStateFlow()
 
     private val _selectedImageAnnotationIds = MutableStateFlow<Set<String>>(emptySet())
     val selectedImageAnnotationIds: StateFlow<Set<String>> = _selectedImageAnnotationIds.asStateFlow()
@@ -73,8 +73,8 @@ internal class SelectionController(
     private val _selectedTextAnnotationIds = MutableStateFlow<Set<String>>(emptySet())
     val selectedTextAnnotationIds: StateFlow<Set<String>> = _selectedTextAnnotationIds.asStateFlow()
 
-    private val _selectedStrokePreview = MutableStateFlow<List<StrokeWithPoints>>(emptyList())
-    val selectedStrokePreview: StateFlow<List<StrokeWithPoints>> = _selectedStrokePreview.asStateFlow()
+    private val _selectedStrokePreview = MutableStateFlow<List<StrokeWithSamples>>(emptyList())
+    val selectedStrokePreview: StateFlow<List<StrokeWithSamples>> = _selectedStrokePreview.asStateFlow()
 
     private val _lassoPolygon = MutableStateFlow<List<Offset>>(emptyList())
     val lassoPolygon: StateFlow<List<Offset>> = _lassoPolygon.asStateFlow()
@@ -106,12 +106,12 @@ internal class SelectionController(
      * and Room emitting the updated rows. The canvas draws these transformed strokes directly so
      * there is no flicker back to the pre-transform position.
      */
-    private val _commitPreview = MutableStateFlow<List<StrokeWithPoints>?>(null)
-    val commitPreview: StateFlow<List<StrokeWithPoints>?> = _commitPreview.asStateFlow()
+    private val _commitPreview = MutableStateFlow<List<StrokeWithSamples>?>(null)
+    val commitPreview: StateFlow<List<StrokeWithSamples>?> = _commitPreview.asStateFlow()
 
     // transformPolygon 見 SelectionGeometry.kt
 
-    private fun currentSelectionAnchor(originals: List<StrokeWithPoints>): Offset {
+    private fun currentSelectionAnchor(originals: List<StrokeWithSamples>): Offset {
         return _selectedStrokeResizeAnchor.value
             ?: StrokeTransformUtils.computeSelectionBounds(originals)?.center
             ?: Offset.Zero
@@ -161,9 +161,9 @@ internal class SelectionController(
             _lassoPage.value = srcPage
         }
         scope.launch(Dispatchers.Default) {
-            val allStrokes = mutableListOf<StrokeWithPoints>()
-            val allImages = mutableListOf<ImageAnnotationEntity>()
-            val allTexts = mutableListOf<TextAnnotationEntity>()
+            val allStrokes = mutableListOf<StrokeWithSamples>()
+            val allImages = mutableListOf<ImageAnnotation>()
+            val allTexts = mutableListOf<TextAnnotation>()
             for ((pg, polys) in polygonsByPage) {
                 val norms = polys.filter { it.size >= 3 }
                     .map { poly -> poly.map { DocTransform.canvasToModel(it, cW, cH, modelWidth(), modelHeight()) } }
@@ -554,10 +554,10 @@ internal class SelectionController(
         return pageIndex()
     }
 
-    private fun selectedImagesSnapshot(): List<ImageAnnotationEntity> {
+    private fun selectedImagesSnapshot(): List<ImageAnnotation> {
         val ids = _selectedImageAnnotationIds.value
         if (ids.isEmpty()) return emptyList()
-        val found = mutableListOf<ImageAnnotationEntity>()
+        val found = mutableListOf<ImageAnnotation>()
         for (flow in pageFlows().values) {
             found += flow.value.images.filter { it.id in ids }
         }
@@ -566,10 +566,10 @@ internal class SelectionController(
     }
 
     /** 套索選中的字快照（與圖同模式掃全頁流；呼叫方保證主線程）。 */
-    private fun selectedTextsSnapshot(): List<TextAnnotationEntity> {
+    private fun selectedTextsSnapshot(): List<TextAnnotation> {
         val ids = _selectedTextAnnotationIds.value
         if (ids.isEmpty()) return emptyList()
-        val found = mutableListOf<TextAnnotationEntity>()
+        val found = mutableListOf<TextAnnotation>()
         for (flow in pageFlows().values) {
             found += flow.value.texts.filter { it.id in ids }
         }
@@ -581,10 +581,10 @@ internal class SelectionController(
      * Overlay 用：主線程同步快照（只讀 flows 當前值；拖曳中實體不變，安全）。
      * 跨頁拖曳時選中圖也要畫在紙上層。
      */
-    fun selectedImagesNow(): List<ImageAnnotationEntity> = selectedImagesSnapshot()
+    fun selectedImagesNow(): List<ImageAnnotation> = selectedImagesSnapshot()
 
     /** 同上，給 overlay 畫選中字（拖曳跨頁全程可見）。 */
-    fun selectedTextsNow(): List<TextAnnotationEntity> = selectedTextsSnapshot()
+    fun selectedTextsNow(): List<TextAnnotation> = selectedTextsSnapshot()
 
     fun deleteSelection() {
         val selectedStrokeSnapshots = _selectedStrokes.value
@@ -662,7 +662,7 @@ internal class SelectionController(
                     repos.strokes.insertStroke(copiedStroke)
                     repos.strokes.insertPoints(copiedPoints)
                 }
-                StrokeWithPoints(copiedStroke, copiedPoints)
+                StrokeWithSamples(copiedStroke, copiedPoints)
             }
 
             val copiedImages = sourceImages.map { original ->

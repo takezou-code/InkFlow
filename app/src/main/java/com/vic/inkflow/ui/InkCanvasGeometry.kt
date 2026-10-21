@@ -9,9 +9,9 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
-import com.vic.inkflow.data.ImageAnnotationEntity
-import com.vic.inkflow.data.StrokeWithPoints
-import com.vic.inkflow.data.TextAnnotationEntity
+import com.vic.inkflow.data.ImageAnnotation
+import com.vic.inkflow.data.StrokeWithSamples
+import com.vic.inkflow.data.TextAnnotation
 import com.vic.inkflow.util.StrokeTransformUtils
 import kotlin.math.abs
 import kotlin.math.cos
@@ -36,7 +36,7 @@ internal const val TEXT_HIT_PAD_PX = 10f
  * 遇到比較差的那個；所以這裡只保留一個真相來源。
  */
 internal fun textAnnotationHitRect(
-    ann: TextAnnotationEntity, sx: Float, sy: Float, fontSizeDelta: Float = 0f,
+    ann: TextAnnotation, sx: Float, sy: Float, fontSizeDelta: Float = 0f,
     boxWidthDelta: Float = 0f
 ): Rect {
     val canvasX         = ann.modelX * sx
@@ -72,7 +72,7 @@ internal fun textAnnotationHitRect(
  * [textAnnotationHitRect]（整個框），所以選中後框與把手的位置還是清楚的。
  */
 internal fun textAnnotationContentRect(
-    ann: TextAnnotationEntity, sx: Float, sy: Float, fontSizeDelta: Float = 0f
+    ann: TextAnnotation, sx: Float, sy: Float, fontSizeDelta: Float = 0f
 ): Rect {
     val canvasX    = ann.modelX * sx
     val canvasY    = ann.modelY * sy
@@ -105,7 +105,7 @@ internal fun textAnnotationContentRect(
 /**
  * Returns the canvas-pixel bounding rect for [ann] (committed DB values, no in-flight delta).
  */
-internal fun imageAnnotationRect(ann: ImageAnnotationEntity, sx: Float, sy: Float): Rect =
+internal fun imageAnnotationRect(ann: ImageAnnotation, sx: Float, sy: Float): Rect =
     Rect(ann.modelX * sx, ann.modelY * sy,
          (ann.modelX + ann.modelWidth) * sx, (ann.modelY + ann.modelHeight) * sy)
 
@@ -166,7 +166,7 @@ internal enum class StrokeSelectionHandle {
 }
 
 internal data class SelectedStrokeRenderData(
-    val strokeWithPoints: StrokeWithPoints,
+    val strokeWithPoints: StrokeWithSamples,
     val path: Path?
 )
 
@@ -179,7 +179,7 @@ internal data class CachedStrokePath(
     val boundsBottom: Float
 )
 
-internal fun StrokeWithPoints.matches(cached: CachedStrokePath?): Boolean {
+internal fun StrokeWithSamples.matches(cached: CachedStrokePath?): Boolean {
     if (cached == null) return false
     return cached.pointCount == points.size &&
         cached.boundsLeft == stroke.boundsLeft &&
@@ -562,7 +562,7 @@ internal fun modelTransformedPolygonBoundsToCanvasRect(
 }
 
 internal fun modelTransformedImageRectToCanvasRect(
-    image: ImageAnnotationEntity,
+    image: ImageAnnotation,
     translation: Offset,
     scale: Float,
     anchor: Offset,

@@ -9,8 +9,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.vic.inkflow.data.repository.InkFlowRepositories
-import com.vic.inkflow.data.DocumentEntity
-import com.vic.inkflow.data.FolderEntity
+import com.vic.inkflow.data.Document
+import com.vic.inkflow.data.Folder
 import com.vic.inkflow.util.PageRaster
 import com.vic.inkflow.util.PdfManager
 import com.vic.inkflow.util.ThumbnailCacheManager
@@ -37,10 +37,10 @@ class DocumentViewModel(
     private val repos: InkFlowRepositories
 ) : ViewModel() {
 
-    val documents: StateFlow<List<DocumentEntity>> = repos.documents.getAllDocuments()
+    val documents: StateFlow<List<Document>> = repos.documents.getAllDocuments()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    val folders: StateFlow<List<FolderEntity>> = repos.folders.getAllFolders()
+    val folders: StateFlow<List<Folder>> = repos.folders.getAllFolders()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     private val _folderOperationMessage = MutableStateFlow<String?>(null)
@@ -80,7 +80,7 @@ class DocumentViewModel(
 
     fun recordOpened(uri: String, displayName: String) {
         viewModelScope.launch {
-            repos.documents.upsert(DocumentEntity(uri = uri, displayName = displayName))
+            repos.documents.upsert(Document(uri = uri, displayName = displayName))
         }
     }
 
@@ -180,7 +180,7 @@ class DocumentViewModel(
                 val now = System.currentTimeMillis()
                 val nextSortOrder = repos.folders.getNextSortOrder(effectiveParent)
                 repos.folders.insert(
-                    FolderEntity(
+                    Folder(
                         id = UUID.randomUUID().toString(),
                         name = trimmed,
                         parentFolderId = effectiveParent,
@@ -241,7 +241,7 @@ class DocumentViewModel(
             val movingFolder = current.firstOrNull { it.id == folderId } ?: return@launch
             val siblings = current
                 .filter { it.parentFolderId == movingFolder.parentFolderId }
-                .sortedWith(compareBy<FolderEntity> { it.sortOrder }.thenBy { it.name.lowercase() })
+                .sortedWith(compareBy<Folder> { it.sortOrder }.thenBy { it.name.lowercase() })
 
             val currentIndex = siblings.indexOfFirst { it.id == folderId }
             if (currentIndex == -1) return@launch

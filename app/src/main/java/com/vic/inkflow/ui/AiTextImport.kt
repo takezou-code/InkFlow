@@ -61,7 +61,7 @@ private fun splitProse(seg: String, maxChars: Int, out: MutableList<String>) {
     }
 }
 
-/** M3：排版輸出（一塊 = 一個 TextAnnotationEntity，modelY=首行 baseline）。 */
+/** M3：排版輸出（一塊 = 一個 TextAnnotation，modelY=首行 baseline）。 */
 data class PlacedText(
     val text: String,
     val modelX: Float,
@@ -407,9 +407,9 @@ fun textMetricsOf(fontSize: Float): Pair<Float, Float> {
  * 不再成立，折了行的框若仍照 `\n` 數算，量到的底會**偏小**，接著寫的 AI 文字會疊上去。
  */
 fun measureContentBottom(
-    strokes: List<com.vic.inkflow.data.StrokeEntity>,
-    texts: List<com.vic.inkflow.data.TextAnnotationEntity>,
-    images: List<com.vic.inkflow.data.ImageAnnotationEntity>,
+    strokes: List<com.vic.inkflow.data.Stroke>,
+    texts: List<com.vic.inkflow.data.TextAnnotation>,
+    images: List<com.vic.inkflow.data.ImageAnnotation>,
     metrics: (Float) -> Pair<Float, Float> = ::textMetricsOf,
     // 診斷收集器（單測傳 null 保持純潔；device 端傳 list 再由呼叫方打 log）
     trace: MutableList<String>? = null

@@ -12,7 +12,7 @@ import android.graphics.Rect
 import android.graphics.RectF
 import android.util.Log
 import androidx.compose.ui.geometry.Offset
-import com.vic.inkflow.data.ImageAnnotationEntity
+import com.vic.inkflow.data.ImageAnnotation
 import com.vic.inkflow.data.repository.InkFlowRepositories
 import com.vic.inkflow.ui.measureTextWidth
 import com.vic.inkflow.ui.textAlignOffsetModel
@@ -54,7 +54,7 @@ internal class ExportController(
      * 裁切結果落地後要做的事：記一格 undo、清選取、切回筆。
      * 由 ViewModel 端實作——undo 棧與選取是它的地盤，這裡不該伸手。
      */
-    private val onRegionExtracted: suspend (ImageAnnotationEntity, Int) -> Unit,
+    private val onRegionExtracted: suspend (ImageAnnotation, Int) -> Unit,
     /**
      * 只裁切不落庫（分享用）之後要做的 事：清選取、切回筆。
      * 分成兩個 callback，是因為「要不要記 undo」是兩條路徑真正的差別。
@@ -320,7 +320,7 @@ internal class ExportController(
             val newModelX = ((modelW - finalW) / 2f).coerceAtLeast(0f)
             val newModelY = topMarginPt
 
-        val newImage = ImageAnnotationEntity(
+        val newImage = ImageAnnotation(
             id          = UUID.randomUUID().toString(),
             documentUri = documentUri,
             pageIndex   = targetPageIndex,

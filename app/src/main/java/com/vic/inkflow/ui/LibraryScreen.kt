@@ -203,11 +203,11 @@ import androidx.navigation.navArgument
 import com.vic.inkflow.R
 import com.vic.inkflow.data.repository.InkFlowRepositories
 import com.vic.inkflow.data.AppDatabase
-import com.vic.inkflow.data.DocumentEntity
-import com.vic.inkflow.data.FolderEntity
-import com.vic.inkflow.data.ImageAnnotationEntity
-import com.vic.inkflow.data.StrokeWithPoints
-import com.vic.inkflow.data.TextAnnotationEntity
+import com.vic.inkflow.data.Document
+import com.vic.inkflow.data.Folder
+import com.vic.inkflow.data.ImageAnnotation
+import com.vic.inkflow.data.StrokeWithSamples
+import com.vic.inkflow.data.TextAnnotation
 import com.vic.inkflow.ui.backdrop.BackdropScene
 import com.vic.inkflow.ui.backdrop.DuneScene
 import com.vic.inkflow.ui.theme.InkFlowTheme
@@ -537,7 +537,7 @@ fun DocumentLibraryScreen(
     val folderTree = remember(folders, documents, normalizedQuery) {
         val docsByFolder = documents.groupBy { it.folderId }
         folders
-            .sortedWith(compareBy<FolderEntity>({ it.sortOrder }, { it.name.lowercase() }))
+            .sortedWith(compareBy<Folder>({ it.sortOrder }, { it.name.lowercase() }))
             .mapNotNull { folder ->
                 val docs = docsByFolder[folder.id].orEmpty()
                 if (normalizedQuery.isNotEmpty()) {
@@ -1001,7 +1001,7 @@ internal fun GlassRailItem(
 }
 
 data class FolderNode(
-    val folder: FolderEntity,
-    val documents: List<DocumentEntity>,
+    val folder: Folder,
+    val documents: List<Document>,
     val children: List<FolderNode>
 )

@@ -1,8 +1,8 @@
 package com.vic.inkflow.ui
 
-import com.vic.inkflow.data.ImageAnnotationEntity
-import com.vic.inkflow.data.StrokeWithPoints
-import com.vic.inkflow.data.TextAnnotationEntity
+import com.vic.inkflow.data.ImageAnnotation
+import com.vic.inkflow.data.StrokeWithSamples
+import com.vic.inkflow.data.TextAnnotation
 
 /**
  * S1 雙寫：把頁空間實體的 docY 重算（docY = pageIndex × stride + 頁內頂邊）。
@@ -14,13 +14,13 @@ import com.vic.inkflow.data.TextAnnotationEntity
  *
  * stride 由呼叫端帶進來：它是當下文件的頁高（紙改了會變），不是常數。
  */
-internal fun StrokeWithPoints.redocWith(stride: Float): StrokeWithPoints {
+internal fun StrokeWithSamples.redocWith(stride: Float): StrokeWithSamples {
     val s = stroke
     return copy(stroke = s.copy(docY = s.pageIndex * stride + s.boundsTop))
 }
 
-internal fun TextAnnotationEntity.redocWith(stride: Float): TextAnnotationEntity =
+internal fun TextAnnotation.redocWith(stride: Float): TextAnnotation =
     copy(docY = pageIndex * stride + modelY)
 
-internal fun ImageAnnotationEntity.redocWith(stride: Float): ImageAnnotationEntity =
+internal fun ImageAnnotation.redocWith(stride: Float): ImageAnnotation =
     copy(docY = pageIndex * stride + modelY)

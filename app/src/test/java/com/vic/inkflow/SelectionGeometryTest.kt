@@ -57,7 +57,8 @@ class SelectionGeometryTest {
     }
 
     private fun textAt(x: Float, y: Float, text: String = "hello", fontSize: Float = 20f) =
-        com.vic.inkflow.data.TextAnnotationEntity(
+        com.vic.inkflow.data.TextAnnotation(
+            id = "t1",
             documentUri = "u",
             pageIndex = 0,
             text = text,

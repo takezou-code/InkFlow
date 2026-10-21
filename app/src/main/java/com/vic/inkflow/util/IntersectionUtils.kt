@@ -5,8 +5,8 @@ import android.graphics.Path
 import android.graphics.RectF
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.asAndroidPath
-import com.vic.inkflow.data.PointEntity
-import com.vic.inkflow.data.StrokeWithPoints
+import com.vic.inkflow.data.Point
+import com.vic.inkflow.data.StrokeWithSamples
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.atan2
@@ -81,8 +81,8 @@ object IntersectionUtils {
     /**
      * Eraser: Two-phase collision detection using AABB broad phase + segment-to-segment distance.
      */
-    fun findIntersectingStrokes(eraserPoints: List<Offset>, strokes: List<StrokeWithPoints>, eraserRadius: Float = 10f): List<StrokeWithPoints> {
-        val intersectingStrokes = mutableListOf<StrokeWithPoints>()
+    fun findIntersectingStrokes(eraserPoints: List<Offset>, strokes: List<StrokeWithSamples>, eraserRadius: Float = 10f): List<StrokeWithSamples> {
+        val intersectingStrokes = mutableListOf<StrokeWithSamples>()
         if (eraserPoints.isEmpty()) return intersectingStrokes
 
         // Combine AABB for all eraser points
@@ -251,7 +251,7 @@ object IntersectionUtils {
      * Lasso: Ray-casting (Even-Odd Rule) to find strokes whose centroid lies inside the polygon.
      * [polygon] is the ordered list of lasso vertices in model coordinates.
      */
-    fun findStrokesInLasso(polygon: List<Offset>, strokes: List<StrokeWithPoints>): List<StrokeWithPoints> {
+    fun findStrokesInLasso(polygon: List<Offset>, strokes: List<StrokeWithSamples>): List<StrokeWithSamples> {
         if (polygon.size < 3) return emptyList()
         return strokes.filter { strokeWithPoints ->
             val points = strokeWithPoints.points
@@ -285,7 +285,7 @@ object IntersectionUtils {
      * Build the actual geometric outline path for a shape stroke so the eraser
      * can intersect against it correctly.  For freehand strokes use [toPath] instead.
      */
-    private fun StrokeWithPoints.toShapePath(): Path {
+    private fun StrokeWithSamples.toShapePath(): Path {
         val path = Path()
         val s = stroke
         val bounds = RectF(s.boundsLeft, s.boundsTop, s.boundsRight, s.boundsBottom)

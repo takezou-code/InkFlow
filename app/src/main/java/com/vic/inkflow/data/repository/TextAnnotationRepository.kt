@@ -4,88 +4,48 @@ import androidx.room.withTransaction
 import com.vic.inkflow.data.AppDatabase
 import com.vic.inkflow.data.MergeVersion
 import com.vic.inkflow.data.PageTextCount
+import com.vic.inkflow.data.StrokeVersionRow
+import com.vic.inkflow.data.TextAnnotation
 import com.vic.inkflow.data.TextAnnotationDao
-import com.vic.inkflow.data.TextAnnotationEntity
+import com.vic.inkflow.data.toModel
+import com.vic.inkflow.data.toRow
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 
-/** 文字註記的資料存取邊界。見 [StrokeRepository] 的說明。 */
-interface TextAnnotationRepository : PageShiftTarget {
-
-    suspend fun insert(annotation: TextAnnotationEntity)
-    suspend fun update(annotation: TextAnnotationEntity)
-
-    fun getForPage(documentUri: String, pageIndex: Int): Flow<List<TextAnnotationEntity>>
-    suspend fun getForPageSync(documentUri: String, pageIndex: Int): List<TextAnnotationEntity>
-    suspend fun getAllForDocument(documentUri: String): List<TextAnnotationEntity>
-    suspend fun getForRange(documentUri: String, y0: Float, y1: Float): List<TextAnnotationEntity>
-
-    /**
-     * Per-page note counts, for the `page_counts` sync verb.
-     * See [StrokeRepository.countStrokesByPage] for why this exists.
-     */
-    suspend fun countTextsByPage(documentUri: String): List<PageTextCount>
-
-    suspend fun deleteById(id: String): Int
-
-    /**
-     * 刪除「使用者看得見的」文字註解：寫墓碑而不是硬刪除（§15.4）。
-     *
-     * 與筆跡同一套理由與同一個警告 —— 見 [StrokeRepository.tombstoneStrokesByIds]。
-     * 不要把所有 [deleteById] 換成這個：undo/redo 一筆「剛新增」時，那筆從來沒被
-     * 同步看過，硬刪才對。
-     */
-    suspend fun tombstoneByIds(ids: List<String>): Int
-
-    suspend fun deleteForPage(documentUri: String, pageIndex: Int)
-    suspend fun deleteForDocument(documentUri: String)
-
-    // ── 頁操作五件套 ──────────────────────────────────────────────────────
-    suspend fun shiftPageIndicesDown(documentUri: String, deletedPageIndex: Int)
-    suspend fun shiftPageIndicesUp(documentUri: String, startingIndex: Int, amount: Int)
-
-    // ── S1 單畫布 docY（= pageIndex × stride + modelY）─────────────────────
-    suspend fun shiftDocYBelow(documentUri: String, yThreshold: Float, dy: Float): Int
-    suspend fun shiftDocYRange(documentUri: String, y0: Float, y1: Float, dy: Float): Int
-    suspend fun countMissingDocY(documentUri: String): Int
-    suspend fun backfillTextDocY(documentUri: String, stride: Float): Int
-    suspend fun countTextDocMismatch(documentUri: String, stride: Float): Int
-
-    // ── v6 併發合併（§15.1／§15.2／§15.4）───────────────────────────────
-    suspend fun bumpTextVersion(id: String): Int
-
-    /**
-     * 改寫＋序號前進（文字修改的寫入漏斗）。
-     * 用這個，不要直接呼叫 update —— 序號不動的話仲裁看不出這筆被改過（§15.1）。
-     */
-    suspend fun updateAndBump(annotation: TextAnnotationEntity)
-    suspend fun getTextVersions(documentUri: String): List<com.vic.inkflow.data.StrokeVersionRow>
-    suspend fun getTextVersion(id: String): com.vic.inkflow.data.StrokeVersionRow?
-    suspend fun countLiveTexts(documentUri: String): Int
-    /** 回收比 [cutoff] 更早的墓碑。回傳刪掉幾列。 */
-    suspend fun purgeTombstonedTexts(cutoff: Long): Int
-    suspend fun tombstoneTexts(ids: List<String>): Int
-    suspend fun reviveTexts(ids: List<String>): Int
-}
-
+/**
+ * 文字註記資料存取邊界的 **Room 實作**。
+ *
+ * 介面在 `:shared`（`TextAnnotationRepository`），講共用文件模型；這裡是儲存的形狀。
+ */
 class RoomTextAnnotationRepository(
     private val db: AppDatabase,
     private val dao: TextAnnotationDao
 ) : TextAnnotationRepository {
 
-    override suspend fun insert(annotation: TextAnnotationEntity) = dao.insert(annotation)
-    override suspend fun update(annotation: TextAnnotationEntity) = dao.update(annotation)
-    override fun getForPage(documentUri: String, pageIndex: Int): Flow<List<TextAnnotationEntity>> =
-        dao.getForPage(documentUri, pageIndex)
-    override suspend fun getForPageSync(documentUri: String, pageIndex: Int) = dao.getForPageSync(documentUri, pageIndex)
-    override suspend fun getAllForDocument(documentUri: String) = dao.getAllForDocument(documentUri)
+    override suspend fun insert(annotation: TextAnnotation) = dao.insert(annotation.toRow())
+    override suspend fun update(annotation: TextAnnotation) = dao.update(annotation.toRow())
 
-    override suspend fun countTextsByPage(documentUri: String) = dao.countTextsByPage(documentUri)
-    override suspend fun getForRange(documentUri: String, y0: Float, y1: Float) = dao.getForRange(documentUri, y0, y1)
+    override fun getForPage(documentUri: String, pageIndex: Int): Flow<List<TextAnnotation>> =
+        dao.getForPage(documentUri, pageIndex).map { rows -> rows.map { it.toModel() } }
+
+    override suspend fun getForPageSync(documentUri: String, pageIndex: Int): List<TextAnnotation> =
+        dao.getForPageSync(documentUri, pageIndex).map { it.toModel() }
+
+    override suspend fun getAllForDocument(documentUri: String): List<TextAnnotation> =
+        dao.getAllForDocument(documentUri).map { it.toModel() }
+
+    override suspend fun countTextsByPage(documentUri: String): List<PageTextCount> =
+        dao.countTextsByPage(documentUri)
+
+    override suspend fun getForRange(documentUri: String, y0: Float, y1: Float): List<TextAnnotation> =
+        dao.getForRange(documentUri, y0, y1).map { it.toModel() }
+
     override suspend fun deleteById(id: String): Int = dao.deleteById(id)
 
     override suspend fun tombstoneByIds(ids: List<String>): Int =
         if (ids.isEmpty()) 0
         else dao.tombstoneTexts(ids, System.currentTimeMillis(), MergeVersion.nextNonce())
+
     override suspend fun deleteForPage(documentUri: String, pageIndex: Int) = dao.deleteForPage(documentUri, pageIndex)
     override suspend fun deleteForDocument(documentUri: String) = dao.deleteForDocument(documentUri)
     override suspend fun shiftPageIndicesDown(documentUri: String, deletedPageIndex: Int) =
@@ -115,14 +75,15 @@ class RoomTextAnnotationRepository(
      * entity 帶舊 version，直接 update 會讓序號停在原地，仲裁看不出改過。
      * update 與 bump 必須在同一交易里（update 先、bump 後）。
      */
-    override suspend fun updateAndBump(annotation: TextAnnotationEntity) {
+    override suspend fun updateAndBump(annotation: TextAnnotation) {
         db.withTransaction {
-            dao.update(annotation)
+            dao.update(annotation.toRow())
             dao.bumpTextVersion(annotation.id, MergeVersion.nextNonce())
         }
     }
-    override suspend fun getTextVersions(documentUri: String): List<com.vic.inkflow.data.StrokeVersionRow> = dao.getTextVersions(documentUri)
-    override suspend fun getTextVersion(id: String): com.vic.inkflow.data.StrokeVersionRow? = dao.getTextVersion(id)
+
+    override suspend fun getTextVersions(documentUri: String): List<StrokeVersionRow> = dao.getTextVersions(documentUri)
+    override suspend fun getTextVersion(id: String): StrokeVersionRow? = dao.getTextVersion(id)
     override suspend fun countLiveTexts(documentUri: String): Int = dao.countLiveTexts(documentUri)
 
     override suspend fun purgeTombstonedTexts(cutoff: Long): Int = dao.purgeTombstonedTexts(cutoff)

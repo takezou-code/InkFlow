@@ -1,6 +1,6 @@
 package com.vic.inkflow.ui
 
-import com.vic.inkflow.data.TextAnnotationEntity
+import com.vic.inkflow.data.TextAnnotation
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -101,7 +101,7 @@ class RenderScaleAndTextHitTest {
     // ---- 文字命中框：中文點得到 ----
 
     private fun ann(text: String, fontSize: Float = 16f) =
-        TextAnnotationEntity(
+        TextAnnotation(
             id = "t1", documentUri = "file:///a.pdf", pageIndex = 0,
             text = text, modelX = 100f, modelY = 200f, fontSize = fontSize
         )

@@ -2,7 +2,7 @@ package com.vic.inkflow.ui
 
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
-import com.vic.inkflow.data.ImageAnnotationEntity
+import com.vic.inkflow.data.ImageAnnotation
 import com.vic.inkflow.util.DocTransform
 import com.vic.inkflow.util.StrokeTransformUtils
 
@@ -124,7 +124,7 @@ private fun intersectY(a: Offset, b: Offset, y: Float): Offset {
 /** M5: axis-aligned bounds of the (possibly rotated) image, in model space.
  * 回傳 compose Rect（刻意不用 android.graphics.RectF——後者在 JVM 單測是空殼，
  * 構造器不賦值、方法全樁，純幾何測不了；血淚教訓見 textEstimatedBounds）。 */
-internal fun rotatedImageBounds(annotation: ImageAnnotationEntity): Rect {
+internal fun rotatedImageBounds(annotation: ImageAnnotation): Rect {
     val cx = annotation.modelX + annotation.modelWidth / 2f
     val cy = annotation.modelY + annotation.modelHeight / 2f
     val rad = Math.toRadians(annotation.rotation.toDouble())
@@ -146,7 +146,7 @@ internal fun rotatedImageBounds(annotation: ImageAnnotationEntity): Rect {
     )
 }
 
-internal fun isImageSelectedByLasso(annotation: ImageAnnotationEntity, polygon: List<Offset>): Boolean {
+internal fun isImageSelectedByLasso(annotation: ImageAnnotation, polygon: List<Offset>): Boolean {
     if (polygon.size < 3) return false
 
     val imageRect = rotatedImageBounds(annotation)
@@ -185,7 +185,7 @@ internal fun isImageSelectedByLasso(annotation: ImageAnnotationEntity, polygon: 
  * 空白文字：共用規則回 null（空白沒有框），這裡補成**零寬框**——與搬家前的行為
  * 完全相同（舊碼對空字串算出 w=0、h=fontSize 的同一個框），所以呼叫端不用改。
  */
-internal fun textEstimatedBounds(ann: com.vic.inkflow.data.TextAnnotationEntity): Rect =
+internal fun textEstimatedBounds(ann: com.vic.inkflow.data.TextAnnotation): Rect =
     com.vic.inkflow.ui.textEstimatedBounds(
         modelX = ann.modelX,
         modelY = ann.modelY,
@@ -196,7 +196,7 @@ internal fun textEstimatedBounds(ann: com.vic.inkflow.data.TextAnnotationEntity)
 
 /** 文字套索命中：baseline 點在圈內，或圈的任一頂點落在字框內。 */
 internal fun isTextSelectedByLasso(
-    ann: com.vic.inkflow.data.TextAnnotationEntity,
+    ann: com.vic.inkflow.data.TextAnnotation,
     polygon: List<Offset>
 ): Boolean {
     if (polygon.size < 3) return false

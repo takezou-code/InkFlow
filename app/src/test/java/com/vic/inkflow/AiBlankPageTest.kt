@@ -1,8 +1,8 @@
 package com.vic.inkflow
 
-import com.vic.inkflow.data.ImageAnnotationEntity
-import com.vic.inkflow.data.StrokeEntity
-import com.vic.inkflow.data.TextAnnotationEntity
+import com.vic.inkflow.data.ImageAnnotation
+import com.vic.inkflow.data.Stroke
+import com.vic.inkflow.data.TextAnnotation
 import com.vic.inkflow.ui.continueTop
 import com.vic.inkflow.ui.isBlankPage
 import com.vic.inkflow.ui.isSelfPage
@@ -77,13 +77,13 @@ class AiBlankPageTest {
     private val fakeMetrics: (Float) -> Pair<Float, Float> = { fs -> (fs * 1.2f) to (fs * 0.25f) }
 
     private fun stroke(bottom: Float) =
-        StrokeEntity(documentUri = "d", pageIndex = 0, color = 0, strokeWidth = 2f, boundsBottom = bottom)
+        Stroke(id = "s1", documentUri = "d", pageIndex = 0, color = 0, strokeWidth = 2f, boundsBottom = bottom)
 
     private fun text(y: Float, body: String, size: Float = 20f, stamp: Boolean = false, boxW: Float? = null) =
-        TextAnnotationEntity(documentUri = "d", pageIndex = 0, text = body, modelX = 48f, modelY = y, fontSize = size, isStamp = stamp, boxWidth = boxW)
+        TextAnnotation(id = "t1", documentUri = "d", pageIndex = 0, text = body, modelX = 48f, modelY = y, fontSize = size, isStamp = stamp, boxWidth = boxW)
 
     private fun image(y: Float, h: Float) =
-        ImageAnnotationEntity(documentUri = "d", pageIndex = 0, uri = "u", modelX = 48f, modelY = y, modelWidth = 100f, modelHeight = h)
+        ImageAnnotation(id = "i1", documentUri = "d", pageIndex = 0, uri = "u", modelX = 48f, modelY = y, modelWidth = 100f, modelHeight = h)
 
     @Test fun measure_maxWins() {
         // 筆底300；字 100＋2×24＋5=153；圖 200＋120=320 → 320

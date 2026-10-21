@@ -12,8 +12,8 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
-import com.vic.inkflow.data.PointEntity
-import com.vic.inkflow.data.StrokeEntity
+import com.vic.inkflow.data.Point
+import com.vic.inkflow.data.Stroke
 import com.vic.inkflow.util.EnvelopeUtils
 import com.vic.inkflow.util.StrokePoint
 import kotlin.math.atan2
@@ -27,8 +27,8 @@ import kotlin.math.sin
 
 internal fun drawShapeOnCanvas(
     canvas: Canvas,
-    stroke: StrokeEntity,
-    points: List<PointEntity>,
+    stroke: Stroke,
+    points: List<Point>,
     tintColor: Color? = null
 ) {
     val color = tintColor ?: Color(stroke.color)
@@ -82,7 +82,7 @@ internal fun DrawScope.drawArrowHeadInScope(start: Offset, end: Offset, color: C
 
 // ---- Freehand path helpers ----
 
-internal fun List<PointEntity>.toComposePath(): Path {
+internal fun List<Point>.toComposePath(): Path {
     val strokePoints = this.map { StrokePoint(it.x, it.y, it.width) }
     return EnvelopeUtils.generateEnvelopePath(strokePoints)
 }

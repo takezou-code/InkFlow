@@ -1,6 +1,6 @@
 package com.vic.inkflow.ui
 
-import com.vic.inkflow.data.TextAnnotationEntity
+import com.vic.inkflow.data.TextAnnotation
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -22,8 +22,8 @@ class TextWrappingTest {
         fontSize: Float = 10f,
         boxWidth: Float? = null,
         alignment: Int = TEXT_ALIGN_LEFT
-    ) = TextAnnotationEntity(
-        documentUri = "u", pageIndex = 0, text = text,
+    ) = TextAnnotation(
+        id = "t1", documentUri = "u", pageIndex = 0, text = text,
         modelX = modelX, modelY = modelY, fontSize = fontSize,
         boxWidth = boxWidth, alignment = alignment
     )

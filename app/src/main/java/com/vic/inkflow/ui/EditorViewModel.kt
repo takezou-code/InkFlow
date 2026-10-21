@@ -9,16 +9,16 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.vic.inkflow.data.AppDatabase
-import com.vic.inkflow.data.ImageAnnotationEntity
-import com.vic.inkflow.data.PointEntity
+import com.vic.inkflow.data.ImageAnnotation
+import com.vic.inkflow.data.Point
 import com.vic.inkflow.data.repository.DocSpaceMigrator
 import com.vic.inkflow.ui.editor.ExportController
 import com.vic.inkflow.ui.editor.SelectionController
 import com.vic.inkflow.ui.editor.UndoRedoController
 import com.vic.inkflow.data.repository.InkFlowRepositories
-import com.vic.inkflow.data.StrokeEntity
-import com.vic.inkflow.data.StrokeWithPoints
-import com.vic.inkflow.data.TextAnnotationEntity
+import com.vic.inkflow.data.Stroke
+import com.vic.inkflow.data.StrokeWithSamples
+import com.vic.inkflow.data.TextAnnotation
 import com.vic.inkflow.util.IntersectionUtils
 import com.vic.inkflow.util.DocTransform
 import com.vic.inkflow.util.EnvelopeUtils
@@ -112,7 +112,7 @@ class EditorViewModel(
      * 與套索 overlay 同協議：放開/取消即清。src 紙原本照畫（同像素複畫無感）。
      */
     data class ImageDragPreview(
-        val image: ImageAnnotationEntity,
+        val image: ImageAnnotation,
         val dxModel: Float,
         val dyModel: Float
     )
@@ -362,9 +362,9 @@ class EditorViewModel(
     val dragPreviewActive: StateFlow<Boolean> = _dragPreviewActive.asStateFlow()
     fun setDragPreviewActive(active: Boolean) { _dragPreviewActive.value = active }
 
-    private val _pendingStrokes = MutableStateFlow<Map<String, StrokeWithPoints>>(emptyMap())
+    private val _pendingStrokes = MutableStateFlow<Map<String, StrokeWithSamples>>(emptyMap())
 
-    val currentStrokes: StateFlow<List<StrokeWithPoints>> = kotlinx.coroutines.flow.combine(
+    val currentStrokes: StateFlow<List<StrokeWithSamples>> = kotlinx.coroutines.flow.combine(
         pageIndex.flatMapLatest { index -> repos.strokes.getStrokesForPage(documentUri, index) },
         _pendingStrokes
     ) { dbStrokes, pending ->
@@ -380,11 +380,11 @@ class EditorViewModel(
         dbStrokes + unresolved
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    val currentTextAnnotations: StateFlow<List<TextAnnotationEntity>> = pageIndex.flatMapLatest { index ->
+    val currentTextAnnotations: StateFlow<List<TextAnnotation>> = pageIndex.flatMapLatest { index ->
         repos.texts.getForPage(documentUri, index)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    val currentImageAnnotations: StateFlow<List<ImageAnnotationEntity>> = pageIndex.flatMapLatest { index ->
+    val currentImageAnnotations: StateFlow<List<ImageAnnotation>> = pageIndex.flatMapLatest { index ->
         repos.images.getForPage(documentUri, index)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
@@ -465,9 +465,9 @@ class EditorViewModel(
     /** 鄰頁預渲染快取：可視範圍 ±1 的已查筆跡，給 Workspace item 當 Flow 初始值，
      * 滑入視口第一幀就有墨，不再空白閃一下。版號守衛防亂序覆蓋，視窗外自動丟棄。 */
     data class NeighborPageData(
-        val strokes: List<StrokeWithPoints> = emptyList(),
-        val texts: List<TextAnnotationEntity> = emptyList(),
-        val images: List<ImageAnnotationEntity> = emptyList()
+        val strokes: List<StrokeWithSamples> = emptyList(),
+        val texts: List<TextAnnotation> = emptyList(),
+        val images: List<ImageAnnotation> = emptyList()
     )
     private val _neighborCache = MutableStateFlow<Map<Int, NeighborPageData>>(emptyMap())
     fun cachedNeighbor(page: Int): NeighborPageData? = _neighborCache.value[page]
@@ -596,7 +596,7 @@ class EditorViewModel(
         val bounds = path.getBounds()
         // S1 雙寫：頁空間照舊，docY 錨點同步存（S2 才讀）。
         val strokePage = targetPage ?: pageIndex.value
-        val strokeEntity = StrokeEntity(
+        val stroke = Stroke(
             id = strokeId,
             documentUri = documentUri,
             pageIndex = strokePage,
@@ -613,7 +613,7 @@ class EditorViewModel(
             isHighlighter = tool == Tool.HIGHLIGHTER
         )
         val pointEntities = normalizedPoints.map {
-            PointEntity(strokeId = strokeId, x = it.x, y = it.y, width = it.width)
+            Point(strokeId = strokeId, x = it.x, y = it.y, width = it.width)
         }
         // 存檔護欄（release 也可見，不是 Log.d——優化版 release 會把 Log.d/Log.v 拿掉，
         // 之前那行法醫線在平板上根本看不到）。這行是「提筆偏移」的判定線：
@@ -636,13 +636,13 @@ class EditorViewModel(
                 "${bounds.right.toInt()},${bounds.bottom.toInt()}] " +
                 "over=[${overX.toInt()},${overY.toInt()}]"
         )
-        val pendingStroke = StrokeWithPoints(strokeEntity, pointEntities)
+        val pendingStroke = StrokeWithSamples(stroke, pointEntities)
         _pendingStrokes.value = _pendingStrokes.value + (strokeId to pendingStroke)
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 repos.transaction {
-                    repos.strokes.insertStroke(strokeEntity)
+                    repos.strokes.insertStroke(stroke)
                     repos.strokes.insertPoints(pointEntities)
                 }
             } catch (e: Exception) {
@@ -672,8 +672,8 @@ class EditorViewModel(
      * 的戰果就靜默消失。批次在呼叫當下（Main）捕獲自己的 acc，結算只等這一個。
      */
     private class EraseGestureAccumulator(val undoGeneration: Int) {
-        val strokes = mutableListOf<StrokeWithPoints>()
-        val texts = mutableListOf<TextAnnotationEntity>()
+        val strokes = mutableListOf<StrokeWithSamples>()
+        val texts = mutableListOf<TextAnnotation>()
         private val pending = java.util.concurrent.atomic.AtomicInteger(0)
         private val idle = MutableStateFlow(true)
 
@@ -946,8 +946,8 @@ class EditorViewModel(
 
     /** 一次擦除批次命中的墨＋字（快路徑結果，供背景墓碑使用）。 */
     private data class EraseHits(
-        val strokes: List<StrokeWithPoints>,
-        val texts: List<TextAnnotationEntity>
+        val strokes: List<StrokeWithSamples>,
+        val texts: List<TextAnnotation>
     )
 
     /**
@@ -1013,7 +1013,7 @@ class EditorViewModel(
         }
     }
 
-    /** Save a geometric shape (RECT / CIRCLE / LINE / ARROW) as a StrokeEntity. */
+    /** Save a geometric shape (RECT / CIRCLE / LINE / ARROW) as a Stroke. */
     fun saveShape(
         startPoint: Offset,
         endPoint: Offset,
@@ -1035,7 +1035,7 @@ class EditorViewModel(
             // S1 雙寫：頁空間照舊，docY 錨點同步存。
             val shapePage = targetPage ?: pageIndex.value
             val shapeEntityTop = minOf(p0.y, p1.y)
-            val strokeEntity = StrokeEntity(
+            val stroke = Stroke(
                 id = strokeId,
                 documentUri = documentUri,
                 pageIndex = shapePage,
@@ -1050,14 +1050,14 @@ class EditorViewModel(
                 shapeType = shapeType
             )
             val pointEntities = listOf(
-                PointEntity(strokeId = strokeId, x = p0.x, y = p0.y),
-                PointEntity(strokeId = strokeId, x = p1.x, y = p1.y)
+                Point(strokeId = strokeId, x = p0.x, y = p0.y),
+                Point(strokeId = strokeId, x = p1.x, y = p1.y)
             )
             repos.transaction {
-                repos.strokes.insertStroke(strokeEntity)
+                repos.strokes.insertStroke(stroke)
                 repos.strokes.insertPoints(pointEntities)
             }
-            val command = DrawCommand.AddStroke(StrokeWithPoints(strokeEntity, pointEntities))
+            val command = DrawCommand.AddStroke(StrokeWithSamples(stroke, pointEntities))
             withContext(Dispatchers.Main) { pushUndo(command) }
         }
     }
@@ -1079,7 +1079,8 @@ class EditorViewModel(
         // 文字框化：預設框寬＝落點到右邊距，超過就折行（見 ui/TextWrapping.kt）。
         val textBoxWidth = (modelWidth - textModelX - TEXT_BOX_DEFAULT_MARGIN)
             .coerceAtLeast(TEXT_BOX_MIN_WIDTH)
-        val ann = TextAnnotationEntity(
+        val ann = TextAnnotation(
+            id = UUID.randomUUID().toString(),
             documentUri = documentUri,
             pageIndex = textPage,
             // S1 雙寫：docY 錨點同步存。
@@ -1105,7 +1106,8 @@ class EditorViewModel(
         // 框寬＝AI 排版的內容寬（同一支 aiTextContentWidth）。有了它，AI 文字就是一般文字框：
         // 折行交給渲染器、可以改寬、可以對齊；存的行再折一次是冪等，所以外觀與匯入時一致。
         val boxWidth = aiTextContentWidth(modelWidth)
-        val ann = TextAnnotationEntity(
+        val ann = TextAnnotation(
+            id = UUID.randomUUID().toString(),
             documentUri = docUri,
             pageIndex = targetPage,
             // S1 雙寫：docY 錨點同步存（他 AI 的 M3 寫入路徑一併帶上）。
@@ -1125,7 +1127,8 @@ class EditorViewModel(
     /** M5：引入數學圖寫入 — KaTeX 渲染 PNG 直接給 model 矩形與目標頁。 */
     fun insertImportedImage(docUri: String, targetPage: Int, fileUri: String, modelX: Float, modelY: Float, modelW: Float, modelH: Float) {
         if (modelW <= 0f || modelH <= 0f) return
-        val ann = ImageAnnotationEntity(
+        val ann = ImageAnnotation(
+            id = UUID.randomUUID().toString(),
             documentUri = docUri,
             pageIndex = targetPage,
             // S1 雙寫：docY 錨點同步存。
@@ -1263,7 +1266,8 @@ class EditorViewModel(
     // S1 雙寫：docY 錨點同步存。
     val imgPage = targetPage ?: pageIndex.value
     val imgModelY = canvasY * scaleY
-    val ann = ImageAnnotationEntity(
+    val ann = ImageAnnotation(
+        id = UUID.randomUUID().toString(),
         documentUri = documentUri,
         pageIndex = imgPage,
         docY = imgPage * docStride + imgModelY,
@@ -1300,7 +1304,7 @@ class EditorViewModel(
         imagePixelWidth: Int,
         imagePixelHeight: Int,
         anchorModel: Offset? = null
-    ): ImageAnnotationEntity {
+    ): ImageAnnotation {
         val (initW, initH) = computeInitialImageSize(imagePixelWidth, imagePixelHeight)
         // 插入由工具列觸發（不再靠點紙面帶錨點）→ 無錨點時置中在頁面中央，
         // 位置可預期；有錨點仍以它為圖心（相容舊路徑）。
@@ -1313,7 +1317,8 @@ class EditorViewModel(
         } else {
             centeredImageOrigin(modelWidth, modelHeight, initW, initH)
         }
-        return ImageAnnotationEntity(
+        return ImageAnnotation(
+            id = UUID.randomUUID().toString(),
             documentUri = documentUri,
             pageIndex = targetPageIndex,
             // S1 雙寫：docY 錨點同步存。
@@ -1664,7 +1669,7 @@ class EditorViewModel(
                         // 不碰 DB，放外面不影響原子性，還讓交易窗口更短）。
                         val shifted = command.originals.map { swp ->
                             val shiftedPoints = swp.points.map { pt ->
-                                PointEntity(strokeId = swp.stroke.id, x = pt.x + command.delta.x, y = pt.y + command.delta.y, width = pt.width)
+                                Point(strokeId = swp.stroke.id, x = pt.x + command.delta.x, y = pt.y + command.delta.y, width = pt.width)
                             }
                             val shiftedStroke = swp.stroke.copy(
                                 boundsLeft   = swp.stroke.boundsLeft   + command.delta.x,
@@ -1678,7 +1683,7 @@ class EditorViewModel(
                             shiftedStroke to shiftedPoints
                         }
                         repos.strokes.replaceStrokeSnapshots(shifted.map { (stroke, points) ->
-                            StrokeWithPoints(stroke, points)
+                            StrokeWithSamples(stroke, points)
                         })
                     }
                 }
@@ -1776,7 +1781,7 @@ class EditorViewModel(
      * transformStrokes/copy æœƒæ”œå¸¶é™³èˆŠ docYï¼Œæ‰€æœ‰è½åº«å‰å¿…ç¶“æ­¤è™•ï¼ˆreplaceStrokeSnapshots
      * æ˜¯ç§»å‹•æäº¤çš„å”¯ä¸€ chokeï¼›æ–°å»ºåœ¨æ§‹é€ æ™‚ç›´æŽ¥å¡«ï¼‰ã€‚
      */
-    private suspend fun replaceStrokeSnapshots(strokes: List<StrokeWithPoints>) {
+    private suspend fun replaceStrokeSnapshots(strokes: List<StrokeWithSamples>) {
         // èµ° repository çš„æ¼æ–—ï¼šè¦†è“‹ï¼‹bump åœ¨åŒä¸€äº¤æ˜“é‡Œã€‚è‡ªå·±æ‹¼ä¸‰æ­¥æœƒæ¼ bumpï¼Œ
         // åºè™Ÿè¢«è“‹å›žèˆŠå€¼ï¼Œä»²è£å°±çœ‹ä¸å‡ºé€™ç­†è¢«æ”¹éŽï¼ˆÂ§15.1ï¼‰ã€‚
         repos.strokes.replaceStrokeSnapshots(strokes.map { it.redocWith(docStride) })
@@ -1804,10 +1809,10 @@ class EditorViewModel(
         showIds = { ids -> showIds(ids) }
     )
 
-    val selectedStrokes: StateFlow<List<StrokeWithPoints>> get() = selection.selectedStrokes
+    val selectedStrokes: StateFlow<List<StrokeWithSamples>> get() = selection.selectedStrokes
     val selectedImageAnnotationIds: StateFlow<Set<String>> get() = selection.selectedImageAnnotationIds
     val selectedTextAnnotationIds: StateFlow<Set<String>> get() = selection.selectedTextAnnotationIds
-    val selectedStrokePreview: StateFlow<List<StrokeWithPoints>> get() = selection.selectedStrokePreview
+    val selectedStrokePreview: StateFlow<List<StrokeWithSamples>> get() = selection.selectedStrokePreview
     val lassoPolygon: StateFlow<List<Offset>> get() = selection.lassoPolygon
     val selectionFramePolygon: StateFlow<List<Offset>> get() = selection.selectionFramePolygon
     val lastLassoPolygon: StateFlow<List<Offset>> get() = selection.lastLassoPolygon
@@ -1822,7 +1827,7 @@ class EditorViewModel(
      * and Room emitting the updated rows. The canvas draws these transformed strokes directly so
      * there is no flicker back to the pre-transform position.
      */
-    val commitPreview: StateFlow<List<StrokeWithPoints>?> get() = selection.commitPreview
+    val commitPreview: StateFlow<List<StrokeWithSamples>?> get() = selection.commitPreview
 
     fun selectStrokesInLassoAcross(
         polygonsByPage: Map<Int, List<List<Offset>>>,
@@ -1844,10 +1849,10 @@ class EditorViewModel(
 
     fun selectionPage(): Int = selection.selectionPage()
 
-    fun selectedImagesNow(): List<ImageAnnotationEntity> = selection.selectedImagesNow()
+    fun selectedImagesNow(): List<ImageAnnotation> = selection.selectedImagesNow()
 
     /** åŒä¸Šï¼Œçµ¦ overlay ç•«é¸ä¸­å­—ï¼ˆæ‹–æ›³è·¨é å…¨ç¨‹å¯è¦‹ï¼‰ã€‚ */
-    fun selectedTextsNow(): List<TextAnnotationEntity> = selection.selectedTextsNow()
+    fun selectedTextsNow(): List<TextAnnotation> = selection.selectedTextsNow()
 
     fun deleteSelection() = selection.deleteSelection()
 
@@ -1860,14 +1865,14 @@ class EditorViewModel(
      * 全活頁查找：在常駐熱流裡按 id 找註解（跨紙可用），找不到才退回作用頁流。
      * M1 全活頁基礎：InkCanvas 只認自己的紙，不再假設東西都在作用頁。
      */
-    private fun findTextAnnotation(id: String): TextAnnotationEntity? {
+    private fun findTextAnnotation(id: String): TextAnnotation? {
         for (flow in pageFlows.values) {
             flow.value.texts.firstOrNull { it.id == id }?.let { return it }
         }
         return currentTextAnnotations.value.firstOrNull { it.id == id }
     }
 
-    private fun findImageAnnotation(id: String): ImageAnnotationEntity? {
+    private fun findImageAnnotation(id: String): ImageAnnotation? {
         for (flow in pageFlows.values) {
             flow.value.images.firstOrNull { it.id == id }?.let { return it }
         }

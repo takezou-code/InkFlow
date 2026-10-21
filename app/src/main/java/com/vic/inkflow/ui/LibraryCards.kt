@@ -1,4 +1,4 @@
-﻿package com.vic.inkflow.ui
+package com.vic.inkflow.ui
 
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeSource
@@ -203,11 +203,11 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.vic.inkflow.R
 import com.vic.inkflow.data.AppDatabase
-import com.vic.inkflow.data.DocumentEntity
-import com.vic.inkflow.data.FolderEntity
-import com.vic.inkflow.data.ImageAnnotationEntity
-import com.vic.inkflow.data.StrokeWithPoints
-import com.vic.inkflow.data.TextAnnotationEntity
+import com.vic.inkflow.data.Document
+import com.vic.inkflow.data.Folder
+import com.vic.inkflow.data.ImageAnnotation
+import com.vic.inkflow.data.StrokeWithSamples
+import com.vic.inkflow.data.TextAnnotation
 import com.vic.inkflow.ui.theme.InkFlowTheme
 
 
@@ -235,8 +235,8 @@ import kotlinx.coroutines.withContext
 @Composable
 internal fun FolderGroupedDocumentsView(
     folderTree: List<FolderNode>,
-    uncategorizedDocs: List<DocumentEntity>,
-    availableFolders: List<FolderEntity>,
+    uncategorizedDocs: List<Document>,
+    availableFolders: List<Folder>,
     docViewModel: DocumentViewModel,
     context: android.content.Context,
     onOpenDocument: (String) -> Unit,
@@ -371,7 +371,7 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
             var isFolderDropTargetActive by remember(folder.id) { mutableStateOf(false) }
 
             val descendantFolderIds = remember { emptySet<String>() }
-            val movableParentCandidates = remember { emptyList<FolderEntity>() }
+            val movableParentCandidates = remember { emptyList<Folder>() }
 
                         AnimatedDialog(visible = showNewChildFolderDialog) {
                 GlassDialogCustom(
@@ -660,9 +660,9 @@ val collapsedSections = remember { mutableStateMapOf<String, Boolean>() }
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun DocumentCard(
-    document: DocumentEntity,
+    document: Document,
     coverBitmap: Bitmap?,
-    availableFolders: List<FolderEntity>,
+    availableFolders: List<Folder>,
     onClick: () -> Unit,
     onDelete: () -> Unit,
     onRename: (String) -> Unit = {},
@@ -975,9 +975,9 @@ internal fun DocumentCard(
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun DocumentListRow(
-    document: DocumentEntity,
+    document: Document,
     coverBitmap: Bitmap?,
-    availableFolders: List<FolderEntity>,
+    availableFolders: List<Folder>,
     onClick: () -> Unit,
     onDelete: () -> Unit,
     onRename: (String) -> Unit = {},

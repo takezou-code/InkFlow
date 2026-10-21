@@ -30,7 +30,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.vic.inkflow.data.TextAnnotationEntity
+import com.vic.inkflow.data.TextAnnotation
 import androidx.compose.material3.MaterialTheme
 import kotlin.math.roundToInt
 
@@ -68,7 +68,7 @@ internal fun InlineTextEditor(
     onDone: () -> Unit,
     focusRequester: FocusRequester,
     /** 正在編輯的既有標註；null 表示新建。 */
-    editing: TextAnnotationEntity?,
+    editing: TextAnnotation?,
     /** 新建時的錨點（像素）。 */
     newAnchorPx: Offset?,
     /** 畫布像素寬度（用來夾住輸入框不超出右緣）。 */

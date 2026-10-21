@@ -6,14 +6,11 @@ import android.os.Environment
 import android.os.SystemClock
 import android.util.Log
 import com.google.gson.Gson
-import com.vic.inkflow.data.DocumentEntity
+import com.vic.inkflow.data.Document
 import com.vic.inkflow.data.MergeVersion
-import com.vic.inkflow.data.StrokeWithPoints
 import com.vic.inkflow.data.StrokeWithSamples
 import com.vic.inkflow.data.TextAnnotation
-import com.vic.inkflow.data.TextAnnotationEntity
 import com.vic.inkflow.data.repository.InkFlowRepositories
-import com.vic.inkflow.data.toRow
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
@@ -454,7 +451,7 @@ class TabletSyncServer(
      */
     private suspend fun applyMergedProposal(
         p: ProposalSubmitPayload,
-        doc: DocumentEntity,
+        doc: Document,
         decision: ProposalArbiter.Decision.Merge,
         live: List<ProposalArbiter.OpState>
     ): ProposalStatusPayload {
@@ -540,7 +537,7 @@ class TabletSyncServer(
     )
 
     /** 和 buildManifest 同一公式，但讀新鮮值而非快取：仲裁用的版本不能是舊的。 */
-    private suspend fun currentDocVersion(doc: DocumentEntity): String {
+    private suspend fun currentDocVersion(doc: Document): String {
         val instance = SyncIdentityStore.instanceId(appContext)
         val file = documentFile(doc.uri)
         val present = file?.exists() == true
@@ -626,7 +623,7 @@ class TabletSyncServer(
                 throw SyncRequestException("op targets a different document")
             }
             // 共用模型 → 本機 Room row（欄位對欄位，漏一個欄位就編譯不過）。
-            DecodedOp.UpsertStroke(swp.toRow())
+            DecodedOp.UpsertStroke(swp)
         }
         ProposalOp.DELETE_STROKE -> {
             val id = op.id?.takeIf { it.isNotBlank() }
@@ -639,7 +636,7 @@ class TabletSyncServer(
             if (text.documentUri != documentUri) {
                 throw SyncRequestException("op targets a different document")
             }
-            DecodedOp.UpsertText(text.toRow())
+            DecodedOp.UpsertText(text)
         }
         ProposalOp.DELETE_TEXT -> {
             val id = op.id?.takeIf { it.isNotBlank() }
@@ -650,9 +647,9 @@ class TabletSyncServer(
     }
 
     private sealed interface DecodedOp {
-        data class UpsertStroke(val swp: StrokeWithPoints) : DecodedOp
+        data class UpsertStroke(val swp: StrokeWithSamples) : DecodedOp
         data class DeleteStroke(val id: String) : DecodedOp
-        data class UpsertText(val text: TextAnnotationEntity) : DecodedOp
+        data class UpsertText(val text: TextAnnotation) : DecodedOp
         data class DeleteText(val id: String) : DecodedOp
     }
 
@@ -783,7 +780,7 @@ class TabletSyncServer(
      * 然後用 `file_data` 把配對碼讀出去。列在 documents 表裡的 uri 才是我們自己寫進去的
      * 值，因此可信任。
      */
-    private suspend fun requireDocument(rawUri: String?): DocumentEntity {
+    private suspend fun requireDocument(rawUri: String?): Document {
         val uri = rawUri?.takeIf { it.isNotBlank() }
             ?: throw SyncRequestException("missing documentUri")
         return repos.documents.getAllDocumentsSync().firstOrNull { it.uri == uri }
@@ -794,7 +791,7 @@ class TabletSyncServer(
      * 縱深防禦：即使 uri 在表內，也只服務 app 私有 documents 目錄底下的實體檔。
      * 擋掉 restored row 被指向 symlink/外部路徑的情況。
      */
-    private fun requireServableFile(doc: DocumentEntity): File {
+    private fun requireServableFile(doc: Document): File {
         val file = documentFile(doc.uri)
             ?: throw SyncRequestException("document path is not a usable file uri")
         if (!file.isFile) return file // 缺席由呼叫端回 exists=false / EOF
@@ -827,10 +824,10 @@ class TabletSyncServer(
      * payload 具決定性：同一份文件重複請求要能產生位元組相同的回應，否則除錯時無法
      * 比較兩次結果。
      */
-    private fun ordered(strokes: List<StrokeWithPoints>): List<StrokeWithPoints> =
+    private fun ordered(strokes: List<StrokeWithSamples>): List<StrokeWithSamples> =
         strokes
             .sortedWith(
-                compareBy<StrokeWithPoints> { it.stroke.pageIndex }
+                compareBy<StrokeWithSamples> { it.stroke.pageIndex }
                     .thenBy { it.stroke.docY ?: it.stroke.boundsTop }
                     .thenBy { it.stroke.id }
             )

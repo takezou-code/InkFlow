@@ -2,8 +2,8 @@ package com.vic.inkflow
 
 import com.vic.inkflow.ui.PendingImageSettle
 import com.vic.inkflow.ui.PendingTextSettle
-import com.vic.inkflow.data.ImageAnnotationEntity
-import com.vic.inkflow.data.TextAnnotationEntity
+import com.vic.inkflow.data.ImageAnnotation
+import com.vic.inkflow.data.TextAnnotation
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -29,7 +29,7 @@ class PendingSettleTest {
         x: Float = 100f, y: Float = 200f,
         w: Float = 200f, h: Float = 150f,
         rot: Float = 0f,
-    ) = ImageAnnotationEntity(
+    ) = ImageAnnotation(
         id = id, documentUri = "doc", pageIndex = 0,
         uri = "file:///x.jpg",
         modelX = x, modelY = y, modelWidth = w, modelHeight = h, rotation = rot
@@ -87,7 +87,7 @@ class PendingSettleTest {
     // ── 文字 ──
 
     private fun txt(id: String = "t1", x: Float = 50f, y: Float = 80f, size: Float = 20f) =
-        TextAnnotationEntity(
+        TextAnnotation(
             id = id, documentUri = "doc", pageIndex = 0,
             text = "hello", modelX = x, modelY = y, fontSize = size, colorArgb = 0
         )

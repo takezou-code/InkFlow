@@ -1,4 +1,4 @@
-﻿package com.vic.inkflow.ui
+package com.vic.inkflow.ui
 
 import android.graphics.BitmapFactory
 import android.net.Uri
@@ -67,7 +67,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.Stroke as DrawStroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.nativeCanvas
@@ -92,11 +92,11 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.ExperimentalComposeUiApi
-import com.vic.inkflow.data.ImageAnnotationEntity
-import com.vic.inkflow.data.PointEntity
-import com.vic.inkflow.data.StrokeEntity
-import com.vic.inkflow.data.StrokeWithPoints
-import com.vic.inkflow.data.TextAnnotationEntity
+import com.vic.inkflow.data.ImageAnnotation
+import com.vic.inkflow.data.Point
+import com.vic.inkflow.data.Stroke
+import com.vic.inkflow.data.StrokeWithSamples
+import com.vic.inkflow.data.TextAnnotation
 import com.vic.inkflow.util.PalmRejectionFilter
 import com.vic.inkflow.util.TouchEventLogger
 import com.vic.inkflow.util.EnvelopeUtils
@@ -143,7 +143,7 @@ internal data class PendingImageSettle(
     val modelHeight: Float,
     val rotation: Float,
 ) {
-    fun matches(ann: ImageAnnotationEntity): Boolean =
+    fun matches(ann: ImageAnnotation): Boolean =
         ann.id == id &&
             near(ann.modelX, modelX) && near(ann.modelY, modelY) &&
             near(ann.modelWidth, modelWidth) && near(ann.modelHeight, modelHeight) &&
@@ -159,7 +159,7 @@ internal data class PendingTextSettle(
     /** 框寬（model pt）；null = 舊資料（無框）。 */
     val boxWidth: Float? = null,
 ) {
-    fun matches(ann: TextAnnotationEntity): Boolean =
+    fun matches(ann: TextAnnotation): Boolean =
         ann.id == id &&
             near(ann.modelX, modelX) && near(ann.modelY, modelY) &&
             near(ann.fontSize, fontSize) &&
@@ -198,11 +198,11 @@ fun InkCanvas(
     /** 本頁在文件中的索引（跨頁分段/換頁歸屬用）。 */
     pageIndex: Int = 0,
     /** 本頁筆跡（Workspace 熱流傳入）：畫布只認自己的紙，不讀作用頁流。 */
-    strokes: List<StrokeWithPoints> = emptyList(),
+    strokes: List<StrokeWithSamples> = emptyList(),
     /** 本頁文字註解（同上）。 */
-    texts: List<TextAnnotationEntity> = emptyList(),
+    texts: List<TextAnnotation> = emptyList(),
     /** 本頁圖片註解（同上）。 */
-    images: List<ImageAnnotationEntity> = emptyList(),
+    images: List<ImageAnnotation> = emptyList(),
     /** 頁間隙 px（Workspace 的 Arrangement.spacedBy，需與列表一致）。 */
     pageGapPx: Float = 0f,
     /** 邊緣自動捲：手指拖出紙上下界時回傳期望捲動量 px（正=往後頁）；回傳實際捲動量。 */
@@ -2096,7 +2096,7 @@ fun InkCanvas(
                 // 只清髒區、只重畫相交的筆：重繪成本跟著變化量走。髒區過大／新圖／
                 // 尺寸變 → 走全量（舊行為原樣保留當 fallback）。
                 val pageRect = Rect(0f, 0f, modelW, modelH)
-                fun strokeRect(swp: StrokeWithPoints) = Rect(
+                fun strokeRect(swp: StrokeWithSamples) = Rect(
                     swp.stroke.boundsLeft, swp.stroke.boundsTop,
                     swp.stroke.boundsRight, swp.stroke.boundsBottom
                 )
@@ -2620,7 +2620,7 @@ fun InkCanvas(
                     val top    = minOf(shapeStart.y, shapeEnd.y)
                     val right  = maxOf(shapeStart.x, shapeEnd.x)
                     val bottom = maxOf(shapeStart.y, shapeEnd.y)
-                    val previewStyle = Stroke(width = strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                    val previewStyle = DrawStroke(width = strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round)
                     when (selectedShapeSubType) {
                         ShapeSubType.RECT ->
                             drawRect(selectedColor, topLeft = Offset(left, top), size = Size(right - left, bottom - top), style = previewStyle)
@@ -2644,7 +2644,7 @@ fun InkCanvas(
                         color = Color.DarkGray,
                         topLeft = Offset(left, top),
                         size = Size(right - left, bottom - top),
-                        style = Stroke(width = 2f, pathEffect = dashPreview)
+                        style = DrawStroke(width = 2f, pathEffect = dashPreview)
                     )
                 }
 
@@ -2655,7 +2655,7 @@ fun InkCanvas(
                         hlPreviewPaint.color = selectedColor.copy(alpha = 0.4f)
                         cvs.drawPath(activeEnvelopePath, hlPreviewPaint)
                     }
-                    Tool.LASSO  -> drawPath(activePath, Color.DarkGray, style = Stroke(width = 2f, pathEffect = dashPreview))
+                    Tool.LASSO  -> drawPath(activePath, Color.DarkGray, style = DrawStroke(width = 2f, pathEffect = dashPreview))
                     Tool.ERASER -> {
                         // 橡皮擦視覺：半透明暖紅寬帶（實際擦除寬度）+ 實線中心 + 頭部游標環。
                         // 之前是 2px 灰線，擦到哪裡完全看不出來。
@@ -2665,11 +2665,11 @@ fun InkCanvas(
                         val eraserColor = Color(0xFFFF5A5A)
                         drawPath(
                             activePath, eraserColor.copy(alpha = 0.28f),
-                            style = Stroke(width = eraserRpx * 2f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                            style = DrawStroke(width = eraserRpx * 2f, cap = StrokeCap.Round, join = StrokeJoin.Round)
                         )
                         drawPath(
                             activePath, eraserColor,
-                            style = Stroke(width = 2.5f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                            style = DrawStroke(width = 2.5f, cap = StrokeCap.Round, join = StrokeJoin.Round)
                         )
                         // 頭部游標環：顯示實際擦除範圍，手指/筆尖擋住時也看得到邊緣
                         currentPathPoints.lastOrNull()?.let { head ->
@@ -2680,7 +2680,7 @@ fun InkCanvas(
                             )
                             drawCircle(
                                 color = eraserColor, radius = eraserRpx, center = c,
-                                style = Stroke(width = 2.5f)
+                                style = DrawStroke(width = 2.5f)
                             )
                             drawCircle(color = eraserColor, radius = 3f, center = c)
                         }
@@ -2709,12 +2709,12 @@ fun InkCanvas(
                             } else 24f
                             drawPath(
                                 epath, Color(0xFFFF5A5A).copy(alpha = 0.28f),
-                                style = Stroke(width = sharedErRpx * 2f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                                style = DrawStroke(width = sharedErRpx * 2f, cap = StrokeCap.Round, join = StrokeJoin.Round)
                             )
                             // 中線：與本紙一致，跨頁不斷（之前鄰頁只有寬帶沒有線）。
                             drawPath(
                                 epath, Color(0xFFFF5A5A),
-                                style = Stroke(width = 2.5f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                                style = DrawStroke(width = 2.5f, cap = StrokeCap.Round, join = StrokeJoin.Round)
                             )
                         }
                         Tool.LASSO -> {
@@ -2722,7 +2722,7 @@ fun InkCanvas(
                             sharedSegs.forEachIndexed { i, sp ->
                                 if (i == 0) lpath.moveTo(sp.x, sp.y) else lpath.lineTo(sp.x, sp.y)
                             }
-                            drawPath(lpath, Color.DarkGray, style = Stroke(width = 2f, pathEffect = dashPreview))
+                            drawPath(lpath, Color.DarkGray, style = DrawStroke(width = 2f, pathEffect = dashPreview))
                         }
                         else -> Unit
                     }

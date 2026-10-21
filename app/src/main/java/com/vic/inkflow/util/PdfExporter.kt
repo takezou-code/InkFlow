@@ -14,10 +14,10 @@ import com.tom_roush.pdfbox.pdmodel.common.PDRectangle
 import com.tom_roush.pdfbox.pdmodel.graphics.image.PDImageXObject
 import com.tom_roush.pdfbox.pdmodel.graphics.state.PDExtendedGraphicsState
 import com.tom_roush.pdfbox.util.Matrix
-import com.vic.inkflow.data.ImageAnnotationEntity
+import com.vic.inkflow.data.ImageAnnotation
 import com.vic.inkflow.data.PointF
-import com.vic.inkflow.data.StrokeWithPoints
-import com.vic.inkflow.data.TextAnnotationEntity
+import com.vic.inkflow.data.StrokeWithSamples
+import com.vic.inkflow.data.TextAnnotation
 import com.vic.inkflow.ui.wrapTextLines
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -47,7 +47,7 @@ object PdfExporter {
      * null 時走舊的整批 groupBy 路徑（相容既有呼叫端）。
      */
     fun interface PageDataProvider {
-        suspend fun load(pageIndex: Int): Triple<List<StrokeWithPoints>, List<TextAnnotationEntity>, List<ImageAnnotationEntity>>
+        suspend fun load(pageIndex: Int): Triple<List<StrokeWithSamples>, List<TextAnnotation>, List<ImageAnnotation>>
     }
 
     /**
@@ -57,9 +57,9 @@ object PdfExporter {
      */
     suspend fun export(
         originalPdfUri: Uri,
-        strokes: List<StrokeWithPoints>,
-        textAnnotations: List<TextAnnotationEntity> = emptyList(),
-        imageAnnotations: List<ImageAnnotationEntity> = emptyList(),
+        strokes: List<StrokeWithSamples>,
+        textAnnotations: List<TextAnnotation> = emptyList(),
+        imageAnnotations: List<ImageAnnotation> = emptyList(),
         context: Context,
         fileName: String = "InkFlow_Export.pdf",
         modelW: Float = MODEL_W,
@@ -95,9 +95,9 @@ object PdfExporter {
                         val tStart = System.currentTimeMillis()
 
                         document.pages.forEachIndexed { pageIndex, page ->
-                            val pageStrokes: List<StrokeWithPoints>?
-                            val pageTexts: List<TextAnnotationEntity>?
-                            val pageImages: List<ImageAnnotationEntity>?
+                            val pageStrokes: List<StrokeWithSamples>?
+                            val pageTexts: List<TextAnnotation>?
+                            val pageImages: List<ImageAnnotation>?
                             if (pageDataProvider != null) {
                                 val (s, t, i) = pageDataProvider.load(pageIndex)
                                 pageStrokes = s
@@ -216,7 +216,7 @@ object PdfExporter {
         }
     }
 
-    private fun drawStroke(stream: PDPageContentStream, stroke: StrokeWithPoints, pageWidth: Float, pageHeight: Float, modelW: Float = MODEL_W, modelH: Float = MODEL_H) {
+    private fun drawStroke(stream: PDPageContentStream, stroke: StrokeWithSamples, pageWidth: Float, pageHeight: Float, modelW: Float = MODEL_W, modelH: Float = MODEL_H) {
         val points = stroke.points.map {
             val width = if (it.width > 0f) it.width else stroke.stroke.strokeWidth
             StrokePoint(it.x, it.y, width)
@@ -389,7 +389,7 @@ object PdfExporter {
         stream.fill()
     }
 
-    private fun drawShape(stream: PDPageContentStream, stroke: StrokeWithPoints, pageWidth: Float, pageHeight: Float, modelW: Float = MODEL_W, modelH: Float = MODEL_H) {
+    private fun drawShape(stream: PDPageContentStream, stroke: StrokeWithSamples, pageWidth: Float, pageHeight: Float, modelW: Float = MODEL_W, modelH: Float = MODEL_H) {
         // Fix #1: scale model-space bounds to actual PDF page dimensions.
         val ratioX = pageWidth  / modelW
         val ratioY = pageHeight / modelH
@@ -490,7 +490,7 @@ object PdfExporter {
         stream: PDPageContentStream,
         document: PDDocument,
         context: Context,
-        ann: TextAnnotationEntity,
+        ann: TextAnnotation,
         pageWidth: Float,
         pageHeight: Float,
         modelW: Float,
@@ -550,7 +550,7 @@ object PdfExporter {
         stream: PDPageContentStream,
         document: PDDocument,
         context: Context,
-        ann: ImageAnnotationEntity,
+        ann: ImageAnnotation,
         pageWidth: Float,
         pageHeight: Float,
         modelW: Float,
@@ -600,7 +600,7 @@ object PdfExporter {
      */
     private fun decodeBoundedForExport(
         context: Context,
-        ann: ImageAnnotationEntity,
+        ann: ImageAnnotation,
         pageWidth: Float,
         pageHeight: Float,
         modelW: Float,

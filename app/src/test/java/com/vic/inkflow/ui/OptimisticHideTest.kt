@@ -1,11 +1,11 @@
 package com.vic.inkflow.ui
 
 import app.cash.turbine.test
-import com.vic.inkflow.data.ImageAnnotationEntity
-import com.vic.inkflow.data.PointEntity
-import com.vic.inkflow.data.StrokeEntity
-import com.vic.inkflow.data.StrokeWithPoints
-import com.vic.inkflow.data.TextAnnotationEntity
+import com.vic.inkflow.data.ImageAnnotation
+import com.vic.inkflow.data.Point
+import com.vic.inkflow.data.Stroke
+import com.vic.inkflow.data.StrokeWithSamples
+import com.vic.inkflow.data.TextAnnotation
 import com.vic.inkflow.data.repository.InkFlowRepositories
 import com.vic.inkflow.data.repository.RoomImageAnnotationRepository
 import com.vic.inkflow.data.repository.RoomStrokeRepository
@@ -46,21 +46,21 @@ class OptimisticHideTest {
         Dispatchers.resetMain()
     }
 
-    private fun swp(id: String) = StrokeWithPoints(
-        StrokeEntity(
+    private fun swp(id: String) = StrokeWithSamples(
+        Stroke(
             id = id,
             documentUri = DOC,
             pageIndex = 0,
             color = 0xFF000000.toInt(),
             strokeWidth = 4f
         ),
-        listOf(PointEntity(strokeId = id, x = 1f, y = 2f))
+        listOf(Point(strokeId = id, x = 1f, y = 2f))
     )
 
     private fun buildVm(
-        strokes: MutableStateFlow<List<StrokeWithPoints>>,
-        texts: MutableStateFlow<List<TextAnnotationEntity>> = MutableStateFlow(emptyList()),
-        images: MutableStateFlow<List<ImageAnnotationEntity>> = MutableStateFlow(emptyList())
+        strokes: MutableStateFlow<List<StrokeWithSamples>>,
+        texts: MutableStateFlow<List<TextAnnotation>> = MutableStateFlow(emptyList()),
+        images: MutableStateFlow<List<ImageAnnotation>> = MutableStateFlow(emptyList())
     ): EditorViewModel {
         // InkFlowRepositories 拿的是具體 Room* 類（不是介面），mock 必須對型別。
         val strokeRepo = mockk<RoomStrokeRepository>()
@@ -114,13 +114,13 @@ class OptimisticHideTest {
     fun `hide covers texts and images with one shared id space`() = runTest(testDispatcher) {
         val texts = MutableStateFlow(
             listOf(
-                TextAnnotationEntity(id = "t1", documentUri = DOC, pageIndex = 0, text = "a", modelX = 0f, modelY = 0f),
-                TextAnnotationEntity(id = "t2", documentUri = DOC, pageIndex = 0, text = "b", modelX = 0f, modelY = 0f)
+                TextAnnotation(id = "t1", documentUri = DOC, pageIndex = 0, text = "a", modelX = 0f, modelY = 0f),
+                TextAnnotation(id = "t2", documentUri = DOC, pageIndex = 0, text = "b", modelX = 0f, modelY = 0f)
             )
         )
         val images = MutableStateFlow(
             listOf(
-                ImageAnnotationEntity(
+                ImageAnnotation(
                     id = "img1", documentUri = DOC, pageIndex = 0, uri = "file:///x.png",
                     modelX = 0f, modelY = 0f, modelWidth = 10f, modelHeight = 10f
                 )

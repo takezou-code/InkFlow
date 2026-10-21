@@ -2,14 +2,14 @@ package com.vic.inkflow.util
 
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
-import com.vic.inkflow.data.PointEntity
-import com.vic.inkflow.data.StrokeEntity
-import com.vic.inkflow.data.StrokeWithPoints
+import com.vic.inkflow.data.Point
+import com.vic.inkflow.data.Stroke
+import com.vic.inkflow.data.StrokeWithSamples
 
 object StrokeTransformUtils {
     private const val MIN_SCALE = 0.2f
 
-    fun computeSelectionBounds(strokes: List<StrokeWithPoints>): Rect? {
+    fun computeSelectionBounds(strokes: List<StrokeWithSamples>): Rect? {
         if (strokes.isEmpty()) return null
         val left = strokes.minOf { it.stroke.boundsLeft }
         val top = strokes.minOf { it.stroke.boundsTop }
@@ -21,18 +21,18 @@ object StrokeTransformUtils {
     fun clampUniformScale(scale: Float): Float = scale.coerceAtLeast(MIN_SCALE)
 
     fun transformStrokes(
-        strokes: List<StrokeWithPoints>,
+        strokes: List<StrokeWithSamples>,
         translation: Offset = Offset.Zero,
         scale: Float = 1f,
         anchor: Offset = Offset.Zero
-    ): List<StrokeWithPoints> = strokes.map { transformStroke(it, translation, scale, anchor) }
+    ): List<StrokeWithSamples> = strokes.map { transformStroke(it, translation, scale, anchor) }
 
     fun transformStroke(
-        strokeWithPoints: StrokeWithPoints,
+        strokeWithPoints: StrokeWithSamples,
         translation: Offset = Offset.Zero,
         scale: Float = 1f,
         anchor: Offset = Offset.Zero
-    ): StrokeWithPoints {
+    ): StrokeWithSamples {
         val clampedScale = clampUniformScale(scale)
         val transformedPoints = strokeWithPoints.points.map { pt ->
             val transformed = transformPoint(Offset(pt.x, pt.y), translation, clampedScale, anchor)
@@ -50,7 +50,7 @@ object StrokeTransformUtils {
             boundsRight = bounds.right,
             boundsBottom = bounds.bottom
         )
-        return StrokeWithPoints(transformedStroke, transformedPoints)
+        return StrokeWithSamples(transformedStroke, transformedPoints)
     }
 
     private fun transformPoint(
@@ -67,7 +67,7 @@ object StrokeTransformUtils {
         )
     }
 
-    private fun computeStrokeBounds(stroke: StrokeEntity, points: List<PointEntity>): Rect {
+    private fun computeStrokeBounds(stroke: Stroke, points: List<Point>): Rect {
         if (points.isEmpty()) {
             return Rect(stroke.boundsLeft, stroke.boundsTop, stroke.boundsRight, stroke.boundsBottom)
         }
