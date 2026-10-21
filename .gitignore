@@ -43,6 +43,14 @@ out/
 # ─── 桌面端 worktree（windows 分支旁系 checkout，不在本樹內）───
 /InkFlow-Windows/
 
+# ─── 孤兒第三方模組（已下架；上游可從 Maven 重新取得）───
+# libs/pdfbox、libs/android-fonts 從未被 settings.gradle.kts include，沒有人
+# 引用，連同 build/ 產物卻有 3,000+ 筆在版控裡。已移出（2026-10-21）。
+/libs/
+
+# ─── Agent 計畫檔（本機專用，不進版控）───
+/.kilo/
+
 # ─── Agent 規則（絕不進版控：repo 是 PUBLIC，這些檔含本機路徑與工作習慣）───
 /AGENTS.md
 /docs/specs/
