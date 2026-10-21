@@ -1,6 +1,7 @@
 package com.vic.inkflow.util
 
 import androidx.compose.ui.geometry.Offset
+import kotlin.math.PI
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
@@ -9,16 +10,17 @@ import kotlin.math.sin
 /**
  * The four shapes the tablet supports, stored in `strokes.shapeType`.
  *
- * The storage is deliberate: a shape is a [com.vic.inkflow.data.StrokeEntity] with
- * exactly two points and a type tag. No separate table, no geometry blob. That is
- * why shapes travel over sync for free — and also why they are so easy to break:
- * the two points are *drag endpoints*, not a canonical representation, and the
- * renderer has to know which of them to use.
+ * The storage is deliberate: a shape is a stroke with exactly two points and a type
+ * tag. No separate table, no geometry blob. That is why shapes travel over sync for
+ * free — and also why they are so easy to break: the two points are *drag
+ * endpoints*, not a canonical representation, and the renderer has to know which of
+ * them to use.
  */
 enum class ShapeType { RECT, CIRCLE, LINE, ARROW }
 
 /**
- * Shape geometry, matching the tablet's `InkCanvasRendering.drawShapeOnCanvas`.
+ * Shape geometry — one implementation, shared by the tablet's renderer and the
+ * desktop's.
  *
  * ## The trap this exists to close
  *
@@ -28,6 +30,11 @@ enum class ShapeType { RECT, CIRCLE, LINE, ARROW }
  * the stored bounds. A renderer that uses the points for a LINE draws it "up"
  * when the user dragged "down". The shape is still visible, so nobody reports it —
  * it just points the wrong way.
+ *
+ * The tablet's renderer and the desktop's used to be two copies of this file: the
+ * desktop's even said "matching the tablet's `InkCanvasRendering.drawShapeOnCanvas`".
+ * Two copies of a rule that decides which end of a line the line points at is two
+ * chances to have the rule disagree with itself.
  *
  * ## Why shapes must never go through the envelope renderer
  *
@@ -94,16 +101,16 @@ object ShapeGeometry {
         if (x0 == x1 && y0 == y1) 0.0 else atan2((y1 - y0).toDouble(), (x1 - x0).toDouble())
 
     /**
-     * The two arrow-head barbs, as offsets from the tip.
+     * The two arrow-head barbs, as absolute points.
      *
      * Both barbs flare backwards from the tip — that is what makes it read as an
-     * arrow pointing at [x1]/[y1]. Half-angle is 0.75π (135°), matching the tablet:
-     * a narrower head looks like a chevron and a wider one like a paper plane.
+     * arrow pointing at [x1]/[y1]. Half-angle is 0.75π (135°): a narrower head
+     * looks like a chevron and a wider one like a paper plane.
      */
     fun arrowHead(x0: Float, y0: Float, x1: Float, y1: Float, headSize: Float): Pair<Offset, Offset> {
         val angle = lineAngle(x0, y0, x1, y1)
-        val left = angle + Math.PI * 0.75
-        val right = angle - Math.PI * 0.75
+        val left = angle + PI * 0.75
+        val right = angle - PI * 0.75
         return Offset(
             x1 + (headSize * cos(left)).toFloat(),
             y1 + (headSize * sin(left)).toFloat()

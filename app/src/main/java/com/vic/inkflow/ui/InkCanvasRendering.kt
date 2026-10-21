@@ -15,10 +15,9 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import com.vic.inkflow.data.Point
 import com.vic.inkflow.data.Stroke
 import com.vic.inkflow.util.EnvelopeUtils
+import com.vic.inkflow.util.ShapeGeometry
+import com.vic.inkflow.util.ShapeType
 import com.vic.inkflow.util.StrokePoint
-import kotlin.math.atan2
-import kotlin.math.cos
-import kotlin.math.sin
 
 // ── InkCanvas 形狀/筆跡渲染 helpers ─────────────────────────────────────────
 // drawWithCache 呼叫的底層繪製（Canvas 路徑 + 包絡填充）。純函數。
@@ -39,14 +38,18 @@ internal fun drawShapeOnCanvas(
         strokeCap    = StrokeCap.Round
         strokeJoin   = StrokeJoin.Round
     }
+    // **形狀的幾何規則只有一份**（`:shared` 的 `ShapeGeometry`）：RECT/CIRCLE 用儲存的
+    // 框，LINE/ARROW 用**拖曳的兩個端點**（順序有意義）。兩端各寫一份這條規則的
+    // 時候，「往上拖的線被畫成往下」這種錯誤就會只在一邊出現。
+    val type = ShapeGeometry.parseType(stroke.shapeType) ?: return
     val r = Rect(stroke.boundsLeft, stroke.boundsTop, stroke.boundsRight, stroke.boundsBottom)
-    when (stroke.shapeType) {
-        "RECT"   -> canvas.drawRect(r, paint)
-        "CIRCLE" -> canvas.drawOval(r, paint)
-        "LINE"   -> if (points.size >= 2) {
+    when (type) {
+        ShapeType.RECT   -> canvas.drawRect(r, paint)
+        ShapeType.CIRCLE -> canvas.drawOval(r, paint)
+        ShapeType.LINE   -> if (points.size >= 2) {
             canvas.drawLine(Offset(points.first().x, points.first().y), Offset(points.last().x, points.last().y), paint)
         }
-        "ARROW"  -> if (points.size >= 2) {
+        ShapeType.ARROW  -> if (points.size >= 2) {
             val p0 = Offset(points.first().x, points.first().y)
             val p1 = Offset(points.last().x,  points.last().y)
             canvas.drawLine(p0, p1, paint)
@@ -59,25 +62,19 @@ internal fun drawArrowHeadOnCanvas(
     canvas: Canvas,
     start: Offset, end: Offset, paint: Paint, sw: Float
 ) {
-    val headSize   = sw * 5f + 10f
-    val angle      = atan2((end.y - start.y).toDouble(), (end.x - start.x).toDouble())
-    val leftAngle  = angle + Math.PI * 0.75
-    val rightAngle = angle - Math.PI * 0.75
-    val lp = Offset(end.x + (headSize * cos(leftAngle)).toFloat(),  end.y + (headSize * sin(leftAngle)).toFloat())
-    val rp = Offset(end.x + (headSize * cos(rightAngle)).toFloat(), end.y + (headSize * sin(rightAngle)).toFloat())
-    canvas.drawLine(end, lp, paint)
-    canvas.drawLine(end, rp, paint)
+    val (left, right) = ShapeGeometry.arrowHead(
+        start.x, start.y, end.x, end.y, ShapeGeometry.arrowHeadSize(sw)
+    )
+    canvas.drawLine(end, left, paint)
+    canvas.drawLine(end, right, paint)
 }
 
 internal fun DrawScope.drawArrowHeadInScope(start: Offset, end: Offset, color: Color, sw: Float) {
-    val headSize   = sw * 5f + 10f
-    val angle      = atan2((end.y - start.y).toDouble(), (end.x - start.x).toDouble())
-    val leftAngle  = angle + Math.PI * 0.75
-    val rightAngle = angle - Math.PI * 0.75
-    val lp = Offset(end.x + (headSize * cos(leftAngle)).toFloat(),  end.y + (headSize * sin(leftAngle)).toFloat())
-    val rp = Offset(end.x + (headSize * cos(rightAngle)).toFloat(), end.y + (headSize * sin(rightAngle)).toFloat())
-    drawLine(color, end, lp, strokeWidth = sw, cap = StrokeCap.Round)
-    drawLine(color, end, rp, strokeWidth = sw, cap = StrokeCap.Round)
+    val (left, right) = ShapeGeometry.arrowHead(
+        start.x, start.y, end.x, end.y, ShapeGeometry.arrowHeadSize(sw)
+    )
+    drawLine(color, end, left, strokeWidth = sw, cap = StrokeCap.Round)
+    drawLine(color, end, right, strokeWidth = sw, cap = StrokeCap.Round)
 }
 
 // ---- Freehand path helpers ----
