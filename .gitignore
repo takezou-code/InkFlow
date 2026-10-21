@@ -35,6 +35,10 @@ local.properties
 *.log
 hs_err_pid*.log
 out/
+# release 輸出（APK／baselineProfiles／output-metadata）不進版控。
+# 這裡曾被 release 打包順手 commit 進去過（b1040a1），害 `ink commit` 差點把
+# 別人的刪除一起帶走；pre-commit 也一併擋。
+/app/release/
 
 # ─── 桌面端 worktree（windows 分支旁系 checkout，不在本樹內）───
 /InkFlow-Windows/
