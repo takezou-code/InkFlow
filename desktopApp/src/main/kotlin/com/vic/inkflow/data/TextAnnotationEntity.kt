@@ -59,9 +59,6 @@ data class TextAnnotationEntity(
  * it. Full-width glyphs advance 1.0 em, everything else 0.65 em.
  */
 object TextMetrics {
-    const val FULL_WIDTH_EM = 1.0f
-    const val HALF_WIDTH_EM = 0.65f
-
     /** Line height multiplier used by the tablet for multi-line height. */
     const val LINE_SPACING = 1.2f
 
@@ -71,13 +68,16 @@ object TextMetrics {
      * Uses a real font measurement when the platform can supply one and falls
      * back to the coefficient model otherwise, so a headless unit test still
      * gets a deterministic answer.
+     *
+     * The coefficient model itself is the **shared** one
+     * (`:shared`'s `com.vic.inkflow.ui.measureTextWidth`): full-width glyphs
+     * advance 1.0 em, everything else 0.65 em. It used to be a second copy here,
+     * with a different set of CJK ranges — so a note containing a full-width
+     * space measured wider on one device than on the other, and the hit box is
+     * drawn from that measurement.
      */
-    fun measureWidth(text: String, fontSize: Float, measurer: ((String, Float) -> Float)? = null): Float {
-        if (measurer != null) return measurer(text, fontSize)
-        var ems = 0f
-        text.forEach { c -> ems += if (c.isWideChar()) FULL_WIDTH_EM else HALF_WIDTH_EM }
-        return ems * fontSize
-    }
+    fun measureWidth(text: String, fontSize: Float, measurer: ((String, Float) -> Float)? = null): Float =
+        measurer?.invoke(text, fontSize) ?: com.vic.inkflow.ui.measureTextWidth(text, fontSize)
 
     /**
      * Bounding box of a text annotation in model units.
@@ -87,6 +87,22 @@ object TextMetrics {
      * box is that wide and the lines are the wrapped ones, matching the tablet's
      * `textAnnotationHitRect`. Returns null for blank text — an empty annotation
      * has no box, so it cannot be hit-tested and should not be drawn.
+     *
+     * ## Known divergence from the tablet's lasso box — read before changing
+     *
+     * This box grows **downwards** from the first baseline, which is what the
+     * drawing does (the first line's baseline is `modelY`, the following lines
+     * are below it) and what the tablet's own *tap* box does
+     * (`textAnnotationHitRect`).
+     *
+     * The tablet's *lasso/erase* box (`:shared`'s `textEstimatedBounds`) grows
+     * **upwards** instead, so a multi-line note has two different boxes inside
+     * the tablet app and a third one here.
+     *
+     * The rule is not unified yet on purpose: the fix is a **behaviour change on
+     * the tablet** (which box the lasso and the eraser use), and it needs a
+     * device to verify. The width and the wrap algorithm, on the other hand,
+     * *are* already shared — see `measureWidth` and `wrapLines` below.
      */
     fun bounds(
         modelX: Float,
@@ -116,23 +132,22 @@ object TextMetrics {
         bounds(ann.modelX, ann.modelY, ann.text, ann.fontSize, ann.boxWidth, measurer)
 
     /**
-     * Wrap [text] to [boxWidth] model units — the same algorithm as the tablet's
-     * `wrapTextLines`, so the two apps agree on where a box breaks. `\n` is
-     * always a hard break; CJK breaks per character; a Latin run moves whole
-     * unless it is wider than the box.
+     * Wrap [text] to [boxWidth] model units — **the shared algorithm**
+     * (`:shared`'s `com.vic.inkflow.ui.wrapTextLines`), so the two apps agree on
+     * where a box breaks. `\n` is always a hard break; CJK breaks per character; a
+     * Latin run moves whole unless it is wider than the box.
+     *
+     * This used to be a second implementation here. The two had drifted: the
+     * width rule underneath them differed (fixed — see `measureWidth`), and a
+     * second copy of a wrapping algorithm is a second chance to break a box in a
+     * different place on the other device.
      */
     fun wrapLines(
         text: String,
         fontSize: Float,
         boxWidth: Float,
         measurer: ((String, Float) -> Float)? = null
-    ): List<String> {
-        if (text.isEmpty()) return emptyList()
-        if (boxWidth <= 0f || fontSize <= 0f) return text.split('\n')
-        val out = ArrayList<String>()
-        for (paragraph in text.split('\n')) out.addAll(wrapParagraph(paragraph, fontSize, boxWidth, measurer))
-        return out
-    }
+    ): List<String> = com.vic.inkflow.ui.wrapTextLines(text, fontSize, boxWidth, measurer)
 
     /** Horizontal offset of a line inside its box, in model units (left/centre/right). */
     fun alignOffset(lineWidth: Float, boxWidth: Float, alignment: Int): Float = when (alignment) {
@@ -141,68 +156,6 @@ object TextMetrics {
         else -> 0f
     }
 
-    private fun wrapParagraph(
-        paragraph: String,
-        fontSize: Float,
-        boxWidth: Float,
-        measurer: ((String, Float) -> Float)?
-    ): List<String> {
-        if (paragraph.isEmpty()) return listOf("")
-        val lines = ArrayList<String>()
-        val line = StringBuilder()
-        var lineW = 0f
-        fun flush() {
-            lines.add(line.toString().trimEnd())
-            line.setLength(0)
-            lineW = 0f
-        }
-        for (tok in tokenize(paragraph)) {
-            if (tok.isBlank()) {
-                if (line.isNotEmpty()) {
-                    line.append(tok)
-                    lineW += measureWidth(tok, fontSize, measurer)
-                }
-                continue
-            }
-            val w = measureWidth(tok, fontSize, measurer)
-            if (lineW > 0f && lineW + w > boxWidth) flush()
-            if (w > boxWidth) {
-                // A single word wider than the box: split it per character.
-                for (ch in tok) {
-                    val cw = measureWidth(ch.toString(), fontSize, measurer)
-                    if (lineW > 0f && lineW + cw > boxWidth) flush()
-                    line.append(ch)
-                    lineW += cw
-                }
-            } else {
-                line.append(tok)
-                lineW += w
-            }
-        }
-        lines.add(line.toString().trimEnd())
-        return lines
-    }
-
-    /** CJK per character, a Latin run as one token, whitespace separate. */
-    private fun tokenize(text: String): List<String> {
-        val tokens = ArrayList<String>()
-        val word = StringBuilder()
-        fun flushWord() {
-            if (word.isNotEmpty()) {
-                tokens.add(word.toString())
-                word.setLength(0)
-            }
-        }
-        for (ch in text) {
-            when {
-                ch.isWhitespace() -> { flushWord(); tokens.add(ch.toString()) }
-                ch.isWideChar() -> { flushWord(); tokens.add(ch.toString()) }
-                else -> word.append(ch)
-            }
-        }
-        flushWord()
-        return tokens
-    }
 }
 
 /**

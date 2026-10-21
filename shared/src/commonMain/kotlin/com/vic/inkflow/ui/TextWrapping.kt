@@ -30,19 +30,30 @@ const val TEXT_ALIGN_RIGHT = 2
  *   除非單一 word 比整個框還寬才逐字硬切。
  * - 回傳至少一行；空字串回傳空清單。
  */
-fun wrapTextLines(text: String, fontSize: Float, boxWidth: Float): List<String> {
+fun wrapTextLines(
+    text: String,
+    fontSize: Float,
+    boxWidth: Float,
+    measurer: ((String, Float) -> Float)? = null
+): List<String> {
     if (text.isEmpty()) return emptyList()
     if (boxWidth <= 0f || fontSize <= 0f) return text.split("\n")
     val out = ArrayList<String>()
-    for (paragraph in text.split("\n")) out.addAll(wrapParagraph(paragraph, fontSize, boxWidth))
+    for (paragraph in text.split("\n")) out.addAll(wrapParagraph(paragraph, fontSize, boxWidth, measurer))
     return out
 }
 
-private fun wrapParagraph(paragraph: String, fontSize: Float, boxWidth: Float): List<String> {
+private fun wrapParagraph(
+    paragraph: String,
+    fontSize: Float,
+    boxWidth: Float,
+    measurer: ((String, Float) -> Float)?
+): List<String> {
     if (paragraph.isEmpty()) return listOf("")
     val lines = ArrayList<String>()
     val line = StringBuilder()
     var lineW = 0f
+    val measure: (String, Float) -> Float = measurer ?: { t, s -> measureTextWidth(t, s) }
 
     fun flushLine() {
         lines.add(line.toString().trimEnd())
@@ -55,16 +66,16 @@ private fun wrapParagraph(paragraph: String, fontSize: Float, boxWidth: Float): 
             // 空白不當行首；行內空白保留（字本身有寬度）
             if (line.isNotEmpty()) {
                 line.append(tok)
-                lineW += measureTextWidth(tok, fontSize)
+                lineW += measure(tok, fontSize)
             }
             continue
         }
-        val w = measureTextWidth(tok, fontSize)
+        val w = measure(tok, fontSize)
         if (lineW > 0f && lineW + w > boxWidth) flushLine()
         if (w > boxWidth) {
             // 單一 word 比框還寬 → 逐字硬切
             for (ch in tok) {
-                val cw = measureTextWidth(ch.toString(), fontSize)
+                val cw = measure(ch.toString(), fontSize)
                 if (lineW > 0f && lineW + cw > boxWidth) flushLine()
                 line.append(ch)
                 lineW += cw

@@ -171,24 +171,28 @@ internal fun isImageSelectedByLasso(annotation: ImageAnnotationEntity, polygon: 
 }
 
 /**
- * 全形字判定與量寬已搬到 `:shared` 的 `com.vic.inkflow.ui.TextMeasurement.kt`
- * （`isWideChar` / `measureTextWidth`）——它們是折行、命中框、繪製三者共用的量法，
+ * 全形字判定、量寬與**文字框**都已搬到 `:shared` 的 `com.vic.inkflow.ui`
+ * （`TextMeasurement.kt` / `TextWrapping.kt`）——它們是折行、命中框、繪製三者共用的量法，
  * 必須三個平台同一份，否則平板算得出的框桌面抓不到。
  */
 
 /**
- * 文字估算框（model 座標）：與繪製命中（textAnnotationHitRect）同一口徑——
- * 寬取各行最大（全形感知），高含多行（首行字號＋其餘行×1.2），baseline 為底邊。
+ * 文字估算框（model 座標）：**共用規則**（`:shared` 的 `textEstimatedBounds`），
+ * 與繪製命中（textAnnotationHitRect）同一口徑——寬取各行最大（全形感知），
+ * 高含多行（首行字號＋其餘行×1.2），baseline 為底邊。
  * 套索命中＋選取框＋大綱共用，單一真相（canvas 層的 ±4px 觸控墊片是另一回事，不在此）。
+ *
+ * 空白文字：共用規則回 null（空白沒有框），這裡補成**零寬框**——與搬家前的行為
+ * 完全相同（舊碼對空字串算出 w=0、h=fontSize 的同一個框），所以呼叫端不用改。
  */
-internal fun textEstimatedBounds(ann: com.vic.inkflow.data.TextAnnotationEntity): Rect {
-    // 文字框：寬度就是框、行數用同一套折行；舊資料維持貼合內容。
-    val boxW = ann.boxWidth?.takeIf { it > 0f }
-    val lines = if (boxW != null) wrapTextLines(ann.text, ann.fontSize, boxW) else ann.text.split("\n")
-    val w = boxW ?: (lines.maxOfOrNull { measureTextWidth(it, ann.fontSize) } ?: 0f)
-    val h = ann.fontSize + (lines.size - 1).coerceAtLeast(0) * ann.fontSize * 1.2f
-    return Rect(ann.modelX, ann.modelY - h, ann.modelX + w, ann.modelY)
-}
+internal fun textEstimatedBounds(ann: com.vic.inkflow.data.TextAnnotationEntity): Rect =
+    com.vic.inkflow.ui.textEstimatedBounds(
+        modelX = ann.modelX,
+        modelY = ann.modelY,
+        text = ann.text,
+        fontSize = ann.fontSize,
+        boxWidth = ann.boxWidth
+    ) ?: Rect(ann.modelX, ann.modelY - ann.fontSize, ann.modelX, ann.modelY)
 
 /** 文字套索命中：baseline 點在圈內，或圈的任一頂點落在字框內。 */
 internal fun isTextSelectedByLasso(
@@ -197,6 +201,6 @@ internal fun isTextSelectedByLasso(
 ): Boolean {
     if (polygon.size < 3) return false
     if (isPointInPolygon(Offset(ann.modelX, ann.modelY), polygon)) return true
-    val b = textEstimatedBounds(ann)
+    val b = textEstimatedBounds(ann) ?: return false
     return polygon.any { p -> p.x in b.left..b.right && p.y in b.top..b.bottom }
 }
