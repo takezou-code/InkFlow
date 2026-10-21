@@ -5,11 +5,17 @@ import androidx.compose.ui.geometry.Rect
 import com.vic.inkflow.data.ImageAnnotation
 import com.vic.inkflow.util.DocTransform
 import com.vic.inkflow.util.StrokeTransformUtils
+import kotlin.math.PI
+
+/**
+ * 度 → 弧度。`Math.toRadians` 是 JVM API，common 沒有；這兩個常數就是它的定義。
+ */
+private const val RADIANS_PER_DEGREE = PI / 180.0
 
 // ── 套索/選取幾何：座標換算、多邊形變換、命中測試 ──────────────────────────
 // 純函數（原 EditorViewModel 私有方法），供手勢與提交路徑共用。
 
-internal fun canvasToModel(
+fun canvasToModel(
     offset: Offset,
     modelW: Float,
     modelH: Float,
@@ -20,7 +26,7 @@ internal fun canvasToModel(
     y = offset.y * DocTransform.invScaleYUnchecked(canvasH, modelH)
 )
 
-internal fun transformPolygon(
+fun transformPolygon(
     polygon: List<Offset>,
     translation: Offset,
     scale: Float,
@@ -37,7 +43,7 @@ internal fun transformPolygon(
     }
 }
 
-internal fun isPointInPolygon(point: Offset, polygon: List<Offset>): Boolean {
+fun isPointInPolygon(point: Offset, polygon: List<Offset>): Boolean {
     if (polygon.size < 3) return false
     var inside = false
     var j = polygon.lastIndex
@@ -59,7 +65,7 @@ internal fun isPointInPolygon(point: Offset, polygon: List<Offset>): Boolean {
  * 跨頁套索用：每頁只拿自己窗口內的閉合圈去測，不開口弧＋弦閉合造成的整頁誤選。
  * 完全在內的圈原樣返回（頂點順序不變）；完全在外的回空表。
  */
-internal fun clipPolygonToRect(
+fun clipPolygonToRect(
     polygon: List<Offset>,
     left: Float,
     top: Float,
@@ -124,10 +130,10 @@ private fun intersectY(a: Offset, b: Offset, y: Float): Offset {
 /** M5: axis-aligned bounds of the (possibly rotated) image, in model space.
  * 回傳 compose Rect（刻意不用 android.graphics.RectF——後者在 JVM 單測是空殼，
  * 構造器不賦值、方法全樁，純幾何測不了；血淚教訓見 textEstimatedBounds）。 */
-internal fun rotatedImageBounds(annotation: ImageAnnotation): Rect {
+fun rotatedImageBounds(annotation: ImageAnnotation): Rect {
     val cx = annotation.modelX + annotation.modelWidth / 2f
     val cy = annotation.modelY + annotation.modelHeight / 2f
-    val rad = Math.toRadians(annotation.rotation.toDouble())
+    val rad = annotation.rotation.toDouble() * RADIANS_PER_DEGREE
     val cos = kotlin.math.cos(rad).toFloat()
     val sin = kotlin.math.sin(rad).toFloat()
     val corners = listOf(
@@ -146,7 +152,7 @@ internal fun rotatedImageBounds(annotation: ImageAnnotation): Rect {
     )
 }
 
-internal fun isImageSelectedByLasso(annotation: ImageAnnotation, polygon: List<Offset>): Boolean {
+fun isImageSelectedByLasso(annotation: ImageAnnotation, polygon: List<Offset>): Boolean {
     if (polygon.size < 3) return false
 
     val imageRect = rotatedImageBounds(annotation)
@@ -185,7 +191,7 @@ internal fun isImageSelectedByLasso(annotation: ImageAnnotation, polygon: List<O
  * 空白文字：共用規則回 null（空白沒有框），這裡補成**零寬框**——與搬家前的行為
  * 完全相同（舊碼對空字串算出 w=0、h=fontSize 的同一個框），所以呼叫端不用改。
  */
-internal fun textEstimatedBounds(ann: com.vic.inkflow.data.TextAnnotation): Rect =
+fun textEstimatedBounds(ann: com.vic.inkflow.data.TextAnnotation): Rect =
     com.vic.inkflow.ui.textEstimatedBounds(
         modelX = ann.modelX,
         modelY = ann.modelY,
@@ -195,7 +201,7 @@ internal fun textEstimatedBounds(ann: com.vic.inkflow.data.TextAnnotation): Rect
     ) ?: Rect(ann.modelX, ann.modelY - ann.fontSize, ann.modelX, ann.modelY)
 
 /** 文字套索命中：baseline 點在圈內，或圈的任一頂點落在字框內。 */
-internal fun isTextSelectedByLasso(
+fun isTextSelectedByLasso(
     ann: com.vic.inkflow.data.TextAnnotation,
     polygon: List<Offset>
 ): Boolean {

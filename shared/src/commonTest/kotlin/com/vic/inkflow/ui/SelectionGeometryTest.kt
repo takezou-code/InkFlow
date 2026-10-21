@@ -1,10 +1,9 @@
-package com.vic.inkflow
+package com.vic.inkflow.ui
 
 import androidx.compose.ui.geometry.Offset
-import com.vic.inkflow.ui.clipPolygonToRect
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
-import org.junit.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+import kotlin.test.Test
 
 class SelectionGeometryTest {
 
@@ -38,7 +37,7 @@ class SelectionGeometryTest {
             Offset(400f, 900f), Offset(500f, 950f)
         )
         val out = clipPolygonToRect(arc, 0f, 0f, 800f, 800f)
-        assertTrue("clipped has >=3 pts, got ${out.size}", out.size >= 3)
+        assertTrue(out.size >= 3, "clipped has >=3 pts, got ${out.size}")
         assertTrue(out.all { it.x in 0f..800f && it.y in 0f..800f })
         // 上界交點存在（弧被紙界切斷再閉合，而非弦連首尾）
         assertTrue(out.any { it.y == 800f })
@@ -81,8 +80,8 @@ class SelectionGeometryTest {
         val poly = listOf(Offset(120f, 480f), Offset(140f, 480f), Offset(140f, 490f), Offset(120f, 490f))
         val b = com.vic.inkflow.ui.textEstimatedBounds(ann)
         assertTrue(
-            "l=${b.left} t=${b.top} r=${b.right} b=${b.bottom} model=(${ann.modelX},${ann.modelY}) len=${ann.text.length}",
-            com.vic.inkflow.ui.isTextSelectedByLasso(ann, poly)
+            com.vic.inkflow.ui.isTextSelectedByLasso(ann, poly),
+            "l=${b.left} t=${b.top} r=${b.right} b=${b.bottom} model=(${ann.modelX},${ann.modelY}) len=${ann.text.length}"
         )
     }
 
