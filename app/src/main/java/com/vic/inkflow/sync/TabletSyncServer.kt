@@ -9,8 +9,11 @@ import com.google.gson.Gson
 import com.vic.inkflow.data.DocumentEntity
 import com.vic.inkflow.data.MergeVersion
 import com.vic.inkflow.data.StrokeWithPoints
+import com.vic.inkflow.data.StrokeWithSamples
+import com.vic.inkflow.data.TextAnnotation
 import com.vic.inkflow.data.TextAnnotationEntity
 import com.vic.inkflow.data.repository.InkFlowRepositories
+import com.vic.inkflow.data.toRow
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
@@ -597,11 +600,12 @@ class TabletSyncServer(
     /** 每種 op 的「提案帶來的版本」：upsert 取 payload 內的版本，delete 取 baseVersion。 */
     private fun incomingVersionOf(op: ProposalOp): Pair<Int, Int>? = when (op.op) {
         ProposalOp.UPSERT_STROKE -> {
-            val swp = gson.fromJson(gson.toJson(op.stroke), StrokeWithPoints::class.java)
+            // 提案帶來的是**共用的文件模型**（wire 的形狀），不是本機的 Room row。
+            val swp = gson.fromJson(gson.toJson(op.stroke), StrokeWithSamples::class.java)
             swp?.stroke?.let { it.version to it.versionNonce }
         }
         ProposalOp.UPSERT_TEXT -> {
-            gson.fromJson(gson.toJson(op.text), TextAnnotationEntity::class.java)
+            gson.fromJson(gson.toJson(op.text), TextAnnotation::class.java)
                 ?.let { it.version to it.versionNonce }
         }
         ProposalOp.DELETE_STROKE, ProposalOp.DELETE_TEXT -> op.baseVersion?.let { it to (op.baseNonce ?: 0) }
@@ -616,12 +620,13 @@ class TabletSyncServer(
     /** 解碼一個 op，並確認它操作的是提案聲稱的那份文件。 */
     private fun decodeOp(documentUri: String, op: ProposalOp): DecodedOp = when (op.op) {
         ProposalOp.UPSERT_STROKE -> {
-            val swp = gson.fromJson(gson.toJson(op.stroke), StrokeWithPoints::class.java)
+            val swp = gson.fromJson(gson.toJson(op.stroke), StrokeWithSamples::class.java)
                 ?: throw SyncRequestException("bad upsert_stroke payload")
             if (swp.stroke.documentUri != documentUri) {
                 throw SyncRequestException("op targets a different document")
             }
-            DecodedOp.UpsertStroke(swp)
+            // 共用模型 → 本機 Room row（欄位對欄位，漏一個欄位就編譯不過）。
+            DecodedOp.UpsertStroke(swp.toRow())
         }
         ProposalOp.DELETE_STROKE -> {
             val id = op.id?.takeIf { it.isNotBlank() }
@@ -629,12 +634,12 @@ class TabletSyncServer(
             DecodedOp.DeleteStroke(id)
         }
         ProposalOp.UPSERT_TEXT -> {
-            val text = gson.fromJson(gson.toJson(op.text), TextAnnotationEntity::class.java)
+            val text = gson.fromJson(gson.toJson(op.text), TextAnnotation::class.java)
                 ?: throw SyncRequestException("bad upsert_text payload")
             if (text.documentUri != documentUri) {
                 throw SyncRequestException("op targets a different document")
             }
-            DecodedOp.UpsertText(text)
+            DecodedOp.UpsertText(text.toRow())
         }
         ProposalOp.DELETE_TEXT -> {
             val id = op.id?.takeIf { it.isNotBlank() }
@@ -686,9 +691,9 @@ class TabletSyncServer(
     private fun strokeIdOf(op: ProposalOp): String? = try {
         when (op.op) {
             ProposalOp.UPSERT_STROKE ->
-                gson.fromJson(gson.toJson(op.stroke), StrokeWithPoints::class.java)?.stroke?.id
+                gson.fromJson(gson.toJson(op.stroke), StrokeWithSamples::class.java)?.stroke?.id
             ProposalOp.UPSERT_TEXT ->
-                gson.fromJson(gson.toJson(op.text), TextAnnotationEntity::class.java)?.id
+                gson.fromJson(gson.toJson(op.text), TextAnnotation::class.java)?.id
             else -> null
         }
     } catch (_: Exception) {

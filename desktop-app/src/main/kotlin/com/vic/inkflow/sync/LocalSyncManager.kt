@@ -3,10 +3,15 @@ package com.vic.inkflow.sync
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.vic.inkflow.data.DatabaseManager
+import com.vic.inkflow.data.Document
 import com.vic.inkflow.data.DocumentEntity
+import com.vic.inkflow.data.Folder
 import com.vic.inkflow.data.StrokeWithPoints
+import com.vic.inkflow.data.StrokeWithSamples
+import com.vic.inkflow.data.TextAnnotation
 import com.vic.inkflow.data.TextAnnotationEntity
 import com.vic.inkflow.data.FolderEntity
+import com.vic.inkflow.data.toRow
 import com.vic.inkflow.util.LocalImport
 import mu.KotlinLogging
 import java.io.DataInputStream
@@ -689,8 +694,8 @@ class LocalSyncManager(
             )
             val resp = readResponse(input) ?: return null
             if (!resp.ok) return null
-            val type = object : TypeToken<List<FolderEntity>>() {}.type
-            gson.fromJson<List<FolderEntity>>(resp.payload, type) ?: emptyList()
+            val type = object : TypeToken<List<Folder>>() {}.type
+            gson.fromJson<List<Folder>>(resp.payload, type)?.map { it.toRow() } ?: emptyList()
         } catch (e: Exception) {
             logger.warn(e) { "Folder sync skipped this pass" }
             null
@@ -1069,8 +1074,13 @@ class LocalSyncManager(
         val resp = readResponse(input) ?: throw IOException("No stroke_page response")
         if (!resp.ok) throw IOException("Stroke page error: ${resp.error}")
         val payload = gson.fromJson(resp.payload, StrokeDeltaPayload::class.java)
-        val type = object : TypeToken<List<StrokeWithPoints>>() {}.type
-        return gson.fromJson<List<StrokeWithPoints>>(gson.toJson(payload.strokes), type)
+        // The wire carries the shared document model (`:shared`'s
+        // `com.vic.inkflow.data`); the desktop's JDBC rows are the storage
+        // mapping of it. Parsing into the model first is what makes the two ends
+        // agree on what a stroke *is* — see ModelMapping.kt.
+        val type = object : TypeToken<List<StrokeWithSamples>>() {}.type
+        return gson.fromJson<List<StrokeWithSamples>>(gson.toJson(payload.strokes), type)
+            ?.map { it.toRow() }
             ?: emptyList()
     }
 
@@ -1089,8 +1099,9 @@ class LocalSyncManager(
         val resp = readResponse(input) ?: throw IOException("No text_page response")
         if (!resp.ok) throw IOException("Text page error: ${resp.error}")
         val payload = gson.fromJson(resp.payload, TextDeltaPayload::class.java)
-        val type = object : TypeToken<List<TextAnnotationEntity>>() {}.type
-        return gson.fromJson<List<TextAnnotationEntity>>(gson.toJson(payload.texts), type)
+        val type = object : TypeToken<List<TextAnnotation>>() {}.type
+        return gson.fromJson<List<TextAnnotation>>(gson.toJson(payload.texts), type)
+            ?.map { it.toRow() }
             ?: emptyList()
     }
 
@@ -1109,17 +1120,20 @@ class LocalSyncManager(
         val resp = readResponse(input) ?: throw IOException("No detail response")
         if (!resp.ok) throw IOException("Detail error: ${resp.error}")
         val payload = gson.fromJson(resp.payload, DocumentDetailPayload::class.java)
-        val doc = gson.fromJson(gson.toJson(payload.document), DocumentEntity::class.java)
+        val doc = gson.fromJson(gson.toJson(payload.document), Document::class.java)
+            ?.toRow()
             ?: throw IOException("Null document in detail payload")
-        val type = object : TypeToken<List<StrokeWithPoints>>() {}.type
-        val strokes = gson.fromJson<List<StrokeWithPoints>>(gson.toJson(payload.strokes), type)
+        val type = object : TypeToken<List<StrokeWithSamples>>() {}.type
+        val strokes = gson.fromJson<List<StrokeWithSamples>>(gson.toJson(payload.strokes), type)
+            ?.map { it.toRow() }
             ?: emptyList()
         // v4. `payload.texts` is `List<Any>` because the payload is decoded before the
         // concrete entity types are known; re-serializing and re-parsing is how the
         // strokes are handled too, so notes follow the same path rather than
         // introducing a second decoding strategy for one payload.
-        val textType = object : TypeToken<List<TextAnnotationEntity>>() {}.type
-        val texts = gson.fromJson<List<TextAnnotationEntity>>(gson.toJson(payload.texts), textType)
+        val textType = object : TypeToken<List<TextAnnotation>>() {}.type
+        val texts = gson.fromJson<List<TextAnnotation>>(gson.toJson(payload.texts), textType)
+            ?.map { it.toRow() }
             ?: emptyList()
         return Triple(doc, strokes, texts)
     }
