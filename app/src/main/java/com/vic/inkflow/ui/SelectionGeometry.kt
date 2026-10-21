@@ -171,25 +171,10 @@ internal fun isImageSelectedByLasso(annotation: ImageAnnotationEntity, polygon: 
 }
 
 /**
- * 全形字判定（CJK 中日韓＋全形符號）：框寬按 1.0×字號算，半形按 0.65×。
- * 舊公式全按 0.65，中文字永遠窄三分之一、框包不住——就這麼簡單。
- * 注意：邊界用碼點整數寫死，不用字面量（工具鏈吞罕見字元字節，血淚）。
+ * 全形字判定與量寬已搬到 `:shared` 的 `com.vic.inkflow.ui.TextMeasurement.kt`
+ * （`isWideChar` / `measureTextWidth`）——它們是折行、命中框、繪製三者共用的量法，
+ * 必須三個平台同一份，否則平板算得出的框桌面抓不到。
  */
-internal fun isWideChar(c: Char): Boolean {
-    val code = c.code
-    return code in 0x2E80..0xA4CF ||
-        code in 0xAC00..0xD7AF ||
-        code in 0xF900..0xFAFF ||
-        code in 0xFE30..0xFE4F ||
-        code in 0xFF00..0xFFEF
-}
-
-/** 一行寬：逐字累加（全形 1.0，半形 0.65），中英混排照包。 */
-internal fun measureTextWidth(text: String, fontSize: Float): Float {
-    var w = 0f
-    for (c in text) w += if (isWideChar(c)) fontSize else fontSize * 0.65f
-    return w
-}
 
 /**
  * 文字估算框（model 座標）：與繪製命中（textAnnotationHitRect）同一口徑——

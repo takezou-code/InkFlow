@@ -1,10 +1,8 @@
-package com.vic.inkflow
+package com.vic.inkflow.util
 
-import com.vic.inkflow.util.TwoFingerArbitrator
-import com.vic.inkflow.util.TwoFingerDecision
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
-import org.junit.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+import kotlin.test.Test
 import kotlin.math.abs
 
 class GestureArbitratorTest {
@@ -26,7 +24,7 @@ class GestureArbitratorTest {
                 TwoFingerDecision.Undecided -> Unit
             }
         }
-        assertTrue("scroll should lock PAN", sawPan)
+        assertTrue(sawPan, "scroll should lock PAN")
         assertTrue(a.isPanning)
     }
 
@@ -42,14 +40,14 @@ class GestureArbitratorTest {
                 is TwoFingerDecision.Pinch -> {
                     sawPinch = true
                     lastFactor = d.zoomFactor
-                    assertTrue("factor sane, got $lastFactor", lastFactor in 0.9f..1.3f)
+                    assertTrue(lastFactor in 0.9f..1.3f, "factor sane, got $lastFactor")
                 }
                 else -> Unit
             }
         }
-        assertTrue("pinch should lock PINCH", sawPinch)
+        assertTrue(sawPinch, "pinch should lock PINCH")
         assertTrue(a.isPinching)
-        assertTrue("net zoom in, last factor=$lastFactor", lastFactor >= 1f)
+        assertTrue(lastFactor >= 1f, "net zoom in, last factor=$lastFactor")
     }
 
     @Test
@@ -68,7 +66,7 @@ class GestureArbitratorTest {
         // One frame: centroid jumps 60px AND span jumps 60px at once.
         a.onFrame(500f, 800f, 200f)
         val d = a.onFrame(560f, 800f, 260f)
-        assertTrue("tie should lock PAN, got $d", d is TwoFingerDecision.Pan)
+        assertTrue(d is TwoFingerDecision.Pan, "tie should lock PAN, got $d")
     }
 
     @Test
@@ -81,7 +79,7 @@ class GestureArbitratorTest {
         // Now fling the centroid far: must STAY pinch, never flip to pan.
         repeat(10) { i ->
             d = a.onFrame(500f + i * 30f, 800f, 260f)
-            assertTrue("must stay PINCH, got $d", d is TwoFingerDecision.Pinch)
+            assertTrue(d is TwoFingerDecision.Pinch, "must stay PINCH, got $d")
         }
     }
 
@@ -91,7 +89,7 @@ class GestureArbitratorTest {
         small.onFrame(500f, 800f, 100f)
         repeat(10) {
             val d = small.onFrame(500f, 800f, 100f + it * 3f) // dist 30 > slop but span < min
-            assertTrue("must not pinch below minSpan, got $d", d !is TwoFingerDecision.Pinch)
+            assertTrue(d !is TwoFingerDecision.Pinch, "must not pinch below minSpan, got $d")
         }
     }
 
@@ -123,20 +121,20 @@ class GestureArbitratorTest {
         val a = arb()
         a.onFrame(500f, 800f, 200f)
         var d = a.onFrame(500f, 860f, 200f) // lock PAN (moved 60 > slop 22)
-        assertTrue("should lock PAN first, got $d", d is TwoFingerDecision.Pan)
+        assertTrue(d is TwoFingerDecision.Pan, "should lock PAN first, got $d")
         // Span wobble within hysteresis must NOT upgrade.
         d = a.onFrame(500f, 870f, 230f)
-        assertTrue("small span change must stay PAN, got $d", d is TwoFingerDecision.Pan)
+        assertTrue(d is TwoFingerDecision.Pan, "small span change must stay PAN, got $d")
         // Span opens clearly past 2x span slop (66): upgrade, factor starts at ~1.
         d = a.onFrame(500f, 880f, 300f)
-        assertTrue("should upgrade to PINCH, got $d", d is TwoFingerDecision.Pinch)
+        assertTrue(d is TwoFingerDecision.Pinch, "should upgrade to PINCH, got $d")
         if (d is TwoFingerDecision.Pinch) {
-            assertTrue("upgrade factor must not jump, got ${d.zoomFactor}", abs(d.zoomFactor - 1f) < 0.05f)
+            assertTrue(abs(d.zoomFactor - 1f) < 0.05f, "upgrade factor must not jump, got ${d.zoomFactor}")
         }
         assertTrue(a.isPinching)
         // Keeps pinching as span grows.
         d = a.onFrame(500f, 890f, 330f)
-        assertTrue("must stay PINCH, got $d", d is TwoFingerDecision.Pinch)
+        assertTrue(d is TwoFingerDecision.Pinch, "must stay PINCH, got $d")
     }
 
     @Test
@@ -148,7 +146,7 @@ class GestureArbitratorTest {
         // Span opens a lot but stays below minSpan: must NOT upgrade.
         repeat(5) {
             d = small.onFrame(500f, 830f + it * 5f, 100f + it * 8f)
-            assertTrue("must stay PAN below minSpan, got $d", d is TwoFingerDecision.Pan)
+            assertTrue(d is TwoFingerDecision.Pan, "must stay PAN below minSpan, got $d")
         }
     }
 
@@ -158,9 +156,9 @@ class GestureArbitratorTest {
         val a = arb()
         a.onFrame(500f, 800f, 200f)
         var d = a.onFrame(500f, 860f, 200f)
-        assertTrue("should lock PAN first, got $d", d is TwoFingerDecision.Pan)
+        assertTrue(d is TwoFingerDecision.Pan, "should lock PAN first, got $d")
         d = a.onFrame(500f, 865f, 240f)
-        assertTrue("40px span open must upgrade, got $d", d is TwoFingerDecision.Pinch)
+        assertTrue(d is TwoFingerDecision.Pinch, "40px span open must upgrade, got $d")
         assertTrue(a.isPinching)
     }
 
@@ -170,10 +168,10 @@ class GestureArbitratorTest {
         val a = arb()
         a.onFrame(500f, 800f, 200f)
         var d = a.onFrame(510f, 800f, 200f)
-        assertTrue("10px must stay Undecided, got $d", d is TwoFingerDecision.Undecided)
+        assertTrue(d is TwoFingerDecision.Undecided, "10px must stay Undecided, got $d")
         a.rebaselineSpan(200f) // 第三指加入（span 書籤同步，不動賽局起點）
         d = a.onFrame(525f, 800f, 200f)
-        assertTrue("cumulative 25px must lock PAN, got $d", d is TwoFingerDecision.Pan)
+        assertTrue(d is TwoFingerDecision.Pan, "cumulative 25px must lock PAN, got $d")
         assertTrue(a.isPanning)
     }
 
@@ -183,10 +181,10 @@ class GestureArbitratorTest {
         val a = arb()
         a.onFrame(500f, 800f, 200f)
         var d = a.onFrame(500f, 800f, 260f)
-        assertTrue("should lock PINCH, got $d", d is TwoFingerDecision.Pinch)
+        assertTrue(d is TwoFingerDecision.Pinch, "should lock PINCH, got $d")
         a.rebaselineSpan(400f)
         d = a.onFrame(500f, 800f, 400f)
-        assertTrue("must stay PINCH, got $d", d is TwoFingerDecision.Pinch)
+        assertTrue(d is TwoFingerDecision.Pinch, "must stay PINCH, got $d")
         if (d is TwoFingerDecision.Pinch) {
             assertEquals(1f, d.zoomFactor, 0f)
         }
@@ -198,7 +196,7 @@ class GestureArbitratorTest {
         a.onFrame(500f, 800f, 200f)
         // Single-frame teleport (jank coalescing): applied delta must be capped.
         val d = a.onFrame(1000f, 800f, 200f)
-        assertTrue("tie jumps must lock PAN, got $d", d is TwoFingerDecision.Pan)
+        assertTrue(d is TwoFingerDecision.Pan, "tie jumps must lock PAN, got $d")
         if (d is TwoFingerDecision.Pan) {
             assertEquals(96f, d.dx, 0f)
             assertEquals(0f, d.dy, 0f)

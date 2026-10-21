@@ -11,15 +11,15 @@ package com.vic.inkflow.ui
 // 平板上畫的是 (fontSize × sy)，比例不變 → 在 model 空間折出來的行，畫出來也一樣。
 
 /** 新建文字框距離頁面右緣的留白（model pt）。 */
-internal const val TEXT_BOX_DEFAULT_MARGIN = 24f
+const val TEXT_BOX_DEFAULT_MARGIN = 24f
 
 /** 文字框最小寬（model pt）：小到不會退化成每個字一行。 */
-internal const val TEXT_BOX_MIN_WIDTH = 40f
+const val TEXT_BOX_MIN_WIDTH = 40f
 
 /** 對齊：0=左 1=中 2=右（與 TextAnnotationEntity.alignment 同一組常數）。 */
-internal const val TEXT_ALIGN_LEFT = 0
-internal const val TEXT_ALIGN_CENTER = 1
-internal const val TEXT_ALIGN_RIGHT = 2
+const val TEXT_ALIGN_LEFT = 0
+const val TEXT_ALIGN_CENTER = 1
+const val TEXT_ALIGN_RIGHT = 2
 
 /**
  * 依 [boxWidth]（model pt）把 [text] 折成多行。
@@ -30,7 +30,7 @@ internal const val TEXT_ALIGN_RIGHT = 2
  *   除非單一 word 比整個框還寬才逐字硬切。
  * - 回傳至少一行；空字串回傳空清單。
  */
-internal fun wrapTextLines(text: String, fontSize: Float, boxWidth: Float): List<String> {
+fun wrapTextLines(text: String, fontSize: Float, boxWidth: Float): List<String> {
     if (text.isEmpty()) return emptyList()
     if (boxWidth <= 0f || fontSize <= 0f) return text.split("\n")
     val out = ArrayList<String>()
@@ -106,7 +106,7 @@ private fun tokenizeForWrap(text: String): List<String> {
  * 某一行在框內的水平偏移（model pt）。
  * 框比行寬時才有作用；行比框寬（理論上折行後不會發生）夾成 0，不讓文字跑到框左邊外。
  */
-internal fun textAlignOffsetModel(lineWidth: Float, boxWidth: Float, alignment: Int): Float = when (alignment) {
+fun textAlignOffsetModel(lineWidth: Float, boxWidth: Float, alignment: Int): Float = when (alignment) {
     TEXT_ALIGN_CENTER -> ((boxWidth - lineWidth) / 2f).coerceAtLeast(0f)
     TEXT_ALIGN_RIGHT -> (boxWidth - lineWidth).coerceAtLeast(0f)
     else -> 0f
@@ -120,7 +120,7 @@ internal fun textAlignOffsetModel(lineWidth: Float, boxWidth: Float, alignment: 
  * 折行用的就是同一支量寬，每一行的寬度都 ≤ 這個值 → 再折一次得到一模一樣的行。
  * 所以回填後畫面與回填前完全相同，只是文字從此可以改寬／對齊。
  */
-internal fun hugBoxWidthForLines(text: String, fontSize: Float): Float {
+fun hugBoxWidthForLines(text: String, fontSize: Float): Float {
     if (fontSize <= 0f) return TEXT_BOX_MIN_WIDTH
     val widest = text.split("\n").maxOfOrNull { measureTextWidth(it, fontSize) } ?: 0f
     return widest.coerceAtLeast(TEXT_BOX_MIN_WIDTH)

@@ -1,11 +1,9 @@
-package com.vic.inkflow
+package com.vic.inkflow.util
 
-import com.vic.inkflow.util.GestureStateMachine
-import com.vic.inkflow.util.Pt
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
-import org.junit.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+import kotlin.test.Test
 
 /**
  * Regression net for the finger-gesture rewrite. Every historical failure
@@ -30,7 +28,7 @@ class GestureStateMachineTest {
     }
 
     private fun scrollDx(o: GestureStateMachine.Output?): Float {
-        assertTrue("expected ScrollBy, got $o", o is GestureStateMachine.Output.ScrollBy)
+        assertTrue(o is GestureStateMachine.Output.ScrollBy, "expected ScrollBy, got $o")
         return (o as GestureStateMachine.Output.ScrollBy).dx
     }
 
@@ -110,7 +108,7 @@ class GestureStateMachineTest {
         d.down(1, 400f, 800f)
         d.down(2, 600f, 800f) // span 200
         val o = d.move(Triple(1, 370f, 800f), Triple(2, 630f, 800f)) // span 260
-        assertTrue("expected ZoomBy, got $o", o is GestureStateMachine.Output.ZoomBy)
+        assertTrue(o is GestureStateMachine.Output.ZoomBy, "expected ZoomBy, got $o")
         assertEquals(1f, (o as GestureStateMachine.Output.ZoomBy).factor, 1e-6f)
         assertEquals(
             GestureStateMachine.Output.GestureStart(GestureStateMachine.Kind.DUAL_PINCH),
@@ -131,14 +129,14 @@ class GestureStateMachineTest {
         d.down(2, 600f, 800f) // focus (500,800), initialSpan 200
         // Centroid +40, span +20: tie goes to PAN.
         val o1 = d.move(Triple(1, 440f, 800f), Triple(2, 660f, 800f))
-        assertTrue("expected Pan ScrollBy, got $o1", o1 is GestureStateMachine.Output.ScrollBy)
+        assertTrue(o1 is GestureStateMachine.Output.ScrollBy, "expected Pan ScrollBy, got $o1")
         assertEquals(
             GestureStateMachine.Output.GestureStart(GestureStateMachine.Kind.DUAL_PAN),
             d.drain()
         )
         // Centroid drifts on, span opens to 260 (|260-200|=60 > 44): upgrade.
         val o2 = d.move(Triple(1, 430f, 810f), Triple(2, 690f, 810f))
-        assertTrue("expected upgrade ZoomBy, got $o2", o2 is GestureStateMachine.Output.ZoomBy)
+        assertTrue(o2 is GestureStateMachine.Output.ZoomBy, "expected upgrade ZoomBy, got $o2")
         assertEquals(
             GestureStateMachine.Output.GestureStart(GestureStateMachine.Kind.DUAL_PINCH),
             d.drain()
@@ -188,7 +186,7 @@ class GestureStateMachineTest {
             if (o == null && silentAt < 0) silentAt = i
             last = o ?: last
         }
-        assertTrue("focus never converged, last=$last", silentAt in 0..3)
+        assertTrue(silentAt in 0..3, "focus never converged, last=$last")
         val z = last as GestureStateMachine.Output.ZoomBy
         assertEquals(560f, z.focusX, 1e-3f) // snapped exactly, no residue
     }
@@ -205,7 +203,7 @@ class GestureStateMachineTest {
         for (s in spans) {
             val half = s / 2f
             val o = d.move(Triple(1, 500f - half, 800f), Triple(2, 500f + half, 800f))
-            assertTrue("expected ZoomBy, got $o", o is GestureStateMachine.Output.ZoomBy)
+            assertTrue(o is GestureStateMachine.Output.ZoomBy, "expected ZoomBy, got $o")
             acc *= (o as GestureStateMachine.Output.ZoomBy).factor
         }
         // 250 -> 400 via lock-frame baseline: 400/250 = 1.6
@@ -232,7 +230,7 @@ class GestureStateMachineTest {
         assertTrue(d.m.state == GestureStateMachine.State.DUAL_PAN)
         assertNull(d.drain())
         val o = d.move(Triple(1, 460f, 830f), Triple(2, 660f, 830f))
-        assertTrue("expected ScrollBy, got $o", o is GestureStateMachine.Output.ScrollBy)
+        assertTrue(o is GestureStateMachine.Output.ScrollBy, "expected ScrollBy, got $o")
     }
 
     @Test
@@ -272,8 +270,8 @@ class GestureStateMachineTest {
         // No-fling invariant: fingers off = stop. Pump frames, expect silence.
         repeat(20) { i ->
             d.adv(16)
-            assertNull("frame $i emitted", d.move())
-            assertNull("tick $i emitted", d.m.tick(d.t))
+            assertNull(d.move(), "frame $i emitted")
+            assertNull(d.m.tick(d.t), "tick $i emitted")
         }
     }
 
@@ -345,6 +343,6 @@ class GestureStateMachineTest {
         assertNull(d.drain())
         val o = d.move(Triple(1, 432f, 802f), Triple(2, 632f, 802f), Triple(3, 900f, 200f))
         val s = o as? GestureStateMachine.Output.ScrollBy
-        assertTrue("expected tiny ScrollBy, got $o", s != null && kotlin.math.abs(s.dx) < 5f && kotlin.math.abs(s.dy) < 5f)
+        assertTrue(s != null && kotlin.math.abs(s.dx) < 5f && kotlin.math.abs(s.dy) < 5f, "expected tiny ScrollBy, got $o")
     }
 }
