@@ -13,6 +13,7 @@ import com.vic.inkflow.data.ImageAnnotationEntity
 import com.vic.inkflow.data.PointEntity
 import com.vic.inkflow.data.repository.DocSpaceMigrator
 import com.vic.inkflow.ui.editor.ExportController
+import com.vic.inkflow.ui.editor.UndoRedoController
 import com.vic.inkflow.data.repository.InkFlowRepositories
 import com.vic.inkflow.data.StrokeEntity
 import com.vic.inkflow.data.StrokeWithPoints
@@ -387,42 +388,21 @@ class EditorViewModel(
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     // Undo / Redo stacks
-    private val undoStack: ArrayDeque<DrawCommand> = ArrayDeque()
-    private val redoStack: ArrayDeque<DrawCommand> = ArrayDeque()
+    //
+    // 機械層（兩個堆、旗標、世代號）在 [com.vic.inkflow.ui.editor.UndoRedoController]；
+    // 「什麼時候該記一格、什麼時候該清棧」是觸控契約的一部分，留在這裡。
+    private val undoRedo = UndoRedoController()
 
-    /**
-     * 結構操作（清棧）的世代號。飛行中的擦除結算會晚幾毫秒才 pushUndo，
-     * 若期間清了棧，那一格帶著舊 pageIndex 進來就是幽靈資料；用世代號擋掉。
-     */
-    @Volatile
-    private var undoGeneration = 0
+    val canUndo: StateFlow<Boolean> get() = undoRedo.canUndo
+    val canRedo: StateFlow<Boolean> get() = undoRedo.canRedo
 
-    private val _canUndo = MutableStateFlow(false)
-    val canUndo: StateFlow<Boolean> = _canUndo.asStateFlow()
-
-    private val _canRedo = MutableStateFlow(false)
-    val canRedo: StateFlow<Boolean> = _canRedo.asStateFlow()
-
-    private fun pushUndo(command: DrawCommand) {
-        undoStack.addLast(command)
-        // R2：歷史上限 200 格，裁頭（最舊先掉；無上限長會話快照膨脹）。
-        while (undoStack.size > 200) undoStack.removeFirst()
-        redoStack.clear()
-        _canUndo.value = true
-        _canRedo.value = false
-    }
+    private fun pushUndo(command: DrawCommand) = undoRedo.push(command)
 
     /**
      * R2：頁面增刪移是結構操作、超出復原範圍——呼叫方在動頁前清棧，
      * 否則舊命令的 pageIndex 已錯位，復原會寫出幽靈資料。
      */
-    fun clearUndoStacks() {
-        undoGeneration++
-        undoStack.clear()
-        redoStack.clear()
-        _canUndo.value = false
-        _canRedo.value = false
-    }
+    fun clearUndoStacks() = undoRedo.clear()
 
     fun onToolSelected(tool: Tool) {
         val previousTool = _selectedTool.value
@@ -754,7 +734,7 @@ class EditorViewModel(
 
     /** 擦除手勢起手呼叫（InkCanvas 橡皮擦接管處）。 */
     fun beginEraseGesture() {
-        eraseAccumulator = EraseGestureAccumulator(undoGeneration)
+        eraseAccumulator = EraseGestureAccumulator(undoRedo.currentGeneration())
     }
 
     /** 擦除手勢正常結束呼叫：等同手勢所有 async 寫入落定後，有戰果則合併推一格，否則不留痕。 */
@@ -791,7 +771,7 @@ class EditorViewModel(
             acc.awaitIdle()
             // 等待期間可能發生結構操作（增刪移頁）→ 棧已清，這一格 pageIndex 已錯位。
             // 跟 clearUndoStacks 的語意一致：結構操作後不接受舊手勢的 undo。
-            if (acc.undoGeneration != undoGeneration) {
+            if (!undoRedo.isCurrentGeneration(acc.undoGeneration)) {
                 android.util.Log.w("EditorViewModel", "erase gesture outlived clearUndoStacks; undo step dropped")
                 return@launch
             }
@@ -1488,7 +1468,7 @@ class EditorViewModel(
     }
 
     fun undo() {
-        val command = undoStack.removeLastOrNull() ?: return
+        val command = undoRedo.takeUndo() ?: return
         // R3：默認 redo 原樣奉還；提取守衛留頁時改記 pageKept 版（redo 不再建頁）。
         var redoCommand: DrawCommand = command
         viewModelScope.launch(Dispatchers.IO) {
@@ -1624,15 +1604,13 @@ class EditorViewModel(
                 }
             }
             withContext(Dispatchers.Main) {
-                redoStack.addLast(redoCommand)
-                _canUndo.value = undoStack.isNotEmpty()
-                _canRedo.value = true
+                undoRedo.completeUndo(redoCommand)
             }
         }
     }
 
     fun redo() {
-        val command = redoStack.removeLastOrNull() ?: return
+        val command = undoRedo.takeRedo() ?: return
         viewModelScope.launch(Dispatchers.IO) {
             when (command) {
                 is DrawCommand.AddStroke -> {
@@ -1668,7 +1646,7 @@ class EditorViewModel(
                         // 連重擦都擦不到（命中讀的是過濾後流）。跟 undo 失敗的處置對稱。
                         showIds(command.strokes.map { it.stroke.id })
                         showIds(command.texts.map { it.id })
-                        withContext(Dispatchers.Main) { _canRedo.value = redoStack.isNotEmpty() }
+                        withContext(Dispatchers.Main) { undoRedo.refreshCanRedo() }
                         android.util.Log.e("EditorViewModel", "redo of erase failed, unhidden", e)
                         return@launch
                     }
@@ -1787,11 +1765,7 @@ class EditorViewModel(
                 }
             }
             withContext(Dispatchers.Main) {
-                undoStack.addLast(command)
-                // R2：redo 回填也要裁頭（上限 200 格，與 pushUndo 同規）。
-                while (undoStack.size > 200) undoStack.removeFirst()
-                _canUndo.value = true
-                _canRedo.value = redoStack.isNotEmpty()
+                undoRedo.completeRedo(command)
             }
         }
     }
