@@ -6,6 +6,7 @@ import androidx.compose.ui.graphics.Path
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
+import kotlin.math.PI
 import kotlin.math.sin
 
 /** One sample of a stroke: position plus the width *at that sample*. */
@@ -188,7 +189,7 @@ object EnvelopeUtils {
         val endAngle = atan2(endDy, endDx)
         for (i in 0..CAP_STEPS) { // Start at 0 to connect seamlessly
             // 使用「減去」角度 (-)，確保弧線是往筆畫「外部（前方）」畫，而不是往筆畫內部凹陷
-            val a = endAngle - (Math.PI.toFloat() * i / CAP_STEPS)
+            val a = endAngle - (PI.toFloat() * i / CAP_STEPS)
             path.lineTo(endPt.x + cos(a) * endR, endPt.y + sin(a) * endR)
         }
 
@@ -209,7 +210,7 @@ object EnvelopeUtils {
         val startAngle = atan2(startDy, startDx)
         for (i in 0..CAP_STEPS) { // Start at 0 to connect seamlessly
             // 使用「減去」角度 (-)，確保弧線是往筆畫「外部（後方）」畫，而不是往筆畫內部凹陷
-            val a = startAngle - (Math.PI.toFloat() * i / CAP_STEPS)
+            val a = startAngle - (PI.toFloat() * i / CAP_STEPS)
             path.lineTo(startPt.x + cos(a) * startR, startPt.y + sin(a) * startR)
         }
 

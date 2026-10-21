@@ -7,7 +7,6 @@ import java.io.EOFException
 import java.io.File
 import java.io.IOException
 import java.io.RandomAccessFile
-import java.security.MessageDigest
 
 /**
  * The byte-level half of the sync protocol: frames on a stream, SHA-256 over
@@ -87,24 +86,28 @@ object SyncWire {
      *
      * Null matters: the manifest uses it to mark an absent PDF as absent, and the
      * two ends must agree on that spelling.
+     *
+     * The digest is the shared plain-Kotlin implementation ([Sha256]), fed in
+     * chunks so a 300 MB PDF is never held in memory twice. It is the same code
+     * every other platform runs, and the golden vectors in `commonTest` pin it
+     * against the JDK's implementation.
      */
     fun sha256Hex(file: File): String? {
         if (!file.exists()) return null
-        val digest = MessageDigest.getInstance("SHA-256")
+        val hasher = Sha256()
         file.inputStream().buffered(HASH_BUFFER_BYTES).use { fis ->
             val buf = ByteArray(HASH_BUFFER_BYTES)
             while (true) {
                 val n = fis.read(buf)
                 if (n <= 0) break
-                digest.update(buf, 0, n)
+                hasher.update(buf, 0, n)
             }
         }
-        return digest.digest().toHex()
+        return hasher.digest().toHex()
     }
 
     /** SHA-256 of a byte array, lowercase hex. */
-    fun sha256Hex(bytes: ByteArray): String =
-        MessageDigest.getInstance("SHA-256").digest(bytes).toHex()
+    fun sha256Hex(bytes: ByteArray): String = com.vic.inkflow.sync.sha256Hex(bytes)
 
     /**
      * Reads at most [limit] bytes starting at [offset] without loading the whole
@@ -126,25 +129,4 @@ object SyncWire {
             return buf
         }
     }
-
-    private fun ByteArray.toHex(): String {
-        val out = CharArray(size * 2)
-        for (i in indices) {
-            val v = this[i].toInt() and 0xFF
-            out[i * 2] = HEX[v ushr 4]
-            out[i * 2 + 1] = HEX[v and 0x0F]
-        }
-        return String(out)
-    }
-
-    private val HEX = "0123456789abcdef".toCharArray()
 }
-
-/**
- * SHA-256 of a byte array, lowercase hex.
- *
- * The single implementation behind both [SyncIdentity]'s protocol hashes and
- * [SyncWire.sha256Hex]; `commonMain` cannot name `java.security`, so it declares
- * this as `expect` and the JVM source set provides the `actual`.
- */
-internal actual fun sha256Hex(bytes: ByteArray): String = SyncWire.sha256Hex(bytes)

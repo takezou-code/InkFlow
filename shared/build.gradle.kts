@@ -36,6 +36,21 @@ kotlin {
     // dependency resolution and the intent stays readable.
     jvm("desktop")
 
+    // iOS targets (2026-10-21).
+    //
+    // The project's third platform. What can be verified from a Windows machine
+    // is the *compilation* of the shared code for iOS — Kotlin/Native allows any
+    // host to produce .klib artifacts for Apple targets as long as the code has
+    // no cinterop/CocoaPods dependency (this module has none). Building a final
+    // iOS binary, running the simulator, and running the iOS test task all
+    // require macOS + Xcode.
+    listOf(iosArm64(), iosSimulatorArm64()).forEach { iosTarget ->
+        iosTarget.binaries.framework {
+            baseName = "InkFlowShared"
+            isStatic = true
+        }
+    }
+
     // `android { }` — NOT `androidTarget()`. AGP 9's KMP library plugin replaces the
     // old target outright: passing androidTarget() fails with "Enabled androidTarget()
     // target is not compatible with 'com.android.kotlin.multiplatform.library'

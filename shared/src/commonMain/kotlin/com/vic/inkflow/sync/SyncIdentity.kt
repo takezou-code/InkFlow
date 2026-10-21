@@ -16,6 +16,10 @@ package com.vic.inkflow.sync
  * the symptom looks like a network problem. That is a genuinely hard bug to find
  * by hand, which is exactly why it should not be findable at all.
  *
+ * The digest itself ([sha256Hex]) is a plain-Kotlin implementation inside this
+ * module, so it produces the same bytes on every platform — see [Sha256] for
+ * why it is not delegated to the platform's crypto library.
+ *
  * ## The separator
  *
  * The fields are joined with a NUL byte, which cannot occur inside a file URI or a
@@ -83,7 +87,7 @@ object SyncIdentity {
             append(fileSize ?: ABSENT_SIZE); append(DOC_VERSION_SEPARATOR)
             append(textCount)
         }
-        return sha256Hex(canonical.toByteArray(Charsets.UTF_8))
+        return sha256Hex(canonical.encodeToByteArray())
     }
 
     /**
@@ -98,7 +102,7 @@ object SyncIdentity {
      * desktop verifies.
      */
     fun pskProof(psk: String): String =
-        sha256Hex((psk + PSK_SALT).toByteArray(Charsets.UTF_8))
+        sha256Hex((psk + PSK_SALT).encodeToByteArray())
 
     /**
      * Length-independent constant-time string comparison.
@@ -119,12 +123,3 @@ object SyncIdentity {
         return diff == 0
     }
 }
-
-/**
- * SHA-256 of a byte array, lowercase hex.
- *
- * `expect`/`actual` because `java.security.MessageDigest` is not available in
- * `commonMain` — but both of this module's targets (Android and the desktop JVM)
- * are JVMs, so a single actual in the shared JVM source set serves both.
- */
-internal expect fun sha256Hex(bytes: ByteArray): String

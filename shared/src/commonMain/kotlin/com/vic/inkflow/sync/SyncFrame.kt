@@ -68,6 +68,42 @@ object SyncFrame {
         }
         return len
     }
+
+    /**
+     * Encodes one frame: the 4-byte length prefix followed by the payload.
+     *
+     * The byte-array form of the format, for transports that work on buffers
+     * rather than streams (and for tests). The stream form writes the same two
+     * pieces separately so a large payload is never copied.
+     */
+    fun encode(payload: ByteArray): ByteArray {
+        val header = lengthHeader(payload.size)
+        val out = ByteArray(header.size + payload.size)
+        header.copyInto(out, 0)
+        payload.copyInto(out, header.size)
+        return out
+    }
+
+    /** A decoded frame: its payload, and where the next frame starts. */
+    class Frame(val payload: ByteArray, val nextOffset: Int)
+
+    /**
+     * Decodes the frame that starts at [offset].
+     *
+     * @throws SyncFrameException if the header is malformed or the payload is
+     *   truncated.
+     */
+    fun decode(bytes: ByteArray, offset: Int = 0): Frame {
+        if (offset < 0 || offset + 4 > bytes.size) {
+            throw SyncFrameException("Truncated frame header at offset $offset")
+        }
+        val len = payloadLength(bytes.copyOfRange(offset, offset + 4))
+        val start = offset + 4
+        if (start + len > bytes.size) {
+            throw SyncFrameException("Truncated frame payload: need $len bytes, have ${bytes.size - start}")
+        }
+        return Frame(bytes.copyOfRange(start, start + len), start + len)
+    }
 }
 
 /** A frame that violates the protocol. The connection is dropped when this is thrown. */

@@ -39,7 +39,16 @@ import androidx.compose.ui.unit.dp
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.min
+import kotlin.math.PI
 import kotlin.math.sin
+
+/**
+ * `Math.toDegrees` / `Math.toRadians` are JVM APIs; this module now compiles for
+ * iOS too, where there is no `java.lang.Math`. These are the same two constants
+ * the JDK uses, so the angles are bit-identical to what the JVM produced.
+ */
+private const val DEGREES_PER_RADIAN = 180.0 / PI
+private const val RADIANS_PER_DEGREE = PI / 180.0
 
 @Composable
 fun ColorPickerDialog(
@@ -203,7 +212,7 @@ private fun HueRing(
             detectTapGestures { offset ->
                 val cx = size.width / 2f
                 val cy = size.height / 2f
-                val angle = Math.toDegrees(atan2((offset.y - cy).toDouble(), (offset.x - cx).toDouble())).toFloat()
+                val angle = (atan2((offset.y - cy).toDouble(), (offset.x - cx).toDouble()) * DEGREES_PER_RADIAN).toFloat()
                 onHueChanged((angle + 360f) % 360f)
             }
         }
@@ -211,7 +220,7 @@ private fun HueRing(
         drawHueRing()
         // Draw selector dot
         val radius = min(size.width, size.height) / 2f * 0.75f
-        val angleRad = Math.toRadians(hue.toDouble())
+        val angleRad = hue * RADIANS_PER_DEGREE
         val cx = size.width / 2f + radius * cos(angleRad).toFloat()
         val cy = size.height / 2f + radius * sin(angleRad).toFloat()
         drawCircle(color = Color.White, radius = 10f, center = Offset(cx, cy), style = Stroke(width = 3f))

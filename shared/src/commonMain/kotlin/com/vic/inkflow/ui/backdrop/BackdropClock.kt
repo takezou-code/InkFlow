@@ -5,6 +5,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import kotlinx.coroutines.delay
+import kotlin.time.TimeSource
 
 /**
  * 所有動態背景唯一的時鐘：delay(22) 驅動的 frame counter ＋ 建立時的奈秒起點。
@@ -21,9 +22,13 @@ class BackdropClock internal constructor() {
     /** 排重繪用：Canvas 內讀一次（讀的是 snapshot state）就會在每次 tick 重畫。 */
     val frame: Long get() = state.longValue
 
-    private val startNanos = System.nanoTime()
+    // `TimeSource.Monotonic` rather than `System.nanoTime()`: the latter is a
+    // JVM API and this module now compiles for iOS too, where there is no
+    // `java.lang.System`. A monotonic source is also the right clock for an
+    // animation: it is unaffected by wall-clock adjustments.
+    private val startMark = TimeSource.Monotonic.markNow()
 
-    fun seconds(): Float = (System.nanoTime() - startNanos) / 1_000_000_000f
+    fun seconds(): Float = startMark.elapsedNow().inWholeMilliseconds / 1000f
 
     internal fun advance() {
         state.longValue += 1
