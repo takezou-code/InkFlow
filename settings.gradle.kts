@@ -36,8 +36,11 @@ include(":app")
 // referenced by both — the whole point of the merge. Previously this was a
 // separate Gradle build with its own settings.gradle.kts, which made sharing UI
 // impossible: the only option was hand-copying files, and they drifted.
+//
+// The module is `:desktopApp` and the directory is `desktopApp/` — the same name
+// on both sides, so there is no `projectDir` mapping to remember and no way to
+// type the wrong one.
 include(":desktopApp")
-project(":desktopApp").projectDir = file("desktop-app")
 
 // Cross-platform library: the code both apps must agree on byte for byte —
 // the ink format, the sync protocol, the glass material, the motion language.

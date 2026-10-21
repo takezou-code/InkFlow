@@ -66,7 +66,7 @@ private const val TAG = "InkFlowSync"
  *  2. **筆數不能用「載入全部筆跡再數」當作長期方案。** `StrokeRepository` 目前沒有
  *     count 查詢（見 [StrokeCountCache] 的說明），所以這裡加了有界的快取與背景刷新。
  *
- * @see <a href="file:../../../../../../../../InkFlow-Windows/desktop-app/SYNC_PROTOCOL.md">SYNC_PROTOCOL.md</a>
+ * @see <a href="file:../../../../../../../../InkFlow-Windows/desktopApp/SYNC_PROTOCOL.md">SYNC_PROTOCOL.md</a>
  */
 class TabletSyncServer(
     context: Context,

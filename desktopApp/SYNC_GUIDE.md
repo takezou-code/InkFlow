@@ -107,18 +107,18 @@ C:\Users\<你的用戶名>\.inkflow\inkflow.db
 
 ### 開發模式運行
 ```bash
-cd desktop-app
+cd desktopApp
 ./gradlew run
 ```
 
 ### 打包發布版本
 ```bash
-cd desktop-app
+cd desktopApp
 ./gradlew packageReleaseDistributionForCurrentOS
 ```
 
 生成的安裝包位於：
-`desktop-app/build/compose/binaries/main-release/msi/`
+`desktopApp/build/compose/binaries/main-release/msi/`
 
 ## 防火牆設置
 

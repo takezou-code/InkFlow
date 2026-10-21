@@ -6,7 +6,7 @@ package com.vic.inkflow.sync
  * ## Why these live in `:shared`
  *
  * They used to be declared twice — once in `app/.../sync/SyncProtocol.kt` and once
- * in `desktop-app/.../sync/SyncProtocol.kt` — and the two copies had already drifted:
+ * in `desktopApp/.../sync/SyncProtocol.kt` — and the two copies had already drifted:
  * the desktop had gained `DOCUMENTS_SUBDIR` and a `DeviceRole` enum that the tablet
  * did not have. Gson matches fields by name with no compile-time check, so a constant
  * that differs on one side is not a compile error, it is a silent behaviour

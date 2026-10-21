@@ -78,10 +78,10 @@ kotlin {
         }
     }
 
-    // `jvmCommon` — the source set both JVM targets share.
+    // `androidJvmMain` — the source set the Android and the Windows JVM share.
     //
-    // Both targets of this module are JVMs (Android and the desktop), so
-    // `java.io` and `java.security` are available on both. The sync protocol's
+    // Both of this module's JVM-ish targets are JVMs (Android and the desktop),
+    // so `java.io` and `java.security` are available on both. The sync protocol's
     // byte-level layer — the length-prefixed frame, the SHA-256 helpers — used
     // to be hand-copied into both apps, and the copies had already drifted: the
     // tablet enforced the 512 MiB frame cap and reported it as an IOException,
@@ -105,12 +105,17 @@ kotlin {
     // Kotlin's own hierarchy template does not cover "JVM + Android" (the
     // combination this project has) — but the template DSL can be extended
     // with a group of exactly those two targets, which is what
-    // `group("jvmCommon") { withJvm(); withAndroid() }` does. `withAndroid()`
+    // `group("androidJvm") { withJvm(); withAndroid() }` does. `withAndroid()`
     // is AGP's extension for this (com.android.build.api.withAndroid, AGP
     // 9.3.2+); the official AGP example is the same shape.
+    //
+    // The name says what it is: the code shared by **Android and the Windows
+    // JVM** — not "the common JVM stuff", which is how a reader takes
+    // `jvmCommon` (the previous name) and ends up looking for a third JVM
+    // target that does not exist. The source set is `androidJvmMain`.
     applyDefaultHierarchyTemplate {
         common {
-            group("jvmCommon") {
+            group("androidJvm") {
                 withJvm()
                 withAndroid()
             }

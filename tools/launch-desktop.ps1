@@ -1,4 +1,4 @@
-﻿#requires -Version 5.1
+#requires -Version 5.1
 <#
 .SYNOPSIS
     啟動 InkFlow 桌面版；必要時先編譯。
@@ -31,7 +31,7 @@ $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $Root
 
-$Exe = Join-Path $Root 'desktop-app\build\compose\binaries\main\app\InkFlow\InkFlow.exe'
+$Exe = Join-Path $Root 'desktopApp\build\compose\binaries\main\app\InkFlow\InkFlow.exe'
 $Wrapper = Join-Path $Root 'gradlew.bat'
 
 function Write-Step($Message) { Write-Host "==> $Message" -ForegroundColor Cyan }
@@ -94,7 +94,7 @@ if (-not (Test-Path -LiteralPath $Wrapper)) {
 function Test-Stale {
     if (-not (Test-Path -LiteralPath $Exe)) { return 'MISSING' }
 
-    $roots = @('shared\src', 'desktop-app\src', 'app\src')
+    $roots = @('shared\src', 'desktopApp\src', 'app\src')
     $newest = $null
 
     foreach ($r in $roots) {
@@ -108,7 +108,7 @@ function Test-Stale {
     $configFiles = @(
         (Join-Path $Root 'gradle\libs.versions.toml'),
         (Join-Path $Root 'settings.gradle.kts'),
-        (Join-Path $Root 'desktop-app\build.gradle.kts'),
+        (Join-Path $Root 'desktopApp\build.gradle.kts'),
         (Join-Path $Root 'shared\build.gradle.kts')
     )
     foreach ($c in $configFiles) {

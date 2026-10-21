@@ -458,7 +458,7 @@ fun InkFlowApp() {
 
 @Composable
 private fun BrandIcon(modifier: Modifier = Modifier) {
-    // Loaded from the jar like the window icon: `desktop-app/src/main/resources`
+    // Loaded from the jar like the window icon: `desktopApp/src/main/resources`
     // ships the same PNG the taskbar and the packaged EXE carry.
     val painter = remember {
         runCatching {

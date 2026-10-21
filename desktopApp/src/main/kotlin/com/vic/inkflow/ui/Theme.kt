@@ -103,7 +103,7 @@ val InkShapes = Shapes(
  * **ui-text-desktop** 1.12.1 declares only `Font(resId: Int,  ... )`. The desktop entry
  * point is a different symbol, `FontFamily_desktopKt.FontFamily(path: String)`, which
  * resolves the font from the jar's resources. Hence the file living at
- * `desktop-app/src/main/resources/fonts/inter_variable.ttf`  ...  same 856 KB binary the
+ * `desktopApp/src/main/resources/fonts/inter_variable.ttf`  ...  same 856 KB binary the
  * tablet ships.
  *
  * The path form has no `variationSettings`, so the five Inter weights are selected by

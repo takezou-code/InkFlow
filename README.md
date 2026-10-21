@@ -62,7 +62,7 @@ Or open the project in Android Studio and run the `app` configuration (a physica
 
 ```
 app/            Android 平板（真相來源）
-desktop-app/    Windows 桌面（鏡像）
+desktopApp/    Windows 桌面（鏡像）
 shared/         跨平臺共用：玻璃材質、墨跡格式、協定、主題
 ```
 
@@ -91,7 +91,7 @@ shared/         跨平臺共用：玻璃材質、墨跡格式、協定、主題
 ```
 ├── app/                   Android 平板（來源）
 │   └── src/{main,debug}/
-├── desktop-app/           Windows 桌面（鏡像）
+├── desktopApp/           Windows 桌面（鏡像）
 │   ├── smoke-test.ps1     打包後啟動檢查
 │   └── SYNC_PROTOCOL.md   v3 協定真相來源
 ├── shared/                跨平臺共用（KMP）
@@ -110,7 +110,7 @@ shared/         跨平臺共用：玻璃材質、墨跡格式、協定、主題
 
 ### Windows
 ```bash
-cd desktop-app
+cd desktopApp
 ./gradlew test createDistributable
 powershell -File smoke-test.ps1
 ```

@@ -4,17 +4,20 @@
 >
 > 實作（2026-10-21 起，兩端共用同一份程式碼）：
 > - **協定的程式碼**：`shared/src/commonMain/kotlin/com/vic/inkflow/sync/`
->   （常數、wire DTO、幀格式、`docVersion`／`pskProof`），以及
->   `shared/src/jvmCommon/kotlin/com/vic/inkflow/sync/SyncWire.kt`（java.io 串流與 SHA-256）。
->   兩端 target 都是 JVM，所以 java.io 那層也只留一份。
-> - 桌面端：`desktop-app/src/main/kotlin/com/vic/inkflow/sync/LocalSyncManager.kt`
+>   （常數、wire DTO、幀格式、`docVersion`／`pskProof`、SHA-256），
+>   以及 `shared/src/androidJvmMain/kotlin/com/vic/inkflow/sync/SyncWire.kt`
+>   （java.io 串流與檔案讀取，只有 Android 與 Windows 看得見）。
+> - **文件的模型**：`shared/src/commonMain/kotlin/com/vic/inkflow/data/Model.kt`
+>   —— wire 上一筆／文字／圖片／文件就是這個形狀，兩端的儲存（Room / JDBC）
+>   各自映射到它。
+> - 桌面端：`desktopApp/src/main/kotlin/com/vic/inkflow/sync/LocalSyncManager.kt`
 > - 平板端：`app/src/main/java/com/vic/inkflow/sync/`
 >
 > 這兩份 `SyncProtocol.kt` 曾在兩端各留一份，而且已經漂移過（DTO 的 nullability、
 > 幀長度上限的例外型別、`docVersion` 的所在位置都不一樣）。現在常數、DTO、幀格式、
 > 雜湊都在 `:shared`，一份檔案不會漂移。
 >
-> `desktop-app/SYNC_GUIDE.md` 描述的是已廢棄的 v1（行分隔 JSON、`get_documents` 動詞），
+> `desktopApp/SYNC_GUIDE.md` 描述的是已廢棄的 v1（行分隔 JSON、`get_documents` 動詞），
 > 與本文件矛盾，已刪除。不要參考它。
 
 ---

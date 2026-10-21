@@ -17,7 +17,7 @@ import java.util.UUID
  * **不動任何 schema**（§5）：兩個值都是 app 自己產生、自己保存的。Room 的
  * `@Entity` / `@Database(version=)` / `Migration` 一行都不用碰。
  *
- * @see <a href="file:../../../../../../../../InkFlow-Windows/desktop-app/SYNC_PROTOCOL.md">SYNC_PROTOCOL.md</a>
+ * @see <a href="file:../../../../../../../../InkFlow-Windows/desktopApp/SYNC_PROTOCOL.md">SYNC_PROTOCOL.md</a>
  */
 object SyncIdentityStore {
 

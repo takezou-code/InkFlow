@@ -38,7 +38,7 @@ java -version
 
 ### 2. 建置專案
 ```bash
-cd desktop-app
+cd desktopApp
 
 # 使用 Gradle Wrapper 建置
 ./gradlew build
@@ -62,7 +62,7 @@ gradle build
 ## 專案結構
 
 ```
-desktop-app/
+desktopApp/
 ├── src/main/kotlin/com/vic/inkflow/
 │   ├── MainKt.kt              # 應用程式入口
 │   ├── data/                  # 資料層（資料庫實體、DAO）
