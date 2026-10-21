@@ -237,15 +237,9 @@ fun GlobalSettingsScreen(
     }
 
     // --- 預設調色盤 -----------------------------------------------------------
+    // 預設墨水色票住在 shared 的 theme 層（hex 色碼只准在那裡，見 ink doctor）
     val paletteDefaults = remember {
-        listOf(
-            0xFF000000.toInt(),
-            0xFFFFC700.toInt(),
-            0xFFF87171.toInt(),
-            0xFF4ADE80.toInt(),
-            0xFF3B82F6.toInt(),
-            0xFF8B5CF6.toInt()
-        )
+        com.vic.inkflow.ui.theme.DefaultInkPalette
     }
     val defaultPaletteCsv = prefs.getString("default_recent_colors", null)
     val paletteInitial = remember(defaultPaletteCsv) {

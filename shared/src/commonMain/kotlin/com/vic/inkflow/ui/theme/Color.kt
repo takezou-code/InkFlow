@@ -17,6 +17,21 @@ val Slate700 = Color(0xFF334155)
 val Slate800 = Color(0xFF1E293B)
 val Slate900 = Color(0xFF0F172A)
 
+/**
+ * 預設墨水調色盤（**內容色**，不是 UI 重點色）：黑、琥珀、紅、綠、藍、紫。
+ *
+ * 住在這裡的理由：所有 hex 色碼只准出現在 theme 層（`ink doctor` 會擋），
+ * 免得「內容色」散在 UI 檔裡，讓換色時分不清哪個是 accent、哪個是墨水。
+ */
+val DefaultInkPalette: List<Int> = listOf(
+    0xFF000000.toInt(),
+    0xFFFFC700.toInt(),
+    0xFFF87171.toInt(),
+    0xFF4ADE80.toInt(),
+    0xFF3B82F6.toInt(),
+    0xFF8B5CF6.toInt()
+)
+
 val InkTextStrong = Color(0xFF0F172A)
 val InkTextSoft = Color(0xFF64748B)
 val InkTextStrongDark = Color(0xFFF8FAFC)
