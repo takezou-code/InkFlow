@@ -1,9 +1,18 @@
 # InkFlow Local LAN Sync Protocol — v5
 
 > 本文件是 Android 平板端與 Windows 桌面端之間的**唯一協定真相來源（single source of truth）**。
-> 實作：
-> - 桌面端：`desktop-app/src/main/kotlin/com/vic/inkflow/sync/SyncProtocol.kt`、`LocalSyncManager.kt`
-> - 平板端：`app/src/main/java/com/vic/inkflow/sync/`（**待實作**，見 §9）
+>
+> 實作（2026-10-21 起，兩端共用同一份程式碼）：
+> - **協定的程式碼**：`shared/src/commonMain/kotlin/com/vic/inkflow/sync/`
+>   （常數、wire DTO、幀格式、`docVersion`／`pskProof`），以及
+>   `shared/src/jvmCommon/kotlin/com/vic/inkflow/sync/SyncWire.kt`（java.io 串流與 SHA-256）。
+>   兩端 target 都是 JVM，所以 java.io 那層也只留一份。
+> - 桌面端：`desktop-app/src/main/kotlin/com/vic/inkflow/sync/LocalSyncManager.kt`
+> - 平板端：`app/src/main/java/com/vic/inkflow/sync/`
+>
+> 這兩份 `SyncProtocol.kt` 曾在兩端各留一份，而且已經漂移過（DTO 的 nullability、
+> 幀長度上限的例外型別、`docVersion` 的所在位置都不一樣）。現在常數、DTO、幀格式、
+> 雜湊都在 `:shared`，一份檔案不會漂移。
 >
 > `desktop-app/SYNC_GUIDE.md` 描述的是已廢棄的 v1（行分隔 JSON、`get_documents` 動詞），
 > 與本文件矛盾，已刪除。不要參考它。

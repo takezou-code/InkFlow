@@ -148,7 +148,7 @@ class DiscoveryResponder(
             return
         }
 
-        val instanceId = SyncIdentity.instanceId(appContext)
+        val instanceId = SyncIdentityStore.instanceId(appContext)
         val response = DiscoveryResponse(
             deviceId = deviceId(instanceId),
             deviceName = deviceName(),

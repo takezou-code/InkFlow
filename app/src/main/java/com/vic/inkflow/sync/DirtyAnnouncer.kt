@@ -121,7 +121,7 @@ class DirtyAnnouncer(
         if (now - last < ANNOUNCE_INTERVAL_MS) return
         if (!lastSentAt.compareAndSet(last, now)) return
         try {
-            val instanceId = SyncIdentity.instanceId(appContext)
+            val instanceId = SyncIdentityStore.instanceId(appContext)
             val msg = gson.toJson(
                 mapOf(
                     "app" to SyncConstants.APP_TAG,

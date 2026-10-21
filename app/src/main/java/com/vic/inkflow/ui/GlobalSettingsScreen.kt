@@ -63,7 +63,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.vic.inkflow.sync.SyncIdentity
+import com.vic.inkflow.sync.SyncIdentityStore
 import com.vic.inkflow.sync.TabletSyncService
 import com.vic.inkflow.ui.backdrop.BackdropScene
 import com.vic.inkflow.ui.backdrop.DuneScene
@@ -714,7 +714,7 @@ fun GlobalSettingsScreen(
                     }
 
                     if (syncRunning) {
-                        val psk = remember { SyncIdentity.psk(context) }
+                        val psk = remember { SyncIdentityStore.psk(context) }
                         val lanIp = remember { localLanIpv4() }
                         Column(
                             modifier = Modifier

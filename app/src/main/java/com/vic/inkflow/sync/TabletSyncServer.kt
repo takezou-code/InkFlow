@@ -240,7 +240,7 @@ class TabletSyncServer(
      * `SHA-256(psk ‖ "inkflow-sync-v3")` 讓它確認我們也持有同一份秘密。
      */
     private fun handshake(req: SyncRequest, out: DataOutputStream): Boolean {
-        val localPsk = SyncIdentity.psk(appContext)
+        val localPsk = SyncIdentityStore.psk(appContext)
         val presented = req.psk
         if (!SyncIdentity.constantTimeEquals(localPsk, presented)) {
             Log.w(TAG, "handshake rejected: bad pairing code from ${req.deviceId}")
@@ -249,7 +249,7 @@ class TabletSyncServer(
         }
         val ack = HandshakeAck(
             protocolVersion = SyncConstants.PROTOCOL_VERSION,
-            instanceId = SyncIdentity.instanceId(appContext),
+            instanceId = SyncIdentityStore.instanceId(appContext),
             pskProof = SyncIdentity.pskProof(localPsk)
         )
         respondJson(out, SyncRequest.TYPE_HANDSHAKE, ack)
@@ -379,7 +379,7 @@ class TabletSyncServer(
             return reject(p, "unknown document").also { recentProposals[p.proposalId] = it }
         }
 
-        val instance = SyncIdentity.instanceId(appContext)
+        val instance = SyncIdentityStore.instanceId(appContext)
         val current = currentDocVersion(doc)
 
         // v6 §15.2：逐 op 的物件版本（一次查完，不是每 op 一次）。
@@ -538,7 +538,7 @@ class TabletSyncServer(
 
     /** 和 buildManifest 同一公式，但讀新鮮值而非快取：仲裁用的版本不能是舊的。 */
     private suspend fun currentDocVersion(doc: DocumentEntity): String {
-        val instance = SyncIdentity.instanceId(appContext)
+        val instance = SyncIdentityStore.instanceId(appContext)
         val file = documentFile(doc.uri)
         val present = file?.exists() == true
         val sha = if (present) digests.sha256Hex(file!!) else null
@@ -702,7 +702,7 @@ class TabletSyncServer(
      * 一份文件 = 使用者下次刪一份文件就被誤判成刪除兩份。
      */
     private suspend fun buildManifest(): List<DocumentManifestEntry> {
-        val instance = SyncIdentity.instanceId(appContext)
+        val instance = SyncIdentityStore.instanceId(appContext)
         return repos.documents.getAllDocumentsSync().map { doc ->
             val file = documentFile(doc.uri)
             val present = file?.exists() == true

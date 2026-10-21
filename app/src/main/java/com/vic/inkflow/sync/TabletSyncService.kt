@@ -171,7 +171,7 @@ class TabletSyncService : Service() {
     }
 
     private fun buildNotification(): Notification {
-        val psk = runCatching { SyncIdentity.psk(this) }.getOrNull()
+        val psk = runCatching { SyncIdentityStore.psk(this) }.getOrNull()
         val text = if (psk == null) {
             "同步伺服器執行中"
         } else {

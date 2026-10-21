@@ -835,7 +835,7 @@ class SyncEndToEndTest {
         fun currentVersion(): String {
             val t = tabletLateInit[0]
             val strokes = t?.strokeCount() ?: 1
-            return SyncWire.docVersion(
+            return SyncIdentity.docVersion(
                 instanceId, tabletUri, strokes, sha, tabletPdf.length(), (t?.texts?.size ?: 0)
             )
         }
@@ -894,15 +894,18 @@ class SyncEndToEndTest {
         while (true) {
             val reqText = SyncWire.readText(input) ?: return
             val req = gson.fromJson(reqText, SyncRequest::class.java)
+            // `type` now lives in the shared module and is nullable by design (Gson
+            // assigns reflectively), so Kotlin cannot smart-cast it here: bind it once.
+            val type = req.type ?: ""
             fun respond(type: String, payload: Any?) =
                 SyncWire.writeText(out, gson.toJson(SyncResponse(type, payload = gson.toJson(payload))))
 
-            when (req.type) {
+            when (type) {
                 SyncRequest.TYPE_HANDSHAKE -> SyncWire.writeText(
                     out,
                     gson.toJson(
                         SyncResponse(
-                            req.type,
+                            type,
                             payload = gson.toJson(
                                 mapOf(
                                     "protocolVersion" to SyncConstants.PROTOCOL_VERSION,
@@ -914,7 +917,7 @@ class SyncEndToEndTest {
                 )
 
                 SyncRequest.TYPE_DOC_MANIFEST -> respond(
-                    req.type,
+                    type,
                     // Re-hash on read so a mid-test mutation is reflected. Without
                     // this the fixture would report a stale version and the test
                     // asserting "notes arrived" could not fail for the right reason.
@@ -932,10 +935,10 @@ class SyncEndToEndTest {
                 SyncRequest.TYPE_DOCUMENT_DETAIL -> {
                     val uri = req.documentUri
                     if (uri != tablet.uri) {
-                        SyncWire.writeText(out, gson.toJson(SyncResponse(req.type, ok = false, error = "unknown document $uri")))
+                        SyncWire.writeText(out, gson.toJson(SyncResponse(type, ok = false, error = "unknown document $uri")))
                     } else {
                         respond(
-                            req.type,
+                            type,
                             DocumentDetailPayload(
                                 DocumentEntity(uri, "Lecture Notes", 2_000_000_000_000L, lastPageIndex = 2),
                                 tablet.allStrokes(),
@@ -946,10 +949,10 @@ class SyncEndToEndTest {
                 }
 
                 SyncRequest.TYPE_FILE_META ->
-                    respond(req.type, FileMetaPayload(true, tablet.pdf.length(), tablet.sha))
+                    respond(type, FileMetaPayload(true, tablet.pdf.length(), tablet.sha))
 
                 SyncRequest.TYPE_FILE_DATA -> {
-                    val chunk = RandomAccessFileAccessor.readChunk(
+                    val chunk = SyncWire.readChunk(
                         tablet.pdf, req.offset ?: 0L, req.limit ?: (1 shl 20)
                     )
                     SyncWire.writeFrame(out, chunk)
@@ -960,14 +963,14 @@ class SyncEndToEndTest {
                 SyncRequest.TYPE_PROPOSAL_SUBMIT -> {
                     val p = req.proposal
                     if (p == null) {
-                        SyncWire.writeText(out, gson.toJson(SyncResponse(req.type, ok = false, error = "missing proposal")))
+                        SyncWire.writeText(out, gson.toJson(SyncResponse(type, ok = false, error = "missing proposal")))
                     } else {
                         tablet.seenProposals[p.proposalId]?.let {
-                            respond(req.type, it)
+                            respond(type, it)
                         } ?: run {
                             if (p.documentUri != tablet.uri) {
                                 respond(
-                                    req.type,
+                                    type,
                                     ProposalStatusPayload(
                                         p.proposalId, ProposalStatusPayload.REJECTED,
                                         message = "unknown document"
@@ -975,7 +978,7 @@ class SyncEndToEndTest {
                                 )
                             } else if (p.baseDocVersion != tablet.rehash() && !tablet.v6Merge) {
                                 respond(
-                                    req.type,
+                                    type,
                                     ProposalStatusPayload(
                                         p.proposalId, ProposalStatusPayload.CONFLICT_STALE,
                                         winnerDocVersion = tablet.rehash(),
@@ -1063,7 +1066,7 @@ class SyncEndToEndTest {
                                     }
                                 }
                                 respond(
-                                    req.type,
+                                    type,
                                     ProposalStatusPayload(
                                         p.proposalId, ProposalStatusPayload.ACCEPTED,
                                         winnerDocVersion = tablet.rehash(),
@@ -1094,7 +1097,7 @@ class SyncEndToEndTest {
                                     }
                                 }
                                 respond(
-                                    req.type,
+                                    type,
                                     ProposalStatusPayload(
                                         p.proposalId, ProposalStatusPayload.ACCEPTED,
                                         winnerDocVersion = tablet.rehash()
@@ -1109,7 +1112,7 @@ class SyncEndToEndTest {
                     val id = req.proposalId
                     val known = id?.let { tablet.seenProposals[it] }
                     respond(
-                        req.type,
+                        type,
                         known ?: ProposalStatusPayload(
                             id ?: "", ProposalStatusPayload.UNKNOWN,
                             message = "no record of this proposal"
@@ -1119,22 +1122,22 @@ class SyncEndToEndTest {
 
                 SyncRequest.TYPE_FOLDER_LIST -> {
                     if (!supportFolders) {
-                        SyncWire.writeText(out, gson.toJson(SyncResponse(req.type, ok = false, error = "unknown")))
+                        SyncWire.writeText(out, gson.toJson(SyncResponse(type, ok = false, error = "unknown")))
                     } else {
-                        respond(req.type, tablet.folders.toList())
+                        respond(type, tablet.folders.toList())
                     }
                 }
 
                 SyncRequest.TYPE_PAGE_COUNTS -> {
                     if (!supportDelta) {
-                        SyncWire.writeText(out, gson.toJson(SyncResponse(req.type, ok = false, error = "unknown")))
+                        SyncWire.writeText(out, gson.toJson(SyncResponse(type, ok = false, error = "unknown")))
                     } else {
                     val uri = req.documentUri
                     if (uri != tablet.uri) {
-                        SyncWire.writeText(out, gson.toJson(SyncResponse(req.type, ok = false, error = "unknown document $uri")))
+                        SyncWire.writeText(out, gson.toJson(SyncResponse(type, ok = false, error = "unknown document $uri")))
                     } else {
                         respond(
-                            req.type,
+                            type,
                             PageCountsPayload(
                                 uri,
                                 tablet.allStrokes().groupBy { it.stroke.pageIndex }
@@ -1158,16 +1161,16 @@ class SyncEndToEndTest {
 
                 SyncRequest.TYPE_STROKE_PAGE -> {
                     if (!supportDelta) {
-                        SyncWire.writeText(out, gson.toJson(SyncResponse(req.type, ok = false, error = "unknown")))
+                        SyncWire.writeText(out, gson.toJson(SyncResponse(type, ok = false, error = "unknown")))
                     } else {
                     val uri = req.documentUri
                     val page = req.pageIndex ?: 0
                     if (uri != tablet.uri) {
-                        SyncWire.writeText(out, gson.toJson(SyncResponse(req.type, ok = false, error = "unknown document $uri")))
+                        SyncWire.writeText(out, gson.toJson(SyncResponse(type, ok = false, error = "unknown document $uri")))
                     } else {
                         tablet.pageFetches.add("stroke_page" to page)
                         respond(
-                            req.type,
+                            type,
                             StrokeDeltaPayload(
                                 uri,
                                 tablet.allStrokes().filter { it.stroke.pageIndex == page }
@@ -1179,23 +1182,23 @@ class SyncEndToEndTest {
 
                 SyncRequest.TYPE_TEXT_PAGE -> {
                     if (!supportDelta) {
-                        SyncWire.writeText(out, gson.toJson(SyncResponse(req.type, ok = false, error = "unknown")))
+                        SyncWire.writeText(out, gson.toJson(SyncResponse(type, ok = false, error = "unknown")))
                     } else {
                     val uri = req.documentUri
                     val page = req.pageIndex ?: 0
                     if (uri != tablet.uri) {
-                        SyncWire.writeText(out, gson.toJson(SyncResponse(req.type, ok = false, error = "unknown document $uri")))
+                        SyncWire.writeText(out, gson.toJson(SyncResponse(type, ok = false, error = "unknown document $uri")))
                     } else {
                         tablet.pageFetches.add("text_page" to page)
                         respond(
-                            req.type,
+                            type,
                             TextDeltaPayload(uri, tablet.texts.filter { it.pageIndex == page })
                         )
                     }
                     }
                 }
 
-                else -> SyncWire.writeText(out, gson.toJson(SyncResponse(req.type, ok = false, error = "unknown")))
+                else -> SyncWire.writeText(out, gson.toJson(SyncResponse(type, ok = false, error = "unknown")))
             }
         }
     }

@@ -1,9 +1,9 @@
 package com.vic.inkflow.sync
 
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotEquals
-import org.junit.Test
 import java.security.MessageDigest
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNotEquals
 
 /**
  * Locks down the bytes that the tablet and the desktop must agree on.
@@ -17,6 +17,10 @@ import java.security.MessageDigest
  * rather than a call into the production code, so that a change to the production
  * layout surfaces here as a failure instead of being silently mirrored on both
  * sides at the same time.
+ *
+ * This test now lives in `:shared`, which means it runs on **both** platforms
+ * instead of only on the tablet — the two ends cannot disagree because there is
+ * only one implementation to disagree with.
  *
  * If the layout genuinely has to change: bump the protocol version, update both
  * sides, and update these vectors in the same commit.
@@ -125,5 +129,14 @@ class SyncIdentityTest {
 
         assertEquals(expected, SyncIdentity.pskProof(psk))
         assertNotEquals(SyncIdentity.pskProof("11111111"), SyncIdentity.pskProof("22222222"))
+    }
+
+    @Test
+    fun `constant time comparison still compares`() {
+        assertEquals(true, SyncIdentity.constantTimeEquals("12345678", "12345678"))
+        assertEquals(false, SyncIdentity.constantTimeEquals("12345678", "12345679"))
+        assertEquals(false, SyncIdentity.constantTimeEquals("12345678", "1234567"))
+        assertEquals(false, SyncIdentity.constantTimeEquals("12345678", null))
+        assertEquals(false, SyncIdentity.constantTimeEquals(null, "12345678"))
     }
 }

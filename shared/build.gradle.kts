@@ -101,5 +101,26 @@ kotlin {
         androidMain.dependencies {
             implementation(libs.androidx.core.ktx)
         }
+
+        // `jvmCommon` — the source set both JVM targets share.
+        //
+        // Both targets of this module are JVMs (Android and the desktop), so
+        // `java.io` and `java.security` are available on both. The sync protocol's
+        // byte-level layer — the length-prefixed frame, the SHA-256 helpers — used
+        // to be hand-copied into both apps, and the copies had already drifted: the
+        // tablet enforced the 512 MiB frame cap and reported it as an IOException,
+        // the desktop used `require()` and had no cap check on the write side.
+        //
+        // Declaring the layer once in a source set that both leaves depend on
+        // makes "the two ends agree" a property of the build rather than a promise
+        // in a comment.
+        val jvmCommon = maybeCreate("jvmCommon")
+        jvmCommon.dependsOn(commonMain.get())
+        androidMain.get().dependsOn(jvmCommon)
+        getByName("desktopMain").dependsOn(jvmCommon)
+
+        commonTest.dependencies {
+            implementation(kotlin("test"))
+        }
     }
 }

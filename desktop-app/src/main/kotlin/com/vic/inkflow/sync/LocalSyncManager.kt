@@ -535,7 +535,7 @@ class LocalSyncManager(
                         seen += entry.uri
                         val local = databaseManager.getDocument(entry.uri)
                         val remoteVersion = entry.docVersion
-                            ?: SyncWire.docVersion(
+                            ?: SyncIdentity.docVersion(
                                 instanceId ?: "", entry.uri, entry.strokeCount,
                                 entry.fileSha256, entry.fileSize, entry.textCount
                             )
@@ -1009,7 +1009,7 @@ class LocalSyncManager(
                 )
             }
             val configured = pairingCode
-            if (configured != null && !constantTimeEquals(pskProof(configured), peer.pskProof)) {
+            if (configured != null && !SyncIdentity.constantTimeEquals(SyncIdentity.pskProof(configured), peer.pskProof)) {
                 throw IOException("Authentication failed: wrong pairing code")
             }
         }
@@ -1017,34 +1017,7 @@ class LocalSyncManager(
         return peer?.instanceId
     }
 
-    /** Payload the tablet returns from a handshake (v3). */
-    private data class HandshakeAck(
-        val protocolVersion: Int = 2,
-        val instanceId: String? = null,
-        /** Server-side proof so the desktop can verify the tablet actually holds the PSK. */
-        val pskProof: String? = null
-    )
-
     private fun pskOrNull(): String? = pairingCode
-
-    /**
-     * The value the tablet returns in `pskProof`. The desktop must compare against
-     * THIS, not against the raw PSK — the tablet never sends the secret back, only
-     * this derivative. Comparing `psk` to `peer.pskProof` (an earlier mistake here)
-     * can never succeed, so pairing was unconditionally rejected.
-     *
-     * Must stay byte-identical to `SyncIdentity.pskProof` on the Android side.
-     */
-    private fun pskProof(psk: String): String =
-        SyncWire.sha256Hex((psk + "inkflow-sync-v3").toByteArray(Charsets.UTF_8))
-
-    private fun constantTimeEquals(a: String, b: String?): Boolean {
-        if (b == null) return false
-        if (a.length != b.length) return false
-        var diff = 0
-        for (i in a.indices) diff = diff or (a[i].code xor b[i].code)
-        return diff == 0
-    }
 
     private fun fetchManifest(
         out: DataOutputStream,
@@ -1288,18 +1261,26 @@ class LocalSyncManager(
     private fun handshakeAuthorised(req: SyncRequest): Boolean {
         val configured = pskOrNull() ?: return true
         val presented = req.psk ?: return false
-        return constantTimeEquals(pskProof(configured), presented)
+        return SyncIdentity.constantTimeEquals(SyncIdentity.pskProof(configured), presented)
     }
 
     private fun handleServerRequest(req: SyncRequest, input: DataInputStream, out: DataOutputStream) {
+        // Gson fills fields by reflection, so a request that arrives without a verb
+        // decodes to `type == null` rather than failing. The shared DTO says so
+        // (nullable on purpose); the guard is where it becomes an error.
+        val rawType = req.type
         try {
-            when (req.type) {
+            val type = rawType ?: run {
+                respondError(out, "unknown", "missing request type")
+                return
+            }
+            when (type) {
                 SyncRequest.TYPE_HANDSHAKE -> {
                     if (!handshakeAuthorised(req)) {
-                        respondError(out, req.type, "authentication failed: wrong pairing code")
+                        respondError(out, type, "authentication failed: wrong pairing code")
                         return
                     }
-                    ack(out, req.type)
+                    ack(out, type)
                 }
 
                 SyncRequest.TYPE_DOC_MANIFEST -> {
@@ -1319,7 +1300,7 @@ class LocalSyncManager(
                             textCount = databaseManager.textAnnotationCountForDocument(doc.uri)
                         )
                     }
-                    respondJson(out, req.type, manifest)
+                    respondJson(out, type, manifest)
                 }
 
                 SyncRequest.TYPE_DOCUMENT_DETAIL -> {
@@ -1328,23 +1309,23 @@ class LocalSyncManager(
                         ?: throw IllegalArgumentException("unknown document $uri")
                     val strokes = databaseManager.getAllStrokesForDocument(uri)
                     val texts = databaseManager.getAllTextAnnotationsForDocument(uri)
-                    respondJson(out, req.type, DocumentDetailPayload(doc, strokes, texts))
+                    respondJson(out, type, DocumentDetailPayload(doc, strokes, texts))
                 }
 
                 SyncRequest.TYPE_FOLDER_LIST -> {
-                    respondJson(out, req.type, databaseManager.getAllFolders())
+                    respondJson(out, type, databaseManager.getAllFolders())
                 }
 
                 SyncRequest.TYPE_STROKE_DELTA -> {
                     val uri = req.documentUri ?: throw IllegalArgumentException("missing documentUri")
-                    respondJson(out, req.type, StrokeDeltaPayload(uri, databaseManager.getAllStrokesForDocument(uri)))
+                    respondJson(out, type, StrokeDeltaPayload(uri, databaseManager.getAllStrokesForDocument(uri)))
                 }
 
                 SyncRequest.TYPE_STROKE_PAGE -> {
                     val uri = req.documentUri ?: throw IllegalArgumentException("missing documentUri")
                     val page = req.pageIndex ?: 0
                     respondJson(
-                        out, req.type,
+                        out, type,
                         StrokeDeltaPayload(uri, databaseManager.getStrokesForPage(uri, page))
                     )
                 }
@@ -1355,7 +1336,7 @@ class LocalSyncManager(
                     val file = resolveServableFile(uri)
                     val present = file.exists()
                     respondJson(
-                        out, req.type,
+                        out, type,
                         FileMetaPayload(present, if (present) file.length() else 0, if (present) SyncWire.sha256Hex(file) else null)
                     )
                 }
@@ -1370,15 +1351,15 @@ class LocalSyncManager(
                     if (!file.exists()) {
                         SyncWire.writeFrame(out, ByteArray(0))
                     } else {
-                        RandomAccessFileAccessor.readChunk(file, offset, limit).let { SyncWire.writeFrame(out, it) }
+                        SyncWire.readChunk(file, offset, limit).let { SyncWire.writeFrame(out, it) }
                     }
                 }
 
-                else -> respondError(out, req.type, "unknown request type ${req.type}")
+                else -> respondError(out, type, "unknown request type $type")
             }
         } catch (e: Exception) {
-            logger.error(e) { "Error serving ${req.type}" }
-            try { respondError(out, req.type, e.message ?: "server error") } catch (_: Exception) {}
+            logger.error(e) { "Error serving ${rawType}" }
+            try { respondError(out, rawType ?: "unknown", e.message ?: "server error") } catch (_: Exception) {}
         }
     }
 
@@ -1441,18 +1422,6 @@ class LocalSyncManager(
     }
 }
 
-/** Small helper to stream file chunks without loading whole PDFs into memory. */
-internal object RandomAccessFileAccessor {
-    fun readChunk(file: File, offset: Long, maxBytes: Int): ByteArray {
-        java.io.RandomAccessFile(file, "r").use { raf ->
-            if (offset >= raf.length()) return ByteArray(0)
-            raf.seek(offset)
-            val size = minOf(maxBytes.toLong(), raf.length() - offset).toInt()
-            val buf = ByteArray(size)
-            raf.readFully(buf)
-            return buf
-        }
-    }
-}
+
 
 private typealias IOException = java.io.IOException
