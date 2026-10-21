@@ -108,7 +108,6 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.focus.focusRequester
 
-import com.vic.inkflow.ui.theme.BrandIndigo
 import com.vic.inkflow.ui.theme.ShapeLg
 import com.vic.inkflow.ui.theme.ShapeSm
 import com.vic.inkflow.util.PageBox
@@ -1666,6 +1665,8 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
         // Captured here (composable scope) because the draw scope below cannot
         // read MaterialTheme.
         val pageEdgeColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
+        // 選取框＝重點色：跟主題同一變數（primary），不寫死品牌靛
+        val selectionAccent = MaterialTheme.colorScheme.primary
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
@@ -1934,7 +1935,7 @@ for (swp in strokes) {
                         // the outline reads as "UI" and not as part of the drawing.
                         selectionBoundsNow()?.let { sb ->
                             drawRect(
-                                color = BrandIndigo.copy(alpha = 0.95f),
+                                color = selectionAccent.copy(alpha = 0.95f),
                                 topLeft = Offset(sb.left * scale - b.originX * scale, sb.top * scale - b.originY * scale),
                                 size = androidx.compose.ui.geometry.Size(sb.width * scale, sb.height * scale),
                                 style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.5f * scale)
@@ -1945,12 +1946,12 @@ for (swp in strokes) {
                         // size reads the same and costs one draw call.
                         selectionRect?.let { rr ->
                             drawRect(
-                                color = BrandIndigo.copy(alpha = 0.14f),
+                                color = selectionAccent.copy(alpha = 0.14f),
                                 topLeft = Offset(rr.left * scale - b.originX * scale, rr.top * scale - b.originY * scale),
                                 size = androidx.compose.ui.geometry.Size(rr.width * scale, rr.height * scale)
                             )
                             drawRect(
-                                color = BrandIndigo.copy(alpha = 0.8f),
+                                color = selectionAccent.copy(alpha = 0.8f),
                                 topLeft = Offset(rr.left * scale - b.originX * scale, rr.top * scale - b.originY * scale),
                                 size = androidx.compose.ui.geometry.Size(rr.width * scale, rr.height * scale),
                                 style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1f * scale)

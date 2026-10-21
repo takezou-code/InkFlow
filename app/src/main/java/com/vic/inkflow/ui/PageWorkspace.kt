@@ -89,7 +89,6 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import com.vic.inkflow.data.AppDatabase
-import com.vic.inkflow.ui.theme.BrandIndigo
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -1007,6 +1006,8 @@ private fun DragPreviewOverlay(
     modifier: Modifier = Modifier
 ) {
     val preview by viewModel.selectedStrokePreview.collectAsState()
+    // 重點色：跟全域主題同一變數（primary），不在這裡寫死靛紫
+    val accentColor = MaterialTheme.colorScheme.primary
     val selectedIds by viewModel.selectedImageAnnotationIds.collectAsState()
     // 選中圖：與墨同待遇畫在紙上層（跨頁拖曳全程可見；之前 overlay 只畫墨，圖被留在紙內）。
     val selImages = remember(selectedIds) { viewModel.selectedImagesNow() }
@@ -1128,10 +1129,10 @@ private fun DragPreviewOverlay(
             applySelectionTransform(cvs, moveOffset, scale, anchor)
             pathData.forEach { (swp, path) ->
                 if (swp.stroke.shapeType != null) {
-                    drawShapeOnCanvas(cvs, swp.stroke, swp.points, tintColor = BrandIndigo)
+                    drawShapeOnCanvas(cvs, swp.stroke, swp.points, tintColor = accentColor)
                 } else if (path != null) {
                     drawPathOnCanvas(
-                        cvs, path, BrandIndigo,
+                        cvs, path, accentColor,
                         swp.stroke.strokeWidth, swp.stroke.isHighlighter
                     )
                 }
@@ -1173,6 +1174,7 @@ private fun DragPreviewOverlay(
         if (rect != null && !rect.isEmpty) {
             drawLassoSelectionFrame(
                 selectionRect = rect,
+                accent = accentColor,
                 showHandles = true,
                 dashPhase = 0f,
                 animateDash = false,

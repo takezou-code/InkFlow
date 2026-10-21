@@ -9,6 +9,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
@@ -20,6 +21,8 @@ import androidx.core.view.WindowInsetsControllerCompat
 @Composable
 fun InkFlowTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
+    /** 使用者選的重點色；預設靛紫。整份 scheme 由它推導（見 shared 的 Accent.kt）。 */
+    accent: Color = DefaultAccentColor,
     content: @Composable () -> Unit
 ) {
 
@@ -27,7 +30,7 @@ fun InkFlowTheme(
     // its own copy, which had drifted into a different hue family entirely (blue navy
     // `Night0..3` instead of the tablet's near-neutral charcoal). See the note on
     // `InkDarkScheme`.
-    val colorScheme = if (darkTheme) InkDarkScheme else InkLightScheme
+    val colorScheme = remember(darkTheme, accent) { inkColorScheme(darkTheme, accent) }
 
     val view = LocalView.current
     if (!view.isInEditMode) {

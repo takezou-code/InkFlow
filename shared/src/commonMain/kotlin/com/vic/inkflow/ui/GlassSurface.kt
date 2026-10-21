@@ -468,14 +468,19 @@ fun ColumnScope.GlassMenuItem(
 @Composable
 fun Modifier.glassSelectionPill(
     shape: Shape = CircleShape
-): Modifier = this
+): Modifier {
+    // 珍珠色由目前的重點色現場推導，不再用固定薰衣草常數：
+    // 使用者換主題色時，選中藥丸必須跟著換，否則會留下舊紫。
+    val top = com.vic.inkflow.ui.theme.accentPillTop(MaterialTheme.colorScheme.primary)
+    val bottom = com.vic.inkflow.ui.theme.accentPillBottom(MaterialTheme.colorScheme.primary)
+    return this
     .background(
         // 上層＝珍珠白；中段混入極淡主色（飽和低到看不出是紫，只覺得「有色」）
         brush = Brush.verticalGradient(
             colorStops = arrayOf(
-                0f to com.vic.inkflow.ui.theme.GlassSelectionTop,
-                0.42f to com.vic.inkflow.ui.theme.GlassSelectionTop,
-                1f to com.vic.inkflow.ui.theme.GlassSelectionBottom
+                0f to top,
+                0.42f to top,
+                1f to bottom
             )
         ),
         shape = shape
@@ -495,6 +500,7 @@ fun Modifier.glassSelectionPill(
         ),
         shape = shape
     )
+}
 
 /**
  * 選中態外框（只畫框，不畫底）。
@@ -505,19 +511,23 @@ fun Modifier.glassSelectionPill(
 fun Modifier.glassSelectionFrame(
     shape: Shape = ShapeMd,
     width: Dp = 1.5.dp
-): Modifier = this.border(
-    border = BorderStroke(
-        width = width,
-        brush = Brush.verticalGradient(
-            colorStops = arrayOf(
-                0f to com.vic.inkflow.ui.theme.GlassSelectionSheen,
-                0.3f to com.vic.inkflow.ui.theme.GlassSelectionTop,
-                1f to com.vic.inkflow.ui.theme.GlassSelectionBottom
+): Modifier {
+    val top = com.vic.inkflow.ui.theme.accentPillTop(MaterialTheme.colorScheme.primary)
+    val bottom = com.vic.inkflow.ui.theme.accentPillBottom(MaterialTheme.colorScheme.primary)
+    return this.border(
+        border = BorderStroke(
+            width = width,
+            brush = Brush.verticalGradient(
+                colorStops = arrayOf(
+                    0f to com.vic.inkflow.ui.theme.GlassSelectionSheen,
+                    0.3f to top,
+                    1f to bottom
+                )
             )
-        )
-    ),
-    shape = shape
-)
+        ),
+        shape = shape
+    )
+}
 
 /**
  * 全統一對話框殼（單一入口）：ui.window.Dialog（純視窗＋系統遮罩，零 M3）

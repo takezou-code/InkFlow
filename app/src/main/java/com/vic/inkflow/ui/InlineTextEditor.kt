@@ -31,7 +31,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.vic.inkflow.data.TextAnnotationEntity
-import com.vic.inkflow.ui.theme.BrandIndigo
+import androidx.compose.material3.MaterialTheme
 import kotlin.math.roundToInt
 
 /**
@@ -87,6 +87,8 @@ internal fun InlineTextEditor(
     alignment: Int = 0
 ) {
     val density = LocalDensity.current
+    // 重點色：跟全域主題同一變數（MaterialTheme 的 primary），不在這裡寫死靛紫
+    val accentColor = MaterialTheme.colorScheme.primary
     val anchorPx = when {
         editing != null -> Offset(editing.modelX * scaleX, editing.modelY * scaleY)
         newAnchorPx != null -> newAnchorPx
@@ -140,7 +142,7 @@ internal fun InlineTextEditor(
             // 所以文字位置與成品一致（白底已由「畫布不畫被編輯的標註」取代）。
             .drawBehind {
                 drawRoundRect(
-                    color = BrandIndigo.copy(alpha = 0.40f),
+                    color = accentColor.copy(alpha = 0.40f),
                     cornerRadius = CornerRadius(with(density) { 6.dp.toPx() }),
                     style = Stroke(width = with(density) { 1.5.dp.toPx() })
                 )
@@ -171,6 +173,6 @@ internal fun InlineTextEditor(
         singleLine = false,
         // 不設上限：以前 maxLines=8，打超過 8 行就看不到自己打的字，送出後才全部冒出來。
         maxLines = Int.MAX_VALUE,
-        cursorBrush = SolidColor(BrandIndigo)
+        cursorBrush = SolidColor(accentColor)
     )
 }

@@ -97,7 +97,6 @@ import com.vic.inkflow.data.PointEntity
 import com.vic.inkflow.data.StrokeEntity
 import com.vic.inkflow.data.StrokeWithPoints
 import com.vic.inkflow.data.TextAnnotationEntity
-import com.vic.inkflow.ui.theme.BrandIndigo
 import com.vic.inkflow.util.PalmRejectionFilter
 import com.vic.inkflow.util.TouchEventLogger
 import com.vic.inkflow.util.EnvelopeUtils
@@ -219,6 +218,8 @@ fun InkCanvas(
     val commitPreview by viewModel.commitPreview.collectAsState()
     val activeTool by viewModel.selectedTool.collectAsState()
     val selectedColor by viewModel.selectedColor.collectAsState()
+    // 重點色：跟全域主題同一變數（primary），畫布裡不再寫死靛紫
+    val accentColor = MaterialTheme.colorScheme.primary
     val strokeWidth by viewModel.strokeWidth.collectAsState()
     val selectedShapeSubType by viewModel.selectedShapeSubType.collectAsState()
     val selectedLassoSubType by viewModel.selectedLassoSubType.collectAsState()
@@ -2411,10 +2412,10 @@ fun InkCanvas(
                         val swp = renderData.strokeWithPoints
                         val stroke = swp.stroke
                         if (stroke.shapeType != null) {
-                            drawShapeOnCanvas(cvs, stroke, swp.points, tintColor = BrandIndigo)
+                            drawShapeOnCanvas(cvs, stroke, swp.points, tintColor = accentColor)
                         } else {
                             val path = renderData.path ?: return@forEach
-                            drawPathOnCanvas(cvs, path, BrandIndigo, stroke.strokeWidth, stroke.isHighlighter)
+                            drawPathOnCanvas(cvs, path, accentColor, stroke.strokeWidth, stroke.isHighlighter)
                         }
                     }
                     cvs.restore()
@@ -2438,6 +2439,7 @@ fun InkCanvas(
                 if (activeTool == Tool.LASSO && selectionRect != null && !selectionRect.isEmpty) {
                     drawLassoSelectionFrame(
                         selectionRect = selectionRect,
+                        accent = accentColor,
                         // 把手只在墨/圖子集非空時出現：字不支援套索縮放，有把手沒功能更騙人。
                         showHandles = ownSelectedStrokes.isNotEmpty() || selectedImageAnnotationIds.isNotEmpty(),
                         dashPhase = if (isSelectionTransforming) 0f else lassoDashPhase,
@@ -2481,13 +2483,14 @@ fun InkCanvas(
                     val anyHandlePressed = pressedHandleCenter != null
                     rotate(imgTheta, imgPivot) {
                         drawLine(
-                            color = BrandIndigo.copy(alpha = 0.6f),
+                            color = accentColor.copy(alpha = 0.6f),
                             start = rotTopLocal,
                             end = rotHandleLocal,
                             strokeWidth = 2f
                         )
                         drawLiquidGlassSelectionFrame(
                             rect = imgSelRect,
+                            accent = accentColor,
                             handles = imgCorners.map { c ->
                                 HandleVisual(
                                     center = c,
@@ -2553,6 +2556,7 @@ fun InkCanvas(
                             )
                             drawLiquidGlassSelectionFrame(
                                 rect = r,
+                                accent = accentColor,
                                 handleCenters = listOf(Offset(r.right, r.bottom)),
                                 visualRadiusPx = handleVisualRadiusPx,
                                 haloRadiusPx = handleHaloRadiusPx
@@ -2597,6 +2601,7 @@ fun InkCanvas(
                     }
                     drawLiquidGlassSelectionFrame(
                         rect = textRect,
+                        accent = accentColor,
                         handles = handleVisuals,
                         visualRadiusPx = handleVisualRadiusPx,
                         haloRadiusPx = handleHaloRadiusPx,

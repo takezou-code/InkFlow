@@ -12,7 +12,6 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import com.vic.inkflow.data.ImageAnnotationEntity
 import com.vic.inkflow.data.StrokeWithPoints
 import com.vic.inkflow.data.TextAnnotationEntity
-import com.vic.inkflow.ui.theme.BrandIndigo
 import com.vic.inkflow.util.StrokeTransformUtils
 import kotlin.math.abs
 import kotlin.math.cos
@@ -244,7 +243,6 @@ internal fun damageCoverage(dirty: Rect, page: Rect): Float {
 internal const val SEL_FRAME_CORNER_PX = 14f
 internal const val SEL_FRAME_HALO_PX = 6f
 internal const val SEL_FRAME_INNER_PX = 2.2f
-internal val SEL_FRAME_HALO = BrandIndigo.copy(alpha = 0.22f)
 internal val SEL_FRAME_FILL = Color.White.copy(alpha = 0.10f)
 internal val SEL_FRAME_EDGE_LIGHT = Color.White.copy(alpha = 0.25f)
 internal val SEL_DASH_PATTERN = floatArrayOf(12f, 8f)
@@ -327,6 +325,8 @@ internal fun handlePressedScale(pressed: Float, maxScale: Float): Float =
 
 internal fun DrawScope.drawLiquidGlassSelectionFrame(
     rect: Rect,
+    /** 重點色：由呼叫端從 MaterialTheme 傳入（同一個主題色變數，不在這裡寫死）。 */
+    accent: Color,
     dashPhase: Float = 0f,
     animateDash: Boolean = false,
     handleCenters: List<Offset> = emptyList(),
@@ -356,14 +356,14 @@ internal fun DrawScope.drawLiquidGlassSelectionFrame(
     )
     // Outer halo + dashed inner line carry the brand color.
     drawRoundRect(
-        color = SEL_FRAME_HALO,
+        color = accent.copy(alpha = 0.22f),
         topLeft = topLeft,
         size = size,
         cornerRadius = corner,
         style = Stroke(width = SEL_FRAME_HALO_PX)
     )
     drawRoundRect(
-        color = BrandIndigo,
+        color = accent,
         topLeft = topLeft,
         size = size,
         cornerRadius = corner,
@@ -383,13 +383,13 @@ internal fun DrawScope.drawLiquidGlassSelectionFrame(
     // 舊簽名路徑：只給中心點、沒有狀態（跨頁 overlay 用）。
     if (handles.isEmpty()) {
         handleCenters.forEach { c ->
-            drawHandle(c, visualRadiusPx, haloRadiusPx, pressed = 0f, isRotation = false)
+            drawHandle(c, accent, visualRadiusPx, haloRadiusPx, pressed = 0f, isRotation = false)
         }
         return
     }
     handles.forEach { h ->
         drawHandle(
-            h.center, visualRadiusPx, haloRadiusPx, h.pressed, h.isRotation, h.isCapsule
+            h.center, accent, visualRadiusPx, haloRadiusPx, h.pressed, h.isRotation, h.isCapsule
         )
     }
 }
@@ -402,6 +402,7 @@ internal fun DrawScope.drawLiquidGlassSelectionFrame(
  */
 private fun DrawScope.drawHandle(
     center: Offset,
+    accent: Color,
     visualRadiusPx: Float,
     haloRadiusPx: Float,
     pressed: Float,
@@ -423,7 +424,7 @@ private fun DrawScope.drawHandle(
         val haloTopLeft = Offset(center.x - halfW - inflate, center.y - halfH - inflate)
         val haloSize = Size(halfW * 2f + inflate * 2f, halfH * 2f + inflate * 2f)
         drawRoundRect(
-            color = SEL_FRAME_HALO.copy(alpha = haloAlpha),
+            color = accent.copy(alpha = haloAlpha),
             topLeft = haloTopLeft,
             size = haloSize,
             cornerRadius = CornerRadius(halfH + inflate, halfH + inflate)
@@ -433,7 +434,7 @@ private fun DrawScope.drawHandle(
         val corner = CornerRadius(halfH, halfH)
         drawRoundRect(color = Color.White.copy(alpha = 0.85f), topLeft = topLeft, size = size, cornerRadius = corner)
         drawRoundRect(
-            color = BrandIndigo,
+            color = accent,
             topLeft = topLeft,
             size = size,
             cornerRadius = corner,
@@ -448,7 +449,7 @@ private fun DrawScope.drawHandle(
         return
     }
 
-    drawCircle(color = SEL_FRAME_HALO.copy(alpha = haloAlpha), radius = halo, center = center)
+    drawCircle(color = accent.copy(alpha = haloAlpha), radius = halo, center = center)
     if (isRotation) {
         // 旋轉把手＝空心環（vs 四角的實心點），一眼分得出哪個能轉。
         // 曾試過在中間加旋轉箭頭做二次區分，但那條弧畫在環內、白色環寬又幾乎填滿
@@ -461,7 +462,7 @@ private fun DrawScope.drawHandle(
             style = Stroke(width = (r * 0.5f).coerceAtLeast(1.5f))
         )
         drawCircle(
-            color = BrandIndigo,
+            color = accent,
             radius = r,
             center = center,
             style = Stroke(width = SEL_HANDLE_RING_PX * s)
@@ -469,7 +470,7 @@ private fun DrawScope.drawHandle(
         return
     }
     drawCircle(color = Color.White.copy(alpha = 0.85f), radius = r, center = center)
-    drawCircle(color = BrandIndigo, radius = r, center = center, style = Stroke(width = SEL_HANDLE_RING_PX * s))
+    drawCircle(color = accent, radius = r, center = center, style = Stroke(width = SEL_HANDLE_RING_PX * s))
     // Specular dot: sells the glass.
     drawCircle(color = Color.White, radius = r * 0.3f, center = center + Offset(-r * 0.3f, -r * 0.3f))
 }
@@ -489,6 +490,8 @@ internal fun applySelectionTransform(
 
 internal fun DrawScope.drawLassoSelectionFrame(
     selectionRect: Rect,
+    /** 重點色：由呼叫端從 MaterialTheme 傳入（全 App 同一個主題色變數）。 */
+    accent: Color,
     showHandles: Boolean,
     dashPhase: Float,
     animateDash: Boolean,
@@ -500,6 +503,7 @@ internal fun DrawScope.drawLassoSelectionFrame(
     val centers = if (showHandles) strokeSelectionHandleCenters(selectionRect) else emptyList()
     drawLiquidGlassSelectionFrame(
         rect = selectionRect,
+        accent = accent,
         dashPhase = dashPhase,
         animateDash = animateDash,
         handles = centers.map { c ->

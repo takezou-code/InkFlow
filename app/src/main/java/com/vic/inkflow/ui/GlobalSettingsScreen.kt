@@ -28,6 +28,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -107,7 +108,10 @@ fun GlobalSettingsScreen(
     backdropScene: BackdropScene = DuneScene,
     onBackdropSceneChanged: (BackdropScene) -> Unit = {},
     backdropImageUri: android.net.Uri? = null,
-    onBackdropImageChanged: (android.net.Uri?) -> Unit = {}
+    onBackdropImageChanged: (android.net.Uri?) -> Unit = {},
+    /** 目前的重點色；AppNav 是唯一來源，這裡只負責顯示與回報。 */
+    accentColor: Color = com.vic.inkflow.ui.theme.DefaultAccentColor,
+    onAccentChanged: (Color) -> Unit = {}
 ) {
     val scrollState = rememberScrollState()
     // 對話框自判深淺
@@ -147,6 +151,7 @@ fun GlobalSettingsScreen(
 
     var showPenColorPicker by remember { mutableStateOf(false) }
     var showHighlighterColorPicker by remember { mutableStateOf(false) }
+    var showAccentPicker by remember { mutableStateOf(false) }
 
     // --- 外觀：靜模式／背景 ---------------------------------------------------
     var powerSaver by remember { mutableStateOf(prefs.getBoolean(KEY_POWER_SAVER, false)) }
@@ -295,6 +300,13 @@ fun GlobalSettingsScreen(
                         onThemeModeChanged(mode)
                         prefs.edit().putString("theme_mode", mode.name).apply()
                     }
+
+                    SettingsAccentBlock(
+                        accent = accentColor,
+                        isDark = isDarkSettings,
+                        onSelect = onAccentChanged,
+                        onCustom = { showAccentPicker = true }
+                    )
 
                     // 流光／靜總開關：靜＝玻璃降假、動畫凍結、幀率 60、暫停自動備份，功能不變
                     SettingsSwitchRow(
@@ -821,6 +833,18 @@ fun GlobalSettingsScreen(
         )
     }
 
+    if (showAccentPicker) {
+        ColorPickerDialog(
+            initialColor = accentColor,
+            subtitle = "套用到標題、按鈕、滑桿與選取框",
+            onColorSelected = { color ->
+                showAccentPicker = false
+                onAccentChanged(color)
+            },
+            onDismiss = { showAccentPicker = false }
+        )
+    }
+
     if (showPaletteColorPicker != null) {
         val (index, colorInt) = showPaletteColorPicker!!
         ColorPickerDialog(
@@ -1011,6 +1035,70 @@ private fun SettingsChoiceBlock(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+    }
+}
+
+/** 主題色：預設色票＋自訂色。所有重點色 UI 都吃這一個變數（見 shared/Accent.kt）。 */
+@Composable
+private fun SettingsAccentBlock(
+    accent: Color,
+    isDark: Boolean,
+    onSelect: (Color) -> Unit,
+    onCustom: () -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Text(
+            text = "主題色",
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            FlowRow(
+                modifier = Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                com.vic.inkflow.ui.theme.AccentPresets.forEach { preset ->
+                    val selected = preset.color.toArgb() == accent.toArgb()
+                    Box(
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(CircleShape)
+                            .background(preset.color, CircleShape)
+                            .border(
+                                width = if (selected) 2.dp else 1.dp,
+                                color = if (selected) MaterialTheme.colorScheme.onSurface
+                                else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
+                                shape = CircleShape
+                            )
+                            .glassClickable(onClick = { onSelect(preset.color) }, shape = CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (selected) {
+                            Icon(
+                                Icons.Outlined.Check,
+                                contentDescription = null,
+                                tint = if (preset.color.luminance() > 0.5f) Color(0xFF1B1235) else Color.White,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                }
+            }
+            SettingsPillButton(text = "自訂…", isDark = isDark, onClick = onCustom)
+        }
+        Text(
+            text = String.format("目前 #%06X　標題、按鈕、滑桿、開關與選取框都跟著它", accent.toArgb() and 0xFFFFFF),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 

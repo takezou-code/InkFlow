@@ -44,6 +44,8 @@ import kotlin.math.sin
 @Composable
 fun ColorPickerDialog(
     initialColor: Color = Color.White,
+    /** 標題下方那行小字：同一個挑色器也拿來挑主題色，文案要能換。 */
+    subtitle: String = "調整墨水、螢光筆與標註色彩",
     onColorSelected: (Color) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -64,7 +66,7 @@ fun ColorPickerDialog(
             Column {
                 Text("選擇顏色")
                 Text(
-                    "調整墨水、螢光筆與標註色彩",
+                    subtitle,
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

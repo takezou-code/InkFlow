@@ -45,10 +45,9 @@ val GlassTintDark = Color(0x800F172A) // 50%
 val PaperInkColor = Color(0xFF1E293B)
 
 /** 選中態藥丸（實體）。半透明在黑玻璃上＝等於沒有，看不出選到哪個，所以用實體。
- *  配色走「珍珠白 → 柔薰衣草」：亮但壓得住，不是那種螢光紫的廉價感。 */
-val GlassSelectionTop = Color(0xFFF6F4FF)
-val GlassSelectionBottom = Color(0xFFDDD8F7)
-/** 選中態的墨色（實體亮底上必須用深色，兩種主題都一樣才讀得清楚）。 */
+ *  配色走「珍珠白 → 柔薰衣草」：亮但壓得住，不是那種螢光紫的廉價感。
+ *  ⚠ 這兩個色值已廢除：藥丸的顏色現在由**重點色**現場推導（見 Accent.kt 的
+ *  `accentPillTop`／`accentPillBottom`），否則使用者換主題色時會留下舊紫。 */
 val GlassSelectionInk = Color(0xFF1B1235)
 /** 選中藥丸的頂端內高光（珍珠感的來源，代替 shadow——shadow 在這台 GPU 會留白框）。 */
 val GlassSelectionSheen = Color(0x66FFFFFF)

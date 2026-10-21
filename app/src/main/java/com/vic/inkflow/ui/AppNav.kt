@@ -177,6 +177,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.draganddrop.DragAndDropEvent
 import androidx.compose.ui.draganddrop.DragAndDropTarget
 import androidx.compose.ui.draganddrop.DragAndDropTransferData
@@ -252,6 +253,17 @@ fun InkLayerApp(db: AppDatabase) {
         ThemeMode.SYSTEM -> isSystemDark
         ThemeMode.LIGHT -> false
         ThemeMode.DARK -> true
+    }
+
+    // 主題重點色（accent）：全 App 唯一來源。存 ARGB，改一次就重建整份 scheme。
+    // 這是「所有重點色 UI 共用同一變數」的入口——設定頁只是呼叫 setAccent。
+    var accentArgb by rememberSaveable(prefs) {
+        mutableIntStateOf(prefs.getInt("theme_accent", com.vic.inkflow.ui.theme.DefaultAccentColor.toArgb()))
+    }
+    val accentColor = Color(accentArgb)
+    fun setAccent(color: Color) {
+        accentArgb = color.toArgb()
+        prefs.edit().putInt("theme_accent", accentArgb).apply()
     }
 
     // 流光／靜總開關：關＝流光（預設），開＝靜。往下透 isPowerSaver，各層內部分支。
@@ -355,7 +367,7 @@ fun InkLayerApp(db: AppDatabase) {
         prefs.edit().putString("backdrop_image", uri?.toString() ?: "").apply()
     }
 
-    InkFlowTheme(darkTheme = isDarkTheme) {
+    InkFlowTheme(darkTheme = isDarkTheme, accent = accentColor) {
         val navController = rememberNavController()
     // 幀率：流光鎖 144（面板上限，要絲滑就認了）；靜模式降到 60  省電大戶。
     // 靜模式旗標由這裡單一提供，全 App（玻璃/動畫/幀率）都讀這一份。
@@ -425,7 +437,9 @@ fun InkLayerApp(db: AppDatabase) {
                 backdropScene = backdropScene,
                 onBackdropSceneChanged = { setBackdropScene(it) },
                 backdropImageUri = backdropImageUri,
-                onBackdropImageChanged = { setBackdropImage(it) }
+                onBackdropImageChanged = { setBackdropImage(it) },
+                accentColor = accentColor,
+                onAccentChanged = { setAccent(it) }
             )
         }
         composable(
