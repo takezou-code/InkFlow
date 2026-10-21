@@ -97,6 +97,7 @@ import com.vic.inkflow.data.Point
 import com.vic.inkflow.data.Stroke
 import com.vic.inkflow.data.StrokeWithSamples
 import com.vic.inkflow.data.TextAnnotation
+import com.vic.inkflow.util.InkWidthModel
 import com.vic.inkflow.util.PalmRejectionFilter
 import com.vic.inkflow.util.TouchEventLogger
 import com.vic.inkflow.util.EnvelopeUtils
@@ -1700,36 +1701,37 @@ fun InkCanvas(
                             val prevPt = currentPathPoints.last()
                             val dist = kotlin.math.hypot(pos.x - prevPt.x, pos.y - prevPt.y)
                             val dt = (time - lastPointTime).coerceAtLeast(1L)
-                                val velocity = dist / dt.toFloat()
                                 val sensitivity = strokeSpeedSensitivity.coerceAtLeast(0.1f)
-                            
+
                             val w = if (activeTool == Tool.HIGHLIGHTER) {
                                 baseWidth // For highlighter, do NOT apply variable thickness
                             } else {
-                                    // 範圍 0.25x–1.7x（最粗最細對比更像壓感筆），跟隨由設定頁
-                                    // 「粗細跟手速度」控制（0=鈍 0.95 → 1=靈 0.50，預設 0.80）。
-                                    val maxW = baseWidth * 1.7f
-                                    val minW = baseWidth * 0.25f
-                                    val smoothOld =
-                                        0.95f - 0.45f * widthResponsiveness.coerceIn(0f, 1f)
-                                    // Sensitivity > 1.0 makes thinning happen sooner; < 1.0 makes it slower.
-                                    val velocityThreshold = 0.7f / sensitivity
-                                    val vMapped = (velocity / velocityThreshold).coerceIn(0f, 1f)
-                                val velocityTarget = minW + (maxW - minW) * (1f - vMapped)
+                                // 範圍 0.25x–1.7x（最粗最細對比更像壓感筆），跟隨由設定頁
+                                // 「粗細跟手速度」控制（0=鈍 0.95 → 1=靈 0.50，預設 0.80）。
+                                val minW = baseWidth * 0.25f
+                                val maxW = baseWidth * 1.7f
                                 // 觸控筆直讀壓力：只用鎖定後的模式。整手勢壓力幾乎不變
                                 // （<0.05，即副廠無壓感筆）→ 整筆退回速度路徑，不中途跳變。
                                 // 鎖定前一律速度，避免開頭在兩種模式間橫跳。
                                 val usePressure = isStylusPen &&
                                     pressureModeLatched && usePressureMode
-                                val targetW = if (usePressure) {
+                                if (usePressure) {
                                     minW + (maxW - minW) * pressure.coerceIn(0f, 1f)
                                 } else {
-                                    velocityTarget
+                                    // 速度路徑：**兩端同一份規則**（`:shared` 的 InkWidthModel）——
+                                    // 以前桌面接的是一份手抄的常數與平滑，改一邊另一邊就不一樣了。
+                                    InkWidthModel.widthFor(
+                                        distPx = dist,
+                                        dtMs = dt,
+                                        previousWidth = prevPt.width,
+                                        baseWidth = baseWidth,
+                                        isHighlighter = false,
+                                        sensitivity = sensitivity,
+                                        responsiveness = widthResponsiveness
+                                    )
                                 }
-                                // 加重前一點的權重，讓粗細過渡更平滑，消除竹節突變
-                                prevPt.width * smoothOld + targetW * (1f - smoothOld)
                             }
-                            
+
                             lastPointTime = time
                             w
                         }

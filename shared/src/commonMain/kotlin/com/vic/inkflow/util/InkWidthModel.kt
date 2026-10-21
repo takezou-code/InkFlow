@@ -3,7 +3,7 @@ package com.vic.inkflow.util
 import kotlin.math.hypot
 
 /**
- * Per-sample stroke width, reproducing the tablet's ink model.
+ * Per-sample stroke width — **one rule for both apps**.
  *
  * The tablet is the source of truth for the ink format. It stores `strokeWidth`
  * as the **base** width the user picked — its own comment is explicit that this is
@@ -12,15 +12,22 @@ import kotlin.math.hypot
  * every sample in `points.width`.
  *
  * A mouse reports no pressure, so the velocity path is the only one available
- * here; that is also the tablet's fallback for a pressureless stylus, so a
- * desktop stroke follows exactly the curve the tablet would produce for the same
+ * on the desktop; that is also the tablet's fallback for a pressureless stylus, so
+ * a desktop stroke follows exactly the curve the tablet would produce for the same
  * motion.
  *
- * The constants and the smoothing are copied from
- * `app/src/main/java/com/vic/inkflow/ui/InkCanvas.kt` (`calcWidth`). They are
- * duplicated rather than shared because the two apps build independently; if
- * either side is tuned, the other has to be tuned to match or the same gesture
- * produces different ink on each device.
+ * ## Why this lives in `:shared` now
+ *
+ * The constants and the smoothing used to be **copied** into the desktop, with a
+ * comment saying so: "if either side is tuned, the other has to be tuned to match
+ * or the same gesture produces different ink on each device". That is a drift
+ * waiting to happen, and the ink curve is exactly the kind of thing that gets
+ * tuned ("the strokes feel too thin at speed") without anyone remembering the
+ * other app.
+ *
+ * The tablet's *pressure* path stays on the tablet — a mouse has no pressure, and
+ * the pressure branch needs the tablet's own pressure bookkeeping. The **velocity**
+ * path, which is the one both apps share, is this one.
  */
 object InkWidthModel {
 
