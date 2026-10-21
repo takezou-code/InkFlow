@@ -96,7 +96,11 @@ function renderBlock(b64){
                 }
             }
             val decor = activity.window?.decorView as? ViewGroup ?: return
-            decor.addView(w, FrameLayout.LayoutParams(1, 1))
+            // 尺寸必須是真的，不能 1x1：父層每次佈局都會把子 view 改回 LayoutParams，
+            // 1x1 的 WebView viewport 就是 1x1，draw() 只畫得出背景（實測全透明）。
+            // 位移到畫面外：真實尺寸才畫得出來，但不能貼在畫面上擋觸控或閃一下。
+            decor.addView(w, FrameLayout.LayoutParams(RENDER_W_PX, 1))
+            w.translationX = -(RENDER_W_PX + 400f)
             wv = w
             ready = false
             w.loadDataWithBaseURL(BASE, SHELL, "text/html", "utf-8", null)
@@ -140,6 +144,17 @@ function renderBlock(b64){
             if (h <= 1) {
                 Log.w(TAG, "zero height")
                 return null
+            }
+            // 父層尺寸必須等於目標：父層是 1x1 時，任何一次佈局巡迴都會把 WebView
+            // 的 viewport 改回 1x1，draw() 只剩背景（實測 ink=0.000）。
+            val lp = w.layoutParams
+            if (lp != null && (lp.width != RENDER_W_PX || lp.height != h)) {
+                lp.width = RENDER_W_PX
+                lp.height = h
+                w.layoutParams = lp
+                w.requestLayout()
+                (w.parent as? ViewGroup)?.requestLayout()
+                delay(80)
             }
             w.layout(0, 0, RENDER_W_PX, h)
             // 截圖＋雙向自檢：透明/白=空，近黑過半=硬體加速沒畫完，隔 400ms 重截一次

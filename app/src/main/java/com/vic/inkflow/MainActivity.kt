@@ -8,6 +8,10 @@ import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.vic.inkflow.data.AppDatabase
 import com.vic.inkflow.ui.InkLayerApp
 import com.vic.inkflow.util.AutoBackupScheduler
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
@@ -35,6 +39,22 @@ PDFBoxResourceLoader.init(applicationContext)
         AutoBackupScheduler.ensureScheduled(this, quiet)
         setContent {
             InkLayerApp(db = db)
+        }
+        // TEMP-KATEX-SMOKE 測完移除
+        if (com.vic.inkflow.BuildConfig.DEBUG) {
+            CoroutineScope(Dispatchers.Main).launch {
+                delay(1500)
+                com.vic.inkflow.ui.MathSnapshot.ensure(this@MainActivity)
+                repeat(2) { i ->
+                    val bmp = com.vic.inkflow.ui.MathSnapshot.render("$$\\frac{a}{b} + x^2 = 1$$")
+                    android.util.Log.d(
+                        "InkFlowDbg",
+                        "TEMP-KATEX-SMOKE #$i " + (bmp?.let { "${it.width}x${it.height}" } ?: "null")
+                    )
+                    bmp?.recycle()
+                }
+                android.util.Log.d("InkFlowDbg", "TEMP-KATEX-SMOKE done")
+            }
         }
     }
 }
