@@ -14,7 +14,7 @@ import com.vic.inkflow.data.Point
 import com.vic.inkflow.data.repository.DocSpaceMigrator
 import com.vic.inkflow.ui.editor.ExportController
 import com.vic.inkflow.ui.editor.SelectionController
-import com.vic.inkflow.ui.editor.UndoRedoController
+import com.vic.inkflow.util.UndoStack
 import com.vic.inkflow.data.repository.InkFlowRepositories
 import com.vic.inkflow.data.Stroke
 import com.vic.inkflow.data.StrokeWithSamples
@@ -390,9 +390,12 @@ class EditorViewModel(
 
     // Undo / Redo stacks
     //
-    // 機械層（兩個堆、旗標、世代號）在 [com.vic.inkflow.ui.editor.UndoRedoController]；
-    // 「什麼時候該記一格、什麼時候該清棧」是觸控契約的一部分，留在這裡。
-    private val undoRedo = UndoRedoController()
+    // 機械層（兩個堆、分支交換、世代號）在 `:shared` 的 `UndoStack`——**平板與桌面
+    // 用同一份**。「什麼時候該記一格、什麼時候該清棧」是觸控契約的一部分，留在這裡。
+    //
+    // 上限 200 格是這個平台的調校值（桌面的 `UndoStack` 預設 64：它的一格是整個手勢，
+    // 比較吃記憶體）。規則是共用的，數字是各平台自己調。
+    private val undoRedo = UndoStack<DrawCommand>(maxDepth = 200)
 
     val canUndo: StateFlow<Boolean> get() = undoRedo.canUndo
     val canRedo: StateFlow<Boolean> get() = undoRedo.canRedo
@@ -403,7 +406,7 @@ class EditorViewModel(
      * R2：頁面增刪移是結構操作、超出復原範圍——呼叫方在動頁前清棧，
      * 否則舊命令的 pageIndex 已錯位，復原會寫出幽靈資料。
      */
-    fun clearUndoStacks() = undoRedo.clear()
+    fun clearUndoStacks() = undoRedo.reset()
 
     fun onToolSelected(tool: Tool) {
         val previousTool = _selectedTool.value
@@ -735,7 +738,7 @@ class EditorViewModel(
 
     /** 擦除手勢起手呼叫（InkCanvas 橡皮擦接管處）。 */
     fun beginEraseGesture() {
-        eraseAccumulator = EraseGestureAccumulator(undoRedo.currentGeneration())
+        eraseAccumulator = EraseGestureAccumulator(undoRedo.generation)
     }
 
     /** 擦除手勢正常結束呼叫：等同手勢所有 async 寫入落定後，有戰果則合併推一格，否則不留痕。 */
@@ -1610,7 +1613,7 @@ class EditorViewModel(
                 }
             }
             withContext(Dispatchers.Main) {
-                undoRedo.completeUndo(redoCommand)
+                undoRedo.pushRedo(redoCommand)
             }
         }
     }
@@ -1652,7 +1655,8 @@ class EditorViewModel(
                         // 連重擦都擦不到（命中讀的是過濾後流）。跟 undo 失敗的處置對稱。
                         showIds(command.strokes.map { it.stroke.id })
                         showIds(command.texts.map { it.id })
-                        withContext(Dispatchers.Main) { undoRedo.refreshCanRedo() }
+                        // redo 這格已經被 takeRedo() 拿走了（共用 UndoStack 會自己更新旗標），
+                        // 所以這裡不用再手動清 redo 分支。
                         android.util.Log.e("EditorViewModel", "redo of erase failed, unhidden", e)
                         return@launch
                     }
@@ -1771,7 +1775,7 @@ class EditorViewModel(
                 }
             }
             withContext(Dispatchers.Main) {
-                undoRedo.completeRedo(command)
+                undoRedo.pushUndo(command)
             }
         }
     }

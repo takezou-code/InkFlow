@@ -1590,8 +1590,8 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
         pan.value = Offset.Zero
     }
     LaunchedEffect(strokes, texts, selectedIds, selectedTextIds, textDraft, pageBox, zoom.floatValue) {
-        handle.canUndo.value = undoStack.canUndo
-        handle.canRedo.value = undoStack.canRedo
+            handle.canUndo.value = undoStack.canUndo.value
+            handle.canRedo.value = undoStack.canRedo.value
         handle.selectionCount.value = selectionCount
         handle.typing.value = textDraft != null
         handle.zoom.value = zoom.floatValue

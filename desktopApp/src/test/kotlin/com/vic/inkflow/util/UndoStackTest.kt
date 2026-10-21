@@ -24,8 +24,8 @@ class UndoStackTest {
     @Test
     fun `empty stack offers neither undo nor redo`() {
         val s = UndoStack<Cmd>()
-        assertFalse(s.canUndo)
-        assertFalse(s.canRedo)
+        assertFalse(s.canUndo.value)
+        assertFalse(s.canRedo.value)
         assertNull(s.popUndo())
         assertNull(s.popRedo())
     }
@@ -41,7 +41,7 @@ class UndoStackTest {
         assertEquals(Cmd.Add(2), s.popUndo())
         assertEquals(Cmd.Add(1), s.popUndo())
         assertNull(s.popUndo())
-        assertFalse(s.canUndo)
+        assertFalse(s.canUndo.value)
     }
 
     @Test
@@ -63,11 +63,11 @@ class UndoStackTest {
         s.push(Cmd.Add(1))
         s.push(Cmd.Add(2))
         s.popUndo()
-        assertTrue(s.canRedo)
+        assertTrue(s.canRedo.value)
 
         s.push(Cmd.Add(99))
 
-        assertFalse(s.canRedo, "redo must not survive a new action")
+        assertFalse(s.canRedo.value, "redo must not survive a new action")
         assertNull(s.popRedo())
         // The original Add(2) must not be reachable in either direction any more.
         assertEquals(Cmd.Add(99), s.popUndo())
@@ -100,12 +100,12 @@ class UndoStackTest {
         val s = UndoStack<Cmd>()
         s.push(Cmd.Add(1))
         s.popUndo()
-        assertTrue(s.canRedo)
+        assertTrue(s.canRedo.value)
 
         s.reset()
 
-        assertFalse(s.canUndo)
-        assertFalse(s.canRedo)
+        assertFalse(s.canUndo.value)
+        assertFalse(s.canRedo.value)
     }
 
     @Test
