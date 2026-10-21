@@ -1,3 +1,5 @@
+import com.android.build.api.withAndroid
+
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
     // AGP 9 refuses `com.android.library` alongside the KMP plugin; the replacement
@@ -44,6 +46,60 @@ kotlin {
         namespace = "com.vic.inkflow.shared"
         compileSdk = 37
         minSdk = 32
+
+        // Host tests are **off by default** in AGP 9's KMP library plugin, and the
+        // build says so:
+        //
+        //   WARNING: The 'commonTest' source directory exists, but android host
+        //   tests are not enabled. To enable android host tests, add
+        //   `withHostTest {}` to your android target configuration.
+        //
+        // Without this, `commonTest` only ever ran in the desktop compilation —
+        // the protocol's golden vectors were verified on one platform and
+        // assumed to hold on the other. "Assumed to hold" is exactly the failure
+        // mode this module exists to prevent.
+        withHostTest {
+            isIncludeAndroidResources = true
+        }
+    }
+
+    // `jvmCommon` — the source set both JVM targets share.
+    //
+    // Both targets of this module are JVMs (Android and the desktop), so
+    // `java.io` and `java.security` are available on both. The sync protocol's
+    // byte-level layer — the length-prefixed frame, the SHA-256 helpers — used
+    // to be hand-copied into both apps, and the copies had already drifted: the
+    // tablet enforced the 512 MiB frame cap and reported it as an IOException,
+    // the desktop used `require()` and had no cap check on the write side.
+    //
+    // Declaring the layer once in a source set that both leaves depend on
+    // makes "the two ends agree" a property of the build rather than a promise
+    // in a comment.
+    //
+    // WHY THIS IS DECLARED THROUGH THE HIERARCHY TEMPLATE AND NOT BY HAND:
+    // a manual `dependsOn` edge cancels the default hierarchy template
+    // outright — the build says so on every run:
+    //
+    //   w: Default Kotlin Hierarchy Template Not Applied Correctly
+    //   [androidMain, desktopMain, jvmCommon]
+    //
+    // and the price is paid later: the template no longer creates the
+    // `iosMain`/`nativeMain` groups a future target would need, and the test
+    // source sets have to be wired by hand as well.
+    //
+    // Kotlin's own hierarchy template does not cover "JVM + Android" (the
+    // combination this project has) — but the template DSL can be extended
+    // with a group of exactly those two targets, which is what
+    // `group("jvmCommon") { withJvm(); withAndroid() }` does. `withAndroid()`
+    // is AGP's extension for this (com.android.build.api.withAndroid, AGP
+    // 9.3.2+); the official AGP example is the same shape.
+    applyDefaultHierarchyTemplate {
+        common {
+            group("jvmCommon") {
+                withJvm()
+                withAndroid()
+            }
+        }
     }
 
     sourceSets {
@@ -100,23 +156,6 @@ kotlin {
         androidMain.dependencies {
             implementation(libs.androidx.core.ktx)
         }
-
-        // `jvmCommon` — the source set both JVM targets share.
-        //
-        // Both targets of this module are JVMs (Android and the desktop), so
-        // `java.io` and `java.security` are available on both. The sync protocol's
-        // byte-level layer — the length-prefixed frame, the SHA-256 helpers — used
-        // to be hand-copied into both apps, and the copies had already drifted: the
-        // tablet enforced the 512 MiB frame cap and reported it as an IOException,
-        // the desktop used `require()` and had no cap check on the write side.
-        //
-        // Declaring the layer once in a source set that both leaves depend on
-        // makes "the two ends agree" a property of the build rather than a promise
-        // in a comment.
-        val jvmCommon = maybeCreate("jvmCommon")
-        jvmCommon.dependsOn(commonMain.get())
-        androidMain.get().dependsOn(jvmCommon)
-        getByName("desktopMain").dependsOn(jvmCommon)
 
         commonTest.dependencies {
             implementation(kotlin("test"))
