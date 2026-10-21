@@ -3,7 +3,6 @@ package com.vic.inkflow.ui
 import android.graphics.BitmapFactory
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Canvas
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Paint
@@ -14,10 +13,8 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import com.vic.inkflow.data.Point
 import com.vic.inkflow.data.Stroke
-import com.vic.inkflow.util.EnvelopeUtils
 import com.vic.inkflow.util.ShapeGeometry
 import com.vic.inkflow.util.ShapeType
-import com.vic.inkflow.util.StrokePoint
 
 // ── InkCanvas 形狀/筆跡渲染 helpers ─────────────────────────────────────────
 // drawWithCache 呼叫的底層繪製（Canvas 路徑 + 包絡填充）。純函數。
@@ -78,11 +75,10 @@ internal fun DrawScope.drawArrowHeadInScope(start: Offset, end: Offset, color: C
 }
 
 // ---- Freehand path helpers ----
-
-internal fun List<Point>.toComposePath(): Path {
-    val strokePoints = this.map { StrokePoint(it.x, it.y, it.width) }
-    return EnvelopeUtils.generateEnvelopePath(strokePoints)
-}
+//
+// `toComposePath()`（筆跡的包絡路徑）與 `strokePaint()`（畫法）都在 `:shared`
+// （`com.vic.inkflow.ui.StrokePaint`）：平板、桌面、PDF 匯出必須是同一份，
+// 否則螢幕上看到的粗細與匯出的 PDF 會對不上。
 
 /**
  * 兩段式降採樣解碼：先讀尺寸再按 2 的冪降採樣，長邊不超過 [maxSidePx]。
@@ -113,9 +109,6 @@ internal fun drawPathOnCanvas(
     canvas: Canvas,
     path: Path, color: Color, strokeWidth: Float, isHighlighter: Boolean = false
 ) {
-    canvas.drawPath(path, Paint().apply {
-        this.color       = if (isHighlighter) color.copy(alpha = 0.4f) else color
-        this.style       = PaintingStyle.Fill
-        if (isHighlighter) this.blendMode = BlendMode.Multiply
-    })
+    // 畫法（高亮的 Multiply 混合與透明度）共用 `:shared` 的 `strokePaint`。
+    canvas.drawPath(path, strokePaint(color, isHighlighter))
 }

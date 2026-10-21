@@ -18,6 +18,7 @@ import com.vic.inkflow.data.ImageAnnotation
 import com.vic.inkflow.data.PointF
 import com.vic.inkflow.data.StrokeWithSamples
 import com.vic.inkflow.data.TextAnnotation
+import com.vic.inkflow.ui.HIGHLIGHTER_ALPHA
 import com.vic.inkflow.ui.wrapTextLines
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -227,7 +228,7 @@ object PdfExporter {
         val ratioY = pageHeight / modelH
 
         val color = android.graphics.Color.valueOf(stroke.stroke.color)
-        val fillAlpha = if (stroke.stroke.isHighlighter) 0.4f else color.alpha()
+        val fillAlpha = if (stroke.stroke.isHighlighter) HIGHLIGHTER_ALPHA else color.alpha()
 
         fun mx(x: Float) = x * ratioX
         fun my(y: Float) = pageHeight - y * ratioY

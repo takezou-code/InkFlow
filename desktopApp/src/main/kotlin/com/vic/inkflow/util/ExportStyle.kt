@@ -1,5 +1,7 @@
 package com.vic.inkflow.util
 
+import com.vic.inkflow.ui.HIGHLIGHTER_ALPHA
+
 /**
  * Export constants shared by the desktop exporter.
  *
@@ -9,7 +11,7 @@ package com.vic.inkflow.util
  */
 object ExportStyle {
     /** Matches the tablet's `PdfExporter`: a translucent fill, whatever the colour. */
-    const val highlighterAlpha = 0.4f
+    const val highlighterAlpha = HIGHLIGHTER_ALPHA
 
     /** Opaque ink. The colour's own alpha byte is honoured elsewhere. */
     const val inkAlpha = 1f

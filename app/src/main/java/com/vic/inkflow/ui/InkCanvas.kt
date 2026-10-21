@@ -2652,7 +2652,7 @@ fun InkCanvas(
                 when (activeTool) {
                     Tool.PEN -> drawPath(activeEnvelopePath, selectedColor) // Uses default Fill style
                     Tool.HIGHLIGHTER -> drawIntoCanvas { cvs ->
-                        hlPreviewPaint.color = selectedColor.copy(alpha = 0.4f)
+                        hlPreviewPaint.color = selectedColor.copy(alpha = HIGHLIGHTER_ALPHA)
                         cvs.drawPath(activeEnvelopePath, hlPreviewPaint)
                     }
                     Tool.LASSO  -> drawPath(activePath, Color.DarkGray, style = DrawStroke(width = 2f, pathEffect = dashPreview))
@@ -2696,7 +2696,7 @@ fun InkCanvas(
                         )
                         Tool.HIGHLIGHTER -> drawIntoCanvas { cvs ->
                             hlPreviewPaint.color =
-                                Color(sharedPreview?.colorArgb ?: 0xFF000000.toInt()).copy(alpha = 0.4f)
+                                Color(sharedPreview?.colorArgb ?: 0xFF000000.toInt()).copy(alpha = HIGHLIGHTER_ALPHA)
                             cvs.drawPath(EnvelopeUtils.generateEnvelopePath(sharedSegs), hlPreviewPaint)
                         }
                         Tool.ERASER -> {

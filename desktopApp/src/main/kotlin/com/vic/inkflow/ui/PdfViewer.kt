@@ -1984,10 +1984,11 @@ for (swp in strokes) {
                                     )
                                 }
                             ),
-color = Color(inkColour).copy(
-                                  alpha = if (tool == InkTool.Highlighter) HIGHLIGHTER_ALPHA else 1f
-                              )
-                          )
+                            // 預覽與定稿用同一個畫法（`:shared` 的 strokeColor/strokeBlendMode）：
+                            // 高亮是 Multiply 混合，不是半透明蓋色。
+                            color = strokeColor(Color(inkColour), tool == InkTool.Highlighter),
+                            blendMode = strokeBlendMode(tool == InkTool.Highlighter)
+                        )
                       }
 
                       // Shape preview, drawn through the same translate as
@@ -2683,9 +2684,13 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawStroke(
         )
     }
     val ink = Color(swp.stroke.color)
+    // 畫法（高亮的 Multiply 混合 ＋ 透明度）共用 `:shared` 的 strokeColor/strokeBlendMode。
+    // 以前這裡是 0.35 而且**沒有** Multiply：桌面上高亮會蓋掉底下的墨，
+    // 匯出的 PDF 卻是 0.4 —— 螢幕與輸出對不上。
     drawPath(
         path = com.vic.inkflow.util.EnvelopeUtils.generateEnvelopePath(strokePoints),
-        color = if (swp.stroke.isHighlighter) ink.copy(alpha = HIGHLIGHTER_ALPHA) else ink
+        color = strokeColor(ink, swp.stroke.isHighlighter),
+        blendMode = strokeBlendMode(swp.stroke.isHighlighter)
     )
 }
 
@@ -2770,9 +2775,6 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawStroke(
           }
       }
   }
-
-  /** Matches the tablet's highlighter opacity. */
-  private const val HIGHLIGHTER_ALPHA = 0.35f
 
 /** Never let ink vanish entirely when zoomed far out. */
 private const val MIN_INK_PX = 0.6f

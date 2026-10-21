@@ -801,7 +801,7 @@ internal fun PageThumbnail(
                 strokes.forEach { swp ->
                     val stroke = swp.stroke
                     val strokeColor = Color(stroke.color)
-                    val alpha = if (stroke.isHighlighter) 0.4f else 1f
+                    val alpha = if (stroke.isHighlighter) HIGHLIGHTER_ALPHA else 1f
                     val widthPx = stroke.strokeWidth * (if (stroke.isHighlighter) 3f else 1f) * sx
                     val paintStyle = Stroke(width = widthPx, cap = StrokeCap.Round, join = StrokeJoin.Round)
                     if (stroke.shapeType != null) {

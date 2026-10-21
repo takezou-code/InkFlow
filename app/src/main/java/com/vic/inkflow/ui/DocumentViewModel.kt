@@ -360,7 +360,7 @@ class DocumentViewModel(
                     val isHL = swp.stroke.isHighlighter
                     strokePaint.color = swp.stroke.color
                     strokePaint.strokeWidth = swp.stroke.strokeWidth * (if (isHL) 3f else 1f)
-                    strokePaint.alpha = if (isHL) (255 * 0.4f).toInt() else 255
+                    strokePaint.alpha = if (isHL) (255 * HIGHLIGHTER_ALPHA).toInt() else 255
                     strokePaint.xfermode = if (isHL) android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.MULTIPLY) else null
 
                     if (swp.stroke.shapeType != null) {
