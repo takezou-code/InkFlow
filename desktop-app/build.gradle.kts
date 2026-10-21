@@ -23,8 +23,8 @@ dependencies {
     implementation(libs.haze)
     implementation(libs.haze.glass)
     // Kotlin Coroutines
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.9.0")
+    implementation(libs.kotlinx.coroutines.core)
+    implementation(libs.kotlinx.coroutines.swing)
     
     // Compose Desktop
     implementation(compose.desktop.currentOs)
@@ -33,7 +33,7 @@ dependencies {
     implementation(compose.materialIconsExtended)
     
     // PDFBox for PDF reading/writing
-    implementation("org.apache.pdfbox:pdfbox:3.0.8")
+    implementation(libs.pdfbox)
 
     // JPEG 2000 decoder. PDFBox treats JPX as an optional plug-in and, without
     // this, silently renders those images as blank:
@@ -44,17 +44,17 @@ dependencies {
     // Scanner PDFs (anything produced by a print-to-PDF or a scan workflow) use
     // JPX heavily, so without this a large share of real documents loses its
     // page content while the PDF "opens fine".
-    implementation("com.github.jai-imageio:jai-imageio-jpeg2000:1.4.0")
-    
+    implementation(libs.jai.imageio.jpeg2000)
+
     // JSON serialization
-    implementation("com.google.code.gson:gson:2.14.0")
-    
+    implementation(libs.gson)
+
     // SQLite database
-    implementation("org.xerial:sqlite-jdbc:3.46.0.0")
-    
+    implementation(libs.sqlite.jdbc)
+
     // Logging
-    implementation("io.github.microutils:kotlin-logging-jvm:3.0.5")
-    implementation("ch.qos.logback:logback-classic:1.5.7")
+    implementation(libs.kotlin.logging.jvm)
+    implementation(libs.logback.classic)
     
     testImplementation(kotlin("test"))
 }

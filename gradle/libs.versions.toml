@@ -47,6 +47,14 @@ reorderable = "3.1.0"
 coroutines = "1.9.0"
 turbine = "1.2.1"
 mockk = "1.14.6"
+# 桌面端（`:desktopApp`）的相依。2026-10-21 之前這些版本是硬寫在
+# desktop-app/build.gradle.kts 裡的，等於同一個依賴有兩個可以改的地方。
+# 統一收進 catalog 之後，「版本只有一個地方可以改」才成立。
+pdfbox = "3.0.8"
+jaiImageio = "1.4.0"
+sqliteJdbc = "3.46.0.0"
+kotlinLogging = "3.0.5"
+logback = "1.5.7"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -78,6 +86,13 @@ haze-blur = { group = "dev.chrisbanes.haze", name = "haze-blur", version.ref = "
 haze-glass = { group = "dev.chrisbanes.haze", name = "haze-glass", version.ref = "haze" }
 reorderable = { group = "sh.calvin.reorderable", name = "reorderable", version.ref = "reorderable" }
 kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutines" }
+kotlinx-coroutines-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-core", version.ref = "coroutines" }
+kotlinx-coroutines-swing = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-swing", version.ref = "coroutines" }
+pdfbox = { group = "org.apache.pdfbox", name = "pdfbox", version.ref = "pdfbox" }
+jai-imageio-jpeg2000 = { group = "com.github.jai-imageio", name = "jai-imageio-jpeg2000", version.ref = "jaiImageio" }
+sqlite-jdbc = { group = "org.xerial", name = "sqlite-jdbc", version.ref = "sqliteJdbc" }
+kotlin-logging-jvm = { group = "io.github.microutils", name = "kotlin-logging-jvm", version.ref = "kotlinLogging" }
+logback-classic = { group = "ch.qos.logback", name = "logback-classic", version.ref = "logback" }
 turbine = { group = "app.cash.turbine", name = "turbine", version.ref = "turbine" }
 mockk = { group = "io.mockk", name = "mockk", version.ref = "mockk" }
 
