@@ -99,6 +99,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.vic.inkflow.data.DatabaseManager
 import com.vic.inkflow.data.StrokeWithPoints
+import com.vic.inkflow.data.toModel
 import com.vic.inkflow.data.TextAnnotationEntity
 import com.vic.inkflow.data.TextMetrics
 import androidx.compose.ui.platform.LocalDensity
@@ -114,6 +115,7 @@ import com.vic.inkflow.util.PageBox
 import com.vic.inkflow.util.PdfManager
 import com.vic.inkflow.util.PdfResult
 import com.vic.inkflow.util.RenderedPage
+import com.vic.inkflow.ui.drawModelStroke
 import com.vic.inkflow.util.ShapeGeometry
 import com.vic.inkflow.util.UndoStack
 import kotlinx.coroutines.Dispatchers
@@ -2658,122 +2660,10 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawStroke(
       scale: Float,
       box: PageBox
   ) {
-      val pts = swp.points
-      if (pts.isEmpty()) return
-
-      // Shapes branch out here, before the envelope renderer.
-      //
-      // A shape is stored as two points plus a type tag, and it is a stroked
-      // outline — not a variable-width polygon. Feeding it to generateEnvelopePath
-      // turns a rectangle into a thin lens between its two corners, which is why
-      // the tablet never routes shapes through that path either.
-      val shapeType = com.vic.inkflow.util.ShapeGeometry.parseType(swp.stroke.shapeType)
-      if (shapeType != null) {
-          drawShape(swp, shapeType, scale, box)
-          return
-      }
-
-      val strokePoints = pts.map {
-        com.vic.inkflow.util.StrokePoint(
-            x = (it.x - box.originX) * scale,
-            y = (it.y - box.originY) * scale,
-            width = (it.width.takeIf { w -> w > 0f } ?: swp.stroke.strokeWidth)
-                .coerceAtLeast(MIN_INK_PT)
-                    .times(scale)
-                    .coerceAtLeast(MIN_INK_PX)
-        )
-    }
-    val ink = Color(swp.stroke.color)
-    // 畫法（高亮的 Multiply 混合 ＋ 透明度）共用 `:shared` 的 strokeColor/strokeBlendMode。
-    // 以前這裡是 0.35 而且**沒有** Multiply：桌面上高亮會蓋掉底下的墨，
-    // 匯出的 PDF 卻是 0.4 —— 螢幕與輸出對不上。
-    drawPath(
-        path = com.vic.inkflow.util.EnvelopeUtils.generateEnvelopePath(strokePoints),
-        color = strokeColor(ink, swp.stroke.isHighlighter),
-        blendMode = strokeBlendMode(swp.stroke.isHighlighter)
-    )
-}
-
-/**
-   * Draw one shape, matching the tablet's `drawShapeOnCanvas`.
-   *
-   * The split that matters: RECT and CIRCLE use the box, LINE and ARROW use the two
-   * endpoints **in stored order**. Sorting the endpoints would flip the direction of
-   * every shape drawn upwards — visible, but not something a user would report,
-   * since the shape is still there.
-   */
-  private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawShape(
-      swp: StrokeWithPoints,
-      type: com.vic.inkflow.util.ShapeType,
-      scale: Float,
-      box: PageBox
-  ) {
-      val ink = Color(swp.stroke.color)
-      val width = com.vic.inkflow.util.ShapeGeometry.strokeWidthFor(type, swp.stroke.strokeWidth)
-          .times(scale).coerceAtLeast(MIN_INK_PX)
-      val style = androidx.compose.ui.graphics.drawscope.Stroke(
-          width = width, cap = androidx.compose.ui.graphics.StrokeCap.Round,
-          join = androidx.compose.ui.graphics.StrokeJoin.Round
-      )
-
-      fun px(mx: Float, my: Float) = Offset(
-          (mx - box.originX) * scale, (my - box.originY) * scale
-      )
-
-      val modelPts = swp.points.map {
-          com.vic.inkflow.util.StrokePoint(it.x, it.y, it.width)
-      }
-      val b = com.vic.inkflow.util.ShapeGeometry.boundsOf(modelPts)
-
-      when (type) {
-          com.vic.inkflow.util.ShapeType.RECT -> drawRect(
-              color = ink,
-              topLeft = px(b[0], b[1]),
-              size = androidx.compose.ui.geometry.Size((b[2] - b[0]) * scale, (b[3] - b[1]) * scale),
-              style = style
-          )
-
-          com.vic.inkflow.util.ShapeType.CIRCLE -> drawOval(
-              color = ink,
-              topLeft = px(b[0], b[1]),
-              size = androidx.compose.ui.geometry.Size((b[2] - b[0]) * scale, (b[3] - b[1]) * scale),
-              style = style
-          )
-
-          com.vic.inkflow.util.ShapeType.LINE -> {
-              val e = com.vic.inkflow.util.ShapeGeometry.endpoints(modelPts)
-              drawLine(
-                  color = ink,
-                  start = px(e[0], e[1]), end = px(e[2], e[3]),
-                  strokeWidth = width, cap = androidx.compose.ui.graphics.StrokeCap.Round
-              )
-          }
-
-          com.vic.inkflow.util.ShapeType.ARROW -> {
-              val e = com.vic.inkflow.util.ShapeGeometry.endpoints(modelPts)
-              val a = px(e[0], e[1])
-              val z = px(e[2], e[3])
-              drawLine(
-                  color = ink, start = a, end = z,
-                  strokeWidth = width, cap = androidx.compose.ui.graphics.StrokeCap.Round
-              )
-              // The head size is computed in model units and scaled with everything
-              // else, so the arrow does not keep a constant pixel size while the
-              // page zooms.
-              val head = com.vic.inkflow.util.ShapeGeometry.arrowHead(
-                  e[0], e[1], e[2], e[3],
-                  com.vic.inkflow.util.ShapeGeometry.arrowHeadSize(swp.stroke.strokeWidth)
-              )
-              drawLine(
-                  color = ink, start = z, end = px(head.first.x, head.first.y),
-                  strokeWidth = width, cap = androidx.compose.ui.graphics.StrokeCap.Round
-              )
-              drawLine(
-                  color = ink, start = z, end = px(head.second.x, head.second.y),
-                  strokeWidth = width, cap = androidx.compose.ui.graphics.StrokeCap.Round
-              )
-          }
-      }
+      // 繪製本身在 `:shared`（`drawModelStroke`）——平板、桌面與之後的 iOS 用同一份：
+      // 包絡路徑、形狀分流、高亮的 Multiply 混合與透明度都在那裡。
+      // 這裡只做型別轉換（桌面的列 → 共用模型）。
+      drawModelStroke(swp.toModel(), scale, box.originX, box.originY)
   }
 
 /** Never let ink vanish entirely when zoomed far out. */
