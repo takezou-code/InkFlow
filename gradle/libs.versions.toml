@@ -6,7 +6,7 @@ junitVersion = "1.3.0"
 espressoCore = "3.7.0"
 lifecycleRuntimeKtx = "2.11.0"
 activityCompose = "1.13.0"
-kotlin = "2.4.10"
+kotlin = "2.4.21"
 # The desktop module MUST track the same Kotlin as the tablet. Kotlin metadata is
 # not forward-compatible, so a `:shared` module compiled by one version cannot be
 # read by the other — there is no version skew that "mostly works".
@@ -14,21 +14,22 @@ kotlin = "2.4.10"
 # Compose Multiplatform has to be raised in lockstep: each CMP release is built
 # against a specific Kotlin compiler, and the compose compiler plugin is
 # version-locked to it.
-kotlinJvm = "2.4.10"
-composeMultiplatform = "1.12.1"
+kotlinJvm = "2.4.21"
+composeMultiplatform = "1.12.2"
 # Compose Multiplatform's Material3 is released on a slower cadence than the rest
-# of CMP, so it cannot simply follow `composeMultiplatform`. Verified against the
-# Gradle cache: at CMP 1.12.1, runtime/ui/foundation/animation-core are all present
-# at 1.12.1, but `org.jetbrains.compose.material3:material3` tops out at 1.9.0
-# (1.12.x exists only as -alpha, and 1.12.1 does not resolve at all). Pinned
-# separately so the skew is explicit and reviewable rather than discovered as a
-# "Could not find" at build time. Revisit when CMP ships a stable material3.
+# of CMP, so it cannot simply follow `composeMultiplatform`. Verified against
+# Maven Central (2026-10-21, at CMP 1.12.2): `org.jetbrains.compose.material3:material3`
+# tops out at **1.9.0** — the 1.12.x line exists only as `-alpha03`, and 1.13.x only as
+# `-alpha02`. Pinned separately so the skew is explicit and reviewable rather than
+# discovered as a "Could not find" at build time. Revisit when CMP ships a stable
+# material3.
 composeMaterial3 = "1.9.0"
 # Compose Multiplatform's Material icons move on the same slow cadence as material3:
-# `material-icons-core` tops out at 1.7.3 even at CMP 1.12.1 (there is no 1.12.1, and
-# 1.12.x exists only as -alpha). `Icons` and the core set are stable API across that
-# gap, so pinning the older line is safe. Needed by `:shared`'s glass dialog/chip
-# components; the AndroidX artifact is Android-only and cannot be used there.
+# `material-icons-core` tops out at **1.7.3** — verified 2026-10-21: there is no
+# 1.8.x at all, and the last publication is 2024-12. `Icons` and the core set are
+# stable API across that gap, so pinning the older line is safe. Needed by
+# `:shared`'s glass dialog/chip components; the AndroidX artifact is Android-only
+# and cannot be used there.
 composeMaterialIcons = "1.7.3"
 composeBom = "2026.08.00"
 materialIconsExtended = "1.7.8"
@@ -39,7 +40,7 @@ datastore = "1.2.1"
 work = "2.10.2"
 gson = "2.14.0"
 pdfboxAndroid = "2.0.27.0"
-haze = "2.0.0"
+haze = "2.0.1"
 # 拖曳排序：手寫版踩了六輪（換位判定/動畫 spec/觸控仲裁/幀序列化/狀態新鮮度/
 # 自捲座標系六件事各錯一次）。改用 Mihon/Lawnchair/ProtonVPN 在用的套件。
 reorderable = "3.1.0"
