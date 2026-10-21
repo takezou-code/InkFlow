@@ -1,6 +1,24 @@
 package com.vic.inkflow.data
 
 /**
+ * Per-page counts and merge versions — the small rows the sync arbitration and the
+ * `page_counts` verb need.
+ *
+ * ## Why they moved to the shared module
+ *
+ * They are pure data with no Room annotations, and they are part of the *contract*
+ * (the tablet's per-page counts are compared against the desktop's, and the merge
+ * version rows are what the arbiter ranks). A contract that lives in one app's
+ * source set is a contract the other app cannot use — which is how the two ends
+ * ended up with two different shapes of "a version row" in the first place.
+ *
+ * They keep their field names because these rows are also what the sync payloads
+ * carry (`page_counts` is a `List<PageCountEntry>` on the wire — see
+ * `com.vic.inkflow.sync.PageCountEntry`, which is the shared model counterpart of
+ * [PageStrokeCount] / [PageTextCount]).
+ */
+
+/**
  * One row of a per-page `COUNT(*) ... GROUP BY pageIndex` query.
  *
  * Room maps these by column name, so the queries must alias to exactly
