@@ -42,8 +42,8 @@ const val HIGHLIGHTER_ALPHA = 0.4f
  *
  * Highlighter → the shared [HIGHLIGHTER_ALPHA]; pen → the colour as it is.
  */
-fun strokeColor(color: Color, isHighlighter: Boolean, alpha: Float = 1f): Color =
-    if (isHighlighter) color.copy(alpha = HIGHLIGHTER_ALPHA) else color.copy(alpha = alpha)
+fun strokeColor(color: Color, isHighlighter: Boolean): Color =
+    if (isHighlighter) color.copy(alpha = HIGHLIGHTER_ALPHA) else color
 
 /**
  * The blend mode a stroke is drawn with.
@@ -59,8 +59,8 @@ fun strokeBlendMode(isHighlighter: Boolean): BlendMode =
  * The paint for one stroke — for the `Canvas` API (the tablet caches the path, so
  * it draws through the raw canvas rather than `DrawScope`).
  */
-fun strokePaint(color: Color, isHighlighter: Boolean, alpha: Float = 1f): Paint = Paint().apply {
-    this.color = strokeColor(color, isHighlighter, alpha)
+fun strokePaint(color: Color, isHighlighter: Boolean): Paint = Paint().apply {
+    this.color = strokeColor(color, isHighlighter)
     style = PaintingStyle.Fill
     blendMode = strokeBlendMode(isHighlighter)
 }

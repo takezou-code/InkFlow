@@ -122,9 +122,11 @@ fun Stroke.toRow(): StrokeEntity = StrokeEntity(
     boundsRight = boundsRight,
     boundsBottom = boundsBottom,
     isHighlighter = isHighlighter,
-    // The wire may simply not carry the tool (the desktop has no column for it),
-    // and the column is NOT NULL. The storage default is applied here — the one
-    // place that knows what the column's default is.
+    // The wire may simply not carry the tool (the desktop's rows have no such
+    // column), and this column is NOT NULL. The storage default is applied
+    // **here** — the one place that knows what the column's default is. Without
+    // it, a stroke proposed by the desktop arrives with a null tool and the
+    // insert fails on the constraint.
     toolKind = toolKind ?: Stroke.TOOL_PEN,
     shapeType = shapeType,
     version = version,
