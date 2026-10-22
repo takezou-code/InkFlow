@@ -29,7 +29,7 @@ class RoomStrokeRepository(
 
     override suspend fun insertStroke(stroke: Stroke) = dao.insertStroke(stroke.toRow())
 
-    override suspend fun insertPoints(points: List<com.vic.inkflow.data.Point>) =
+    suspend fun insertPoints(points: List<com.vic.inkflow.data.Point>) =
         dao.insertPoints(points.map { it.toRow() })
 
     override suspend fun saveStrokeWithPoints(stroke: Stroke, points: List<com.vic.inkflow.data.Point>) {

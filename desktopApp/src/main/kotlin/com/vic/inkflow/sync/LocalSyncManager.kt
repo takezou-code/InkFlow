@@ -3,6 +3,9 @@ package com.vic.inkflow.sync
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.vic.inkflow.data.DatabaseManager
+import com.vic.inkflow.data.DesktopStrokeStore
+import com.vic.inkflow.data.toModel
+import com.vic.inkflow.data.store.StrokeStore
 import com.vic.inkflow.data.Document
 import com.vic.inkflow.data.DocumentEntity
 import com.vic.inkflow.data.Folder
@@ -136,7 +139,13 @@ class LocalSyncManager(
      * than constructed here so the editor and the sync loop share one queue —
      * two queues would each believe they own the ops.
      */
-    val proposalQueue: ProposalQueue? = null
+    val proposalQueue: ProposalQueue? = null,
+    /**
+     * 筆跡的存取走**共用的 store 介面**（`:shared` 的 `StrokeStore`），
+     * 實作是桌面的 JDBC 那一側（`DesktopStrokeStore`）。這樣「鏡像怎麼存筆」
+     * 與「鏡像怎麼讀筆」是同一個契約，iOS 版可以直接實作同一個介面。
+     */
+    private val strokeStore: DesktopStrokeStore = DesktopStrokeStore(databaseManager)
 ) {
 
     @Volatile
@@ -614,7 +623,7 @@ class LocalSyncManager(
                         val (doc, docStrokes, docTexts) =
                             fetchDocumentDetail(out, input, entry.uri, instanceId)
                         databaseManager.saveDocument(doc)
-                        databaseManager.replaceStrokesForDocument(entry.uri, docStrokes)
+                        strokeStore.replaceStrokeSnapshotsNow(docStrokes.map { it.toModel() })
                         // Notes are replaced wholesale for the same reason strokes are:
                         // the manifest is complete and the tablet is the only writer,
                         // so anything we still hold that is not in the payload is gone
@@ -896,7 +905,7 @@ class LocalSyncManager(
         for (page in changedPages) {
             val pageStrokes = fetchStrokePage(out, input, entry.uri, page)
             databaseManager.deleteStrokesForPage(entry.uri, page)
-            pageStrokes.forEach { databaseManager.saveStroke(it.stroke, it.points) }
+            pageStrokes.forEach { strokeStore.saveStrokeWithPointsNow(it.stroke.toModel(), it.points.map { p -> p.toModel() }) }
             pulledStrokes += pageStrokes.size
 
             val pageTexts = fetchTextPage(out, input, entry.uri, page)
