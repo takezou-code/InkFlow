@@ -40,6 +40,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -249,7 +250,16 @@ fun PdfViewer(
     refreshToken: Int = 0,
     documentTitle: String = "",
     /** Fired (debounced by the receiver) whenever a local edit lands in the outbox. */
-    onLocalEdit: () -> Unit = {}
+    onLocalEdit: () -> Unit = {},
+    /**
+     * Where an AI-produced note is landed.
+     *
+     * The agent panel lives outside this composable, but the note has to land
+     * in the page that has the ink, the undo stack and the proposal queue —
+     * so the reader binds its landing function into the handle while it is on
+     * screen.
+     */
+    noteLanding: com.vic.inkflow.agent.NoteLandingHandle? = null
 ) {
     var pageCount by remember(documentUri) { mutableIntStateOf(0) }
     var docError by remember(documentUri) { mutableStateOf<String?>(null) }
@@ -476,7 +486,8 @@ fun PdfViewer(
                         shapeSubType = shapeSubType,
                         handle = handles.getOrPut(idx) { PageHandle() },
                         onFocused = { focusPage(idx) },
-                        onDocCleared = { docRefresh++ }
+                        onDocCleared = { docRefresh++ },
+                        noteLanding = if (idx == focusedPage) noteLanding else null
                     )
                 }
             }
@@ -533,6 +544,7 @@ private fun PageView(
     handle: PageHandle,
     onFocused: () -> Unit = {},
     onDocCleared: () -> Unit = {},
+    noteLanding: com.vic.inkflow.agent.NoteLandingHandle? = null,
     modifier: Modifier = Modifier
 ) {
     // Fixed page: the parent owns navigation, so the page-turn state is gone.
@@ -1288,6 +1300,19 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                 logger.error(it) { "Failed to save the note on page ${requestedPage + 1}" }
             }
         return layout.placed.size
+    }
+
+    /**
+     * Lets the agent panel land a note into **this** page while it is on
+     * screen.
+     *
+     * Only the focused page binds (the parent passes the handle to one page),
+     * so the note lands where the user is looking rather than wherever the
+     * last page in the lazy list happened to be composed.
+     */
+    DisposableEffect(noteLanding) {
+        noteLanding?.bind { note -> landNote(note) }
+        onDispose { noteLanding?.unbind() }
     }
 
     // (export lives in the parent reader)

@@ -16,6 +16,7 @@ import androidx.compose.material.icons.outlined.LightMode
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Sync
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -31,6 +32,7 @@ import com.vic.inkflow.data.DatabaseManager
 import com.vic.inkflow.sync.LocalSyncManager
 import com.vic.inkflow.sync.ProposalQueue
 import com.vic.inkflow.ui.AuroraBackground
+import com.vic.inkflow.ui.AgentPanel
 import com.vic.inkflow.ui.BackdropTheme
 import com.vic.inkflow.ui.PdfViewer
 import com.vic.inkflow.ui.InkFlowTheme
@@ -269,6 +271,11 @@ fun InkFlowApp() {
     // ── Navigation & view state ─────────────────────────────────────────────
     var selectedDocument by remember { mutableStateOf<String?>(null) }
     var showSettings by remember { mutableStateOf(false) }
+    // The AI panel is a reader companion: it works on the page in front of the
+    // user, so it only makes sense with a document open.
+    var showAgent by remember { mutableStateOf(false) }
+    // The bridge between the panel and the reader's page state.
+    val noteLanding = remember { com.vic.inkflow.agent.NoteLandingHandle() }
     var currentPageIndex by remember { mutableStateOf(0) }
     var selectedFolderId by remember { mutableStateOf<String?>(null) }
 
@@ -404,6 +411,16 @@ fun InkFlowApp() {
                     icon = Icons.Outlined.Settings,
                     label = "設定"
                 )
+                // The AI panel only exists for a document — it turns the page in
+                // front of the user into a study note.
+                if (selectedDocument != null) {
+                    DesktopRailItem(
+                        selected = showAgent,
+                        onClick = { showAgent = !showAgent },
+                        icon = Icons.Filled.AutoAwesome,
+                        label = "AI"
+                    )
+                }
                 Spacer(Modifier.weight(1f))
                 IconButton(onClick = {
                     val next = !InkThemeState.darkMode
@@ -516,8 +533,18 @@ fun InkFlowApp() {
                                 // page from the database instead of showing stale ink.
                                 refreshToken = libraryRefresh,
                                 documentTitle = displayName,
+                                noteLanding = noteLanding,
                                 modifier = Modifier.fillMaxSize()
                             )
+                            if (showAgent) {
+                                AgentPanel(
+                                    documentUri = doc,
+                                    pageIndex = currentPageIndex,
+                                    landing = noteLanding,
+                                    collapsed = false,
+                                    onToggleCollapsed = { showAgent = false }
+                                )
+                            }
                         }
                     }
                 }
