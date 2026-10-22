@@ -11,6 +11,9 @@ import androidx.lifecycle.viewModelScope
 import com.vic.inkflow.data.repository.InkFlowRepositories
 import com.vic.inkflow.data.Document
 import com.vic.inkflow.data.Folder
+import androidx.compose.ui.graphics.asAndroidBitmap
+import com.vic.inkflow.util.AndroidImageDecoder
+import com.vic.inkflow.util.AndroidPdfEngine
 import com.vic.inkflow.util.PageRaster
 import com.vic.inkflow.util.PdfManager
 import com.vic.inkflow.util.ThumbnailCacheManager
@@ -317,37 +320,40 @@ class DocumentViewModel(
     }
 
     private suspend fun renderThumbnailBitmap(context: Context, documentUri: String): Bitmap? {
-        val uri = Uri.parse(documentUri)
-        val pfd = PdfManager.openPdfFileDescriptor(context, uri) ?: return null
-        var renderer: PdfRenderer? = null
-        var page: PdfRenderer.Page? = null
+        // PDF 層與圖片解碼走**共用的契約**（`:shared` 的 `PdfEngine`／`ImageDecoder`），
+        // 平台這邊是 Android 的實作（`AndroidPdfEngine`＝PdfRenderer、
+        // `AndroidImageDecoder`＝BitmapFactory）。桌面與 iOS 之後會各自實作同一個介面，
+        // 這張縮圖的畫法不用再各寫一份。
+        val pdfEngine = AndroidPdfEngine(context)
+        val imageDecoder = AndroidImageDecoder(context)
+
         return try {
-            renderer = PdfRenderer(pfd)
-            if (renderer.pageCount == 0) return null
-            page = renderer.openPage(0)
+            val pageBox = pdfEngine.pageSize(documentUri, 0) ?: return null
             val scale = 0.35f
-            val bitmapWidth = (page.width * scale).toInt().coerceAtLeast(1)
-            val bitmapHeight = (page.height * scale).toInt().coerceAtLeast(1)
-            Bitmap.createBitmap(bitmapWidth, bitmapHeight, Bitmap.Config.ARGB_8888).also { bitmap ->
-                bitmap.eraseColor(Color.WHITE)
-                page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+            val bitmapWidth = (pageBox.widthPt * scale).toInt().coerceAtLeast(1)
+            val bitmapHeight = (pageBox.heightPt * scale).toInt().coerceAtLeast(1)
+            // PDF 層（引擎已經填好白底與頁面）
+            val pdfLayer = pdfEngine.renderPage(documentUri, 0, bitmapWidth) ?: return null
+            val bitmap = pdfLayer.asAndroidBitmap()
 
-                val canvas = android.graphics.Canvas(bitmap)
-                canvas.scale(scale, scale)
+            val canvas = android.graphics.Canvas(bitmap)
+            canvas.scale(scale, scale)
 
-                // 1. Draw Images
-                val images = repos.images.getForPageSync(documentUri, 0)
-                for (img in images) {
-                    val bmp = PageRaster.loadBitmapFromUri(context, img.uri)
-                    if (bmp != null) {
-                        canvas.drawBitmap(
-                            bmp, null,
-                            android.graphics.RectF(img.modelX, img.modelY, img.modelX + img.modelWidth, img.modelY + img.modelHeight),
-                            android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
-                        )
-                        bmp.recycle()
-                    }
+            // 1. Draw Images
+            val images = repos.images.getForPageSync(documentUri, 0)
+            for (img in images) {
+                // 縮圖只需要幾十像素，用**有上限**的解碼（原本是全尺寸解碼：
+                // 一張 4000×3000 的照片是 48MB，縮圖根本用不到那麼多）。
+                val bmp = imageDecoder.decode(img.uri, maxSidePx = 1024)?.asAndroidBitmap()
+                if (bmp != null) {
+                    canvas.drawBitmap(
+                        bmp, null,
+                        android.graphics.RectF(img.modelX, img.modelY, img.modelX + img.modelWidth, img.modelY + img.modelHeight),
+                        android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
+                    )
+                    bmp.recycle()
                 }
+            }
 
                 // 2. Draw Strokes
                 val strokes = repos.strokes.getStrokesForPageSync(documentUri, 0)
@@ -411,19 +417,9 @@ class DocumentViewModel(
                         y += txt.fontSize * 1.2f
                     }
                 }
-            }
+            bitmap
         } catch (_: Exception) {
             null
-        } finally {
-            try {
-                page?.close()
-            } catch (_: Exception) { }
-            try {
-                renderer?.close()
-            } catch (_: Exception) { }
-            try {
-                pfd.close()
-            } catch (_: Exception) { }
         }
     }
 

@@ -21,7 +21,8 @@ object PdfManager {
     private const val TAG = "PdfManager"
 
     /** App 私有外部儲存目錄（不需任何權限，空間比 filesDir 大）。 */
-    private fun pdfDir(context: Context): File {
+    /** The app's private documents directory — where the synced and imported PDFs live. */
+    internal fun pdfDir(context: Context): File {
         val dir = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
             ?: context.filesDir  // fallback 到內部儲存
         return dir.also { it.mkdirs() }
@@ -43,11 +44,14 @@ object PdfManager {
     suspend fun copyPdfToAppDir(context: Context, sourceUri: Uri): Uri? =
         withContext(Dispatchers.IO) {
             try {
-                val dest = File(pdfDir(context), "${UUID.randomUUID()}.pdf")
-                context.contentResolver.openInputStream(sourceUri)!!.use { input ->
-                    FileOutputStream(dest).use { output -> input.copyTo(output) }
-                }
-                Uri.fromFile(dest)
+                // 走**共用的 DocumentSource 契約**：複製的規則（複製而非連結、
+                // 串流而非整份讀進記憶體、落在 app 私有目錄）是三個平台都要守的，
+                // 寫在契約裡，Android 這邊只是其中一個實作。
+                val uri = AndroidDocumentSource(context).import(
+                    sourceUri = sourceUri.toString(),
+                    fileName = "${UUID.randomUUID()}.pdf"
+                )
+                Uri.parse(uri)
             } catch (e: Exception) {
                 Log.e(TAG, "copyPdfToAppDir failed", e)
                 null
