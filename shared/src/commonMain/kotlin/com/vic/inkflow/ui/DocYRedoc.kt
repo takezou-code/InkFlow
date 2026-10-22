@@ -14,13 +14,13 @@ import com.vic.inkflow.data.TextAnnotation
  *
  * stride 由呼叫端帶進來：它是當下文件的頁高（紙改了會變），不是常數。
  */
-internal fun StrokeWithSamples.redocWith(stride: Float): StrokeWithSamples {
+fun StrokeWithSamples.redocWith(stride: Float): StrokeWithSamples {
     val s = stroke
     return copy(stroke = s.copy(docY = s.pageIndex * stride + s.boundsTop))
 }
 
-internal fun TextAnnotation.redocWith(stride: Float): TextAnnotation =
+fun TextAnnotation.redocWith(stride: Float): TextAnnotation =
     copy(docY = pageIndex * stride + modelY)
 
-internal fun ImageAnnotation.redocWith(stride: Float): ImageAnnotation =
+fun ImageAnnotation.redocWith(stride: Float): ImageAnnotation =
     copy(docY = pageIndex * stride + modelY)

@@ -2,8 +2,6 @@ package com.vic.inkflow.ui
 
 import dev.chrisbanes.haze.HazeState
 
-import android.content.ClipData
-import android.content.ClipDescription
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory

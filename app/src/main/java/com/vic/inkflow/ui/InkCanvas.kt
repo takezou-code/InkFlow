@@ -2767,7 +2767,21 @@ fun InkCanvas(
                 defaultFontPx = defaultTextFontPx,
                 cursorColorArgb = inlineTextColor.toArgb(),
                 boxWidthPx = editAnn?.boxWidth?.let { it * osx } ?: newBoxW,
-                alignment = editAnn?.alignment ?: TEXT_ALIGN_LEFT
+                alignment = editAnn?.alignment ?: TEXT_ALIGN_LEFT,
+                // 與畫布同一顆字體度量：行高 = -ascent + descent + leading。
+                // 這個元件是共用的，度量由平台給（桌面／iOS 給自己的量法），
+                // 否則共用元件只能猜，猜出來的會差幾 px。
+                fontMetrics = { px ->
+                    val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                        typeface = android.graphics.Typeface.DEFAULT_BOLD
+                        textSize = px
+                    }
+                    val fm = p.fontMetrics
+                    com.vic.inkflow.ui.TextFontMetrics(
+                        lineHeightPx = -fm.ascent + fm.descent + fm.leading,
+                        ascentPx = -fm.ascent
+                    )
+                }
             )
         }
 

@@ -35,6 +35,29 @@ import androidx.compose.material3.MaterialTheme
 import kotlin.math.roundToInt
 
 /**
+ * The metrics of the drawing font: the line height, and how far the first line's
+ * baseline sits below the top of the text box.
+ *
+ * ## Why the platform provides them
+ *
+ * This editor has to draw the note **exactly** like the canvas draws the committed
+ * one — same line height, same first baseline. The canvas measures with the
+ * platform's drawing stack (Android: `Paint.fontMetrics`), so a shared component
+ * that guesses its own metrics is off by a few pixels, and the symptom is "the
+ * text drifts up and to the left, and it is not quite in the right place" (an
+ * on-device report).
+ *
+ * So the numbers come in from the caller, and the shared component only lays out
+ * with them.
+ */
+data class TextFontMetrics(
+    /** The line height in px: `-ascent + descent + leading`. */
+    val lineHeightPx: Float,
+    /** The distance from the first baseline up to the top of the box (positive). */
+    val ascentPx: Float
+)
+
+/**
  * 行內文字編輯器（P4 從 InkCanvas 抽出）。
  *
  * 為什麼這塊值得獨立：它是 InkCanvas 裡少數「純輸出、不碰手勢也不碰繪製管線」
@@ -62,7 +85,7 @@ import kotlin.math.roundToInt
  * 少數斷行規則）。CJK 每字 1em、兩邊同寬，斷行點一致；拉丁文偶爾會差一個字。
  */
 @Composable
-internal fun InlineTextEditor(
+fun InlineTextEditor(
     value: String,
     onValueChange: (String) -> Unit,
     onDone: () -> Unit,
@@ -84,7 +107,15 @@ internal fun InlineTextEditor(
     /** 文字框寬（像素）；null = 舊資料（貼合內容、最寬到畫布右緣）。 */
     boxWidthPx: Float? = null,
     /** 對齊 0=左 1=中 2=右。 */
-    alignment: Int = 0
+    alignment: Int = 0,
+    /**
+     * 字體度量：畫布用的那一顆字體的行高與首行 ascent。
+     *
+     * Android 傳 `Paint.fontMetrics`（見 [TextFontMetrics]）；其他平台傳自己的量法。
+     * 不給就用與字體無關的粗估——**只有量到實測值之前的那一幀**會用到粗估，
+     * 量到之後兩種平台都換成實測值。
+     */
+    fontMetrics: ((fontPx: Float) -> TextFontMetrics)? = null
 ) {
     val density = LocalDensity.current
     // 重點色：跟全域主題同一變數（MaterialTheme 的 primary），不在這裡寫死靛紫
@@ -96,13 +127,15 @@ internal fun InlineTextEditor(
     }
     val fontPx = (editing?.fontSize?.times(scaleY) ?: defaultFontPx).coerceAtLeast(1f)
     // 與畫布同一顆字體度量：行高由它算（見類別註解）。
-    val (lineHeightPx, ascentPx) = remember(fontPx) {
-        val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            typeface = android.graphics.Typeface.DEFAULT_BOLD
-            textSize = fontPx
+    val (lineHeightPx, ascentPx) = remember(fontPx, fontMetrics) {
+        val m = fontMetrics?.invoke(fontPx)
+        if (m != null) {
+            m.lineHeightPx to -m.ascentPx
+        } else {
+            // 粗估：行高 ≈ 1.2 em、ascent ≈ 0.8 em。量到實測值後就會被取代。
+            val est = fontPx * 1.2f
+            est to -(fontPx * 0.8f)
         }
-        val fm = p.fontMetrics
-        (-fm.ascent + fm.descent + fm.leading) to fm.ascent
     }
     // 首位基線的**實測值**（相對輸入框頂端）。null = 還沒量到，先用 Paint 估。
     //

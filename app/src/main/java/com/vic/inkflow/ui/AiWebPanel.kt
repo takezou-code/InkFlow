@@ -9,8 +9,6 @@ import com.vic.inkflow.ui.theme.ShapeLg
 import com.vic.inkflow.ui.theme.ShapeXl
 
 import android.Manifest
-import android.content.ClipData
-import android.content.ClipDescription
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap

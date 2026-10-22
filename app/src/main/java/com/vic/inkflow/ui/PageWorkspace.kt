@@ -2,8 +2,6 @@ package com.vic.inkflow.ui
 
 import com.vic.inkflow.ui.theme.ShapeSm
 
-import android.content.ClipData
-import android.content.ClipDescription
 import android.content.Intent
 import android.provider.OpenableColumns
 import android.view.MotionEvent

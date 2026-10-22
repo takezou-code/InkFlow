@@ -7,8 +7,6 @@ import com.vic.inkflow.ui.theme.ShapeSm
 import com.vic.inkflow.ui.theme.ShapeLg
 import com.vic.inkflow.ui.theme.ShapeXl
 
-import android.content.ClipData
-import android.content.ClipDescription
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
