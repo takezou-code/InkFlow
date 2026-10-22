@@ -12,6 +12,7 @@ import com.vic.inkflow.data.repository.InkFlowRepositories
 import com.vic.inkflow.data.Document
 import com.vic.inkflow.data.Folder
 import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.graphics.asAndroidPath
 import com.vic.inkflow.util.AndroidImageDecoder
 import com.vic.inkflow.util.AndroidPdfEngine
 import com.vic.inkflow.util.PageRaster
@@ -357,44 +358,45 @@ class DocumentViewModel(
 
                 // 2. Draw Strokes
                 val strokes = repos.strokes.getStrokesForPageSync(documentUri, 0)
-                val strokePaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                // 形狀是**描邊**的（畫布上也是描邊），自由筆是**填色**的包絡多邊形。
+                //
+                // 舊碼兩者共用一支「描邊」畫筆，而且自由筆畫的是自己拼的折線而不是包絡：
+                // → 縮圖裡的墨是一條空心細線、高亮還被放大 3 倍描邊，
+                //   跟文件完全不像（使用者回報的兩個現象同一個根因）。
+                val shapePaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                     style = android.graphics.Paint.Style.STROKE
                     strokeCap = android.graphics.Paint.Cap.ROUND
                     strokeJoin = android.graphics.Paint.Join.ROUND
                 }
+                val inkPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                    style = android.graphics.Paint.Style.FILL
+                }
                 for (swp in strokes) {
                     val isHL = swp.stroke.isHighlighter
-                    strokePaint.color = swp.stroke.color
-                    strokePaint.strokeWidth = swp.stroke.strokeWidth * (if (isHL) 3f else 1f)
-                    strokePaint.alpha = if (isHL) (255 * HIGHLIGHTER_ALPHA).toInt() else 255
-                    strokePaint.xfermode = if (isHL) android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.MULTIPLY) else null
-
+                    // paint.alpha 會蓋掉顏色自帶的 alpha → 一般筆要把它還回去
+                    val colorAlpha = swp.stroke.color ushr 24
                     if (swp.stroke.shapeType != null) {
+                        shapePaint.color = swp.stroke.color
+                        shapePaint.strokeWidth = swp.stroke.strokeWidth
+                        shapePaint.alpha = if (isHL) (255 * HIGHLIGHTER_ALPHA).toInt() else colorAlpha
+                        shapePaint.xfermode = if (isHL) android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.MULTIPLY) else null
                         val r = android.graphics.RectF(swp.stroke.boundsLeft, swp.stroke.boundsTop, swp.stroke.boundsRight, swp.stroke.boundsBottom)
                         when (swp.stroke.shapeType) {
-                            "RECT"  -> canvas.drawRect(r, strokePaint)
-                            "OVAL"  -> canvas.drawOval(r, strokePaint)
+                            "RECT"  -> canvas.drawRect(r, shapePaint)
+                            "OVAL"  -> canvas.drawOval(r, shapePaint)
                             "LINE", "ARROW" -> if (swp.points.size >= 2) {
                                 val p0 = swp.points.first(); val p1 = swp.points.last()
-                                canvas.drawLine(p0.x, p0.y, p1.x, p1.y, strokePaint)
+                                canvas.drawLine(p0.x, p0.y, p1.x, p1.y, shapePaint)
                             }
                         }
                     } else {
-                        val pts = swp.points
-                        if (pts.size >= 2) {
-                            val path = android.graphics.Path()
-                            path.moveTo(pts[0].x, pts[0].y)
-                            if (pts.size < 3) {
-                                for (i in 1 until pts.size) path.lineTo(pts[i].x, pts[i].y)
-                            } else {
-                                for (i in 1 until pts.size) {
-                                    val prev = pts[i - 1]; val curr = pts[i]
-                                    path.quadTo(prev.x, prev.y, (prev.x + curr.x) / 2f, (prev.y + curr.y) / 2f)
-                                }
-                                path.lineTo(pts.last().x, pts.last().y)
-                            }
-                            canvas.drawPath(path, strokePaint)
-                        }
+                        // 自由筆：跟畫布同一份**包絡路徑**（`:shared` 的 toComposePath）、
+                        // 填色而不是描邊 —— 縮圖才會跟文件長一樣。
+                        val path = swp.points.toComposePath().asAndroidPath()
+                        inkPaint.color = swp.stroke.color
+                        inkPaint.alpha = if (isHL) (255 * HIGHLIGHTER_ALPHA).toInt() else colorAlpha
+                        inkPaint.xfermode = if (isHL) android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.MULTIPLY) else null
+                        canvas.drawPath(path, inkPaint)
                     }
                 }
 
