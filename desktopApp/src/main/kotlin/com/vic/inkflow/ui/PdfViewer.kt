@@ -1228,6 +1228,68 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
         textDraftAnchor = null
     }
 
+    /**
+     * Lands an AI-produced note on the current page as text annotations.
+     *
+     * The note becomes ordinary text annotations, which is what makes it
+     * ordinary: it can be moved, edited, exported with the PDF, thumbnailed,
+     * undone in one press, and — because text annotations have a proposal
+     * type already — synced to the tablet without a protocol change.
+     *
+     * ## Where it lands, and why it is not perfect
+     *
+     * The tablet gives an AI import its own pages. The desktop cannot: its
+     * documents are PDFs and it has no way to add a page to somebody's
+     * textbook file. So the note goes on the page in front of the user, below
+     * the top margin, and it can overlap what is printed there.
+     *
+     * That is a real limitation, not a design choice, and the alternatives are
+     * worse: rewriting the user's PDF to add a page would change the file the
+     * tablet mirrors, and a note that is not on the page at all would not be
+     * the artefact the feature promises. The user can drag the note (the
+     * desktop can move annotations) and undo it in one press.
+     *
+     * @return how many blocks were placed. Blocks that did not fit are not
+     *   placed and not hidden — the caller reports the difference.
+     */
+    fun landNote(note: com.vic.inkflow.data.LessonNote): Int {
+        val box = pageBox ?: return 0
+        val width = box.widthPt
+        val height = box.heightPt
+        if (width <= 0f || height <= 0f) return 0
+
+        val layout = com.vic.inkflow.agent.NoteLayout.layout(
+            note = note,
+            pageWidthPt = width,
+            pageHeightPt = height,
+            startBaselineY = com.vic.inkflow.agent.NoteLayout.MARGIN + com.vic.inkflow.agent.NoteLayout.BODY_SIZE
+        )
+        if (layout.placed.isEmpty()) return 0
+
+        val notes = layout.placed.map { placed ->
+            TextAnnotationEntity(
+                documentUri = documentUri,
+                pageIndex = requestedPage,
+                docY = null,
+                text = placed.text,
+                modelX = placed.modelX,
+                modelY = placed.baselineY,
+                fontSize = placed.fontSize,
+                colorArgb = inkColour
+            )
+        }
+        runCatching { notes.forEach { databaseManager.saveTextAnnotation(it) } }
+            .onSuccess {
+                texts = texts + notes
+                undoStack.push(InkEdit.AddTexts(notes))
+                recordOps(notes.map { upsertTextOp(it) })
+                onInkChanged()
+            }.onFailure {
+                logger.error(it) { "Failed to save the note on page ${requestedPage + 1}" }
+            }
+        return layout.placed.size
+    }
+
     // (export lives in the parent reader)
 
 /**
@@ -1429,6 +1491,20 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                 undoStack.push(e)
             }
 
+            // The whole note goes in one press: it was one action, so it is
+            // one history entry, and it is undone as a unit.
+            is InkEdit.AddTexts -> runCatching {
+                e.notes.forEach { databaseManager.deleteTextAnnotation(it.id) }
+            }.onSuccess {
+                val ids = e.notes.map { it.id }.toSet()
+                texts = texts.filterNot { it.id in ids }
+                recordOps(e.notes.map { deleteTextOp(it) })
+                onInkChanged()
+            }.onFailure {
+                logger.error(it) { "Undo of the note failed" }
+                undoStack.push(e)
+            }
+
             // Undo restores the pre-drag snapshot VERBATIM — with no delta applied.
             //
             // The snapshot is the position before the drag, so undo is a restore, not
@@ -1507,6 +1583,17 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                 onInkChanged()
             }.onFailure {
                 logger.error(it) { "Redo of note add failed" }
+                undoStack.push(e)
+            }
+
+            is InkEdit.AddTexts -> runCatching {
+                e.notes.forEach { databaseManager.saveTextAnnotation(it) }
+            }.onSuccess {
+                texts = texts + e.notes
+                recordOps(e.notes.map { upsertTextOp(it) })
+                onInkChanged()
+            }.onFailure {
+                logger.error(it) { "Redo of the note failed" }
                 undoStack.push(e)
             }
 
@@ -2201,6 +2288,17 @@ private sealed interface InkEdit {
 
     /** A note was inserted. Undo deletes it; redo re-inserts it. */
     data class AddText(val note: com.vic.inkflow.data.TextAnnotationEntity) : InkEdit
+
+    /**
+     * A whole AI-produced note was inserted.
+     *
+     * Grouped, like [Erase]: the note is one thing the user asked for, so it
+     * has to come back in one press. Undoing it block by block would leave the
+     * user pressing undo five times to remove five lines of somebody else's
+     * prose — and the tablet's `DrawCommand` history has the same rule, that
+     * one gesture is one entry.
+     */
+    data class AddTexts(val notes: List<com.vic.inkflow.data.TextAnnotationEntity>) : InkEdit
 
     /**
      * One eraser gesture (or one selection delete) removed these items.
