@@ -1716,7 +1716,15 @@ fun InkCanvas(
                                 val usePressure = isStylusPen &&
                                     pressureModeLatched && usePressureMode
                                 if (usePressure) {
-                                    minW + (maxW - minW) * pressure.coerceIn(0f, 1f)
+                                    // 壓感路徑**也要平滑**（與速度路徑同一個函式）——
+                                    // 數位板的壓感在取樣之間會跳動，直接用目標值會讓粗細
+                                    // 逐點跳動（就是被消掉的「竹節」）。
+                                    val target = minW + (maxW - minW) * pressure.coerceIn(0f, 1f)
+                                    InkWidthModel.smoothWidth(
+                                        previousWidth = prevPt.width,
+                                        targetWidth = target,
+                                        responsiveness = widthResponsiveness
+                                    )
                                 } else {
                                     // 速度路徑：**兩端同一份規則**（`:shared` 的 InkWidthModel）——
                                     // 以前桌面接的是一份手抄的常數與平滑，改一邊另一邊就不一樣了。

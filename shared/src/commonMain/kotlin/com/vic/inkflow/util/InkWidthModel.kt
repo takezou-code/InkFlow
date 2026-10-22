@@ -26,8 +26,11 @@ import kotlin.math.hypot
  * other app.
  *
  * The tablet's *pressure* path stays on the tablet — a mouse has no pressure, and
- * the pressure branch needs the tablet's own pressure bookkeeping. The **velocity**
- * path, which is the one both apps share, is this one.
+ * the pressure branch needs the tablet's own pressure bookkeeping. But the
+ * **smoothing both paths share** lives here ([smoothWidth]), because a rule that
+ * one path applies and the other does not is a rule that will drift: it already
+ * did once (the pressure path used the raw target while the velocity path
+ * smoothed, and the "bamboo" segments came back).
  */
 object InkWidthModel {
 
@@ -46,6 +49,28 @@ object InkWidthModel {
 
     /** Matches the tablet's global default for 「提筆變細強度」 (0 = blunt, 1 = lively). */
     const val DEFAULT_RESPONSIVENESS = 0.33f
+
+    /**
+     * Eases the width from the previous sample towards the target.
+     *
+     * **Both** width paths go through this — the velocity one *and* the pressure
+     * one. The tablet's stylus reports a pressure that jumps between samples
+     * (the digitiser's resolution is coarse, and a fast stroke changes pressure
+     * a lot between two points), so a target that is used directly makes the
+     * line's thickness step at every sample — the "bamboo" segments the comment
+     * below keeps mentioning. The previous sample is weighted heavily so the
+     * thickness *eases* into the target instead of stepping.
+     *
+     * It is public because the pressure path lives on the tablet (only a
+     * pressure-capable stylus has one), and the tablet's path must smooth the
+     * same way the velocity path does. When the smoothing lived only inside
+     * [widthFor], the tablet's pressure branch returned the raw target and the
+     * bamboo came back — the two paths must share this one function.
+     */
+    fun smoothWidth(previousWidth: Float, targetWidth: Float, responsiveness: Float = DEFAULT_RESPONSIVENESS): Float {
+        val smoothOld = 0.95f - 0.45f * responsiveness.coerceIn(0f, 1f)
+        return previousWidth * smoothOld + targetWidth * (1f - smoothOld)
+    }
 
     /**
      * Width for the segment ending at [pos], given the previous sample.
@@ -76,16 +101,11 @@ object InkWidthModel {
         val maxW = baseWidth * MAX_MULT
         val minW = baseWidth * MIN_MULT
 
-        // Weight the previous sample more heavily so the width eases instead of
-        // stepping — without it a jittery mouse produces visible "bamboo"
-        // segments along an otherwise smooth line.
-        val smoothOld = 0.95f - 0.45f * responsiveness.coerceIn(0f, 1f)
-
         val velocityThreshold = VELOCITY_BASE / sens
         val vMapped = (velocity / velocityThreshold).coerceIn(0f, 1f)
         val velocityTarget = minW + (maxW - minW) * (1f - vMapped)
 
-        return previousWidth * smoothOld + velocityTarget * (1f - smoothOld)
+        return smoothWidth(previousWidth, velocityTarget, responsiveness)
     }
 
     /** Convenience overload taking the previous sample's position directly. */

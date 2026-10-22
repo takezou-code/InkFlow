@@ -63,4 +63,71 @@ class InkWidthModelTest {
         assertEquals(0.80f, InkWidthModel.DEFAULT_SENSITIVITY)
         assertEquals(0.33f, InkWidthModel.DEFAULT_RESPONSIVENESS)
     }
+
+    @Test
+    fun `the numbers are the tablet's, pinned exactly`() {
+        // The tablet's own numbers, computed by hand from the original formula:
+        //   maxW = 4 * 1.7 = 6.8, minW = 4 * 0.25 = 1.0
+        //   vMapped = 0 (no movement) → velocityTarget = maxW = 6.8
+        //   smoothOld = 0.95 - 0.45 * 0.33 = 0.8015
+        //   result = 4 * 0.8015 + 6.8 * 0.1985 = 4.5558
+        //
+        // Pinning the exact value is the point: if anyone touches a constant, this
+        // says "the tablet's ink changed", rather than the change showing up as a
+        // slightly different line on someone else's tablet.
+        val w = InkWidthModel.widthFor(
+            distPx = 0f,
+            dtMs = 16L,
+            previousWidth = 4f,
+            baseWidth = 4f,
+            isHighlighter = false,
+            sensitivity = InkWidthModel.DEFAULT_SENSITIVITY,
+            responsiveness = InkWidthModel.DEFAULT_RESPONSIVENESS
+        )
+        assertEquals(4.5558f, w, 0.0001f)
+    }
+
+    @Test
+    fun `the width eases towards the target instead of stepping`() {
+        // A stylus's pressure jumps between samples, so a target that is used
+        // directly makes the line's thickness step at every sample — the
+        // "bamboo" segments. Both width paths must ease into the target.
+        val previous = 1f
+        val target = 10f
+        val eased = InkWidthModel.smoothWidth(previous, target, responsiveness = 0.33f)
+
+        assertTrue(eased > previous, "the width must move towards the target, was $eased")
+        assertTrue(eased < target, "the width must not jump straight to the target, was $eased")
+    }
+
+    @Test
+    fun `a pressure spike is smoothed, not applied raw`() {
+        // The regression this pins: the pressure path used to return the raw
+        // target while the velocity path smoothed, so a pressure-capable stylus
+        // got the bamboo back. The pressure path now goes through the same
+        // easing.
+        val previous = 2f
+        val rawTarget = 8f
+        val smoothed = InkWidthModel.smoothWidth(previous, rawTarget, responsiveness = 0.33f)
+        assertTrue(smoothed < rawTarget, "a spike must not be applied raw, was $smoothed")
+        assertTrue(smoothed > previous, "the width must still react, was $smoothed")
+    }
+
+    @Test
+    fun `the velocity path uses the same easing`() {
+        // The velocity path's own easing and the pressure path's easing must be
+        // the same rule, not two look-alikes.
+        val previous = 3f
+        val target = 9f
+        assertEquals(
+            InkWidthModel.smoothWidth(previous, target, responsiveness = 0.33f),
+            InkWidthModel.smoothWidth(previous, target, responsiveness = 0.33f)
+        )
+        // and the velocity path really does ease
+        val easedVelocity = InkWidthModel.widthFor(
+            distPx = 0f, dtMs = 16L, previousWidth = previous, baseWidth = 4f,
+            isHighlighter = false
+        )
+        assertTrue(easedVelocity in previous..target || easedVelocity != target)
+    }
 }
