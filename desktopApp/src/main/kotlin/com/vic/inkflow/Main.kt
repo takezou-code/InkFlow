@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
+import com.vic.inkflow.agent.LocalModelConfig
 import com.vic.inkflow.data.DatabaseManager
 import com.vic.inkflow.sync.LocalSyncManager
 import com.vic.inkflow.sync.ProposalQueue
@@ -143,6 +144,74 @@ object DesktopSettings {
             props.setProperty(KEY_BACKDROP, value)
             save(props)
         }
+
+    // ── Local model (the AI agent's engine) ────────────────────────────────
+    //
+    // The model server is local and the user starts it themselves, so these
+    // are just connection details. The API key is optional: llama.cpp and
+    // LM Studio ignore it unless the server was started with one.
+    //
+    // They live in the same properties file as the pairing code because they
+    // are the same kind of thing: local settings that never leave the
+    // machine and that the user can delete by deleting one file.
+
+    private val KEY_MODEL_BASE_URL = "model.baseUrl"
+    private val KEY_MODEL_NAME = "model.name"
+    private val KEY_MODEL_API_KEY = "model.apiKey"
+    private val KEY_MODEL_TEMPERATURE = "model.temperature"
+    private val KEY_MODEL_SEND_IMAGES = "model.sendImages"
+
+    var modelBaseUrl: String
+        get() = load().getProperty(KEY_MODEL_BASE_URL)?.trim()?.takeIf { it.isNotEmpty() }
+            ?: "http://localhost:8080"
+        set(value) {
+            val props = load()
+            props.setProperty(KEY_MODEL_BASE_URL, value.trim())
+            save(props)
+        }
+
+    var modelName: String
+        get() = load().getProperty(KEY_MODEL_NAME)?.trim().orEmpty()
+        set(value) {
+            val props = load()
+            props.setProperty(KEY_MODEL_NAME, value.trim())
+            save(props)
+        }
+
+    var modelApiKey: String
+        get() = load().getProperty(KEY_MODEL_API_KEY)?.trim().orEmpty()
+        set(value) {
+            val props = load()
+            props.setProperty(KEY_MODEL_API_KEY, value.trim())
+            save(props)
+        }
+
+    /** `null` means "let the server decide". */
+    var modelTemperature: Double?
+        get() = load().getProperty(KEY_MODEL_TEMPERATURE)?.trim()?.toDoubleOrNull()
+        set(value) {
+            val props = load()
+            if (value == null) props.remove(KEY_MODEL_TEMPERATURE)
+            else props.setProperty(KEY_MODEL_TEMPERATURE, value.toString())
+            save(props)
+        }
+
+    /** Whether page images are sent to the model (only if it can see them). */
+    var modelSendImages: Boolean
+        get() = load().getProperty(KEY_MODEL_SEND_IMAGES)?.toBooleanStrictOrNull() ?: true
+        set(value) {
+            val props = load()
+            props.setProperty(KEY_MODEL_SEND_IMAGES, value.toString())
+            save(props)
+        }
+
+    /** The provider configuration the agent uses. */
+    fun localModelConfig(): LocalModelConfig = LocalModelConfig(
+        baseUrl = modelBaseUrl,
+        model = modelName,
+        apiKey = modelApiKey,
+        temperature = modelTemperature
+    )
 }
 
 @Composable
