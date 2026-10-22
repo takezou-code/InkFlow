@@ -310,7 +310,8 @@ object PdfManager {
         pageIndex: Int,
         dpi: Float,
         minDpi: Float,
-        maxDpi: Float
+        maxDpi: Float,
+        targetWidthPx: Int? = null
     ): PdfResult<RenderedPage> {
         val count = doc.numberOfPages
         if (count <= 0) return PdfResult.Err("PDF 沒有任何頁面")
@@ -327,7 +328,25 @@ object PdfManager {
 
         return runCatching {
             val awt = PDFRenderer(doc).renderImageWithDPI(index, effectiveDpi, ImageType.RGB)
-            val bitmap = awt.toImageBitmap()
+            // The raster may be wider or narrower than the caller asked for (the
+            // DPI is clamped to the memory budget and quantised for the cache).
+            // Scaling it here — while the AWT bitmap still exists — is the one
+            // place where the result can be brought to the requested size without
+            // a second copy of the pixel data.
+            val scaled = if (targetWidthPx != null && targetWidthPx > 0 && awt.width != targetWidthPx) {
+                val h = (awt.height * (targetWidthPx.toFloat() / awt.width)).toInt().coerceAtLeast(1)
+                BufferedImage(targetWidthPx, h, BufferedImage.TYPE_INT_RGB).also { out ->
+                    val g = out.createGraphics()
+                    try {
+                        g.drawImage(awt, 0, 0, targetWidthPx, h, null)
+                    } finally {
+                        g.dispose()
+                    }
+                }
+            } else {
+                awt
+            }
+            val bitmap = scaled.toImageBitmap()
             logger.info {
                 "Loaded PDF page: $documentUri page=${index + 1}/$count " +
                     "dpi=$effectiveDpi raster=${bitmap.width}x${bitmap.height} " +
@@ -339,6 +358,26 @@ object PdfManager {
             onFailure = { PdfResult.Err(describe(it), it) }
         )
     }
+
+    /**
+     * Renders a page at exactly [widthPx] pixels wide.
+     *
+     * The shared contract asks for a width in pixels, while PDFBox rasterises in
+     * DPI — and the desktop's DPI is clamped (memory budget) and quantised (the
+     * raster cache), so the natural raster is often not the requested size. This
+     * renders at the best DPI available and scales the result, so the caller's
+     * promise ("a page this many pixels wide") holds exactly.
+     */
+    fun renderPageAtWidth(documentUri: String, pageIndex: Int, widthPx: Int): PdfResult<ImageBitmap> =
+        withDocument(documentUri) { doc ->
+            val box = boxInfo(doc, pageIndex.coerceIn(0, (doc.numberOfPages - 1).coerceAtLeast(0)))
+            val dpi = if (box.widthPt > 0f) (widthPx * 72f / box.widthPt) else MIN_RENDER_DPI
+            rasterise(
+                doc, documentUri, pageIndex, dpi,
+                MIN_RENDER_DPI, MAX_RENDER_DPI,
+                targetWidthPx = widthPx
+            ).map { it.bitmap }
+        }
 
     /**
      * Cap [dpi] so the raster fits [MAX_RENDER_PIXELS], or `null` if even
