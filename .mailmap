@@ -1,0 +1,9 @@
+# .mailmap — 把 commit 的作者身分對應到真人帳號
+#
+# 為什麼需要：某些自動產出的 commit（AI 產生的初版、機器人）帶的是機器帳號，
+# 於是 GitHub 的「Contributors」名單會出現不該出現的名字。
+# .mailmap 是 Git 標準的作者對應檔，commit 本身不動，歷史 SHA 也不動。
+#
+# 格式：<正式 email> <commit 裡的 email> <正式名字>
+# 空白開頭的 # 是註解。
+e24141042@gs.ncku.edu.tw qwenlm-intl@service.alibaba.com e24141042-glitch

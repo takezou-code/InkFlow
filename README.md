@@ -1,6 +1,6 @@
 # InkFlow
 
-A tablet-first PDF reader and handwritten-notebook for Android, built with Jetpack Compose. The point of the app is simple: the AI works where your notes already are. You box something, you ask about it, and the answer ends up back on the page.
+A tablet-first PDF reader and handwritten notebook for Android, built with Jetpack Compose. The point of the app is simple: the AI works where your notes already are. You box something, you ask about it, and the answer ends up back on the page.
 
 ---
 ![IMG_20260408_224011](https://github.com/user-attachments/assets/ac6b68e7-a6fa-49a8-9f0e-575311146733)
@@ -40,37 +40,42 @@ Pen, highlighter, eraser, shapes, text, stamps, images; pinch zoom and pan; thum
 
 ## Tech stack
 
-Kotlin 2.4.10 · Compose BOM 2026.08.00 · Room 2.8.4 · PdfBox-Android 2.0.27.0 · AGP 9.3.2 · Gradle 9.7.1 · minSdk 32 / targetSdk 36
+Kotlin 2.4.21 · Compose BOM 2026.08.00 · Compose Multiplatform 1.12.2 · Room 2.8.4 · PdfBox-Android 2.0.27.0 · AGP 9.3.2 · Gradle 9.7.1 · minSdk 32 / targetSdk 36
 
 ---
 
-## Build & run
-
-```bash
-git clone https://github.com/takezou-code/InkFlow.git
-cd InkFlow
-./gradlew assembleDebug
-```
-
-Or open the project in Android Studio and run the `app` configuration (a physical tablet on API 32+ is recommended).
-
----
-
-## 兩個平臺
+## 三個平臺
 
 同一個 repo、同一個 Gradle build：
 
 ```
-app/            Android 平板（真相來源）
-desktopApp/    Windows 桌面（鏡像）
-shared/         跨平臺共用：玻璃材質、墨跡格式、協定、主題
+app/          Android 平板（真相來源：唯一的寫入者）
+desktopApp/   Windows 桌面（鏡像：拉取 ＋ 提案）
+shared/       跨平臺共用（KMP）：協定、文件模型、儲存契約、幾何、繪製、設計系統
 ```
 
 - **Android**：Room、SAF、haze 真折射玻璃、筆壓與傾斜
-- **Windows**：SQLite JDBC、jpackage 打包、方向鍵、faux 玻璃
+- **Windows**：SQLite JDBC、PDFBox、jpackage 打包、faux 玻璃
+- **iOS**：進行中（`:shared` 已經能編譯成 iOS framework；App 本身待做）
 
 平板是唯一寫入者。桌面在同一個 Wi-Fi 下單向 pull：拉取平板的文件、PDF 與筆跡，
-並可在本地加註（本地加註不推回平板）。
+並可在本地加註（本地加註**不**推回平板——要改平板的內容要走提案）。
+
+### `:shared` 裡有什麼
+
+一份規則只寫一次，兩個平臺共用同一份實作：
+
+| 內容 | 位置 |
+|---|---|
+| 同步協定（幀格式、wire DTO、雜湊、版本） | `shared/.../sync/` |
+| 文件模型（Document / Stroke / Text / Image） | `shared/.../data/Model.kt` |
+| 儲存契約（`StrokeStore` / `DocumentStore` …）與平台實作 | `shared/.../data/store/` ＋ 各平臺 |
+| 幾何（選取命中、形狀、座標換算、折行、筆寬） | `shared/.../util/` ＋ `shared/.../ui/SelectionGeometry.kt` |
+| 繪製（包絡路徑、畫法、高亮混合） | `shared/.../ui/PageInk.kt`、`StrokePaint.kt` |
+| 設計系統（玻璃、主題、動態背景） | `shared/.../ui/` |
+
+三個平臺各自要做的只有「這個平台怎麼存檔、怎麼開檔、怎麼畫 PDF」——
+那是 `DocumentSource` / `PdfEngine` / `ImageDecoder` 三個介面，各平台一份實作。
 
 ### 墨跡格式：只有一份實作
 
@@ -93,26 +98,66 @@ shared/         跨平臺共用：玻璃材質、墨跡格式、協定、主題
 │   └── src/{main,debug}/
 ├── desktopApp/           Windows 桌面（鏡像）
 │   ├── smoke-test.ps1     打包後啟動檢查
-│   └── SYNC_PROTOCOL.md   v3 協定真相來源
-├── shared/                跨平臺共用（KMP）
+│   └── SYNC_PROTOCOL.md   協定真相來源
+├── shared/                跨平臺共用（KMP：android / jvm("desktop") / iosArm64 / iosSimulatorArm64）
 └── legacy-prototype/      早期原型，僅供參考
 ```
+
+---
+
+## 同步協定（v6）
+
+完整規格見 `desktopApp/SYNC_PROTOCOL.md`（協定的唯一人工文件）。
+
+- **平板是唯一寫入者**；桌面端 pull 完整 manifest，逐份比對 `docVersion`（內容雜湊）決定要不要重抓。
+- **桌面端不能改平板的文件**。它只能送**提案**（`upsert_stroke` / `upsert_text` / `delete_*`），
+  平板逐 op 仲裁：提案帶的 `baseVersion` 比平板現在的版本舊 → **判成衝突，不套用**。
+- 缺席＝已刪除（平板是唯一寫入者，manifest 每次都是完整的），但只在**連續兩輪**缺席後才刪，
+  而且只刪**曾經從平板同步來**的文件——你自己在桌面匯入的本機檔不受影響。
+- 平板重灌（`instanceId` 變了）→ 桌面端清空鏡像重抓。
+
+---
+
+## Build & run
+
+這個 repo 用 `ink` 這支工具做建置／裝機／提交（它擋 release、擋 `git add -A`、
+會等建置鎖，避免兩個 agent 同時 build 互相毀產物）。
+
+```powershell
+ink doctor              # 環境與不變量自我檢查
+ink build                # assembleDebug + compile
+ink build -Install       # 裝到平板並啟動（debug 軌）
+ink stage <檔案...>      # 只 stage 明列的檔案
+ink commit "訊息"        # 訊息走 UTF-8 檔案，中文不會被吃掉
+```
+
+簽章的正式包走 `inkflow-quick-release`（只裝到平板）或 `inkflow-release`（連 tag 與
+GitHub Release 一起出）。
+
+或者用 Android Studio 開啟這個專案，跑 `app` 設定（建議用 API 32+ 的實機平板）。
 
 ---
 
 ## 驗證
 
 ### Android
-```bash
-./gradlew :app:assembleDebug
-./gradlew :app:testDebugUnitTest
+```powershell
+ink build :app:testDebugUnitTest
 ```
 
+### 共用模組（三個平臺都跑）
+```powershell
+ink build :shared:desktopTest :shared:testAndroidHostTest
+```
+
+`commonTest` 放的是**兩端必須逐位元一致**的東西：協定的黃金向量（`docVersion` 的分隔符與
+雜湊、幀格式、SHA-256 對照 JDK 的差異測試）、文件模型的語意、形狀幾何、筆寬規則。
+
 ### Windows
-```bash
-cd desktopApp
-./gradlew test createDistributable
-powershell -File smoke-test.ps1
+```powershell
+ink build :desktopApp:test
+ink build :desktopApp:createDistributable
+powershell -File desktopApp\smoke-test.ps1
 ```
 
 `smoke-test.ps1` 驗證的是 `gradlew run` **看不出來**的東西：打包後的 runtime image
@@ -123,8 +168,11 @@ powershell -File smoke-test.ps1
 ```powershell
 $env:INKFLOW_PAIRING_CODE = <平板設定頁顯示的 8 位配對碼>
 $env:INKFLOW_TABLET_HOST = <平板區網 IP>
-./gradlew test --tests '*AppDatabaseSyncTest*'
+ink build :desktopApp:test --tests '*AppDatabaseSyncTest*'
 ```
+
+平板的探索廣播跟著 app 走：**平板 app 退到背景就同步不到**（桌面端會印
+"No tablets discovered yet"）。
 
 ---
 
