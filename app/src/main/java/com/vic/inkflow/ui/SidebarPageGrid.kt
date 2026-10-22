@@ -47,6 +47,8 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -130,6 +132,8 @@ internal fun SidebarPageGrid(
     var previewOrder by remember(visibleIndices) { mutableStateOf(visibleIndices) }
     var reorderInitial by remember { mutableStateOf<List<Int>?>(null) }
     var reorderStartPage by remember { mutableStateOf(-1) }
+    // 重建套件狀態用的計數（見下方 epoch 說明）。
+    var reorderEpoch by remember { mutableIntStateOf(0) }
 
     // 業務邏輯（與手感無關）：起拖拍快照、放手從 key 序列反查目標位置一次 movePage。
     // R2：移頁是結構操作，清棧。
@@ -156,17 +160,23 @@ internal fun SidebarPageGrid(
         // 不回來的話，每一格顯示的是「頁碼 N」的內容，而內容已經換位了——
         // 畫面看起來就是「順序沒換」（實際上文件換了）。
         previewOrder = visibleIndices
+        // 重建套件狀態：它內部還記著「拖曳中的排列」，不重建的話放開後會把格線
+        // 動畫送回拖曳前的樣子。
+        reorderEpoch++
     }
 
     // 套件狀態：onMove 必須在 return 前同步改清單（FAQ 明文，延後會 flicker）。
     //
-    // key 用**格線位置**：改成頁碼（穩定身分）雖然比較不會跟錯目標，但整套換位動畫
-    // 會跟著改成「跟著內容跑」，手感跟原來不同——這裡保留原來的定位 key。
-    val reorderState = rememberReorderableLazyGridState(gridState) { from, to ->
-        val newOrder = previewOrder.toMutableList()
-        val item = newOrder.removeAt(from.index)
-        newOrder.add(to.index, item)
-        previewOrder = newOrder
+    // **epoch**：移頁之後頁碼依位置重編 → 格線要回到身分順序 → 每一格的 key 都變了 →
+    // 套件會把「剛拖下來的那一格」動畫送回原位（看起來像跳回去）。
+    // 重建一次套件狀態（key(epoch)）就不會有那段動畫：新的狀態本來就等於身分順序。
+    val reorderState = key(reorderEpoch) {
+        rememberReorderableLazyGridState(gridState) { from, to ->
+            val newOrder = previewOrder.toMutableList()
+            val item = newOrder.removeAt(from.index)
+            newOrder.add(to.index, item)
+            previewOrder = newOrder
+        }
     }
     val orderForGrid = previewOrder
 
@@ -388,7 +398,9 @@ internal fun SidebarPageGrid(
                     } else Modifier
                 )
         ) {
-            items(count = orderForGrid.size, key = { it }) { it ->
+            // key 必須是**頁碼**（每一頁一個身分），不能改成位置：套件靠 key 認出「被拖的
+            // 那一頁」，位置當 key 時換位就認不出來 → 長按拖不起來（實測）。
+            items(count = orderForGrid.size, key = { orderForGrid[it] }) { it ->
                 val index = orderForGrid[it]
                 val thumbFlow = remember(index, thumbnailVersion) {
                     pdfViewModel.getPageThumbnail(index)
@@ -474,7 +486,10 @@ internal fun SidebarPageGrid(
                         Box {
                             PageThumbnail(
                                 pageIndex = index,
-                                pageLabel = it + 1,
+                                // 拖曳預覽期間顯示**位置**（1..n 依序），放開後頁碼依位置
+                                // 重編，兩者一致。書籤篩選時沒有拖曳，位置不等於頁碼 →
+                                // 顯示真正的頁碼。
+                                pageLabel = if (showOnlyBookmarked) index + 1 else it + 1,
                                 bitmap = thumb,
                                 strokes = strokes,
                                 imageAnnotations = images,
