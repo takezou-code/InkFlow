@@ -179,6 +179,11 @@ kotlin {
 
         commonTest.dependencies {
             implementation(kotlin("test"))
+            // The agent loop is a suspending function, so its tests need a
+            // coroutine scope. `runTest` is the only way to test one that
+            // works the same on every target (the desktop JVM, the Android
+            // host, and iOS, whose test task needs a Mac).
+            implementation(libs.kotlinx.coroutines.test)
         }
     }
 }
