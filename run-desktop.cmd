@@ -8,6 +8,7 @@ rem
 rem    run-desktop.cmd --no-build   always launch the existing EXE (fastest)
 rem    run-desktop.cmd --build      force a rebuild before launching
 rem    run-desktop.cmd --rebuild    clean first, then a full rebuild
+rem    run-desktop.cmd --probe=pen  A0.1 pen probe (temporary diagnostic window)
 rem
 rem  This file is a shim only -- all the logic lives in tools\launch-desktop.ps1.
 rem  Two reasons for the split: the logic becomes testable on its own, and the
@@ -38,7 +39,8 @@ if "%~1"=="" goto parsed
 if /i "%~1"=="--no-build" set "PSARGS=%PSARGS% -NoBuild" & shift & goto parse
 if /i "%~1"=="--build"    set "PSARGS=%PSARGS% -Build"    & shift & goto parse
 if /i "%~1"=="--rebuild"  set "PSARGS=%PSARGS% -Rebuild"  & shift & goto parse
-if /i "%~1"=="-NoBuild"   set "PSARGS=%PSARGS% -NoBuild"  & shift & goto parse
+if /i "%~1"=="--probe=pen" set "PSARGS=%PSARGS% -Probe pen" & shift & goto parse
+if /i "%~1"=="-NoBuild"   set "PSARGS=%PSARGS% -NoBuild" & shift & goto parse
 if /i "%~1"=="-Build"     set "PSARGS=%PSARGS% -Build"    & shift & goto parse
 if /i "%~1"=="-Rebuild"   set "PSARGS=%PSARGS% -Rebuild"  & shift & goto parse
 echo Unknown argument: %~1

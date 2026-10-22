@@ -44,6 +44,7 @@ import com.vic.inkflow.ui.glassClickable
 import com.vic.inkflow.ui.glassContentColor
 import com.vic.inkflow.ui.glassFieldColors
 import com.vic.inkflow.ui.glassSelectionPill
+import com.vic.inkflow.probe.PenProbeScreen
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Image
 import androidx.compose.ui.draw.clip
@@ -693,7 +694,7 @@ private fun SettingRow(label: String, value: String) {
     }
 }
 
-fun main() {
+fun main(args: Array<String>) {
     // The data dir has to exist before anything logs into it (logback.xml writes to
     // %USERPROFILE%/.inkflow) and before the database opens.
     File(AppPaths.dir).mkdirs()
@@ -703,14 +704,27 @@ fun main() {
     // return null and the taskbar would silently fall back to Compose's default.
     val icon: Painter? = loadWindowIcon()
 
+    // A0.1 pen probe (TEMPORARY): `--probe=pen` swaps the whole app for the
+    // probe window. It runs inside the same window/runtime as the product, so
+    // the numbers it reports are the numbers the packaged app produces — which
+    // is the only measurement worth acting on. See `probe/PenProbe.kt`.
+    val probe = args.firstOrNull { it.startsWith("--probe=") }
+        ?.substringAfter("=")
+        ?.trim()
+        ?.lowercase()
+
     application {
         Window(
             onCloseRequest = ::exitApplication,
-            title = "InkFlow",
+            title = if (probe == "pen") "InkFlow — pen probe" else "InkFlow",
             state = rememberWindowState(width = 1280.dp, height = 800.dp),
             icon = icon
         ) {
-            App()
+            if (probe == "pen") {
+                PenProbeScreen()
+            } else {
+                App()
+            }
         }
     }
 }

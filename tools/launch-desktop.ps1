@@ -20,7 +20,10 @@
 param(
     [switch]$Build,
     [switch]$NoBuild,
-    [switch]$Rebuild
+    [switch]$Rebuild,
+    # A0.1 pen probe (TEMPORARY): forwarded to the EXE as `--probe=<value>`.
+    # `pen` swaps the app for the probe window.
+    [string]$Probe
 )
 
 $ErrorActionPreference = 'Stop'
@@ -168,5 +171,14 @@ if (-not (Test-Path -LiteralPath $Exe)) {
 
 Write-Step "啟動 $Exe"
 Write-Host ''
-Start-Process -FilePath $Exe
+if ($Probe) {
+    # `Start-Process -ArgumentList` does not quote values that contain spaces
+    # (it splits the string on whitespace), so only pass values that cannot
+    # contain one.
+    Write-Host "探針模式：--probe=$Probe" -ForegroundColor DarkGray
+    Start-Process -FilePath $Exe -ArgumentList "--probe=$Probe"
+}
+else {
+    Start-Process -FilePath $Exe
+}
 exit 0
