@@ -139,20 +139,29 @@ internal fun SidebarPageGrid(
         if (isExportingSelection) {
             reorderInitial = null
             reorderStartPage = -1
+            // 選擇模式下不允許排序 → 格線必須回到原順序（拖過的預覽要收掉）。
+            previewOrder = visibleIndices
             return
         }
-        if (!showOnlyBookmarked && initial != null && page in initial) {
-            val targetPos = previewOrder.indexOf(page)
-            if (targetPos >= 0 && targetPos != initial.indexOf(page)) {
+        if (!showOnlyBookmarked && initial != null) {
+            val targetPos = reorderTargetPos(initial, previewOrder, page)
+            if (targetPos != null) {
                 onStructureChanged()
                 pdfViewModel.movePage(documentUri, page, targetPos)
             }
         }
         reorderInitial = null
         reorderStartPage = -1
+        // 移頁之後**頁碼是依位置重編的** → 格線必須回到身分順序。
+        // 不回來的話，每一格顯示的是「頁碼 N」的內容，而內容已經換位了——
+        // 畫面看起來就是「順序沒換」（實際上文件換了）。
+        previewOrder = visibleIndices
     }
 
     // 套件狀態：onMove 必須在 return 前同步改清單（FAQ 明文，延後會 flicker）。
+    //
+    // key 用**格線位置**：改成頁碼（穩定身分）雖然比較不會跟錯目標，但整套換位動畫
+    // 會跟著改成「跟著內容跑」，手感跟原來不同——這裡保留原來的定位 key。
     val reorderState = rememberReorderableLazyGridState(gridState) { from, to ->
         val newOrder = previewOrder.toMutableList()
         val item = newOrder.removeAt(from.index)
