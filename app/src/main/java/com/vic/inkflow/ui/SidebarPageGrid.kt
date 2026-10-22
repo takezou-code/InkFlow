@@ -388,7 +388,7 @@ internal fun SidebarPageGrid(
                     } else Modifier
                 )
         ) {
-            items(count = orderForGrid.size, key = { orderForGrid[it] }) { it ->
+            items(count = orderForGrid.size, key = { it }) { it ->
                 val index = orderForGrid[it]
                 val thumbFlow = remember(index, thumbnailVersion) {
                     pdfViewModel.getPageThumbnail(index)
@@ -417,6 +417,9 @@ internal fun SidebarPageGrid(
                 ReorderableItem(reorderState, key = index) { isDragging ->
                     Box(
                         modifier = Modifier
+                            // 觸控框要是**圓角**的：長按把手掛在整張卡上，沒有 clip 的話
+                            // 觸控區是方框的四角（邊角上按得到、但看起來不對）。
+                            .clip(ShapeLg)
                             // 長按整卡起拖（套件的長按把手；選擇模式/書籤過濾時不啟用）。
                             .then(
                                 if (!showOnlyBookmarked && !isSelectionMode && !isPageOperationInProgress && !isExportingSelection) {
@@ -471,6 +474,7 @@ internal fun SidebarPageGrid(
                         Box {
                             PageThumbnail(
                                 pageIndex = index,
+                                pageLabel = it + 1,
                                 bitmap = thumb,
                                 strokes = strokes,
                                 imageAnnotations = images,

@@ -714,6 +714,13 @@ private fun railSpineButton(
 @Composable
 internal fun PageThumbnail(
     pageIndex: Int,
+    /**
+     * 頁碼徽上顯示的數字。
+     *
+     * 預設是頁碼本身。頁面網格另外傳「位置＋1」：移頁之後頁碼是**依位置重編**的，
+     * 而拖曳預覽期間那一格還帶著舊頁碼 → 用位置才不會出現「放開後數字不對」。
+     */
+    pageLabel: Int = pageIndex + 1,
     bitmap: android.graphics.Bitmap?,
     strokes: List<StrokeWithSamples>,
     imageAnnotations: List<ImageAnnotation>,
@@ -928,7 +935,7 @@ internal fun PageThumbnail(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = "${pageIndex + 1}",
+                    text = "${pageLabel}",
                     style = MaterialTheme.typography.labelSmall,
                     color = if (isSelected) MaterialTheme.colorScheme.onPrimary
                         else MaterialTheme.colorScheme.onSurfaceVariant
