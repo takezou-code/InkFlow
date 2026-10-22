@@ -173,8 +173,10 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
@@ -219,6 +221,8 @@ import com.vic.inkflow.ui.theme.WorkspaceDeskDark
 import com.vic.inkflow.ui.theme.WorkspaceDeskLight
 import com.vic.inkflow.util.PdfManager
 import com.vic.inkflow.util.DocTransform
+import com.vic.inkflow.util.ShapeGeometry
+import com.vic.inkflow.util.ShapeType
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import kotlin.math.atan2
@@ -803,68 +807,72 @@ internal fun PageThumbnail(
                 val sx = DocTransform.scaleX(size.width, modelW)
                 val sy = DocTransform.scaleY(size.height, modelH)
                 // --- Strokes (freehand + shapes) ---
+                // 畫法跟畫布（InkCanvas）**同一份規則**：`:shared` 的 toComposePath（包絡路徑）、
+                // strokeColor（HIGHLIGHTER_ALPHA）、strokeBlendMode（Multiply）。
+                //
+                // 舊碼在這裡自己拼折線、而且高亮放大 3 倍描邊 → 縮圖裡的墨是一條線、
+                // 高亮是粗線而不是塗滿的色帶，跟文件完全不像。
                 strokes.forEach { swp ->
                     val stroke = swp.stroke
-                    val strokeColor = Color(stroke.color)
-                    val alpha = if (stroke.isHighlighter) HIGHLIGHTER_ALPHA else 1f
-                    val widthPx = stroke.strokeWidth * (if (stroke.isHighlighter) 3f else 1f) * sx
-                    val paintStyle = Stroke(width = widthPx, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                    val isHL = stroke.isHighlighter
+                    val baseColor = Color(stroke.color)
                     if (stroke.shapeType != null) {
+                        // 形狀是**描邊**的（畫布也是）：粗細就是 strokeWidth，沒有高亮放大。
+                        val widthPx = stroke.strokeWidth * sx
+                        val paintStyle = Stroke(width = widthPx, cap = StrokeCap.Round, join = StrokeJoin.Round)
                         val r = Rect(
                             stroke.boundsLeft * sx, stroke.boundsTop * sy,
                             stroke.boundsRight * sx, stroke.boundsBottom * sy
                         )
-                        when (stroke.shapeType) {
-                            "RECT" -> drawRect(
-                                color = strokeColor.copy(alpha = alpha),
+                        when (ShapeGeometry.parseType(stroke.shapeType)) {
+                            ShapeType.RECT -> drawRect(
+                                color = baseColor,
                                 topLeft = Offset(r.left, r.top),
                                 size = Size(r.width, r.height),
                                 style = paintStyle
                             )
-                            "CIRCLE" -> drawOval(
-                                color = strokeColor.copy(alpha = alpha),
+                            ShapeType.CIRCLE -> drawOval(
+                                color = baseColor,
                                 topLeft = Offset(r.left, r.top),
                                 size = Size(r.width, r.height),
                                 style = paintStyle
                             )
-                            "LINE" -> if (swp.points.size >= 2) {
+                            ShapeType.LINE -> if (swp.points.size >= 2) {
                                 drawLine(
-                                    color = strokeColor.copy(alpha = alpha),
+                                    color = baseColor,
                                     start = Offset(swp.points.first().x * sx, swp.points.first().y * sy),
                                     end = Offset(swp.points.last().x * sx, swp.points.last().y * sy),
                                     strokeWidth = widthPx,
                                     cap = StrokeCap.Round
                                 )
                             }
-                            "ARROW" -> if (swp.points.size >= 2) {
+                            ShapeType.ARROW -> if (swp.points.size >= 2) {
                                 val p0 = Offset(swp.points.first().x * sx, swp.points.first().y * sy)
                                 val p1 = Offset(swp.points.last().x * sx, swp.points.last().y * sy)
                                 drawLine(
-                                    color = strokeColor.copy(alpha = alpha),
+                                    color = baseColor,
                                     start = p0, end = p1,
                                     strokeWidth = widthPx, cap = StrokeCap.Round
                                 )
                                 thumbnailDrawArrowHead(
                                     drawScope = this,
-                                    color = strokeColor.copy(alpha = alpha),
+                                    color = baseColor,
                                     start = p0, end = p1, sw = widthPx
                                 )
                             }
+                            null -> Unit
                         }
                     } else {
-                        val pts = swp.points
-                        if (pts.size >= 2) {
-                            val path = androidx.compose.ui.graphics.Path()
-                            path.moveTo(pts.first().x * sx, pts.first().y * sy)
-                            for (i in 1 until pts.size) {
-                                val p1 = pts[i - 1]; val p2 = pts[i]
-                                path.quadraticTo(
-                                    p1.x * sx, p1.y * sy,
-                                    (p1.x + p2.x) / 2f * sx, (p1.y + p2.y) / 2f * sy
-                                )
-                            }
-                            pts.lastOrNull()?.let { path.lineTo(it.x * sx, it.y * sy) }
-                            drawPath(path, strokeColor.copy(alpha = alpha), style = paintStyle)
+                        // 自由筆：跟畫布同一份**包絡路徑**（`:shared` 的 toComposePath）＋**填色**。
+                        // 模型座標 → 縮圖座標用 scale() 縮放（畫布也是 cvs.scale(sx, sy)）。
+                        val path = swp.points.toComposePath()
+                        scale(sx, sy, Offset.Zero) {
+                            drawPath(
+                                path = path,
+                                color = strokeColor(baseColor, isHL),
+                                style = Fill,
+                                blendMode = strokeBlendMode(isHL)
+                            )
                         }
                     }
                 }
