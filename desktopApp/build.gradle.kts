@@ -110,7 +110,21 @@ compose.desktop {
             // first sync handshake — while `gradlew run` (full JDK) and all unit tests
             // are perfectly happy, which is why this only ever showed up in the EXE,
             // exactly like the java.sql/java.naming trimmings above.
-            modules("java.sql", "java.naming", "java.logging", "jdk.unsupported")
+            //
+            // `java.net.http` because the local-model driver (`LocalOpenAiProvider`)
+            // uses `java.net.http.HttpClient`. It is not a transitive dependency of
+            // anything else in the list, so jpackage omitted it: the packaged EXE
+            // would throw `NoClassDefFoundError: java/net/http/HttpClient` the moment
+            // the AI panel sent a request, while `gradlew run` and every test passed.
+            // Verified by reading `runtime/release` in the packaged output — the
+            // MODULES line did not contain `java.net.http`.
+            modules(
+                "java.sql",
+                "java.naming",
+                "java.logging",
+                "jdk.unsupported",
+                "java.net.http"
+            )
 
             windows {
                 menuGroup = "InkFlow"
