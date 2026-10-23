@@ -89,7 +89,7 @@ fun LibraryView(
         fd.dispose()
 
         if (chosen == null) return
-        viewModel.importDocument(chosen, mirrorRoot, onLibraryChanged)
+        viewModel.onEvent(LibraryViewModel.LibraryEvent.ImportDocument(chosen, mirrorRoot, onLibraryChanged))
     }
 
     DeskScreen(
@@ -102,7 +102,7 @@ fun LibraryView(
             SyncStatusPill(syncStatusText)
             DeskSearchField(
                 value = state.query,
-                onValueChange = { viewModel.setQuery(it) },
+                onValueChange = { viewModel.onEvent(LibraryViewModel.LibraryEvent.SetQuery(it)) },
                 placeholder = "搜尋標題或檔名",
                 modifier = Modifier.width(240.dp)
             )
@@ -119,7 +119,7 @@ fun LibraryView(
             FolderChips(
                 folders = state.folders.map { it.id to it.name },
                 selectedFolderId = state.selectedFolderId,
-                onFolderSelected = { viewModel.setFolder(it) }
+                onFolderSelected = { viewModel.onEvent(LibraryViewModel.LibraryEvent.SetFolder(it)) }
             )
 
             (state.importError)?.let { msg ->

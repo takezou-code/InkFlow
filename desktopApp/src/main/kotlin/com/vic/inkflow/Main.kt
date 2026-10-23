@@ -762,7 +762,7 @@ private fun SettingsView(
                     DeskTextField(
                         value = state.pairingCode,
                         onValueChange = { code ->
-                            viewModel.setPairingCode(code)
+                            viewModel.onEvent(SettingsViewModel.SettingsEvent.SetPairingCode(code))
                             onPairingCodeChange(code)
                         },
                         placeholder = "8 位數字",

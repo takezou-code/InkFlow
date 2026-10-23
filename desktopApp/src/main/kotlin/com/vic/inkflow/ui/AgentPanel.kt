@@ -78,7 +78,7 @@ fun AgentPanel(
                 DeskPrimaryButton(
                     text = "寫進文件",
                     icon = Icons.Default.Check,
-                    onClick = { vm.setLanded(vm.landNote()) },
+                    onClick = { vm.onEvent(AgentPanelViewModel.AgentEvent.LandNote) },
                     enabled = !state.busy,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -108,7 +108,7 @@ fun AgentPanel(
                 DeskPillButton(
                     text = if (state.models.isEmpty()) "檢查模型" else "${state.models.size} 個",
                     icon = Icons.Default.Search,
-                    onClick = { vm.checkModels() }
+                    onClick = { vm.onEvent(AgentPanelViewModel.AgentEvent.CheckModels) }
                 )
             }
 
@@ -117,7 +117,7 @@ fun AgentPanel(
             GlassOptionChip(
                 text = if (DesktopSettings.modelSendImages) "送圖：開" else "送圖：關",
                 selected = DesktopSettings.modelSendImages,
-                onClick = { vm.toggleSendImages() },
+                onClick = { vm.onEvent(AgentPanelViewModel.AgentEvent.ToggleSendImages) },
                 isDark = InkThemeState.darkMode
             )
 
@@ -125,7 +125,7 @@ fun AgentPanel(
 
             DeskTextField(
                 value = state.instruction,
-                onValueChange = { vm.setInstruction(it) },
+                onValueChange = { vm.onEvent(AgentPanelViewModel.AgentEvent.SetInstruction(it)) },
                 placeholder = "把這一頁整理成教材筆記",
                 singleLine = false,
                 minLines = 2,
@@ -138,7 +138,7 @@ fun AgentPanel(
             DeskPrimaryButton(
                 text = if (state.busy) "進行中…" else "產生教材筆記",
                 icon = Icons.Default.AutoAwesome,
-                onClick = { vm.generate() },
+                onClick = { vm.onEvent(AgentPanelViewModel.AgentEvent.Generate) },
                 enabled = !state.busy,
                 modifier = Modifier.fillMaxWidth()
             )

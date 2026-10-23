@@ -17,29 +17,13 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * Screen state holder for the library.
+ * Screen state holder for the library, following unidirectional data flow (UDF).
  *
- * ## Why this exists
+ * ## UDF contract
  *
- * `LibraryView` used to call `DatabaseManager` directly in composition, which
- * means the screen re-queried the database on every recomposition and the import
- * flow's side effects ran inside a composable. That is the pattern the Android
- * side moved away from years ago (`DocumentViewModel` + `DocumentRepository`);
- * the desktop is catching up.
- *
- * The ViewModel owns:
- *  - the query / folder filter (UI state)
- *  - the document & folder lists (loaded from the repositories)
- *  - the import transaction (validation → copy → upsert)
- *
- * The composable owns only the rendering and the file picker dialog.
- *
- * ## Scope
- *
- * A `CoroutineScope` is passed in rather than created internally so the owner
- * (the composable's `rememberCoroutineScope()`) controls cancellation. When the
- * composable leaves composition the scope is cancelled and in-flight imports
- * stop.
+ * The composable reads [state] (a [StateFlow]) and dispatches [LibraryEvent]s via
+ * [onEvent]. It never mutates state directly. All state transitions happen
+ * inside [onEvent], which is the single entry point for user actions.
  */
 class LibraryViewModel(
     private val documentRepository: DocumentRepository,
@@ -56,55 +40,42 @@ class LibraryViewModel(
         val importing: Boolean = false
     )
 
+    sealed interface LibraryEvent {
+        data class SetQuery(val query: String) : LibraryEvent
+        data class SetFolder(val folderId: String?) : LibraryEvent
+        data class ImportDocument(val chosen: File, val mirrorRoot: String, val onLibraryChanged: () -> Unit) : LibraryEvent
+        data object ClearImportError : LibraryEvent
+        data object Refresh : LibraryEvent
+    }
+
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     init {
-        refresh()
+        onEvent(LibraryEvent.Refresh)
     }
 
-    fun setQuery(query: String) {
-        _state.value = _state.value.copy(query = query)
-        refresh()
-    }
-
-    fun setFolder(folderId: String?) {
-        _state.value = _state.value.copy(selectedFolderId = folderId)
-        refresh()
-    }
-
-    fun clearImportError() {
-        _state.value = _state.value.copy(importError = null)
-    }
-
-    fun refresh() {
-        scope.launch {
-            val all = documentRepository.getAllDocumentsSync()
-            val folders = (folderRepository as? com.vic.inkflow.data.JdbcFolderRepository)?.getAllFoldersSync() ?: emptyList()
-            val s = _state.value
-            val filtered = when (s.selectedFolderId) {
-                null -> all
-                "__none__" -> all.filter { it.folderId == null }
-                else -> all.filter { it.folderId == s.selectedFolderId }
+    fun onEvent(event: LibraryEvent) {
+        when (event) {
+            is LibraryEvent.SetQuery -> {
+                _state.value = _state.value.copy(query = event.query)
+                onEvent(LibraryEvent.Refresh)
             }
-            val searched = if (s.query.isBlank()) filtered
-            else filtered.filter { doc ->
-                doc.displayName.contains(s.query, ignoreCase = true) ||
-                    folders.firstOrNull { it.id == doc.folderId }?.name?.contains(s.query, ignoreCase = true) == true
+            is LibraryEvent.SetFolder -> {
+                _state.value = _state.value.copy(selectedFolderId = event.folderId)
+                onEvent(LibraryEvent.Refresh)
             }
-            _state.value = s.copy(documents = searched, folders = folders)
+            is LibraryEvent.ImportDocument -> importDocument(event.chosen, event.mirrorRoot, event.onLibraryChanged)
+            is LibraryEvent.ClearImportError -> _state.value = _state.value.copy(importError = null)
+            is LibraryEvent.Refresh -> refresh()
         }
     }
 
-    /**
-     * Run the full import transaction. Returns true on success so the caller
-     * (the composable) can bump its refresh token / close the picker.
-     *
-     * Validation happens before any I/O so a rejected file costs nothing; the
-     * copy happens before the upsert so a failed copy never leaves a dangling
-     * library entry.
-     */
-    fun importDocument(chosen: File, mirrorRoot: String, onLibraryChanged: () -> Unit) {
+    /** Stroke count for a document (desktop-only query, delegates to the repository). */
+    fun strokeCountForDocument(uri: String): Int =
+        (documentRepository as? com.vic.inkflow.data.JdbcDocumentRepository)?.strokeCountForDocument(uri) ?: 0
+
+    private fun importDocument(chosen: File, mirrorRoot: String, onLibraryChanged: () -> Unit) {
         scope.launch {
             _state.value = _state.value.copy(importing = true, importError = null)
 
@@ -134,7 +105,7 @@ class LibraryViewModel(
 
             _state.value = _state.value.copy(importing = false)
             onLibraryChanged()
-            refresh()
+            onEvent(LibraryEvent.Refresh)
         }
     }
 
@@ -142,7 +113,22 @@ class LibraryViewModel(
         _state.value = _state.value.copy(importing = false, importError = message)
     }
 
-    /** Stroke count for a document (desktop-only query, delegates to the repository). */
-    fun strokeCountForDocument(uri: String): Int =
-        (documentRepository as? com.vic.inkflow.data.JdbcDocumentRepository)?.strokeCountForDocument(uri) ?: 0
+    private fun refresh() {
+        scope.launch {
+            val all = documentRepository.getAllDocumentsSync()
+            val folders = (folderRepository as? com.vic.inkflow.data.JdbcFolderRepository)?.getAllFoldersSync() ?: emptyList()
+            val s = _state.value
+            val filtered = when (s.selectedFolderId) {
+                null -> all
+                "__none__" -> all.filter { it.folderId == null }
+                else -> all.filter { it.folderId == s.selectedFolderId }
+            }
+            val searched = if (s.query.isBlank()) filtered
+            else filtered.filter { doc ->
+                doc.displayName.contains(s.query, ignoreCase = true) ||
+                    folders.firstOrNull { it.id == doc.folderId }?.name?.contains(s.query, ignoreCase = true) == true
+            }
+            _state.value = s.copy(documents = searched, folders = folders)
+        }
+    }
 }

@@ -17,18 +17,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-/**
- * Screen state holder for the AI panel.
- *
- * ## Why this exists
- *
- * `AgentPanel` used to own every piece of agent state (instruction, steps,
- * note, failure, landed, busy, models, tools) inside the composable. That is
- * the same "hoist everything to the root" pattern the library and settings
- * screens had; the agent state is the most complex of the three because the
- * generate flow runs a coroutine that mutates six fields, so lifting it into
- * a `StateFlow`-backed holder makes the state transitions explicit and testable.
- */
 class AgentPanelViewModel(
     private val documentUri: String,
     private val pageIndex: Int,
@@ -46,21 +34,36 @@ class AgentPanelViewModel(
         val models: List<String> = emptyList()
     )
 
+    sealed interface AgentEvent {
+        data class SetInstruction(val value: String) : AgentEvent
+        data object ToggleSendImages : AgentEvent
+        data object CheckModels : AgentEvent
+        data object Generate : AgentEvent
+        data object LandNote : AgentEvent
+    }
+
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     private var tools = rebuildTools(documentUri)
 
-    fun setInstruction(value: String) {
-        _state.value = _state.value.copy(instruction = value)
+    fun onEvent(event: AgentEvent) {
+        when (event) {
+            is AgentEvent.SetInstruction -> _state.value = _state.value.copy(instruction = event.value)
+            is AgentEvent.ToggleSendImages -> {
+                DesktopSettings.modelSendImages = !DesktopSettings.modelSendImages
+                tools = rebuildTools(documentUri)
+            }
+            is AgentEvent.CheckModels -> checkModels()
+            is AgentEvent.Generate -> generate()
+            is AgentEvent.LandNote -> {
+                val msg = landNote()
+                _state.value = _state.value.copy(landed = msg)
+            }
+        }
     }
 
-    fun toggleSendImages() {
-        DesktopSettings.modelSendImages = !DesktopSettings.modelSendImages
-        tools = rebuildTools(documentUri)
-    }
-
-    fun checkModels() {
+    private fun checkModels() {
         scope.launch {
             val found = LocalOpenAiProvider(DesktopSettings.localModelConfig()).listModels()
             val ids = found.map { it.id }
@@ -71,7 +74,7 @@ class AgentPanelViewModel(
         }
     }
 
-    fun generate() {
+    private fun generate() {
         val s = _state.value
         if (s.busy) return
         _state.value = s.copy(busy = true, failure = null, landed = null, note = null, steps = emptyList())
@@ -93,7 +96,7 @@ class AgentPanelViewModel(
         }
     }
 
-    fun landNote(): String {
+    private fun landNote(): String {
         val produced = _state.value.note ?: return "筆記沒有內容可寫"
         return when (val result = landing.land(produced)) {
             is NoteLanding.Placed ->
@@ -108,10 +111,6 @@ class AgentPanelViewModel(
         }
     }
 
-    fun setLanded(message: String) {
-        _state.value = _state.value.copy(landed = message)
-    }
-
     private fun rebuildTools(documentUri: String): List<com.vic.inkflow.agent.AgentTool> {
         val base = mutableListOf<com.vic.inkflow.agent.AgentTool>(ReadPageTextTool(documentUri))
         if (DesktopSettings.modelSendImages) {
@@ -121,7 +120,6 @@ class AgentPanelViewModel(
     }
 
     companion object {
+        private const val DEFAULT_INSTRUCTION = "把這一頁整理成教材筆記：重點、範例、字卡與自測題"
     }
 }
-
-internal const val DEFAULT_INSTRUCTION = "把這一頁整理成教材筆記：重點、範例、字卡與自測題"
