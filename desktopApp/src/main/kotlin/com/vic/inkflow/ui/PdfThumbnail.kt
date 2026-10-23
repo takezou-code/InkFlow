@@ -55,7 +55,8 @@ import kotlinx.coroutines.withContext
 fun PdfThumbnail(
     uri: String,
     modifier: Modifier = Modifier,
-    dpi: Float = 48f
+    dpi: Float = 48f,
+    contentScale: ContentScale = ContentScale.Crop
 ) {
     var bitmap by remember(uri, dpi) { mutableStateOf<ImageBitmap?>(null) }
     var failed by remember(uri, dpi) { mutableStateOf(false) }
@@ -77,7 +78,7 @@ fun PdfThumbnail(
             bitmap = image,
             contentDescription = null,
             modifier = modifier,
-            contentScale = ContentScale.Crop
+            contentScale = contentScale
         )
     } else {
         Box(

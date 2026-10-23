@@ -2,8 +2,19 @@ package com.vic.inkflow.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.rememberScrollState
@@ -12,30 +23,53 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material.icons.outlined.Description
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.vic.inkflow.data.DatabaseManager
 import com.vic.inkflow.data.DocumentEntity
-import com.vic.inkflow.util.LocalImport
+import com.vic.inkflow.ui.kit.DeskDims
+import com.vic.inkflow.ui.kit.DeskPillButton
+import com.vic.inkflow.ui.kit.DeskScreen
+import com.vic.inkflow.ui.kit.DeskSearchField
+import com.vic.inkflow.ui.kit.DeskSpace
 import com.vic.inkflow.ui.theme.ShapeMd
+import com.vic.inkflow.ui.theme.ShapeSm
 import com.vic.inkflow.ui.theme.ShapeXl
+import com.vic.inkflow.util.LocalImport
+import com.vic.inkflow.util.PdfManager
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 
 /**
- * Library View (spec §4A): category rail on the left (handled by MainKt),
- * search field, and a card grid of synced documents with thumbnails.
+ * The library: the documents on this machine, with a cover, a name, and when it
+ * was last opened.
+ *
+ * ## What changed, and why
+ *
+ * It used to open with the tablet's `LibraryHeroPanel` — a serif wordmark and a
+ * full-width search pill — and then stack three more full-width rows (sync pill,
+ * folder chips, import button) before the first card. Four rows of chrome, each
+ * with its own inset, so nothing lined up with anything and the content started
+ * 400px down the window.
+ *
+ * Now the screen is a [DeskScreen]: one title, one row of actions, one filter row,
+ * then the documents. The search field is in the header where a search field
+ * belongs, and the tablet's hero stays where it is — on the tablet, where it has
+ * room.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LibraryView(
     databaseManager: DatabaseManager,
@@ -118,126 +152,38 @@ fun LibraryView(
         }
     }
 
-    Column(modifier = modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-        // The tablet's own hero panel — serif italic wordmark with a moving gradient
-        // shimmer, staggered entrance, glass search field, grid/list toggle — lifted
-        // into `:shared` so the desktop runs the same component instead of a
-        // hand-built header row.
-        LibraryHeroPanel(
-            searchQuery = query,
-            onSearchQueryChange = { query = it },
-            isDarkTheme = InkThemeState.darkMode,
-            isGridView = true,
-            onToggleGridView = {},
-            hazeState = rememberHazeState()
-        )
-
-        // Sync status stays here rather than in the hero panel: it has no slot there,
-        // and "has this ever synced" is the only signal the user gets that the
-        // library is populated at all.
-        val tabletOnline = remember(syncStatusText) {
-            !syncStatusText.startsWith("未偵測到") && !syncStatusText.startsWith("等待")
-        }
-        // Sync status rides the shared selection pill when online (armed state, in
-        // the tablet's language) and plain faux glass when offline. The old
-        // private glassPill is gone — one selection language everywhere.
-        Box(
-            modifier = Modifier.padding(horizontal = 16.dp),
-            contentAlignment = Alignment.CenterStart
-        ) {
-            Box(
-                modifier = Modifier
-                    .then(
-                        if (tabletOnline) Modifier.glassSelectionPill(CircleShape)
-                        else Modifier.chromeGlass(InkThemeState.darkMode, CircleShape)
-                    )
-                    .clip(CircleShape)
-                    .padding(horizontal = 12.dp, vertical = 6.dp)
-            ) {
-                Text(
-                    syncStatusText,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = if (tabletOnline) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-        }
-
-
-        Spacer(Modifier.height(12.dp))
-
-        // ── Folder filter ──────────────────────────────────────────────────
-        // Shared option chips in a scrolling row, not M3 FilterChips: the folder
-        // list comes from the tablet and has no bounded length, so the row
-        // scrolls instead of clipping.
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState())
-        ) {
-            GlassOptionChip(
-                text = "全部",
-                selected = selectedFolderId == null,
-                onClick = { onFolderSelected(null) },
-                isDark = InkThemeState.darkMode
+    DeskScreen(
+        title = "文件庫",
+        subtitle = buildString {
+            append("${docs.size} 份文件")
+            if (query.isNotBlank()) append(" · 搜尋「$query」")
+        },
+        actions = {
+            SyncStatusPill(syncStatusText)
+            DeskSearchField(
+                value = query,
+                onValueChange = { query = it },
+                placeholder = "搜尋標題或檔名",
+                modifier = Modifier.width(240.dp)
             )
-            folders.forEach { f ->
-                GlassOptionChip(
-                    text = f.name,
-                    selected = selectedFolderId == f.id,
-                    onClick = { onFolderSelected(f.id) },
-                    isDark = InkThemeState.darkMode
-                )
-            }
-            GlassOptionChip(
-                text = "未分類",
-                selected = selectedFolderId == "__none__",
-                onClick = { onFolderSelected("__none__") },
-                isDark = InkThemeState.darkMode
+            DeskPillButton(
+                text = if (importing) "匯入中…" else "開啟 PDF",
+                icon = Icons.Default.UploadFile,
+                onClick = { pickAndImport() },
+                enabled = !importing
             )
-        }
+        },
+        modifier = modifier
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            FolderChips(
+                folders = folders.map { it.id to it.name },
+                selectedFolderId = selectedFolderId,
+                onFolderSelected = onFolderSelected
+            )
 
-        Spacer(Modifier.height(12.dp))
-
-        // ── Actions row ───────────────────────────────────────────────────
-        // The import control sits above the grid rather than inside the hero panel:
-        // the hero is the tablet's shared component and has no slot for one, and
-        // bolting a button onto it would fork shared UI just to suit the desktop.
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            // Glass pill button, not an M3 OutlinedButton: actions on glass stay in
-            // the shared press language (glassClickable) instead of bolting an
-            // opaque control onto the backdrop.
-            Box(
-                modifier = Modifier
-                    .chromeGlass(InkThemeState.darkMode, CircleShape)
-                    .glassClickable(
-                        onClick = { pickAndImport() },
-                        shape = CircleShape,
-                        enabled = !importing
-                    )
-                    .padding(horizontal = 14.dp, vertical = 8.dp)
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    val contentColor = glassContentColor(InkThemeState.darkMode)
-                        .copy(alpha = if (importing) 0.38f else 1f)
-                    Icon(Icons.Default.UploadFile, null, modifier = Modifier.size(16.dp), tint = contentColor)
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        if (importing) "匯入中…" else "開啟本機 PDF",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = contentColor
-                    )
-                }
-            }
             importError?.let { msg ->
+                Spacer(Modifier.height(DeskSpace.xs))
                 Text(
                     msg,
                     style = MaterialTheme.typography.bodySmall,
@@ -246,46 +192,132 @@ fun LibraryView(
                     overflow = TextOverflow.Ellipsis
                 )
             }
-        }
 
-        Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(DeskSpace.sm))
 
-        // ── Document card grid ───────────────────────────────────────────────
-        if (docs.isEmpty()) {
-            EmptyLibrary(query = query, onImport = { pickAndImport() })
-        } else {
-            LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = 210.dp),
-                horizontalArrangement = Arrangement.spacedBy(14.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
-                contentPadding = PaddingValues(bottom = 24.dp),
-                modifier = Modifier.fillMaxSize()
-            ) {
-                items(docs.size, key = { docs[it].uri }) { i ->
-                    DocumentCard(
-                        document = docs[i],
-                        strokeCount = databaseManager.strokeCountForDocument(docs[i].uri),
-                        folderName = folders.firstOrNull { it.id == docs[i].folderId }?.name,
-                        onClick = { onDocumentSelected(docs[i].uri) }
-                    )
+            if (docs.isEmpty()) {
+                EmptyLibrary(query = query, onImport = { pickAndImport() })
+            } else {
+                LazyVerticalGrid(
+                    columns = GridCells.Adaptive(minSize = DeskDims.cardMinWidth),
+                    horizontalArrangement = Arrangement.spacedBy(DeskSpace.md),
+                    verticalArrangement = Arrangement.spacedBy(DeskSpace.md),
+                    contentPadding = PaddingValues(bottom = DeskSpace.lg),
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    items(docs.size, key = { docs[it].uri }) { i ->
+                        DocumentCard(
+                            document = docs[i],
+                            strokeCount = databaseManager.strokeCountForDocument(docs[i].uri),
+                            folderName = folders.firstOrNull { it.id == docs[i].folderId }?.name,
+                            onClick = { onDocumentSelected(docs[i].uri) }
+                        )
+                    }
                 }
             }
         }
     }
 }
 
+/**
+ * The tablet-connection pill.
+ *
+ * Rides the shared selection pill when a tablet is present (the tablet's own
+ * "armed" language) and plain glass when it is not. The dot is not decoration:
+ * colour alone would be the only online/offline signal for a user who cannot see
+ * the difference, so the text carries it too.
+ */
+@Composable
+private fun SyncStatusPill(text: String) {
+    val isDark = InkThemeState.darkMode
+    val online = !text.startsWith("未偵測到") && !text.startsWith("等待")
+    Box(
+        modifier = Modifier
+            .then(
+                if (online) Modifier.glassSelectionPill(CircleShape)
+                else Modifier.chromeGlass(isDark, CircleShape)
+            )
+            .clip(CircleShape)
+            .padding(horizontal = DeskSpace.sm, vertical = 8.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .size(6.dp)
+                    .clip(CircleShape)
+                    .background(
+                        if (online) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.outline
+                    )
+            )
+            Spacer(Modifier.width(DeskSpace.xs))
+            Text(
+                text,
+                style = MaterialTheme.typography.labelMedium,
+                color = if (online) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 220.dp)
+            )
+        }
+    }
+}
+
+/**
+ * Folder filters, in a scrolling row.
+ *
+ * Shared option chips, not M3 `FilterChip`: the folder list comes from the tablet
+ * and has no bounded length, so the row scrolls instead of clipping, and the
+ * chips stay in the product's press language.
+ */
+@Composable
+private fun FolderChips(
+    folders: List<Pair<String, String>>,
+    selectedFolderId: String?,
+    onFolderSelected: (String?) -> Unit
+) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(DeskSpace.xs),
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+    ) {
+        GlassOptionChip(
+            text = "全部",
+            selected = selectedFolderId == null,
+            onClick = { onFolderSelected(null) },
+            isDark = InkThemeState.darkMode
+        )
+        folders.forEach { (id, name) ->
+            GlassOptionChip(
+                text = name,
+                selected = selectedFolderId == id,
+                onClick = { onFolderSelected(id) },
+                isDark = InkThemeState.darkMode
+            )
+        }
+        GlassOptionChip(
+            text = "未分類",
+            selected = selectedFolderId == "__none__",
+            onClick = { onFolderSelected("__none__") },
+            isDark = InkThemeState.darkMode
+        )
+    }
+}
+
 @Composable
 private fun EmptyLibrary(query: String, onImport: () -> Unit) {
     // A real empty state, not two grey lines: glass card, icon, guidance, and
-    // the one action that gets the user out of here. The import dialog it opens
-    // is the same native one as the import button above.
+    // the one action that gets the user out of here.
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             modifier = Modifier
                 .widthIn(max = 420.dp)
                 .chromeGlass(InkThemeState.darkMode, ShapeXl)
-                .padding(28.dp)
+                .padding(DeskSpace.lg)
         ) {
             Icon(
                 Icons.Outlined.Description,
@@ -293,14 +325,14 @@ private fun EmptyLibrary(query: String, onImport: () -> Unit) {
                 tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(40.dp)
             )
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(DeskSpace.sm))
             Text(
                 if (query.isNotBlank()) "找不到符合「$query」的文件"
                 else "尚無文件",
                 style = MaterialTheme.typography.titleLarge,
                 color = MaterialTheme.colorScheme.onSurface
             )
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(DeskSpace.xs))
             Text(
                 if (query.isNotBlank()) "換個關鍵字，或清除搜尋看看全部文件。"
                 else "等待局域網同步從平板拉取筆記，或直接開啟本機 PDF。",
@@ -308,14 +340,21 @@ private fun EmptyLibrary(query: String, onImport: () -> Unit) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             if (query.isBlank()) {
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(DeskSpace.md))
                 GlassTextButton(text = "開啟本機 PDF", onClick = onImport)
             }
         }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * One document: a page-shaped cover, its name, and when it was last opened.
+ *
+ * The cover is a real render of page 1 (the same `PdfManager` cache the reader
+ * uses), not a file-type icon — a library of identical placeholders tells the
+ * user nothing about which document is which. It is drawn `Fit` on a paper-grey
+ * plate so a blank page reads as "a blank page", not as a missing image.
+ */
 @Composable
 private fun DocumentCard(
     document: DocumentEntity,
@@ -323,87 +362,83 @@ private fun DocumentCard(
     folderName: String?,
     onClick: () -> Unit
 ) {
-    // Was `ElevatedCard(elevation = 3.dp)`: a solid M3 surface floating by cast
-    // shadow. Replaced with the shared glass material, which is what the tablet
-    // uses for the same card — translucency plus a top rim instead of a drop
-    // shadow, so the thumbnail behind the glass actually shows through.
-    Box(
+    val isDark = InkThemeState.darkMode
+    Column(
         modifier = Modifier
-            .height(210.dp)
-            .chromeGlass(InkThemeState.darkMode, ShapeMd)
+            .height(DeskDims.cardHeight)
+            .chromeGlass(isDark, ShapeMd)
             .glassClickable(onClick = onClick, shape = ShapeMd)
             .clip(ShapeMd)
     ) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            // Thumbnail area: local PDF first page rendered lazily; fallback gradient.
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .padding(DeskSpace.sm)
+        ) {
             Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-                    .background(
-                        // surfaceVariant to surface, never secondaryContainer: the
-                        // near-white container flashes on dark scroll.
-                        Brush.linearGradient(
-                            listOf(
-                                MaterialTheme.colorScheme.surfaceVariant,
-                                MaterialTheme.colorScheme.surface
-                            )
-                        )
-                    ),
+                    .fillMaxSize()
+                    .clip(ShapeSm)
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
                 contentAlignment = Alignment.Center
             ) {
-                val thumb = remember(document.uri) { findLocalPdfThumbSource(document) }
+                val thumb = remember(document.uri) {
+                    PdfManager.resolveFile(document.uri)?.absolutePath
+                }
                 if (thumb != null) {
-                    PdfThumbnail(uri = thumb, modifier = Modifier.fillMaxSize())
+                    PdfThumbnail(
+                        uri = thumb,
+                        modifier = Modifier.fillMaxSize().padding(6.dp),
+                        contentScale = ContentScale.Fit
+                    )
                 } else {
                     Text(
                         document.displayName.substringAfterLast('.', "PDF").uppercase(),
                         style = MaterialTheme.typography.titleLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-                if (document.isFavorite) {
-                    Icon(
-                        Icons.Default.Star,
-                        contentDescription = "Favorite",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.align(Alignment.TopEnd).padding(8.dp).size(18.dp)
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
-            Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                Text(
-                    document.displayName,
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    buildString {
-                        append(SimpleDateFormat("MM-dd HH:mm").format(Date(document.lastOpenedAt)))
-                        append(" · $strokeCount 筆跡")
-                        if (folderName != null) append(" · $folderName")
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+            if (document.isFavorite) {
+                Icon(
+                    Icons.Default.Star,
+                    contentDescription = "我的最愛",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(DeskSpace.xs)
+                        .size(16.dp)
                 )
             }
         }
+        Column(
+            modifier = Modifier.padding(
+                start = DeskSpace.sm,
+                end = DeskSpace.sm,
+                top = DeskSpace.xs,
+                bottom = DeskSpace.sm
+            )
+        ) {
+            Text(
+                document.displayName,
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                buildString {
+                    append(SimpleDateFormat("MM-dd HH:mm").format(Date(document.lastOpenedAt)))
+                    append(" · $strokeCount 筆跡")
+                    if (folderName != null) append(" · $folderName")
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
     }
-}
-
-/** Resolve an existing local file for thumbnail rendering (mirrors PdfViewer logic). */
-private fun findLocalPdfThumbSource(doc: DocumentEntity): String? {
-    val direct = File(doc.localPath)
-    if (direct.exists()) return doc.localPath
-    val mirrored = File(
-        System.getProperty("user.home") + File.separator + ".inkflow" +
-            File.separator + "documents" + File.separator + direct.name
-    )
-    return if (mirrored.exists()) mirrored.absolutePath else null
 }

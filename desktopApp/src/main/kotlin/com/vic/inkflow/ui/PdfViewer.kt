@@ -395,7 +395,7 @@ fun PdfViewer(
     }
 
     val h = handles[focusedPage]
-    Box(
+    Column(
         modifier = modifier
             .fillMaxSize()
             .focusRequester(focusRequester)
@@ -454,47 +454,6 @@ fun PdfViewer(
                 }
             }
     ) {
-        if (pageCount == 0) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                if (docError != null) {
-                    Text(
-                        "無法開啟 PDF：$docError",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.error
-                    )
-                } else {
-                    CircularProgressIndicator()
-                }
-            }
-        } else {
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.fillMaxSize(),
-                verticalArrangement = Arrangement.spacedBy(24.dp)
-            ) {
-                items(pageCount, key = { "$documentUri:$it" }) { idx ->
-                    PageView(
-                        documentUri = documentUri,
-                        pageIndex = idx,
-                        databaseManager = databaseManager,
-                        proposalQueue = proposalQueue,
-                        editable = editable,
-                        onInkChanged = onInkChanged,
-                        refreshToken = refreshToken,
-                        docRefresh = docRefresh,
-                        onLocalEdit = onLocalEdit,
-                        tool = tool,
-                        inkColour = inkColour,
-                        inkWidthPt = inkWidthPt,
-                        shapeSubType = shapeSubType,
-                        handle = handles.getOrPut(idx) { PageHandle() },
-                        onFocused = { focusPage(idx) },
-                        onDocCleared = { docRefresh++ },
-                        noteLanding = if (idx == focusedPage) noteLanding else null
-                    )
-                }
-            }
-        }
         if (editable && pageCount > 0) {
             InkToolbar(
                 tool = tool,
@@ -522,8 +481,49 @@ fun PdfViewer(
                 onZoomIn = { h?.onZoomCentered(1.25f) },
                 onZoomOut = { h?.onZoomCentered(0.8f) },
                 onZoomReset = { h?.onZoomReset() },
-                modifier = Modifier.align(Alignment.TopStart)
+                modifier = Modifier.fillMaxWidth()
             )
+        }
+        if (pageCount == 0) {
+            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                if (docError != null) {
+                    Text(
+                        "無法開啟 PDF：$docError",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                } else {
+                    CircularProgressIndicator()
+                }
+            }
+        } else {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(24.dp)
+            ) {
+                items(pageCount, key = { "$documentUri:$it" }) { idx ->
+                    PageView(
+                        documentUri = documentUri,
+                        pageIndex = idx,
+                        databaseManager = databaseManager,
+                        proposalQueue = proposalQueue,
+                        editable = editable,
+                        onInkChanged = onInkChanged,
+                        refreshToken = refreshToken,
+                        docRefresh = docRefresh,
+                        onLocalEdit = onLocalEdit,
+                        tool = tool,
+                        inkColour = inkColour,
+                        inkWidthPt = inkWidthPt,
+                        shapeSubType = shapeSubType,
+                        handle = handles.getOrPut(idx) { PageHandle() },
+                        onFocused = { focusPage(idx) },
+                        onDocCleared = { docRefresh++ },
+                        noteLanding = if (idx == focusedPage) noteLanding else null
+                    )
+                }
+            }
         }
     }
 }

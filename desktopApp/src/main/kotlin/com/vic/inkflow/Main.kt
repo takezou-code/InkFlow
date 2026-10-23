@@ -8,7 +8,9 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.Home
@@ -47,6 +49,12 @@ import com.vic.inkflow.ui.glassClickable
 import com.vic.inkflow.ui.glassContentColor
 import com.vic.inkflow.ui.glassFieldColors
 import com.vic.inkflow.ui.glassSelectionPill
+import com.vic.inkflow.ui.GlassOptionChip
+import com.vic.inkflow.ui.kit.DeskDivider
+import com.vic.inkflow.ui.kit.DeskScreen
+import com.vic.inkflow.ui.kit.DeskSectionLabel
+import com.vic.inkflow.ui.kit.DeskSpace
+import com.vic.inkflow.ui.kit.DeskTextField
 import com.vic.inkflow.probe.PenProbeScreen
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Image
@@ -217,7 +225,7 @@ object DesktopSettings {
 }
 
 @Composable
-fun App() {
+fun App(uiPreview: String? = null) {
     InkFlowTheme {
         // The backdrop has to sit *behind* everything, including the reading
         // surface, so it is applied at the root rather than per-panel. A
@@ -239,13 +247,13 @@ fun App() {
                 theme = InkThemeState.backdropTheme,
                 modifier = Modifier.fillMaxSize()
             )
-            InkFlowApp()
+            InkFlowApp(uiPreview)
         }
     }
 }
 
 @Composable
-fun InkFlowApp() {
+fun InkFlowApp(uiPreview: String? = null) {
     val databaseManager = remember { DatabaseManager(AppPaths.dbPath).also { it.connect() } }
     // v5: one outbox shared by the editor (records) and the sync loop (sends).
     // Shared rather than owned by either side so the queue survives both: the editor
@@ -270,14 +278,27 @@ fun InkFlowApp() {
 
     // ── Navigation & view state ─────────────────────────────────────────────
     var selectedDocument by remember { mutableStateOf<String?>(null) }
-    var showSettings by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(uiPreview == "settings") }
     // The AI panel is a reader companion: it works on the page in front of the
     // user, so it only makes sense with a document open.
-    var showAgent by remember { mutableStateOf(false) }
+    var showAgent by remember { mutableStateOf(uiPreview == "ai") }
     // The bridge between the panel and the reader's page state.
     val noteLanding = remember { com.vic.inkflow.agent.NoteLandingHandle() }
     var currentPageIndex by remember { mutableStateOf(0) }
     var selectedFolderId by remember { mutableStateOf<String?>(null) }
+
+    // `--ui=settings|reader|ai` opens straight onto a screen with the most
+    // recently opened document. It exists so the UI can be looked at without a
+    // human driving the mouse: a screenshot script cannot click a window that a
+    // fullscreen app is covering, and a screen you cannot see is a screen you
+    // cannot judge. No effect on a normal launch.
+    LaunchedEffect(uiPreview) {
+        if (uiPreview == "reader" || uiPreview == "ai") {
+            selectedDocument = runCatching {
+                databaseManager.getAllDocuments().firstOrNull()?.uri
+            }.getOrNull()
+        }
+    }
 
     // ── Sync state (polled so the indicator tracks background auto-sync) ────
     var isSyncing by remember { mutableStateOf(false) }
@@ -534,14 +555,17 @@ fun InkFlowApp() {
                                 refreshToken = libraryRefresh,
                                 documentTitle = displayName,
                                 noteLanding = noteLanding,
-                                modifier = Modifier.fillMaxSize()
+                                // `weight`, not `fillMaxSize`: in a Row the reader
+                                // used to take the whole width and squeeze the AI
+                                // panel to zero, so the panel never actually
+                                // appeared next to the page.
+                                modifier = Modifier.weight(1f).fillMaxHeight()
                             )
                             if (showAgent) {
                                 AgentPanel(
                                     documentUri = doc,
                                     pageIndex = currentPageIndex,
                                     landing = noteLanding,
-                                    collapsed = false,
                                     onToggleCollapsed = { showAgent = false }
                                 )
                             }
@@ -652,140 +676,142 @@ private fun SettingsView(
     pairingCode: String,
     onPairingCodeChange: (String) -> Unit
 ) {
-    // Settings is chrome, so it gets the glass panel — but the text inside stays
-    // on an opaque run. A translucent panel behind small type is the fastest way
-    // to make a setting screen unreadable.
-    Column(
-        Modifier
-            .fillMaxSize()
-            .padding(28.dp)
+    // Settings used to be a 28dp-padded column that could not scroll, so on a
+    // short window the last rows (the pairing code, the privacy note) simply fell
+    // off the bottom with no way to reach them. It now sits on the same scaffold
+    // as every other screen — title and actions in the header, one scrolling body
+    // with a bounded reading width — and the section cards are the only chrome.
+    DeskScreen(
+        title = "設定",
+        subtitle = "外觀、本機資料與平板同步"
     ) {
-        Text("設定", style = MaterialTheme.typography.headlineMedium)
-        Spacer(Modifier.height(16.dp))
         Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .chromeGlass(isDark = InkThemeState.darkMode, shape = ShapeXl)
-                .padding(24.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState()),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            SettingRow("主題模式", if (InkThemeState.darkMode) "深色（閱讀預設）" else "淺色")
+            Column(
+                modifier = Modifier
+                    .widthIn(max = 760.dp)
+                    .chromeGlass(isDark = InkThemeState.darkMode, shape = ShapeXl)
+                    .padding(DeskSpace.lg),
+                verticalArrangement = Arrangement.spacedBy(DeskSpace.sm)
+            ) {
+                DeskSectionLabel("外觀")
+                SettingRow("主題模式", if (InkThemeState.darkMode) "深色（閱讀預設）" else "淺色")
 
-            // Backdrop intensity. The tablet picks this in its own settings screen;
-            // the desktop had no control because it had no real backdrop to tune.
-            // Now that it runs the tablet's AuroraBackground, the four presets mean
-            // something here too — and being able to flip between them is how you
-            // judge whether the backdrop is the thing making a screen look wrong.
-            Text(
-                "背景",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                BackdropTheme.entries.forEach { t ->
-                    val selected = InkThemeState.backdropTheme == t
-                    Box(
-                        modifier = Modifier
-                            .chromeGlass(
-                                isDark = InkThemeState.darkMode,
-                                shape = CircleShape,
-                                specular = !selected
-                            )
-                            .background(
-                                if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)
-                                else Color.Transparent
-                            )
-                            // glassClickable, not a bare clickable or the desktop's
-                            // simplified pressable: one press language everywhere.
-                            .glassClickable(
+                // Backdrop intensity. The tablet picks this in its own settings
+                // screen; the desktop had no control because it had no real
+                // backdrop to tune. Now that it runs the tablet's
+                // AuroraBackground, the four presets mean something here too.
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(DeskSpace.sm)
+                ) {
+                    Text(
+                        "背景",
+                        style = MaterialTheme.typography.titleSmall,
+                        modifier = Modifier.width(140.dp)
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(DeskSpace.xs)) {
+                        BackdropTheme.entries.forEach { t ->
+                            GlassOptionChip(
+                                text = t.label,
+                                selected = InkThemeState.backdropTheme == t,
                                 onClick = {
                                     InkThemeState.backdropTheme = t
                                     DesktopSettings.backdropThemeName = t.name
                                 },
-                                shape = CircleShape
+                                isDark = InkThemeState.darkMode
                             )
-                            .padding(horizontal = 14.dp, vertical = 7.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            t.label,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = if (selected) MaterialTheme.colorScheme.onSurface
-                            else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        }
                     }
                 }
-            }
-            SettingRow("資料目錄", AppPaths.dir)
-            SettingRow("資料庫", AppPaths.dbPath)
-            SettingRow("已連線設備", if (peerNames.isNotBlank()) peerNames else "無（請確認平板與電腦同一 Wi-Fi，且兩端均開啟 InkFlow）")
-            SettingRow("上次同步", lastSyncSummary ?: "尚無記錄")
 
-            HorizontalDivider(Modifier.padding(vertical = 6.dp))
+                DeskDivider(Modifier.padding(vertical = DeskSpace.xs))
 
-            Text(
-                "平板配對碼",
-                style = MaterialTheme.typography.titleSmall
-            )
-            Text(
-                "在平板「設定 → 電腦同步」開啟同步伺服器後，把畫面上的 8 位數配對碼填在這裡。" +
-                    "留空則不驗證——同一個 Wi-Fi 上任何人都能讀走你的全部文件，所以建議填。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                OutlinedTextField(
-                    value = pairingCode,
-                    onValueChange = onPairingCodeChange,
-                    singleLine = true,
-                    label = { Text("配對碼") },
-                    shape = ShapeSm,
-                    colors = glassFieldColors(InkThemeState.darkMode),
-                    modifier = Modifier.widthIn(min = 200.dp)
+                DeskSectionLabel("本機資料")
+                SettingRow("資料目錄", AppPaths.dir)
+                SettingRow("資料庫", AppPaths.dbPath)
+
+                DeskDivider(Modifier.padding(vertical = DeskSpace.xs))
+
+                DeskSectionLabel("平板同步")
+                SettingRow(
+                    "已連線設備",
+                    if (peerNames.isNotBlank()) peerNames
+                    else "無（請確認平板與電腦同一 Wi-Fi，且兩端均開啟 InkFlow）"
                 )
-                // Live validation: the tablet's code is exactly 8 digits, so a
-                // non-conforming value can only be a typo. Saying so here beats a
-                // handshake rejection on the next sync with no explanation.
-                val normalised = pairingCode.trim()
-                val looksRight = normalised.isEmpty() ||
-                    (normalised.length == 8 && normalised.all { it.isDigit() })
+                SettingRow("上次同步", lastSyncSummary ?: "尚無記錄")
+
+                Spacer(Modifier.height(DeskSpace.xxs))
+
+                Text("平板配對碼", style = MaterialTheme.typography.titleSmall)
                 Text(
-                    when {
-                        normalised.isEmpty() -> "未設定"
-                        looksRight -> "已設定"
-                        else -> "應該是 8 位數字"
-                    },
+                    "在平板「設定 → 電腦同步」開啟同步伺服器後，把畫面上的 8 位數配對碼填在這裡。" +
+                        "留空則不驗證——同一個 Wi-Fi 上任何人都能讀走你的全部文件，所以建議填。",
                     style = MaterialTheme.typography.bodySmall,
-                    color = if (looksRight) MaterialTheme.colorScheme.onSurfaceVariant
-                            else MaterialTheme.colorScheme.error
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(DeskSpace.sm)
+                ) {
+                    DeskTextField(
+                        value = pairingCode,
+                        onValueChange = onPairingCodeChange,
+                        placeholder = "8 位數字",
+                        modifier = Modifier.width(200.dp)
+                    )
+                    // Live validation: the tablet's code is exactly 8 digits, so
+                    // a non-conforming value can only be a typo. Saying so here
+                    // beats a handshake rejection with no explanation.
+                    val normalised = pairingCode.trim()
+                    val looksRight = normalised.isEmpty() ||
+                        (normalised.length == 8 && normalised.all { it.isDigit() })
+                    Text(
+                        when {
+                            normalised.isEmpty() -> "未設定"
+                            looksRight -> "已設定"
+                            else -> "應該是 8 位數字"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (looksRight) MaterialTheme.colorScheme.onSurfaceVariant
+                        else MaterialTheme.colorScheme.error
+                    )
+                }
             }
 
-            HorizontalDivider(Modifier.padding(vertical = 6.dp))
-
+            Spacer(Modifier.height(DeskSpace.md))
             Text(
                 "本機不同步雲端：所有數據僅在局域網內傳輸。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            Spacer(Modifier.height(DeskSpace.lg))
         }
     }
 }
 
 @Composable
 private fun SettingRow(label: String, value: String) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(label, style = MaterialTheme.typography.titleSmall)
+    // Label column is fixed so the values line up down the card; a
+    // `SpaceBetween` row made every value start wherever its label happened to
+    // end, which reads as a ragged table.
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+        Text(
+            label,
+            style = MaterialTheme.typography.titleSmall,
+            modifier = Modifier.width(140.dp)
+        )
         Text(
             value,
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurface,
-            maxLines = 2,
+            maxLines = 3,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.widthIn(max = 520.dp)
+            modifier = Modifier.weight(1f)
         )
     }
 }
@@ -843,7 +869,7 @@ fun main(args: Array<String>) {
             when (probe) {
                 "pen" -> PenProbeScreen()
                 "llm" -> com.vic.inkflow.probe.LlmProbeScreen(llmOptions)
-                else -> App()
+                else -> App(uiPreview = probeArg("ui"))
             }
         }
     }
