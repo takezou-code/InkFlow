@@ -800,26 +800,50 @@ fun main(args: Array<String>) {
     // return null and the taskbar would silently fall back to Compose's default.
     val icon: Painter? = loadWindowIcon()
 
-    // A0.1 pen probe (TEMPORARY): `--probe=pen` swaps the whole app for the
-    // probe window. It runs inside the same window/runtime as the product, so
-    // the numbers it reports are the numbers the packaged app produces — which
-    // is the only measurement worth acting on. See `probe/PenProbe.kt`.
+    // A0.1 / B2.0 probes (TEMPORARY): `--probe=pen` and `--probe=llm` swap the
+    // whole app for the probe window. They run inside the same window/runtime as
+    // the product, so the numbers they report are the numbers the packaged app
+    // produces — which is the only measurement worth acting on. The packaged EXE
+    // matters here specifically: a trimmed jpackage runtime can lack a module
+    // (`java.net.http`) that the full development JDK has. See `probe/PenProbe.kt`
+    // and `probe/LlmProbe.kt`.
     val probe = args.firstOrNull { it.startsWith("--probe=") }
         ?.substringAfter("=")
         ?.trim()
         ?.lowercase()
 
+    fun probeArg(name: String): String? = args
+        .firstOrNull { it.startsWith("--$name=") }
+        ?.substringAfter("=")
+        ?.trim()
+        ?.takeIf { it.isNotEmpty() }
+
+    // Where the model server listens is the user's choice, so both addresses are
+    // tried unless one is given. `--llm-runs` trades wall-clock time for a
+    // tighter estimate of the structured-output pass rate.
+    val llmOptions = com.vic.inkflow.probe.LlmProbeOptions(
+        urls = probeArg("llm-url")?.let { listOf(it) }
+            ?: com.vic.inkflow.probe.LlmProbeOptions().urls,
+        model = probeArg("llm-model"),
+        imagePath = probeArg("llm-image"),
+        runs = probeArg("llm-runs")?.toIntOrNull() ?: 5
+    )
+
     application {
         Window(
             onCloseRequest = ::exitApplication,
-            title = if (probe == "pen") "InkFlow — pen probe" else "InkFlow",
+            title = when (probe) {
+                "pen" -> "InkFlow — pen probe"
+                "llm" -> "InkFlow — LLM probe"
+                else -> "InkFlow"
+            },
             state = rememberWindowState(width = 1280.dp, height = 800.dp),
             icon = icon
         ) {
-            if (probe == "pen") {
-                PenProbeScreen()
-            } else {
-                App()
+            when (probe) {
+                "pen" -> PenProbeScreen()
+                "llm" -> com.vic.inkflow.probe.LlmProbeScreen(llmOptions)
+                else -> App()
             }
         }
     }
