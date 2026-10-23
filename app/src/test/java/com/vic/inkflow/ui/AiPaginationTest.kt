@@ -43,7 +43,6 @@ class AiPaginationTest {
             rendered = emptyMap(),
             modelW = modelW,
             modelH = pageH,
-            fontSize = fontSize,
             fontMetrics = metrics
         )
 

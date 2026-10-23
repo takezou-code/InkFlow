@@ -21,13 +21,20 @@ package com.vic.inkflow.data
 
 /**
  * M2：從 AI 回覆抓回的文字分塊（一塊 = 一次插入單位，M3 排版引擎消費）。
+ *
+ * @property fontSize 這一塊的字級（model pt）。平板全部 16；桌面的教材筆記用 22 當
+ *   章節標題，所以字級跟著塊走，分頁時逐塊量測。預設值讓既有呼叫端不必改。
  */
 data class AiTextChunk(
     val id: String,
     val title: String,
     val body: String,
-    val charCount: Int = body.length
+    val charCount: Int = body.length,
+    val fontSize: Float = DEFAULT_AI_FONT_SIZE
 )
+
+/** AI 匯入的預設字級（model pt）：與分頁、寫入端共用的同一個數字。 */
+const val DEFAULT_AI_FONT_SIZE = 16f
 
 /** 一個文字塊最多幾個字（超過就按句／硬切）。 */
 const val AI_CHUNK_MAX_CHARS = 300

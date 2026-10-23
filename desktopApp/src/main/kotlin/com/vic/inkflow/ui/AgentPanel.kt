@@ -42,6 +42,7 @@ import com.vic.inkflow.agent.AgentGoal
 import com.vic.inkflow.agent.AgentLoop
 import com.vic.inkflow.agent.AgentStep
 import com.vic.inkflow.agent.LocalOpenAiProvider
+import com.vic.inkflow.agent.NoteLanding
 import com.vic.inkflow.agent.NoteLandingHandle
 import com.vic.inkflow.agent.ReadPageTextTool
 import com.vic.inkflow.agent.RenderPageTool
@@ -271,8 +272,17 @@ fun AgentPanel(
                 GlassTextButton(
                     text = "寫進文件",
                     onClick = {
-                        val placed = landing.land(produced)
-                        landed = if (placed > 0) "已寫進第 ${pageIndex + 1} 頁（$placed 段）" else "寫入失敗"
+                        landed = when (val result = landing.land(produced)) {
+                            is NoteLanding.Placed ->
+                                if (result.annotations > 0) "已寫進第 ${pageIndex + 1} 頁（${result.annotations} 段）"
+                                else "筆記沒有內容可寫"
+                            is NoteLanding.Overflow ->
+                                "已寫進第 ${pageIndex + 1} 頁（${result.annotations} 段），" +
+                                    "另有 ${result.dropped} 段這一頁放不下"
+                            NoteLanding.NoRoom -> "這一頁沒有空間（下方已被既有內容寫滿）"
+                            NoteLanding.NoPage -> "找不到可寫入的頁面"
+                            NoteLanding.SaveFailed -> "寫入失敗"
+                        }
                     },
                     enabled = !busy,
                     modifier = Modifier.fillMaxWidth()

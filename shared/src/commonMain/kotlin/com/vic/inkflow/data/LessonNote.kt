@@ -236,4 +236,31 @@ sealed interface NoteBlock {
         }
         return JsonValue.Obj(fields)
     }
+
+    /**
+     * The block flattened into the text a page can store.
+     *
+     * A text annotation is only text, so the note's richer vocabulary has to be
+     * spelled out here: a bullet carries its bullet character, an example
+     * becomes its Q/A lines, a quiz becomes its question, its options and its
+     * answer. The alternative — a second table for note blocks — would be a
+     * protocol change, and the protocol is versioned with both ends shipping.
+     *
+     * Shared rather than duplicated per app: the desktop and the tablet must
+     * store the *same* string, or the same note reads differently on each.
+     */
+    fun asPlainText(): String = when (this) {
+        is Heading -> text
+        is Paragraph -> text
+        is Bullet -> "• $text"
+        is Example -> "Q: $question\nA: $answer"
+        is Flashcard -> "Q: $front\nA: $back"
+        is Quiz -> buildString {
+            append("Q: ").append(question)
+            options.forEachIndexed { index, option ->
+                append('\n').append(index + 1).append(") ").append(option)
+            }
+            append("\nAnswer: ").append(options.getOrNull(answerIndex).orEmpty())
+        }
+    }
 }

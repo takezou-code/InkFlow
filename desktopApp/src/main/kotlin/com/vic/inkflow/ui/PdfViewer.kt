@@ -101,8 +101,11 @@ import androidx.compose.ui.unit.dp
 import com.vic.inkflow.data.DatabaseManager
 import com.vic.inkflow.data.StrokeWithPoints
 import com.vic.inkflow.data.toModel
+import com.vic.inkflow.data.LessonNote
 import com.vic.inkflow.data.TextAnnotationEntity
 import com.vic.inkflow.data.TextMetrics
+import com.vic.inkflow.agent.DesktopNoteLayout
+import com.vic.inkflow.agent.NoteLanding
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.sp
 import androidx.compose.material3.OutlinedTextField
@@ -1248,48 +1251,51 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
      * undone in one press, and — because text annotations have a proposal
      * type already — synced to the tablet without a protocol change.
      *
-     * ## Where it lands, and why it is not perfect
+     * ## Where it lands
      *
      * The tablet gives an AI import its own pages. The desktop cannot: its
      * documents are PDFs and it has no way to add a page to somebody's
-     * textbook file. So the note goes on the page in front of the user, below
-     * the top margin, and it can overlap what is printed there.
+     * textbook file. So the note goes on the page in front of the user, **below
+     * whatever is already there** — ink, typed text, and any earlier note —
+     * measured with the shared `measureContentBottom`. If fewer than two lines
+     * fit, nothing is written and the caller says so; a note that overlaps the
+     * page's content is worse than a note that was refused, because the overlap
+     * is invisible until it is too late.
      *
-     * That is a real limitation, not a design choice, and the alternatives are
-     * worse: rewriting the user's PDF to add a page would change the file the
-     * tablet mirrors, and a note that is not on the page at all would not be
-     * the artefact the feature promises. The user can drag the note (the
-     * desktop can move annotations) and undo it in one press.
-     *
-     * @return how many blocks were placed. Blocks that did not fit are not
-     *   placed and not hidden — the caller reports the difference.
+     * The layout itself is the shared pipeline (`:shared`'s `paginateAiBlocks`),
+     * so the line breaks and the line height are the tablet's, not a second
+     * opinion. Only the first page is placed; the rest is reported as overflow.
      */
-    fun landNote(note: com.vic.inkflow.data.LessonNote): Int {
-        val box = pageBox ?: return 0
-        val width = box.widthPt
-        val height = box.heightPt
-        if (width <= 0f || height <= 0f) return 0
-
-        val layout = com.vic.inkflow.agent.NoteLayout.layout(
-            note = note,
-            pageWidthPt = width,
-            pageHeightPt = height,
-            startBaselineY = com.vic.inkflow.agent.NoteLayout.MARGIN + com.vic.inkflow.agent.NoteLayout.BODY_SIZE
+    fun landNote(note: LessonNote): NoteLanding {
+        val box = pageBox ?: return NoteLanding.NoPage
+        val bottom = DesktopNoteLayout.contentBottomOf(
+            strokes = strokes.map { it.stroke.toModel() },
+            texts = texts.map { it.toModel() }
         )
-        if (layout.placed.isEmpty()) return 0
+        val page = DesktopNoteLayout.layout(
+            note = note,
+            pageWidth = box.widthPt,
+            pageHeight = box.heightPt,
+            contentBottom = bottom
+        ) ?: return NoteLanding.NoRoom
+        if (page.placed.isEmpty()) return NoteLanding.Placed(0)
 
-        val notes = layout.placed.map { placed ->
+        val notes = page.placed.map { placed ->
             TextAnnotationEntity(
                 documentUri = documentUri,
                 pageIndex = requestedPage,
                 docY = null,
                 text = placed.text,
                 modelX = placed.modelX,
-                modelY = placed.baselineY,
+                modelY = placed.modelY,
                 fontSize = placed.fontSize,
+                // The text is pre-wrapped to this width, so the box is the wrap
+                // width — the same contract the tablet's AI text uses.
+                boxWidth = placed.boxWidth,
                 colorArgb = inkColour
             )
         }
+        var saved = true
         runCatching { notes.forEach { databaseManager.saveTextAnnotation(it) } }
             .onSuccess {
                 texts = texts + notes
@@ -1297,9 +1303,15 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                 recordOps(notes.map { upsertTextOp(it) })
                 onInkChanged()
             }.onFailure {
+                saved = false
                 logger.error(it) { "Failed to save the note on page ${requestedPage + 1}" }
             }
-        return layout.placed.size
+        if (!saved) return NoteLanding.SaveFailed
+        return if (page.dropped > 0) {
+            NoteLanding.Overflow(notes.size, page.dropped)
+        } else {
+            NoteLanding.Placed(notes.size)
+        }
     }
 
     /**
@@ -2223,7 +2235,13 @@ for (swp in strokes) {
                         2 -> TextAlign.End
                         else -> TextAlign.Start
                     },
-                    lineHeight = androidx.compose.ui.unit.TextUnit.Unspecified
+                    // The line height is pinned to the tablet's 1.2 em rather than
+                    // left to the font: the hit box, the PDF export, the shared
+                    // content measurement and the tablet all assume 1.2, so a
+                    // font whose natural leading is taller would draw outside its
+                    // own box — and the *next* note would then be measured onto
+                    // the last line's descenders.
+                    lineHeight = with(density) { (t.fontSize * TextMetrics.LINE_SPACING * scale).toSp() }
                 )
             }
         }

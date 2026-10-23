@@ -239,13 +239,13 @@ fun resolveAiBlocks(blocks: List<AiBlock>, rendered: Map<String, RenderedMath>, 
  *   平板用 `Paint`（DEFAULT_BOLD），桌面用自己的係數模型。抽出來是為了讓本函數能在
  *   JVM 單測跑（`android.graphics.Paint` 在單測是 stub，`fontMetrics` 回 null），
  *   也讓兩個 app 用各自**渲染時真正用的**那組數字排版。
+ *   字級不是參數：它在 [AiTextChunk.fontSize] 上，逐塊量測。
  */
 fun paginateAiBlocks(
     blocks: List<AiBlock>,
     rendered: Map<String, RenderedMath>,
     modelW: Float,
     modelH: Float,
-    fontSize: Float = 16f,
     marginH: Float = AI_MARGIN_H,
     marginTop: Float = 64f,
     marginBottom: Float = 64f,
@@ -256,11 +256,9 @@ fun paginateAiBlocks(
     /** 數學圖的渲染參考寬（px）；預設是平板的 KaTeX 寬。 */
     mathReferenceWidthPx: Float = MATH_RENDER_REFERENCE_W_PX
 ): List<List<Placed>> {
-    // 與 InkCanvas 同字體/字號量測（DEFAULT_BOLD），行高公式與渲染器一致
-    val m = fontMetrics(fontSize)
-    val lineH = -m[0] + m[1] + m[2]
-    val ascent = m[0]
-    if (lineH <= 0f) return emptyList()
+    // 與 InkCanvas 同字體/字號量測（DEFAULT_BOLD），行高公式與渲染器一致。
+    // 字級跟著塊走（[AiTextChunk.fontSize]）：平板全是 [DEFAULT_AI_FONT_SIZE]，
+    // 桌面用 22 排章節標題，所以不能假設全篇同一個字級。
     val contentWpt = modelW - marginH * 2
     // 預設邊距下 contentWpt == aiTextContentWidth(modelW)：分頁寬與寫入端同源。
     if (contentWpt <= 100f) return emptyList()
@@ -273,8 +271,13 @@ fun paginateAiBlocks(
         cur = mutableListOf()
         cursorTop = marginTop
     }
-    // lines：已折好的行；必要時跨頁切段（一段一 annotation）
-    fun emitLines(lines: List<String>) {
+    // lines：已折好的行；必要時跨頁切段（一段一 annotation）。
+    // 量測逐塊做：每塊可能有自己的字級（平板全 16，桌面標題 22）。
+    fun emitLines(lines: List<String>, size: Float) {
+        val m = fontMetrics(size)
+        val lineH = -m[0] + m[1] + m[2]
+        val ascent = m[0]
+        if (lineH <= 0f) return
         var idx = 0
         while (idx < lines.size) {
             val room = modelH - marginBottom - cursorTop
@@ -291,7 +294,7 @@ fun paginateAiBlocks(
                         text = seg.joinToString("\n") { it.trimEnd() },
                         modelX = marginH,
                         modelY = cursorTop - ascent,
-                        fontSize = fontSize,
+                        fontSize = size,
                         boxWidth = contentWpt
                     )
                 )
@@ -311,8 +314,9 @@ fun paginateAiBlocks(
     for (b in blocks) {
         when (b) {
             is AiTextBlock -> {
-                val lines = layoutLines(b.chunk.body.trim(), fontSize, contentWpt)
-                if (lines.isNotEmpty()) emitLines(lines)
+                val size = b.chunk.fontSize
+                val lines = layoutLines(b.chunk.body.trim(), size, contentWpt)
+                if (lines.isNotEmpty()) emitLines(lines, size)
             }
             is AiMathBlock -> {
                 val rm = rendered[b.id] ?: continue

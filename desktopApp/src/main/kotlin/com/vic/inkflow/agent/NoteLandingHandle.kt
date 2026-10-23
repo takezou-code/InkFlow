@@ -13,19 +13,22 @@ import com.vic.inkflow.data.LessonNote
  */
 class NoteLandingHandle {
 
-    private var lander: ((LessonNote) -> Int)? = null
+    private var lander: ((LessonNote) -> NoteLanding)? = null
 
     /**
      * Lands [note] on the page the reader is showing.
      *
-     * @return how many blocks were placed; `0` when no reader is bound.
+     * @return what happened, as a value rather than a count: "wrote 3 blocks",
+     *   "the page is full" and "the save failed" are three different things to
+     *   tell the user, and a count cannot express the last two.
+     *   [NoteLanding.NoPage] when no reader is bound.
      */
-    fun land(note: LessonNote): Int = lander?.invoke(note) ?: 0
+    fun land(note: LessonNote): NoteLanding = lander?.invoke(note) ?: NoteLanding.NoPage
 
     /** Whether a reader is currently bound. */
     val isBound: Boolean get() = lander != null
 
-    internal fun bind(lander: (LessonNote) -> Int) {
+    internal fun bind(lander: (LessonNote) -> NoteLanding) {
         this.lander = lander
     }
 
