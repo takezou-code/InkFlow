@@ -220,6 +220,7 @@ private class PageHandle {
     var onClearDocument: () -> Unit = {}
     var onZoomCentered: (Float) -> Unit = {}
     var onZoomReset: () -> Unit = {}
+    var onFitWidth: () -> Unit = {}
     val canUndo = mutableStateOf(false)
     val canRedo = mutableStateOf(false)
     val selectionCount = mutableStateOf(0)
@@ -486,6 +487,9 @@ fun PdfViewer(
                 onZoomIn = { h?.onZoomCentered(1.25f) },
                 onZoomOut = { h?.onZoomCentered(0.8f) },
                 onZoomReset = { h?.onZoomReset() },
+                onFitWidth = { h?.onFitWidth() },
+                onPrevPage = { scrollToPage(focusedPage - 1) },
+                onNextPage = { scrollToPage(focusedPage + 1) },
                 modifier = Modifier.fillMaxWidth()
             )
         }
@@ -505,7 +509,7 @@ fun PdfViewer(
             LazyColumn(
                 state = listState,
                 modifier = Modifier.weight(1f).fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(24.dp)
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(pageCount, key = { "$documentUri:$it" }) { idx ->
                     PageView(
@@ -1720,6 +1724,17 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
         zoom.floatValue = 1f
         pan.value = Offset.Zero
     }
+    handle.onFitWidth = {
+        val box = pageBox
+        val viewportW = viewport.value.width
+        val viewportH = viewport.value.height
+        if (box != null && box.widthPt > 0f && viewportW > 0f && viewportH > 0f) {
+            val fitWidthScale = viewportW / box.widthPt
+            val fitScale = minOf(viewportW / box.widthPt, viewportH / box.heightPt)
+            zoom.floatValue = (fitWidthScale / fitScale).coerceIn(MIN_ZOOM, MAX_ZOOM)
+            pan.value = Offset.Zero
+        }
+    }
     LaunchedEffect(strokes, texts, selectedIds, selectedTextIds, textDraft, pageBox, zoom.floatValue) {
             handle.canUndo.value = undoStack.canUndo.value
             handle.canRedo.value = undoStack.canRedo.value
@@ -1795,7 +1810,10 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
         // â”€â”€ Page + ink, one transformable surface â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         // Captured here (composable scope) because the draw scope below cannot
         // read MaterialTheme.
-        val pageEdgeColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
+        val pageEdgeColor = if (InkThemeState.darkMode)
+            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+        else
+            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
         // é¸å–æ¡†ï¼é‡é»žè‰²ï¼šè·Ÿä¸»é¡ŒåŒä¸€è®Šæ•¸ï¼ˆprimaryï¼‰ï¼Œä¸å¯«æ­»å“ç‰Œé›
         val selectionAccent = MaterialTheme.colorScheme.primary
         Canvas(
@@ -2446,6 +2464,9 @@ private fun InkToolbar(
     onZoomIn: () -> Unit,
     onZoomOut: () -> Unit,
     onZoomReset: () -> Unit,
+    onFitWidth: () -> Unit = {},
+    onPrevPage: () -> Unit = {},
+    onNextPage: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     // One row, period: tools, history, colours, actions and AI ride a single
@@ -2468,7 +2489,7 @@ private fun InkToolbar(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(2.dp)
         ) {
-            InkToolbarTitle(documentTitle, focusedPage, pageCount)
+            InkToolbarTitle(documentTitle, focusedPage, pageCount, onPrevPage, onNextPage)
             InkToolbarTools(tool, selectionCount, onToolChange)
             androidx.compose.material3.VerticalDivider(
                 modifier = Modifier.height(24.dp).padding(horizontal = 6.dp),
@@ -2481,7 +2502,7 @@ private fun InkToolbar(
                 modifier = Modifier.height(24.dp).padding(horizontal = 6.dp),
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
             )
-            InkToolbarZoom(zoom, onZoomOut, onZoomReset, onZoomIn)
+            InkToolbarZoom(zoom, onZoomOut, onZoomReset, onFitWidth, onZoomIn)
             androidx.compose.material3.VerticalDivider(
                 modifier = Modifier.height(24.dp).padding(horizontal = 6.dp),
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)

@@ -16,6 +16,8 @@ import androidx.compose.material.icons.rounded.Brush
 import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.Gesture
 import androidx.compose.material.icons.rounded.Highlight
+import androidx.compose.material.icons.rounded.KeyboardArrowLeft
+import androidx.compose.material.icons.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.PanTool
 import androidx.compose.material.icons.rounded.ShapeLine
 import androidx.compose.material.icons.rounded.TextFields
@@ -55,7 +57,13 @@ import kotlin.math.roundToInt
  */
 
 @Composable
-fun InkToolbarTitle(documentTitle: String, focusedPage: Int, pageCount: Int) {
+fun InkToolbarTitle(
+    documentTitle: String,
+    focusedPage: Int,
+    pageCount: Int,
+    onPrevPage: () -> Unit,
+    onNextPage: () -> Unit
+) {
     if (documentTitle.isNotBlank()) {
         Text(
             documentTitle,
@@ -66,6 +74,8 @@ fun InkToolbarTitle(documentTitle: String, focusedPage: Int, pageCount: Int) {
             modifier = Modifier.widthIn(max = 180.dp).padding(end = 4.dp)
         )
     }
+    // Page navigation: prev/next buttons + page number
+    InkToolIcon(Icons.Rounded.KeyboardArrowLeft, "上一頁", false, enabled = focusedPage > 0, onClick = onPrevPage)
     Text(
         "${focusedPage + 1}/$pageCount",
         style = MaterialTheme.typography.labelMedium,
@@ -73,6 +83,7 @@ fun InkToolbarTitle(documentTitle: String, focusedPage: Int, pageCount: Int) {
         maxLines = 1,
         modifier = Modifier.padding(end = 4.dp)
     )
+    InkToolIcon(Icons.Rounded.KeyboardArrowRight, "下一頁", false, enabled = focusedPage < pageCount - 1, onClick = onNextPage)
 }
 
 @Composable
@@ -153,9 +164,11 @@ fun InkToolbarZoom(
     zoom: Float,
     onZoomOut: () -> Unit,
     onZoomReset: () -> Unit,
+    onFitWidth: () -> Unit,
     onZoomIn: () -> Unit
 ) {
     InkToolIcon(Icons.Rounded.ZoomOut, "縮小", false, onClick = onZoomOut)
+    // Fit page (reset to 100%)
     Box(
         modifier = Modifier
             .size(48.dp)
@@ -169,6 +182,8 @@ fun InkToolbarZoom(
             color = glassContentColor(InkThemeState.darkMode)
         )
     }
+    // Fit width (text button: no single icon reads as "fit to width" clearly)
+    GlassTextButton(text = "適合寬度", onClick = onFitWidth)
     InkToolIcon(Icons.Rounded.ZoomIn, "放大", false, onClick = onZoomIn)
 }
 
