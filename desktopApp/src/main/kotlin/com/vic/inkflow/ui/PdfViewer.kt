@@ -1,4 +1,4 @@
-package com.vic.inkflow.ui
+﻿package com.vic.inkflow.ui
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -145,7 +145,7 @@ private val logger = KotlinLogging.logger {}
  *
  * ## The coordinate problem this solves
  *
- * Strokes arrive in the tablet's **model space** — PDF points, i.e. roughly
+ * Strokes arrive in the tablet's **model space** â€” PDF points, i.e. roughly
  * 0..595 x 0..842 for A4 portrait. The page is drawn at whatever size fills the
  * viewport, so drawing `point.x, point.y` straight onto the canvas puts every stroke at
  * the wrong scale, jammed into one corner.
@@ -163,7 +163,7 @@ private val logger = KotlinLogging.logger {}
  * ```
  *
  * The image and the ink share one `translate` and one `scale`, so they cannot drift
- * apart — there is no second set of arithmetic to get wrong. The page box used for both
+ * apart â€” there is no second set of arithmetic to get wrong. The page box used for both
  * is the one carried by the raster itself, so "the page was re-read between rendering and
  * drawing" is not a failure mode. (The old code computed absolute screen positions and
  * then subtracted the origin again inside the translate block; same result, one more
@@ -184,15 +184,15 @@ private val logger = KotlinLogging.logger {}
  *
  * ## Gestures
  *
- * - drag / pinch — pan and zoom, about the pinch centroid. Rotation is locked out so a
+ * - drag / pinch â€” pan and zoom, about the pinch centroid. Rotation is locked out so a
  *   rotated page can never disagree with its ink.
- * - Ctrl (or Cmd) + wheel — zoom about the pointer, one step per notch: the PDF reader
+ * - Ctrl (or Cmd) + wheel â€” zoom about the pointer, one step per notch: the PDF reader
  *   convention, and the only wheel binding that touches zoom.
- * - wheel — pan vertically, Shift + wheel — pan horizontally, about 72 px per notch. Plain
+ * - wheel â€” pan vertically, Shift + wheel â€” pan horizontally, about 72 px per notch. Plain
  *   wheel is deliberately pan rather than page turn: scrolling is how you move around
  * * inside a page, and jumping whole pages on every notch makes a long document
  *   unusable. Page turn therefore lives on the keys and the nav bar, where it is explicit.
- * - PageUp / PageDown, arrow keys, Home / End — page turn (the canvas takes focus on open)
+ * - PageUp / PageDown, arrow keys, Home / End â€” page turn (the canvas takes focus on open)
  *
  * ## Rendering resolution
  *
@@ -231,7 +231,7 @@ private class PageHandle {
  * Continuous document reader: every page stacked in one scroll, the way
  * mainstream notebook apps work. The wheel scrolls the document, drags draw
  * (or scroll with the grab hand), and the toolbar always acts on the focused
- * page — the one under the last press, or the top visible one at rest.
+ * page â€” the one under the last press, or the top visible one at rest.
  *
  * One [PageView] per page owns its raster, ink, gestures and history; this
  * parent owns navigation, shared tool state, export, and the chrome. Pages
@@ -258,7 +258,7 @@ fun PdfViewer(
      * Where an AI-produced note is landed.
      *
      * The agent panel lives outside this composable, but the note has to land
-     * in the page that has the ink, the undo stack and the proposal queue —
+     * in the page that has the ink, the undo stack and the proposal queue â€”
      * so the reader binds its landing function into the handle while it is on
      * screen.
      */
@@ -342,7 +342,7 @@ fun PdfViewer(
         if (exporting) return
         val src = PdfManager.resolveFile(documentUri)
         if (src == null) {
-            exportMessage = "找不到原始 PDF，無法匯出"
+            exportMessage = "æ‰¾ä¸åˆ°åŽŸå§‹ PDFï¼Œç„¡æ³•åŒ¯å‡º"
             return
         }
         val base = documentTitle.substringBeforeLast('.').ifEmpty { "document" }
@@ -357,11 +357,11 @@ fun PdfViewer(
                 }
             if (mb == null) {
                 exporting = false
-                exportMessage = "匯出失敗：讀不到頁面尺寸"
+                exportMessage = "åŒ¯å‡ºå¤±æ•—ï¼šè®€ä¸åˆ°é é¢å°ºå¯¸"
                 return@launch
             }
             withContext(Dispatchers.Main) {
-                val fd = java.awt.FileDialog(null as java.awt.Frame?, "匯出 PDF", java.awt.FileDialog.SAVE)
+                val fd = java.awt.FileDialog(null as java.awt.Frame?, "åŒ¯å‡º PDF", java.awt.FileDialog.SAVE)
                 fd.file = "$base-annotated.pdf"
                 fd.filenameFilter = java.io.FilenameFilter { _, name -> name.lowercase().endsWith(".pdf") }
                 fd.isVisible = true
@@ -384,11 +384,11 @@ fun PdfViewer(
                     }
                 }.onSuccess { pages ->
                     exporting = false
-                    exportMessage = "已匯出 $pages 頁：${dest.absolutePath}"
+                    exportMessage = "å·²åŒ¯å‡º $pages é ï¼š${dest.absolutePath}"
                 }.onFailure { e ->
                     logger.error(e) { "Failed to export $documentUri" }
                     exporting = false
-                    exportMessage = "匯出失敗：${e.message ?: e::class.simpleName}"
+                    exportMessage = "åŒ¯å‡ºå¤±æ•—ï¼š${e.message ?: e::class.simpleName}"
                 }
             }
         }
@@ -488,7 +488,7 @@ fun PdfViewer(
             Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 if (docError != null) {
                     Text(
-                        "無法開啟 PDF：$docError",
+                        "ç„¡æ³•é–‹å•Ÿ PDFï¼š$docError",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.error
                     )
@@ -551,10 +551,10 @@ private fun PageView(
     modifier: Modifier = Modifier
 ) {
     // Fixed page: the parent owns navigation, so the page-turn state is gone.
-    // Everything below still says `requestedPage` — one alias, zero rewrites.
+    // Everything below still says `requestedPage` â€” one alias, zero rewrites.
     val requestedPage = pageIndex
 
-    // ── Page raster ─────────────────────────────────────────────────────────
+    // â”€â”€ Page raster â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Keyed on the page, so a page turn clears them: page 2's ink drawn over page 1's
     // bitmap for a frame would be worse than a brief spinner.
     var pageBox by remember(documentUri, requestedPage) { mutableStateOf<PageBox?>(null) }
@@ -562,12 +562,12 @@ private fun PageView(
     var renderedDpi by remember(documentUri, requestedPage) { mutableFloatStateOf(0f) }
     var loadError by remember(documentUri, requestedPage) { mutableStateOf<String?>(null) }
 
-    // ── Ink ─────────────────────────────────────────────────────────────────
+    // â”€â”€ Ink â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     var strokes by remember(documentUri, requestedPage, refreshToken, docRefresh) {
         mutableStateOf<List<StrokeWithPoints>>(emptyList())
     }
 
-    // ── Text annotations ────────────────────────────────────────────────────
+    // â”€â”€ Text annotations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Separate list rather than folded into `strokes`: a note has no points and
     // no width, and forcing it into the envelope renderer would invent geometry
     // for it. Its own list also keeps the ink fast path from re-measuring text
@@ -599,7 +599,7 @@ private fun PageView(
     // pressure-varying ink.
     var liveStrokeWidths by remember { mutableStateOf<List<Float>>(emptyList()) }
 
-    // ── Shapes ──────────────────────────────────────────────────────────────
+    // â”€â”€ Shapes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // The subtype is picked in the toolbar before the drag, the way the tablet does
     // it, so one gesture handler covers all four shapes instead of four handlers
     // competing over the same pointer stream. It arrives as a parameter now, shared
@@ -617,7 +617,7 @@ private fun PageView(
     // A pointerInput coroutine captures the values in scope when it *starts*, and
     // it only restarts when its keys change. `box` and `scale` are null/zero on
     // the first composition and only become valid once the page finishes
-    // rendering — with keys of (document, page, editable) the handler therefore
+    // rendering â€” with keys of (document, page, editable) the handler therefore
     // kept calling a converter closed over a null box, so every press was
     // rejected as "outside the page" and the tool looked completely dead.
     //
@@ -625,7 +625,7 @@ private fun PageView(
     // and read `box`/`scale` at call time; rememberUpdatedState re-points them at
     // the current composition so a gesture always uses the transform of the
     // frame it is actually in.
-    // ── View transform ──────────────────────────────────────────────────────
+    // â”€â”€ View transform â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Explicit states, not `by` delegates: the render pipeline reads these from a
     // coroutine, where only a stable reference to the state can be observed.
     val zoom = remember(documentUri, pageIndex) { mutableFloatStateOf(1f) }
@@ -641,7 +641,7 @@ private fun PageView(
      * Reading `zoom`/`viewport` here, from inside a `snapshotFlow`, is what makes the
      * render pipeline react to pinch and to window resizes. It uses the metadata box
      * rather than the rendered one, because it has to decide the DPI *before* the raster
-     * exists — that is the whole reason page geometry is read separately.
+     * exists â€” that is the whole reason page geometry is read separately.
      */
     fun desiredDpi(): Float = PdfManager.renderDpiFor(
         pageWidthPt = pageBox?.widthPt ?: 0f,
@@ -651,7 +651,7 @@ private fun PageView(
         zoom = zoom.floatValue
     )
 
-    // ── Metadata: this page's geometry only, without rasterising ────────────
+    // â”€â”€ Metadata: this page's geometry only, without rasterising â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // The parent loads the page count once for the whole document; each page only
     // needs its own box, for the item aspect and the ink transform.
     LaunchedEffect(documentUri, pageIndex) {
@@ -669,9 +669,9 @@ private fun PageView(
         }
     }
 
-    // ── Raster ──────────────────────────────────────────────────────────────
+    // â”€â”€ Raster â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // PDFBox is blocking and CPU-heavy, so every render runs on Dispatchers.IO, and the
-    // effect is keyed on the page only — a pinch must not restart it.
+    // effect is keyed on the page only â€” a pinch must not restart it.
     //
     // The mutex is what makes the debounce a real throttle. `collectLatest` cancels the
     // *suspended* previous iteration, but PDFBox is a blocking call, so a cancelled render
@@ -718,7 +718,7 @@ private fun PageView(
             }
     }
 
-    // ── Ink ─────────────────────────────────────────────────────────────────
+    // â”€â”€ Ink â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Keyed on refreshToken as well as the page: a background sync writes rows
     // straight into the database without touching this composable's state, so
     // without the token the canvas would keep showing whatever it loaded at open.
@@ -732,7 +732,7 @@ private fun PageView(
             .getOrDefault(emptyList())
     }
 
-    // ── Text ────────────────────────────────────────────────────────────────
+    // â”€â”€ Text â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     LaunchedEffect(documentUri, requestedPage, refreshToken, docRefresh) {
         texts = runCatching {
             withContext(Dispatchers.IO) {
@@ -743,7 +743,7 @@ private fun PageView(
             .getOrDefault(emptyList())
     }
 
-    // ── model -> screen transform ───────────────────────────────────────────
+    // â”€â”€ model -> screen transform â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Derived from the raster itself, never from a separately-read page box: the ink is
     // positioned against the exact geometry of the bitmap underneath it, so "the crop box
     // was re-read between the render and the draw" cannot drift the two apart.
@@ -767,13 +767,13 @@ private fun PageView(
      *
      * Because the page is always centred, the pan range that still keeps it touching all
      * four viewport edges is exactly `|page - viewport| / 2`. When the page fits, that
-     * collapses to zero — a fit-to-window view should not pan at all, and letting it
+     * collapses to zero â€” a fit-to-window view should not pan at all, and letting it
      * drift is how a reader ends up showing an empty grey rectangle with no way back.
 */
     // A pointerInput coroutine captures the values in scope when it *starts*, and
     // it only restarts when its keys change. ox and scale are null/zero on
     // the first composition and only become valid once the page finishes
-    // rendering — with keys of (document, page, editable) the handler therefore
+    // rendering â€” with keys of (document, page, editable) the handler therefore
     // kept calling a converter closed over a null box, so every press was
     // rejected as "outside the page" and the tool looked completely dead.
     //
@@ -799,7 +799,7 @@ private fun PageView(
      *
      * `screen = (viewport - page) / 2 + pan + model * scale`, so a point at screen
      * position [focal] has model position `(focal - origin) / scale`. Measuring against
-     * the *current* origin — pan included — is what makes a zoom on an already-panned page
+     * the *current* origin â€” pan included â€” is what makes a zoom on an already-panned page
      * stay on the spot under the pointer; solving for the pan that puts that same model
      * point back under [focal] is the whole of the anchor maths.
      */
@@ -834,7 +834,7 @@ private fun PageView(
      * coordinate (`pageIndex * stride + boundsTop`), and the tablet backfills it
      * lazily using the live model height when the document is opened. Computing a
      * guess here would need a stride this side does not have, and a wrong stride
-     * puts the stroke somewhere else entirely on the tablet — a wrong answer that
+     * puts the stroke somewhere else entirely on the tablet â€” a wrong answer that
      * is worse than no answer.
      *
      * The database write is the commit point: on success the stroke goes into
@@ -850,7 +850,7 @@ private fun PageView(
      * Snapshot of a drag in progress, folded into one history entry on release.
      *
      * A dedicated class rather than a nested Tuple because the shape is now
-     * (strokes, notes, totalDx, totalDy) — no Quadruple exists, and unpacking four
+     * (strokes, notes, totalDx, totalDy) â€” no Quadruple exists, and unpacking four
      * positional fields of a Tuple leaves the reader guessing which float is which axis.
      */
     data class DragState(
@@ -860,13 +860,13 @@ private fun PageView(
         val dy: Float
     )
 
-    // ── Selection ────────────────────────────────────────────────────────────
+    // â”€â”€ Selection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Ids rather than the objects: the selection has to survive the list being
     // rebuilt after every edit, and identity is what the ink is keyed on anyway.
     var selectedIds by remember(documentUri, pageIndex) { mutableStateOf<Set<String>>(emptySet()) }
 
     // Note ids are a disjoint namespace from stroke ids, so a note and a stroke
-    // can never collide in one set — which is what makes a mixed selection
+    // can never collide in one set â€” which is what makes a mixed selection
     // (drag across both, delete together, undo once) fall out for free.
     var selectedTextIds by remember(documentUri, pageIndex) { mutableStateOf<Set<String>>(emptySet()) }
 
@@ -879,7 +879,7 @@ private fun PageView(
      * A drag writes the database on every frame it moves, so without this the history
      * would gain one entry per frame and a single drag would take dozens of undos to
      * reverse. [DragState] is a dedicated class rather than a nested Tuple because the
-     * shape is now (strokes, notes, totalDx, totalDy) — no Quadruple exists, and
+     * shape is now (strokes, notes, totalDx, totalDy) â€” no Quadruple exists, and
      * unpacking four positional fields of a Tuple leaves the reader guessing which
      * float is which axis.
      */
@@ -925,7 +925,7 @@ private fun PageView(
      * Bounding box of everything selected, strokes and notes together.
      *
      * Note bounds are unioned with the stroke bounds rather than kept separate so
-     * the selection outline wraps a mixed selection in one rectangle — two nested
+     * the selection outline wraps a mixed selection in one rectangle â€” two nested
      * boxes would read as two unrelated selections.
      */
     fun selectionBounds(): Rect? {
@@ -959,7 +959,7 @@ private fun PageView(
      *
      * Every guard reads this instead of `selectedIds.isEmpty()`: a selection can
      * legitimately consist of notes alone, and checking the stroke set would report
-     * "nothing selected" while a note is plainly outlined — which reads as the
+     * "nothing selected" while a note is plainly outlined â€” which reads as the
      * delete key being broken.
      */
     val selectionCount: Int = selectedIds.size + selectedTextIds.size
@@ -989,7 +989,7 @@ private fun PageView(
     }
 
     /**
-     * Moves the whole selection — strokes and notes together — by an incremental
+     * Moves the whole selection â€” strokes and notes together â€” by an incremental
      * ([dx], [dy]).
      *
      * The delta is incremental on purpose. The drag gesture records where the
@@ -1036,12 +1036,12 @@ private fun PageView(
     }
 
     /**
-     * v6 §15.2: the four op builders, each stamping the object's CURRENT version as
+     * v6 Â§15.2: the four op builders, each stamping the object's CURRENT version as
      * the base the tablet will compare against.
      *
      * The base is the version the desktop had when it made the edit. For an upsert
      * that lives in the payload anyway; for a delete there is no payload, so the op
-     * field is the only place it can go — which is why these exist instead of a
+     * field is the only place it can go â€” which is why these exist instead of a
      * caller remembering to add it (23 call sites used to build ops by hand, and one
      * forgotten `baseVersion` is one unarbitrable op, i.e. one silent overwrite).
      */
@@ -1080,7 +1080,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
     /**
      * Files local edits into the v5 proposal queue.
      *
-     * Called next to every undo push, on success only — the queue mirrors what is
+     * Called next to every undo push, on success only â€” the queue mirrors what is
      * actually in the database, never what was attempted. A null queue means
      * local-only mode and skips silently.
      */
@@ -1092,7 +1092,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                 com.vic.inkflow.sync.ProposalQueue.RecordResult.STALE_DROPPED -> {
                     logger.info { "Older desktop edits for ${documentUri.substringAfterLast('/')} were overwritten by a pull" }
                     // The current edit was still filed under the new base, so it
-                    // still needs a ride — a stale drop is not "nothing to send".
+                    // still needs a ride â€” a stale drop is not "nothing to send".
                     filed = true
                 }
                 com.vic.inkflow.sync.ProposalQueue.RecordResult.RECORDED -> filed = true
@@ -1108,7 +1108,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
      * Collapses the drag's incremental writes into one undoable move.
      *
      * A drag that ends where it started moves nothing, so it must not leave an
-     * entry behind — otherwise an undo would appear to do nothing and the user
+     * entry behind â€” otherwise an undo would appear to do nothing and the user
      * would have to press it twice.
      */
     fun commitMove() {
@@ -1129,7 +1129,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
     }
 
     /**
-     * Deletes the selection — strokes and notes together — as one undoable step.
+     * Deletes the selection â€” strokes and notes together â€” as one undoable step.
      *
      * Ink and text are separate tables, so this is two deletes in one command. Doing
      * them as one history entry is what stops "select everything, delete, undo" from
@@ -1200,7 +1200,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
      * Writes the note being typed, then clears the draft.
      *
      * A blank note is discarded rather than stored: an empty annotation has no
-     * bounding box, so it cannot be selected and draws nothing — a row that exists
+     * bounding box, so it cannot be selected and draws nothing â€” a row that exists
      * but is unreachable is worse than no row.
      */
     fun commitText() {
@@ -1248,15 +1248,15 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
      *
      * The note becomes ordinary text annotations, which is what makes it
      * ordinary: it can be moved, edited, exported with the PDF, thumbnailed,
-     * undone in one press, and — because text annotations have a proposal
-     * type already — synced to the tablet without a protocol change.
+     * undone in one press, and â€” because text annotations have a proposal
+     * type already â€” synced to the tablet without a protocol change.
      *
      * ## Where it lands
      *
      * The tablet gives an AI import its own pages. The desktop cannot: its
      * documents are PDFs and it has no way to add a page to somebody's
      * textbook file. So the note goes on the page in front of the user, **below
-     * whatever is already there** — ink, typed text, and any earlier note —
+     * whatever is already there** â€” ink, typed text, and any earlier note â€”
      * measured with the shared `measureContentBottom`. If fewer than two lines
      * fit, nothing is written and the caller says so; a note that overlaps the
      * page's content is worse than a note that was refused, because the overlap
@@ -1290,7 +1290,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                 modelY = placed.modelY,
                 fontSize = placed.fontSize,
                 // The text is pre-wrapped to this width, so the box is the wrap
-                // width — the same contract the tablet's AI text uses.
+                // width â€” the same contract the tablet's AI text uses.
                 boxWidth = placed.boxWidth,
                 colorArgb = inkColour
             )
@@ -1332,7 +1332,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
 /**
      * Persists a shape as a two-point stroke, exactly as the tablet does.
      *
-     * Two points and a `shapeType` tag is the whole representation — no separate
+     * Two points and a `shapeType` tag is the whole representation â€” no separate
      * table. That is what lets shapes sync without any protocol change, and it is
      * why the bounds are computed with min/max here rather than read off the
      * points: RECT and CIRCLE are drawn from the bounds, so a shape dragged
@@ -1430,7 +1430,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
      * Removes the strokes a single eraser drag touched.
      *
      * Hit testing is against each stroke's stored bounds, which is a rectangle rather
-     * than the true envelope — cheap, and generous enough for a mouse. Deletes are
+     * than the true envelope â€” cheap, and generous enough for a mouse. Deletes are
      * per stroke id, so overlapping bounds on the same page are all caught.
      */
     fun eraseAt(pts: List<Offset>) {
@@ -1542,7 +1542,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                 undoStack.push(e)
             }
 
-            // Undo restores the pre-drag snapshot VERBATIM — with no delta applied.
+            // Undo restores the pre-drag snapshot VERBATIM â€” with no delta applied.
             //
             // The snapshot is the position before the drag, so undo is a restore, not
             // a reverse translation. Subtracting the drag total from the snapshot
@@ -1693,7 +1693,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
     }
     val deleteSelectionNow by rememberUpdatedState<() -> Unit> { deleteSelection() }
 
-    // ── Parent bridge ──────────────────────────────────────────────────────
+    // â”€â”€ Parent bridge â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // The toolbar and bottom bar live in the parent reader and act on the
     // focused page through this handle. Plain fields are (re)assigned every
     // composition so they never go stale; snapshot states mirror in an effect.
@@ -1725,7 +1725,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
     }
 
     // Text needs the same treatment, plus a separate one for "the user asked to
-    // start writing here" — the pointer coroutine only knows about geometry.
+    // start writing here" â€” the pointer coroutine only knows about geometry.
     val commitTextNow by rememberUpdatedState<() -> Unit> { commitText() }
     val cancelTextNow by rememberUpdatedState<() -> Unit> { cancelText() }
     val commitShapeNow by rememberUpdatedState<(Offset, Offset) -> Unit> { a, b -> commitShape(a, b) }
@@ -1787,11 +1787,11 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                 .height(maxWidth * aspect * max(zoom.floatValue, 1f))
         ) {
 
-        // ── Page + ink, one transformable surface ───────────────────────────
+        // â”€â”€ Page + ink, one transformable surface â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         // Captured here (composable scope) because the draw scope below cannot
         // read MaterialTheme.
         val pageEdgeColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
-        // 選取框＝重點色：跟主題同一變數（primary），不寫死品牌靛
+        // é¸å–æ¡†ï¼é‡é»žè‰²ï¼šè·Ÿä¸»é¡ŒåŒä¸€è®Šæ•¸ï¼ˆprimaryï¼‰ï¼Œä¸å¯«æ­»å“ç‰Œé›
         val selectionAccent = MaterialTheme.colorScheme.primary
         Canvas(
             modifier = Modifier
@@ -1831,7 +1831,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                         // Shift + wheel pans horizontally and is consumed. A plain
                         // wheel is deliberately NOT consumed: in the continuous
                         // reader it belongs to the page list, which scrolls the
-                        // document — the mainstream behaviour.
+                        // document â€” the mainstream behaviour.
                         val step = Offset(deltaX, deltaY) / WHEEL_NOTCH_UNITS * WHEEL_PAN_PX
                         pan.value = clampPan(pan.value + Offset(step.y, step.x))
                         true
@@ -1861,7 +1861,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                         // toolbar always acts where the user just touched.
                         onFocused()
                         // `toModel` is the current-frame converter, not the one
-                        // captured when this coroutine started — see above.
+                        // captured when this coroutine started â€” see above.
                         val start = toModel(down.position)
                             ?: return@awaitEachGesture // press landed in the margin
                         down.consume()
@@ -1921,7 +1921,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                             // Track the previous model position so each frame moves the
                             // selection by one step. Passing the displacement from the
                             // press instead would re-apply the whole travelled distance
-                            // on every frame — the selection runs away and the stored
+                            // on every frame â€” the selection runs away and the stored
                             // undo baseline ends up being a mid-drag frame.
                             var prevX = start.x
                             var prevY = start.y
@@ -2032,7 +2032,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                     )
                     // Hairline paper edge: with the aurora showing behind the page,
                     // the white sheet needs one pixel of definition against a pale
-                    // sky in light mode. Constant 1px, not scaled — UI chrome,
+                    // sky in light mode. Constant 1px, not scaled â€” UI chrome,
                     // not document content.
                     drawRect(
                         color = pageEdgeColor,
@@ -2091,7 +2091,7 @@ for (swp in strokes) {
                     // viewport origin: this block already runs inside
                     // translate(originX, originY), exactly like drawStroke. Adding the
                     // origin again is what used to throw the preview a full viewport
-                    // away from the cursor — visible as "no preview at all" whenever
+                    // away from the cursor â€” visible as "no preview at all" whenever
                     // the page was centred with a margin.
                     liveStroke?.takeIf { it.isNotEmpty() }?.let { pts ->
                         val previewBase = if (tool == InkTool.Highlighter) inkWidthPt * HIGHLIGHTER_WIDTH_MULT else inkWidthPt
@@ -2110,8 +2110,8 @@ for (swp in strokes) {
                                     )
                                 }
                             ),
-                            // 預覽與定稿用同一個畫法（`:shared` 的 strokeColor/strokeBlendMode）：
-                            // 高亮是 Multiply 混合，不是半透明蓋色。
+                            // é è¦½èˆ‡å®šç¨¿ç”¨åŒä¸€å€‹ç•«æ³•ï¼ˆ`:shared` çš„ strokeColor/strokeBlendModeï¼‰ï¼š
+                            // é«˜äº®æ˜¯ Multiply æ··åˆï¼Œä¸æ˜¯åŠé€æ˜Žè“‹è‰²ã€‚
                             color = strokeColor(Color(inkColour), tool == InkTool.Highlighter),
                             blendMode = strokeBlendMode(tool == InkTool.Highlighter)
                         )
@@ -2120,7 +2120,7 @@ for (swp in strokes) {
                       // Shape preview, drawn through the same translate as
                       // everything else. Rendered as a primitive outline rather than
                       // through the envelope path, which is what it will be
-                      // committed as — so the preview cannot differ from the result.
+                      // committed as â€” so the preview cannot differ from the result.
                       //
                       // Same mapping as the pen preview above: page pixels, no added
                       // viewport origin (the translate already provides it).
@@ -2189,12 +2189,12 @@ for (swp in strokes) {
             }
         }
 
-        // ── Notes layer ───────────────────────────────────────────────────────
+        // â”€â”€ Notes layer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         // Real Text composables rather than draw calls on the canvas.
         //
         // Two reasons, both practical. DrawScope has no drawText in this Compose
         // version, and reaching for Skia directly would mean reimplementing font
-        // fallback — which is exactly what breaks when CJK and Latin share a note.
+        // fallback â€” which is exactly what breaks when CJK and Latin share a note.
         // As composables the notes also get proper text shaping and stay crisp at
         // any DPI for free.
         //
@@ -2239,7 +2239,7 @@ for (swp in strokes) {
                     // left to the font: the hit box, the PDF export, the shared
                     // content measurement and the tablet all assume 1.2, so a
                     // font whose natural leading is taller would draw outside its
-                    // own box — and the *next* note would then be measured onto
+                    // own box â€” and the *next* note would then be measured onto
                     // the last line's descenders.
                     lineHeight = with(density) { (t.fontSize * TextMetrics.LINE_SPACING * scale).toSp() }
                 )
@@ -2258,7 +2258,7 @@ for (swp in strokes) {
         if (loadError != null) {
             Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
                 Text(
-                    "無法開啟 PDF：$loadError",
+                    "ç„¡æ³•é–‹å•Ÿ PDFï¼š$loadError",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.error
                 )
@@ -2267,10 +2267,10 @@ for (swp in strokes) {
 
         // (page navigation and toolbar live in the parent reader)
 
-        // ── Ink toolbar ────────────────────────────────────────────────────
+        // â”€â”€ Ink toolbar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         // Only shown when [editable]. Top-start so it does not collide with the
         // page navigator at the bottom.
-        // ── Note editor ───────────────────────────────────────────────────────
+        // â”€â”€ Note editor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         // A plain borderless field rather than a Material outlined one: it has to
         // sit directly on the page and read as part of the annotation, not as a
         // dialog that happened to land on the paper.
@@ -2286,7 +2286,7 @@ for (swp in strokes) {
                     .offset { IntOffset(textEditorPos.x.roundToInt(), textEditorPos.y.roundToInt()) }
                     .width(280.dp)
                     .focusRequester(textFieldFocus),
-                placeholder = { Text("輸入文字，Enter 完成", style = MaterialTheme.typography.bodySmall) },
+                placeholder = { Text("è¼¸å…¥æ–‡å­—ï¼ŒEnter å®Œæˆ", style = MaterialTheme.typography.bodySmall) },
                 textStyle = MaterialTheme.typography.bodyMedium.copy(color = Color(inkColour)),
                 singleLine = false,
                 maxLines = 4,
@@ -2321,8 +2321,8 @@ for (swp in strokes) {
  * What an undoable edit did, in terms the desktop can actually reverse.
  *
  * Ink and notes both appear here because both tables exist on the desktop now. The
- * tablet's `DrawCommand` is still not reusable wholesale — it carries shape and image
- * branches with no desktop counterpart — but the history *discipline* is shared through
+ * tablet's `DrawCommand` is still not reusable wholesale â€” it carries shape and image
+ * branches with no desktop counterpart â€” but the history *discipline* is shared through
  * `UndoStack`: one gesture is one entry, and every branch has a matching inverse.
  */
 private sealed interface InkEdit {
@@ -2338,7 +2338,7 @@ private sealed interface InkEdit {
      * Grouped, like [Erase]: the note is one thing the user asked for, so it
      * has to come back in one press. Undoing it block by block would leave the
      * user pressing undo five times to remove five lines of somebody else's
-     * prose — and the tablet's `DrawCommand` history has the same rule, that
+     * prose â€” and the tablet's `DrawCommand` history has the same rule, that
      * one gesture is one entry.
      */
     data class AddTexts(val notes: List<com.vic.inkflow.data.TextAnnotationEntity>) : InkEdit
@@ -2348,7 +2348,7 @@ private sealed interface InkEdit {
      *
      * Grouped per gesture rather than per object: a single drag across a paragraph
      * should come back in one press, which is what the tablet's `EraseGesture` does.
-     * Strokes and notes travel together because the user asked for one action —
+     * Strokes and notes travel together because the user asked for one action â€”
      * splitting them would need two undos to reverse one gesture.
      */
     data class Erase(
@@ -2365,11 +2365,11 @@ private sealed interface InkEdit {
      *
      * [dx]/[dy] are the TOTAL for the whole drag, not one frame. A drag writes to the
      * database on every frame it moves, and folding that into a single entry requires
-     * the total — otherwise a selection that travelled 300pt over 30 frames would have
+     * the total â€” otherwise a selection that travelled 300pt over 30 frames would have
      * its 30th frame's 10pt step recorded, and undo would only move it back 10pt.
      *
      * Stored as a delta rather than an "after" snapshot because a move is exactly
-     * invertible — replaying the same translation forward or back cannot drift the way
+     * invertible â€” replaying the same translation forward or back cannot drift the way
      * storing two independently-computed states could.
      */
     data class Move(
@@ -2390,11 +2390,11 @@ private const val TEXT_SIZE_PT = 16f
 
 /**
  * Stroke width in **model units** (PDF points), not pixels, so it scales with the
- * page exactly the way the tablet's does — a 2pt pen is 2pt at any zoom.
+ * page exactly the way the tablet's does â€” a 2pt pen is 2pt at any zoom.
  *
  * This is the default picked width; the live value lives in the reader state and
  * arrives as `inkWidthPt`. The highlighter multiplies it (see below), so the
- * stored per-sample widths — not this constant — are what the renderer reads.
+ * stored per-sample widths â€” not this constant â€” are what the renderer reads.
  */
 private const val INK_WIDTH_PT = 1.6f
 
@@ -2406,7 +2406,7 @@ private const val INK_WIDTH_PT = 1.6f
 private const val HIGHLIGHTER_WIDTH_MULT = 3f
 
 /** Width stops offered in the toolbar while a stroke tool is armed. */
-private val INK_WIDTH_PRESETS = listOf("細" to 1.0f, "標準" to 1.6f, "粗" to 2.6f)
+internal val INK_WIDTH_PRESETS = listOf("ç´°" to 1.0f, "æ¨™æº–" to 1.6f, "ç²—" to 2.6f)
 
 /**
  * Floating ink toolbar: tool, colour, and a destructive clear.
@@ -2449,7 +2449,7 @@ private fun InkToolbar(
     // because the primary tools sit at the head of the row.
     //
     // Near-opaque on purpose: a translucent pill over body text fails both
-    // ways — the page shows through and neither layer stays legible. The rim
+    // ways â€” the page shows through and neither layer stays legible. The rim
     // and sheen from glassDressing keep the glass read without the washout.
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         val pillShape = ShapeLg
@@ -2463,210 +2463,35 @@ private fun InkToolbar(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(2.dp)
         ) {
-            // The document title lives here now that the top app bar is gone: a
-            // compact chip that shrinks to an ellipsis instead of shoving tools
-            // off the row. Bright content colour, not the muted variant: in dark
-            // mode every primary text must stand at full brightness.
-            if (documentTitle.isNotBlank()) {
-                Text(
-                    documentTitle,
-                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                    color = glassContentColor(InkThemeState.darkMode),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.widthIn(max = 180.dp).padding(end = 4.dp)
-                )
-            }
-            // Page position in one glance: the bottom bar is gone, so the
-            // "where am I" signal rides the toolbar next to the title.
-            Text(
-                "${focusedPage + 1}/$pageCount",
-                style = MaterialTheme.typography.labelMedium,
-                color = glassContentColor(InkThemeState.darkMode).copy(alpha = 0.75f),
-                maxLines = 1,
-                modifier = Modifier.padding(end = 4.dp)
-            )
-            InkToolIcon(
-                icon = Icons.Rounded.PanTool,
-                description = "抓手（拖曳捲動）",
-                selected = tool == InkTool.Hand,
-                onClick = { onToolChange(InkTool.Hand) }
-            )
-            InkToolIcon(
-                icon = Icons.Rounded.Brush,
-                description = "筆",
-                selected = tool == InkTool.Pen,
-                onClick = { onToolChange(InkTool.Pen) }
-            )
-            InkToolIcon(
-                icon = Icons.Rounded.Highlight,
-                description = "螢光筆",
-                selected = tool == InkTool.Highlighter,
-                onClick = { onToolChange(InkTool.Highlighter) }
-            )
-            InkToolIcon(
-                icon = Icons.Rounded.DeleteSweep,
-                description = "橡皮擦",
-                selected = tool == InkTool.Eraser,
-                onClick = { onToolChange(InkTool.Eraser) }
-            )
-            InkToolIcon(
-                icon = Icons.Rounded.Gesture,
-                description = if (selectionCount > 0) "選取（$selectionCount）" else "選取",
-                selected = tool == InkTool.Select,
-                badgeCount = selectionCount,
-                onClick = { onToolChange(InkTool.Select) }
-            )
-            InkToolIcon(
-                icon = Icons.Rounded.TextFields,
-                description = "文字",
-                selected = tool == InkTool.Text,
-                onClick = { onToolChange(InkTool.Text) }
-            )
-            InkToolIcon(
-                icon = Icons.Rounded.ShapeLine,
-                description = "形狀",
-                selected = tool == InkTool.Shape,
-                onClick = { onToolChange(InkTool.Shape) }
-            )
+            InkToolbarTitle(documentTitle, focusedPage, pageCount)
+            InkToolbarTools(tool, selectionCount, onToolChange)
             androidx.compose.material3.VerticalDivider(
                 modifier = Modifier.height(24.dp).padding(horizontal = 6.dp),
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
             )
-            InkToolIcon(
-                icon = Icons.AutoMirrored.Rounded.Undo,
-                description = "復原",
-                selected = false,
-                enabled = canUndo,
-                onClick = onUndo
-            )
-            InkToolIcon(
-                icon = Icons.AutoMirrored.Rounded.Redo,
-                description = "重做",
-                selected = false,
-                enabled = canRedo,
-                onClick = onRedo
-            )
-            if (selectionCount > 0) {
-                // Delete lives here rather than only on the keyboard: the selection is a
-                // mode, and a control that exists only as a shortcut is a control most
-                // people never find.
-                InkToolIcon(
-                    icon = Icons.AutoMirrored.Rounded.Backspace,
-                    description = "刪除選取",
-                    selected = false,
-                    onClick = onDeleteSelection
-                )
-            }
-
-        // Shape subtypes ride the same row while the shape tool is armed — no
-        // second row, no popup. They scroll with everything else.
-        if (tool == InkTool.Shape) {
+            InkToolbarHistory(canUndo, canRedo, selectionCount, onUndo, onRedo, onDeleteSelection)
+            InkToolbarShapeSubtypes(tool, shapeSubType, onShapeSubTypeChange)
+            InkToolbarWidthPresets(tool, widthPt, onWidthChange)
             androidx.compose.material3.VerticalDivider(
                 modifier = Modifier.height(24.dp).padding(horizontal = 6.dp),
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
             )
-            com.vic.inkflow.util.ShapeType.entries.forEach { st ->
-                GlassOptionChip(
-                    text = SHAPE_LABELS[st] ?: st.name,
-                    selected = shapeSubType == st,
-                    onClick = { onShapeSubTypeChange(st) },
-                    isDark = InkThemeState.darkMode
-                )
-            }
-        }
-
-        // Width presets ride the same row while a stroke tool is armed — the same
-        // pattern as the shape subtypes. Three named stops, not a slider: a mouse
-        // cannot feel pressure, so coarse steps beat fine scrubbing.
-        if (tool == InkTool.Pen || tool == InkTool.Highlighter) {
+            InkToolbarZoom(zoom, onZoomOut, onZoomReset, onZoomIn)
             androidx.compose.material3.VerticalDivider(
                 modifier = Modifier.height(24.dp).padding(horizontal = 6.dp),
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
             )
-            INK_WIDTH_PRESETS.forEach { (label, w) ->
-                GlassOptionChip(
-                    text = label,
-                    selected = widthPt == w,
-                    onClick = { onWidthChange(w) },
-                    isDark = InkThemeState.darkMode
-                )
-            }
-        }
-
-        androidx.compose.material3.VerticalDivider(
-            modifier = Modifier.height(24.dp).padding(horizontal = 6.dp),
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
-        )
-            // Zoom lives here now, not in a second bar: one row for the whole
-            // toolchain. The readout doubles as the reset button.
-            InkToolIcon(
-                icon = Icons.Rounded.ZoomOut,
-                description = "縮小",
-                selected = false,
-                onClick = onZoomOut
-            )
-            Box(
-                modifier = Modifier
-                    .size(48.dp)
-                    .clip(CircleShape)
-                    .glassClickable(onClick = onZoomReset, shape = CircleShape),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    "${(zoom * 100).roundToInt()}%",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = glassContentColor(InkThemeState.darkMode)
-                )
-            }
-            InkToolIcon(
-                icon = Icons.Rounded.ZoomIn,
-                description = "放大",
-                selected = false,
-                onClick = onZoomIn
-            )
-        androidx.compose.material3.VerticalDivider(
-            modifier = Modifier.height(24.dp).padding(horizontal = 6.dp),
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
-        )
-            INK_PALETTE.forEach { swatch ->
-                val chosen = colour == swatch
-                // Every swatch keeps a faint ring: without it the near-black ink
-                // dot vanishes on a dark toolbar and looks like a missing colour.
-                Box(
-                    modifier = Modifier
-                        .size(26.dp)
-                        .clip(CircleShape)
-                        .background(Color(swatch))
-                        .border(
-                            width = if (chosen) 2.5.dp else 1.dp,
-                            color = if (chosen) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f),
-                            shape = CircleShape
-                        )
-                        .clip(CircleShape)
-                        .clickable { onColourChange(swatch) }
-                )
-            }
+            InkToolbarColors(colour, onColourChange)
             Spacer(Modifier.width(6.dp))
-            GlassTextButton(
-                text = if (exporting) "匯出中…" else "匯出 PDF",
-                onClick = onExport,
-                enabled = !exporting
-            )
-            GlassTextButton(
-                text = "清除",
-                onClick = onClear,
-                color = MaterialTheme.colorScheme.error
-            )
+            InkToolbarExport(exporting, onExport, onClear)
         }
         // Export feedback lives under the toolbar rather than in a dialog: a modal
         // would interrupt reading, while a missing success message leaves the user
         // unsure whether the file was actually written.
         exportStatus?.let { status ->
             // Success reads primary, failure reads error: a single muted colour
-            // for both is how "匯出失敗" went unnoticed under the toolbar.
-            val failed = status.startsWith("匯出失敗") || status.startsWith("找不到")
+            // for both is how "åŒ¯å‡ºå¤±æ•—" went unnoticed under the toolbar.
+            val failed = status.startsWith("åŒ¯å‡ºå¤±æ•—") || status.startsWith("æ‰¾ä¸åˆ°")
             Text(
                 status,
                 modifier = Modifier.padding(bottom = 12.dp),
@@ -2683,11 +2508,11 @@ private fun InkToolbar(
  * One icon tool button, in the tablet's language: the icon carries the meaning,
  * the selection pill carries the state, and the tint follows the theme.
  *
- * Icon-only on purpose — six text labels plus undo/redo is what overflowed the old
+ * Icon-only on purpose â€” six text labels plus undo/redo is what overflowed the old
  * row on a normal window. The description survives for screen readers and tooltips.
  */
 @Composable
-private fun InkToolIcon(
+internal fun InkToolIcon(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     description: String,
     selected: Boolean,
@@ -2740,14 +2565,14 @@ private fun InkToolIcon(
 }
 
 /** Labels for the shape subtypes, in the tablet's terms. */
-private val SHAPE_LABELS: Map<com.vic.inkflow.util.ShapeType, String> = mapOf(
-    com.vic.inkflow.util.ShapeType.RECT to "矩形",
-    com.vic.inkflow.util.ShapeType.CIRCLE to "橢圓",
-    com.vic.inkflow.util.ShapeType.LINE to "直線",
-    com.vic.inkflow.util.ShapeType.ARROW to "箭頭"
+internal val SHAPE_LABELS: Map<com.vic.inkflow.util.ShapeType, String> = mapOf(
+    com.vic.inkflow.util.ShapeType.RECT to "çŸ©å½¢",
+    com.vic.inkflow.util.ShapeType.CIRCLE to "æ©¢åœ“",
+    com.vic.inkflow.util.ShapeType.LINE to "ç›´ç·š",
+    com.vic.inkflow.util.ShapeType.ARROW to "ç®­é ­"
 )
 
-private val INK_PALETTE = listOf(
+internal val INK_PALETTE = listOf(
     0xFF121826.toInt(), // ink black
     0xFFDC2626.toInt(), // red
     0xFF2563EB.toInt(), // blue
@@ -2793,7 +2618,7 @@ internal fun screenToModel(
  * what get rendered.
  *
  * A stroke whose samples all carry the same width still goes through the
- * envelope — it costs one path fill and keeps a single code path, which matters
+ * envelope â€” it costs one path fill and keeps a single code path, which matters
  * more here than the micro-optimisation would.
  */
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawStroke(
@@ -2801,9 +2626,9 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawStroke(
       scale: Float,
       box: PageBox
   ) {
-      // 繪製本身在 `:shared`（`drawModelStroke`）——平板、桌面與之後的 iOS 用同一份：
-      // 包絡路徑、形狀分流、高亮的 Multiply 混合與透明度都在那裡。
-      // 這裡只做型別轉換（桌面的列 → 共用模型）。
+      // ç¹ªè£½æœ¬èº«åœ¨ `:shared`ï¼ˆ`drawModelStroke`ï¼‰â€”â€”å¹³æ¿ã€æ¡Œé¢èˆ‡ä¹‹å¾Œçš„ iOS ç”¨åŒä¸€ä»½ï¼š
+      // åŒ…çµ¡è·¯å¾‘ã€å½¢ç‹€åˆ†æµã€é«˜äº®çš„ Multiply æ··åˆèˆ‡é€æ˜Žåº¦éƒ½åœ¨é‚£è£¡ã€‚
+      // é€™è£¡åªåšåž‹åˆ¥è½‰æ›ï¼ˆæ¡Œé¢çš„åˆ— â†’ å…±ç”¨æ¨¡åž‹ï¼‰ã€‚
       drawModelStroke(swp.toModel(), scale, box.originX, box.originY)
   }
 
@@ -2833,8 +2658,8 @@ private fun PointEntity.toPagePixel(scale: Float, box: PageBox): Offset =
 
 /**
  * Zoom bounds, relative to fit-to-window. `1.0` is "the whole page on screen", which is the
- * state a reopened document starts in. `0.25` is an overview — the page with its
- * neighbours visible — and is the floor because a reader who has zoomed out this far is
+ * state a reopened document starts in. `0.25` is an overview â€” the page with its
+ * neighbours visible â€” and is the floor because a reader who has zoomed out this far is
  * orienting themselves, not reading. `8.0` is where 6 pt body text is comfortably legible;
  * past that the render DPI cap of 300 means the extra zoom would only enlarge an already
  * soft bitmap, so stopping here costs nothing and bounds the worst-case raster.
