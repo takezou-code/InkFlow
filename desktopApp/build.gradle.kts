@@ -22,8 +22,10 @@ dependencies {
     // material it used to hand-port.
     implementation(libs.haze)
     implementation(libs.haze.glass)
-    // Kotlin Coroutines
-    implementation(libs.kotlinx.coroutines.core)
+    // Koin (DI for ViewModels)
+    implementation(libs.koin.core)
+    implementation(libs.koin.compose)
+    implementation(libs.koin.compose.viewmodel)
     implementation(libs.kotlinx.coroutines.swing)
     
     // Compose Desktop

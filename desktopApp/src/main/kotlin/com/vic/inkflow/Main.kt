@@ -508,8 +508,9 @@ fun InkFlowApp(uiPreview: String? = null) {
                             )
                         }
                         doc == null -> {
-                            val docRepo = com.vic.inkflow.data.JdbcDocumentRepository(databaseManager)
-                            val folderRepo = com.vic.inkflow.data.JdbcFolderRepository(databaseManager)
+                            val docRepo: com.vic.inkflow.data.JdbcDocumentRepository = org.koin.core.context.GlobalContext.get().get()
+                            val folderRepo: com.vic.inkflow.data.JdbcFolderRepository = org.koin.core.context.GlobalContext.get().get()
+                            val scope = rememberCoroutineScope()
                             val libraryVm = remember(databaseManager) {
                                 com.vic.inkflow.ui.LibraryViewModel(
                                     documentRepository = docRepo,
@@ -857,6 +858,11 @@ fun main(args: Array<String>) {
         imagePath = probeArg("llm-image"),
         runs = probeArg("llm-runs")?.toIntOrNull() ?: 5
     )
+
+    // Start Koin (Milestone 6): the repository graph is resolved from here.
+    org.koin.core.context.startKoin {
+        modules(com.vic.inkflow.appModule)
+    }
 
     application {
         Window(

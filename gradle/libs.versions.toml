@@ -53,6 +53,7 @@ mockk = "1.14.6"
 pdfbox = "3.0.8"
 jaiImageio = "1.4.0"
 sqliteJdbc = "3.46.0.0"
+koin = "4.0.0"
 kotlinLogging = "3.0.5"
 logback = "1.5.7"
 
@@ -92,6 +93,9 @@ pdfbox = { group = "org.apache.pdfbox", name = "pdfbox", version.ref = "pdfbox" 
 jai-imageio-jpeg2000 = { group = "com.github.jai-imageio", name = "jai-imageio-jpeg2000", version.ref = "jaiImageio" }
 sqlite-jdbc = { group = "org.xerial", name = "sqlite-jdbc", version.ref = "sqliteJdbc" }
 kotlin-logging-jvm = { group = "io.github.microutils", name = "kotlin-logging-jvm", version.ref = "kotlinLogging" }
+koin-core = { group = "io.insert-koin", name = "koin-core", version.ref = "koin" }
+koin-compose = { group = "io.insert-koin", name = "koin-compose", version.ref = "koin" }
+koin-compose-viewmodel = { group = "io.insert-koin", name = "koin-compose-viewmodel", version.ref = "koin" }
 logback-classic = { group = "ch.qos.logback", name = "logback-classic", version.ref = "logback" }
 turbine = { group = "app.cash.turbine", name = "turbine", version.ref = "turbine" }
 mockk = { group = "io.mockk", name = "mockk", version.ref = "mockk" }
