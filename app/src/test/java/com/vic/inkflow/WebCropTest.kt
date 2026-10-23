@@ -1,7 +1,7 @@
-package com.vic.inkflow
+﻿package com.vic.inkflow
 
 import com.vic.inkflow.ui.WebCrop
-import com.vic.inkflow.ui.fitMathSize
+import com.vic.inkflow.data.fitMathSize
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -162,34 +162,34 @@ class WebCropTest {
 
     @Test fun fit_fullWidthRender_unchanged() {
         // KaTeX 1500px 渲染 → 剛好內容寬（與舊行為一致）
-        val (w, h) = fitMathSize(1500, 300, 500f, 700f)
+        val (w, h) = fitMathSize(1500, 300, 500f, 700f, 1500f)
         assertEquals(500f, w)
         assertEquals(100f, h)
     }
 
     @Test fun fit_smallShot_noStretch() {
         // 300px 行內小圖 → 等比小塊，不拉伸全寬
-        val (w, h) = fitMathSize(300, 60, 500f, 700f)
+        val (w, h) = fitMathSize(300, 60, 500f, 700f, 1500f)
         assertEquals(100f, w)
         assertEquals(20f, h)
     }
 
     @Test fun fit_overWide_shrinks() {
-        val (w, h) = fitMathSize(3000, 600, 500f, 700f)
+        val (w, h) = fitMathSize(3000, 600, 500f, 700f, 1500f)
         assertEquals(500f, w)
         assertEquals(100f, h)
     }
 
     @Test fun fit_overTall_shrinks() {
-        val (w, h) = fitMathSize(1500, 3000, 500f, 700f)
+        val (w, h) = fitMathSize(1500, 3000, 500f, 700f, 1500f)
         assertEquals(700f, h)
         assertTrue(w > 0f && w < 500f)
     }
 
     @Test fun fit_invalid_zero() {
-        assertEquals(0f to 0f, fitMathSize(0, 10, 500f, 700f))
-        assertEquals(0f to 0f, fitMathSize(10, 0, 500f, 700f))
-        assertEquals(0f to 0f, fitMathSize(100, 100, 0f, 700f))
+        assertEquals(0f to 0f, fitMathSize(0, 10, 500f, 700f, 1500f))
+        assertEquals(0f to 0f, fitMathSize(10, 0, 500f, 700f, 1500f))
+        assertEquals(0f to 0f, fitMathSize(100, 100, 0f, 700f, 1500f))
     }
 
     @Test fun nearBg_tintVsText() {

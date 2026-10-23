@@ -1,5 +1,12 @@
 package com.vic.inkflow.ui
 
+import com.vic.inkflow.data.AI_MARGIN_H
+import com.vic.inkflow.data.AiTextBlock
+import com.vic.inkflow.data.AiTextChunk
+import com.vic.inkflow.data.Placed
+import com.vic.inkflow.data.PlacedText
+import com.vic.inkflow.data.aiTextContentWidth
+import com.vic.inkflow.data.paginateAiBlocks
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test

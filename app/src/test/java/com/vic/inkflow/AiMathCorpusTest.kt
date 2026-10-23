@@ -1,18 +1,18 @@
-package com.vic.inkflow
+﻿package com.vic.inkflow
 
-import com.vic.inkflow.ui.AiMathBlock
-import com.vic.inkflow.ui.AiTextBlock
-import com.vic.inkflow.ui.RenderedMath
-import com.vic.inkflow.ui.convertLatexInProse
-import com.vic.inkflow.ui.convertLatexMath
-import com.vic.inkflow.ui.escHtml
-import com.vic.inkflow.ui.hasMathScent
-import com.vic.inkflow.ui.katexSourceOf
-import com.vic.inkflow.ui.katexTargets
-import com.vic.inkflow.ui.looksLikeInlineMath
-import com.vic.inkflow.ui.normalizeDollarMath
-import com.vic.inkflow.ui.resolveAiBlocks
-import com.vic.inkflow.ui.splitAiBlocks
+import com.vic.inkflow.data.AiMathBlock
+import com.vic.inkflow.data.AiTextBlock
+import com.vic.inkflow.data.RenderedMath
+import com.vic.inkflow.data.convertLatexInProse
+import com.vic.inkflow.data.convertLatexMath
+import com.vic.inkflow.data.escHtml
+import com.vic.inkflow.data.hasMathScent
+import com.vic.inkflow.data.katexSourceOf
+import com.vic.inkflow.data.katexTargets
+import com.vic.inkflow.data.looksLikeInlineMath
+import com.vic.inkflow.data.normalizeDollarMath
+import com.vic.inkflow.data.resolveAiBlocks
+import com.vic.inkflow.data.splitAiBlocks
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -181,7 +181,7 @@ class AiMathCorpusTest {
         val split = AiMathBlock("m1", html = "\$\$y=mx+b\$\$", display = true, fallback = "y=mx+b")
         val t = katexTargets(listOf(montage, split), emptyMap())
         assertEquals(listOf("s0", "m1"), t.map { it.id })
-        assertEquals(1, katexTargets(listOf(montage, split), mapOf("s0" to RenderedMath(java.io.File("x"), 10, 10))).size)
+        assertEquals(1, katexTargets(listOf(montage, split), mapOf("s0" to RenderedMath("x", 10, 10))).size)
         // 原文優先；裁圖塊退回 fallback（TeX 在這裡）
         assertEquals("\$\$y=mx+b\$\$", katexSourceOf(split))
         assertEquals("\$\$\\int_0^1 x\\,dx\$\$", katexSourceOf(montage))
@@ -192,7 +192,7 @@ class AiMathCorpusTest {
     @Test fun resolve_keepsBlocksThatGotAnImage() {
         // 第二引擎在 resolve 之前跑：有圖的塊不能被換成文字
         val b = AiMathBlock("s0", html = "", display = true, fallback = "\$\$x\$\$")
-        val kept = resolveAiBlocks(listOf(b), mapOf("s0" to RenderedMath(java.io.File("x"), 10, 10)))
+        val kept = resolveAiBlocks(listOf(b), mapOf("s0" to RenderedMath("x", 10, 10)))
         assertEquals(1, kept.size)
         assertTrue(kept.first() is AiMathBlock)
         // 沒圖的照舊退文字（保底）

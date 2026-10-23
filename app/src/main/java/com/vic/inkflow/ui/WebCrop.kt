@@ -12,6 +12,7 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.View
 import android.webkit.WebView
+import com.vic.inkflow.data.RenderedMath
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
@@ -855,7 +856,7 @@ object WebCrop {
             FileOutputStream(f).use { out ->
                 bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
             }
-            val rm = RenderedMath(f, bmp.width, bmp.height)
+            val rm = RenderedMath(f.absolutePath, bmp.width, bmp.height)
             bmp.recycle()
             rm
         } catch (t: Throwable) {

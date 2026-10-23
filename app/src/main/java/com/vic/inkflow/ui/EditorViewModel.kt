@@ -10,6 +10,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.vic.inkflow.data.AppDatabase
 import com.vic.inkflow.data.ImageAnnotation
+import com.vic.inkflow.data.aiTextContentWidth
 import com.vic.inkflow.data.Point
 import com.vic.inkflow.data.repository.DocSpaceMigrator
 import com.vic.inkflow.ui.editor.ExportController

@@ -5,8 +5,23 @@ import android.content.Context
 import android.net.Uri
 import android.util.Log
 import android.widget.Toast
-import com.vic.inkflow.data.repository.InkFlowRepositories
+import com.vic.inkflow.data.AiBlock
+import com.vic.inkflow.data.AiMathBlock
 import com.vic.inkflow.data.MathSourceEntity
+import com.vic.inkflow.data.Placed
+import com.vic.inkflow.data.RenderedMath
+import com.vic.inkflow.data.continueTop
+import com.vic.inkflow.data.hasMathScent
+import com.vic.inkflow.data.isBlankPage
+import com.vic.inkflow.data.isSelfPage
+import com.vic.inkflow.data.katexSourceOf
+import com.vic.inkflow.data.katexTargets
+import com.vic.inkflow.data.mathBlockHtml
+import com.vic.inkflow.data.measureContentBottom
+import com.vic.inkflow.data.paginateAiBlocks
+import com.vic.inkflow.data.resolveAiBlocks
+import com.vic.inkflow.data.splitAiBlocks
+import com.vic.inkflow.data.repository.InkFlowRepositories
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.filter
@@ -57,7 +72,7 @@ suspend fun renderMathBlocks(
                     FileOutputStream(f).use { out ->
                         bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
                     }
-                    rendered[mb.id] = RenderedMath(f, bmp.width, bmp.height)
+                    rendered[mb.id] = RenderedMath(f.absolutePath, bmp.width, bmp.height)
                     bmp.recycle()
                     ok = true
                 }
@@ -233,7 +248,8 @@ suspend fun importPickedJsonInner(
     val pages = withContext(Dispatchers.Default) {
         paginateAiBlocks(
             resolved, rendered, viewModel.modelWidth, viewModel.modelHeight,
-            startTop = contTop ?: 64f // = paginate 預設 marginTop
+            startTop = contTop ?: 64f, // = paginate 預設 marginTop
+            fontMetrics = ::androidFontMetrics
         )
     }
     if (pages.isEmpty()) {
@@ -297,7 +313,7 @@ suspend fun placePages(
             when (pl) {
                 is Placed.T -> viewModel.insertImportedText(documentUri, pageIdx, pl.t.text, pl.t.modelX, pl.t.modelY, pl.t.fontSize)
                 is Placed.I -> {
-                    val imageUri = Uri.fromFile(pl.file).toString()
+                    val imageUri = Uri.fromFile(java.io.File(pl.path)).toString()
                     viewModel.insertImportedImage(
                         documentUri, pageIdx, imageUri,
                         pl.modelX, pl.modelY, pl.modelW, pl.modelH
@@ -430,7 +446,7 @@ suspend fun resolveContinueTop(
             return null
         }
         val trace = mutableListOf<String>()
-        val bottom = measureContentBottom(strokes.map { it.stroke }, texts, images, trace = trace) ?: run {
+        val bottom = measureContentBottom(strokes.map { it.stroke }, texts, images, ::textMetricsOf, trace = trace) ?: run {
             Log.d("InkFlowDbg", "CONTINUE skip p=$sourcePage unmeasurable (stamp?)")
             return null
         }

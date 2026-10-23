@@ -3,11 +3,11 @@ package com.vic.inkflow
 import com.vic.inkflow.data.ImageAnnotation
 import com.vic.inkflow.data.Stroke
 import com.vic.inkflow.data.TextAnnotation
-import com.vic.inkflow.ui.continueTop
-import com.vic.inkflow.ui.isBlankPage
-import com.vic.inkflow.ui.isSelfPage
-import com.vic.inkflow.ui.measureContentBottom
-import com.vic.inkflow.ui.whiteRatioOfPixels
+import com.vic.inkflow.data.continueTop
+import com.vic.inkflow.data.isBlankPage
+import com.vic.inkflow.data.isSelfPage
+import com.vic.inkflow.data.measureContentBottom
+import com.vic.inkflow.data.whiteRatioOfPixels
 import com.vic.inkflow.ui.wrapTextLines
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
