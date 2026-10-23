@@ -21,6 +21,8 @@ import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -40,6 +42,7 @@ import com.vic.inkflow.ui.PdfViewer
 import com.vic.inkflow.ui.InkFlowTheme
 import com.vic.inkflow.ui.InkThemeState
 import com.vic.inkflow.ui.LibraryView
+import com.vic.inkflow.ui.SettingsViewModel
 import com.vic.inkflow.ui.theme.ShapeXl
 import com.vic.inkflow.ui.theme.ShapeMd
 import com.vic.inkflow.ui.theme.ShapeSm
@@ -305,7 +308,7 @@ fun InkFlowApp(uiPreview: String? = null) {
     var lastSyncSummary by remember { mutableStateOf<String?>(null) }
     var peerCount by remember { mutableStateOf(0) }
     var peerNames by remember { mutableStateOf("") }
-    var pairingCode by remember { mutableStateOf(DesktopSettings.pairingCode ?: "") }
+
 
     // Write-through sync state (see triggerEditSync below): a filed proposal
     // must not wait for the next 28s poll tick. Declared before the poll loop
@@ -493,19 +496,17 @@ fun InkFlowApp(uiPreview: String? = null) {
                 val (settingsOpen, doc) = screen
                 Box(modifier = Modifier.fillMaxSize()) {
                     when {
-                        settingsOpen -> SettingsView(
-                            peerNames = peerNames,
-                            lastSyncSummary = lastSyncSummary,
-                            pairingCode = pairingCode,
-                            onPairingCodeChange = { code ->
-                                pairingCode = code
-                                syncManager.setPairingCode(code)
-                                // Persist on every keystroke rather than on blur: the user
-                                // has no "save" affordance here, and losing the code on a
-                                // crash would mean re-reading it off the tablet screen.
-                                DesktopSettings.pairingCode = code
-                            }
-                        )
+                        settingsOpen -> {
+                            val settingsVm = remember { SettingsViewModel() }
+                            SettingsView(
+                                viewModel = settingsVm,
+                                peerNames = peerNames,
+                                lastSyncSummary = lastSyncSummary,
+                                onPairingCodeChange = { code ->
+                                    syncManager.setPairingCode(code)
+                                }
+                            )
+                        }
                         doc == null -> {
                             val docRepo = com.vic.inkflow.data.JdbcDocumentRepository(databaseManager)
                             val folderRepo = com.vic.inkflow.data.JdbcFolderRepository(databaseManager)
@@ -674,9 +675,9 @@ private fun DesktopRailItem(
 
 @Composable
 private fun SettingsView(
+    viewModel: SettingsViewModel,
     peerNames: String,
     lastSyncSummary: String?,
-    pairingCode: String,
     onPairingCodeChange: (String) -> Unit
 ) {
     // Settings used to be a 28dp-padded column that could not scroll, so on a
@@ -684,10 +685,7 @@ private fun SettingsView(
     // off the bottom with no way to reach them. It now sits on the same scaffold
     // as every other screen — title and actions in the header, one scrolling body
     // with a bounded reading width — and the section cards are the only chrome.
-    DeskScreen(
-        title = "設定",
-        subtitle = "外觀、本機資料與平板同步"
-    ) {
+    val state by viewModel.state.collectAsState()
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -762,15 +760,18 @@ private fun SettingsView(
                     horizontalArrangement = Arrangement.spacedBy(DeskSpace.sm)
                 ) {
                     DeskTextField(
-                        value = pairingCode,
-                        onValueChange = onPairingCodeChange,
+                        value = state.pairingCode,
+                        onValueChange = { code ->
+                            viewModel.setPairingCode(code)
+                            onPairingCodeChange(code)
+                        },
                         placeholder = "8 位數字",
                         modifier = Modifier.width(200.dp)
                     )
                     // Live validation: the tablet's code is exactly 8 digits, so
                     // a non-conforming value can only be a typo. Saying so here
                     // beats a handshake rejection with no explanation.
-                    val normalised = pairingCode.trim()
+                    val normalised = state.pairingCode.trim()
                     val looksRight = normalised.isEmpty() ||
                         (normalised.length == 8 && normalised.all { it.isDigit() })
                     Text(
@@ -795,7 +796,6 @@ private fun SettingsView(
             Spacer(Modifier.height(DeskSpace.lg))
         }
     }
-}
 
 @Composable
 private fun SettingRow(label: String, value: String) {
