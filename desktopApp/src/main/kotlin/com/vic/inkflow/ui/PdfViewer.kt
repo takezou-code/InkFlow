@@ -40,6 +40,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -272,10 +273,14 @@ fun PdfViewer(
 
     // Shared by every page: switching pages must not reset the tool, colour or
     // shape, or drawing across a page boundary becomes a mode lottery.
-    var tool by remember(documentUri) { mutableStateOf(InkTool.Pen) }
-    var inkColour by remember(documentUri) { mutableIntStateOf(0xFF121826.toInt()) }
-    var inkWidthPt by remember(documentUri) { mutableFloatStateOf(INK_WIDTH_PT) }
-    var shapeSubType by remember(documentUri) { mutableStateOf(com.vic.inkflow.util.ShapeType.RECT) }
+    // Lifted into a ReaderViewModel so the ink settings have a single owner
+    // (Milestone 2b of the architecture rewrite).
+    val readerVm = remember { ReaderViewModel() }
+    val inkState = readerVm.ink.collectAsState()
+    val tool = inkState.value.tool
+    val inkColour = inkState.value.colour
+    val inkWidthPt = inkState.value.widthPt
+    val shapeSubType = inkState.value.shapeSubType
 
     // Export runs off the UI thread: a long document must not freeze the reader while
     // PDFBox stamps every page, and the status stays visible under the toolbar.
@@ -458,12 +463,12 @@ fun PdfViewer(
             InkToolbar(
                 tool = tool,
                 colour = inkColour,
-                onToolChange = { tool = it },
-                onColourChange = { inkColour = it },
+                onToolChange = { readerVm.setTool(it) },
+                onColourChange = { readerVm.setColour(it) },
                 widthPt = inkWidthPt,
-                onWidthChange = { inkWidthPt = it },
+                onWidthChange = { readerVm.setWidth(it) },
                 shapeSubType = shapeSubType,
-                onShapeSubTypeChange = { shapeSubType = it },
+                onShapeSubTypeChange = { readerVm.setShapeSubType(it) },
                 canUndo = h?.canUndo?.value == true,
                 canRedo = h?.canRedo?.value == true,
                 selectionCount = h?.selectionCount?.value ?: 0,
@@ -2396,7 +2401,7 @@ private const val TEXT_SIZE_PT = 16f
  * arrives as `inkWidthPt`. The highlighter multiplies it (see below), so the
  * stored per-sample widths â€” not this constant â€” are what the renderer reads.
  */
-private const val INK_WIDTH_PT = 1.6f
+internal const val INK_WIDTH_PT = 1.6f
 
 /**
  * Highlighter-to-pen width ratio. Matches the tablet (`strokeWidth * 3f` for the
