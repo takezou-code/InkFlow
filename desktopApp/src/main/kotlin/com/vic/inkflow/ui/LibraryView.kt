@@ -18,7 +18,6 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.UploadFile
@@ -27,6 +26,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -35,10 +35,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.vic.inkflow.data.DatabaseManager
-import com.vic.inkflow.data.DocumentEntity
+import com.vic.inkflow.data.Document as SharedDocument
 import com.vic.inkflow.ui.kit.DeskDims
 import com.vic.inkflow.ui.kit.DeskPillButton
 import com.vic.inkflow.ui.kit.DeskScreen
@@ -57,39 +58,28 @@ import java.util.Date
  * The library: the documents on this machine, with a cover, a name, and when it
  * was last opened.
  *
- * ## What changed, and why
+ * ## What changed in the repository migration
  *
- * It used to open with the tablet's `LibraryHeroPanel` — a serif wordmark and a
- * full-width search pill — and then stack three more full-width rows (sync pill,
- * folder chips, import button) before the first card. Four rows of chrome, each
- * with its own inset, so nothing lined up with anything and the content started
- * 400px down the window.
- *
- * Now the screen is a [DeskScreen]: one title, one row of actions, one filter row,
- * then the documents. The search field is in the header where a search field
- * belongs, and the tablet's hero stays where it is — on the tablet, where it has
- * room.
+ * The screen used to call [DatabaseManager] directly in composition and run the
+ * import transaction inline. It now takes a [LibraryViewModel] that owns the
+ * query, the folder filter, the document/folder lists and the import flow; the
+ * composable only renders and hosts the file picker. That is the same shape the
+ * Android side has had for years (`DocumentViewModel` + `DocumentRepository`),
+ * and it is the pattern every other desktop screen will follow.
  */
 @Composable
 fun LibraryView(
-    databaseManager: DatabaseManager,
-    refreshToken: Int,
+    viewModel: LibraryViewModel,
     syncStatusText: String,
-    selectedFolderId: String?,            // null = All, "__none__" = Uncategorized
-    onFolderSelected: (String?) -> Unit,
     onDocumentSelected: (String) -> Unit,
-    /** Mirror directory the imported copies land in. */
     mirrorRoot: String,
     onLibraryChanged: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var query by remember { mutableStateOf("") }
+    val state by viewModel.state.collectAsState()
 
-    // File dialog. The native AWT FileDialog, not Swing's JFileChooser: the Swing
-    // dialog looks like 2005 and breaks the whole visual language, while the
-    // native one matches the OS. It is modal and blocking, same as before.
+    // File dialog. The native AWT FileDialog, not Swing's JFileChooser.
     var importError by remember { mutableStateOf<String?>(null) }
-    var importing by remember { mutableStateOf(false) }
 
     fun pickAndImport() {
         val fd = java.awt.FileDialog(null as java.awt.Frame?, "開啟 PDF", java.awt.FileDialog.LOAD)
@@ -99,90 +89,40 @@ fun LibraryView(
         fd.dispose()
 
         if (chosen == null) return
-
-        // Validation before any I/O, so a rejected file costs nothing and the
-        // reason reaches the user in words rather than as a stack trace.
-        val ext = LocalImport.checkExtension(chosen.name)
-        if (!ext.isOk) { importError = ext.message; return }
-        val exists = LocalImport.checkExists(chosen)
-        if (!exists.isOk) { importError = exists.message; return }
-        val size = LocalImport.checkSize(chosen.length())
-        if (!size.isOk) { importError = size.message; return }
-
-        importing = true
-        importError = null
-        val uri = LocalImport.toDocumentUri(chosen.absolutePath)
-        val plan = LocalImport.plan(uri, chosen, File(mirrorRoot))
-        val copied = LocalImport.copyIntoMirror(plan)
-
-        if (!copied.isOk) {
-            importError = copied.message
-            importing = false
-            return
-        }
-
-        // Only now does the library learn about the document. Registering it before
-        // the copy succeeded would leave an entry that cannot be opened — the one
-        // state worse than "the file is not in my library yet".
-        val existing = databaseManager.getDocument(uri)
-        databaseManager.saveDocument(
-            DocumentEntity(
-                uri = uri,
-                displayName = plan.displayName,
-                lastOpenedAt = existing?.lastOpenedAt ?: System.currentTimeMillis(),
-                lastPageIndex = existing?.lastPageIndex ?: 0,
-                isFavorite = existing?.isFavorite ?: false,
-                folderId = existing?.folderId
-            )
-        )
-        importing = false
-        onLibraryChanged()
-    }
-
-    val folders = remember(refreshToken) { databaseManager.getAllFolders() }
-    val allDocs = remember(refreshToken, query) {
-        if (query.isBlank()) databaseManager.getAllDocuments()
-        else databaseManager.searchDocuments(query)
-    }
-    val docs = remember(allDocs, selectedFolderId) {
-        when (selectedFolderId) {
-            null -> allDocs
-            "__none__" -> allDocs.filter { it.folderId == null }
-            else -> allDocs.filter { it.folderId == selectedFolderId }
-        }
+        viewModel.importDocument(chosen, mirrorRoot, onLibraryChanged)
     }
 
     DeskScreen(
         title = "文件庫",
         subtitle = buildString {
-            append("${docs.size} 份文件")
-            if (query.isNotBlank()) append(" · 搜尋「$query」")
+            append("${state.documents.size} 份文件")
+            if (state.query.isNotBlank()) append(" · 搜尋「${state.query}」")
         },
         actions = {
             SyncStatusPill(syncStatusText)
             DeskSearchField(
-                value = query,
-                onValueChange = { query = it },
+                value = state.query,
+                onValueChange = { viewModel.setQuery(it) },
                 placeholder = "搜尋標題或檔名",
                 modifier = Modifier.width(240.dp)
             )
             DeskPillButton(
-                text = if (importing) "匯入中…" else "開啟 PDF",
+                text = if (state.importing) "匯入中…" else "開啟 PDF",
                 icon = Icons.Default.UploadFile,
                 onClick = { pickAndImport() },
-                enabled = !importing
+                enabled = !state.importing
             )
         },
         modifier = modifier
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
             FolderChips(
-                folders = folders.map { it.id to it.name },
-                selectedFolderId = selectedFolderId,
-                onFolderSelected = onFolderSelected
+                folders = state.folders.map { it.id to it.name },
+                selectedFolderId = state.selectedFolderId,
+                onFolderSelected = { viewModel.setFolder(it) }
             )
 
-            importError?.let { msg ->
+            (state.importError)?.let { msg ->
                 Spacer(Modifier.height(DeskSpace.xs))
                 Text(
                     msg,
@@ -195,8 +135,8 @@ fun LibraryView(
 
             Spacer(Modifier.height(DeskSpace.sm))
 
-            if (docs.isEmpty()) {
-                EmptyLibrary(query = query, onImport = { pickAndImport() })
+            if (state.documents.isEmpty()) {
+                EmptyLibrary(query = state.query, onImport = { pickAndImport() })
             } else {
                 LazyVerticalGrid(
                     columns = GridCells.Adaptive(minSize = DeskDims.cardMinWidth),
@@ -205,12 +145,13 @@ fun LibraryView(
                     contentPadding = PaddingValues(bottom = DeskSpace.lg),
                     modifier = Modifier.fillMaxSize()
                 ) {
-                    items(docs.size, key = { docs[it].uri }) { i ->
+                    items(state.documents.size, key = { state.documents[it].uri }) { i ->
+                        val doc = state.documents[i]
                         DocumentCard(
-                            document = docs[i],
-                            strokeCount = databaseManager.strokeCountForDocument(docs[i].uri),
-                            folderName = folders.firstOrNull { it.id == docs[i].folderId }?.name,
-                            onClick = { onDocumentSelected(docs[i].uri) }
+                            document = doc,
+                            strokeCount = viewModel.strokeCountForDocument(doc.uri),
+                            folderName = state.folders.firstOrNull { it.id == doc.folderId }?.name,
+                            onClick = { onDocumentSelected(doc.uri) }
                         )
                     }
                 }
@@ -219,14 +160,10 @@ fun LibraryView(
     }
 }
 
-/**
- * The tablet-connection pill.
- *
- * Rides the shared selection pill when a tablet is present (the tablet's own
- * "armed" language) and plain glass when it is not. The dot is not decoration:
- * colour alone would be the only online/offline signal for a user who cannot see
- * the difference, so the text carries it too.
- */
+
+// (helpers appended below)
+
+/** Sync status pill. */
 @Composable
 private fun SyncStatusPill(text: String) {
     val isDark = InkThemeState.darkMode
@@ -264,13 +201,7 @@ private fun SyncStatusPill(text: String) {
     }
 }
 
-/**
- * Folder filters, in a scrolling row.
- *
- * Shared option chips, not M3 `FilterChip`: the folder list comes from the tablet
- * and has no bounded length, so the row scrolls instead of clipping, and the
- * chips stay in the product's press language.
- */
+/** Folder filter chips in a scrolling row. */
 @Composable
 private fun FolderChips(
     folders: List<Pair<String, String>>,
@@ -307,10 +238,9 @@ private fun FolderChips(
     }
 }
 
+/** Empty library state. */
 @Composable
 private fun EmptyLibrary(query: String, onImport: () -> Unit) {
-    // A real empty state, not two grey lines: glass card, icon, guidance, and
-    // the one action that gets the user out of here.
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -327,8 +257,7 @@ private fun EmptyLibrary(query: String, onImport: () -> Unit) {
             )
             Spacer(Modifier.height(DeskSpace.sm))
             Text(
-                if (query.isNotBlank()) "找不到符合「$query」的文件"
-                else "尚無文件",
+                if (query.isNotBlank()) "找不到符合「$query」的文件" else "尚無文件",
                 style = MaterialTheme.typography.titleLarge,
                 color = MaterialTheme.colorScheme.onSurface
             )
@@ -347,17 +276,10 @@ private fun EmptyLibrary(query: String, onImport: () -> Unit) {
     }
 }
 
-/**
- * One document: a page-shaped cover, its name, and when it was last opened.
- *
- * The cover is a real render of page 1 (the same `PdfManager` cache the reader
- * uses), not a file-type icon — a library of identical placeholders tells the
- * user nothing about which document is which. It is drawn `Fit` on a paper-grey
- * plate so a blank page reads as "a blank page", not as a missing image.
- */
+/** One document card. */
 @Composable
 private fun DocumentCard(
-    document: DocumentEntity,
+    document: com.vic.inkflow.data.Document,
     strokeCount: Int,
     folderName: String?,
     onClick: () -> Unit

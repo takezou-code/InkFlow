@@ -285,7 +285,6 @@ fun InkFlowApp(uiPreview: String? = null) {
     // The bridge between the panel and the reader's page state.
     val noteLanding = remember { com.vic.inkflow.agent.NoteLandingHandle() }
     var currentPageIndex by remember { mutableStateOf(0) }
-    var selectedFolderId by remember { mutableStateOf<String?>(null) }
 
     // `--ui=settings|reader|ai` opens straight onto a screen with the most
     // recently opened document. It exists so the UI can be looked at without a
@@ -507,26 +506,30 @@ fun InkFlowApp(uiPreview: String? = null) {
                                 DesktopSettings.pairingCode = code
                             }
                         )
-                        doc == null -> LibraryView(
-                            databaseManager = databaseManager,
-                            refreshToken = libraryRefresh,
-                            syncStatusText = lastSyncSummary
-                                ?: if (peerCount > 0) "已連接：$peerNames"
-                                   else "未偵測到平板（等待局域網發現）",
-                            selectedFolderId = selectedFolderId,
-                            onFolderSelected = { selectedFolderId = it },
-                            onDocumentSelected = { uri ->
-                                selectedDocument = uri
-                                currentPageIndex = 0
-                            },
-                            // PdfManager.mirroredDir() is the same directory — hard-coding a second
-                            // spelling here would let an import land somewhere the
-                            // viewer never looks, and the document would open as
-                            // "file not found".
-                            mirrorRoot = com.vic.inkflow.util.PdfManager.mirroredDir().absolutePath,
-                            onLibraryChanged = { libraryRefresh++ },
-                            modifier = Modifier.fillMaxSize()
-                        )
+                        doc == null -> {
+                            val docRepo = com.vic.inkflow.data.JdbcDocumentRepository(databaseManager)
+                            val folderRepo = com.vic.inkflow.data.JdbcFolderRepository(databaseManager)
+                            val libraryVm = remember(databaseManager) {
+                                com.vic.inkflow.ui.LibraryViewModel(
+                                    documentRepository = docRepo,
+                                    folderRepository = folderRepo,
+                                    scope = scope
+                                )
+                            }
+                            LibraryView(
+                                viewModel = libraryVm,
+                                syncStatusText = lastSyncSummary
+                                    ?: if (peerCount > 0) "已連接：$peerNames"
+                                       else "未偵測到平板（等待局域網發現）",
+                                onDocumentSelected = { uri ->
+                                    selectedDocument = uri
+                                    currentPageIndex = 0
+                                },
+                                mirrorRoot = com.vic.inkflow.util.PdfManager.mirroredDir().absolutePath,
+                                onLibraryChanged = { libraryRefresh++ },
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
                         else -> Row(Modifier.fillMaxSize()) {
                             // Display name from the database, not the URI: synced URIs
                             // are opaque keys (not file paths), so chopping the URI
