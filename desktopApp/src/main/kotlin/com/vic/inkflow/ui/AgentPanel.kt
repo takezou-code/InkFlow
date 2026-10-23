@@ -1,6 +1,10 @@
 package com.vic.inkflow.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -48,6 +52,8 @@ import com.vic.inkflow.agent.ReadPageTextTool
 import com.vic.inkflow.agent.RenderPageTool
 import com.vic.inkflow.data.LessonNote
 import com.vic.inkflow.data.NoteBlock
+import com.vic.inkflow.ui.kit.DeskPillButton
+import com.vic.inkflow.ui.kit.DeskPrimaryButton
 import com.vic.inkflow.ui.kit.DeskSidePanel
 import com.vic.inkflow.ui.kit.DeskSpace
 import com.vic.inkflow.ui.kit.DeskTextField
@@ -99,18 +105,21 @@ fun AgentPanel(
     var tools by remember { mutableStateOf(rebuildTools(documentUri)) }
 
     val produced = note
+    val modelSet = DesktopSettings.modelName.isNotBlank()
 
     DeskSidePanel(
         title = "AI 教材筆記",
-        subtitle = "本機模型：${DesktopSettings.modelName.ifBlank { "未設定" }} · ${DesktopSettings.modelBaseUrl}",
+        titleIcon = Icons.Default.AutoAwesome,
+        subtitle = if (modelSet) DesktopSettings.modelName else "未設定模型",
         onClose = onToggleCollapsed,
         modifier = modifier,
         // The only way the note touches the document. It lives in the panel's
         // footer so it stays reachable however long the step list grows.
         footer = if (produced != null) {
             {
-                GlassTextButton(
+                DeskPrimaryButton(
                     text = "寫進文件",
+                    icon = Icons.Default.Check,
                     onClick = {
                         landed = when (val result = landing.land(produced)) {
                             is NoteLanding.Placed ->
@@ -131,22 +140,30 @@ fun AgentPanel(
         } else null
     ) {
         Column(modifier = Modifier.fillMaxSize().padding(DeskSpace.md)) {
+            // Model status + the one control that needs a network round-trip.
+            // A dot carries the state for anyone who cannot read the label colour.
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(DeskSpace.xs)
+                horizontalArrangement = Arrangement.spacedBy(DeskSpace.xs),
+                modifier = Modifier.fillMaxWidth()
             ) {
-                GlassTextButton(
-                    text = if (DesktopSettings.modelSendImages) "送圖：開" else "送圖：關",
-                    onClick = {
-                        // Sending an image to a model that cannot see one is a
-                        // guaranteed error, so this is a switch the user can
-                        // reach from the panel itself.
-                        DesktopSettings.modelSendImages = !DesktopSettings.modelSendImages
-                        tools = rebuildTools(documentUri)
-                    }
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(if (modelSet) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline)
                 )
-                GlassTextButton(
-                    text = if (models.isEmpty()) "檢查模型" else "${models.size} 個模型",
+                Text(
+                    text = if (modelSet) DesktopSettings.modelBaseUrl else "請到設定填入本機模型",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                DeskPillButton(
+                    text = if (models.isEmpty()) "檢查模型" else "${models.size} 個",
+                    icon = Icons.Default.Search,
                     onClick = {
                         scope.launch {
                             val found = LocalOpenAiProvider(DesktopSettings.localModelConfig()).listModels()
@@ -159,6 +176,20 @@ fun AgentPanel(
                 )
             }
 
+            Spacer(Modifier.height(DeskSpace.xs))
+
+            // Send-images toggle as a chip, not a text button: it is a state, and
+            // a state belongs in the chip language the rest of the app uses.
+            GlassOptionChip(
+                text = if (DesktopSettings.modelSendImages) "送圖：開" else "送圖：關",
+                selected = DesktopSettings.modelSendImages,
+                onClick = {
+                    DesktopSettings.modelSendImages = !DesktopSettings.modelSendImages
+                    tools = rebuildTools(documentUri)
+                },
+                isDark = InkThemeState.darkMode
+            )
+
             Spacer(Modifier.height(DeskSpace.sm))
 
             DeskTextField(
@@ -167,16 +198,17 @@ fun AgentPanel(
                 placeholder = "把這一頁整理成教材筆記",
                 singleLine = false,
                 minLines = 2,
-                maxLines = 3,
+                maxLines = 4,
                 modifier = Modifier.fillMaxWidth()
             )
 
             Spacer(Modifier.height(DeskSpace.xs))
 
-            GlassTextButton(
+            DeskPrimaryButton(
                 text = if (busy) "進行中…" else "產生教材筆記",
+                icon = Icons.Default.AutoAwesome,
                 onClick = {
-                    if (busy) return@GlassTextButton
+                    if (busy) return@DeskPrimaryButton
                     busy = true
                     failure = null
                     landed = null
@@ -196,7 +228,8 @@ fun AgentPanel(
                         busy = false
                     }
                 },
-                enabled = !busy
+                enabled = !busy,
+                modifier = Modifier.fillMaxWidth()
             )
 
             Spacer(Modifier.height(DeskSpace.sm))
@@ -205,6 +238,37 @@ fun AgentPanel(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(DeskSpace.xs)
             ) {
+                if (steps.isEmpty() && failure == null && produced == null && !busy) {
+                    item {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = DeskSpace.lg),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(
+                                    Icons.Default.MenuBook,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(32.dp)
+                                )
+                                Spacer(Modifier.height(DeskSpace.xs))
+                                Text(
+                                    "尚無筆記",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Spacer(Modifier.height(2.dp))
+                                Text(
+                                    "輸入指令後點「產生教材筆記」",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
                 items(steps) { step ->
                     StepRow(step)
                 }

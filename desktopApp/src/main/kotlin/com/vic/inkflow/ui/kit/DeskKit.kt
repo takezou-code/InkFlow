@@ -209,6 +209,43 @@ fun DeskIconButton(
     }
 }
 
+/**
+ * A filled primary action: the one button per screen that moves the work forward.
+ *
+ * Glass everywhere else, but the primary action carries the accent colour so the
+ * user can find it without reading. It stays a pill (same shape as the other
+ * controls) so it lines up with them; only the fill changes.
+ */
+@Composable
+fun DeskPrimaryButton(
+    text: String,
+    icon: ImageVector? = null,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true
+) {
+    val isDark = InkThemeState.darkMode
+    val fill = if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
+    val content = if (enabled) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+    Box(
+        modifier = modifier
+            .height(DeskDims.controlHeight)
+            .clip(CircleShape)
+            .background(fill)
+            .glassClickable(onClick = onClick, shape = CircleShape, enabled = enabled)
+            .padding(horizontal = DeskSpace.md),
+        contentAlignment = Alignment.Center
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (icon != null) {
+                Icon(icon, contentDescription = null, tint = content, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(DeskSpace.xs))
+            }
+            Text(text, style = MaterialTheme.typography.labelLarge, color = content)
+        }
+    }
+}
+
 /** A glass pill with an icon and a label — the one shape a primary action takes. */
 @Composable
 fun DeskPillButton(
@@ -365,6 +402,7 @@ fun DeskSidePanel(
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
     subtitle: String? = null,
+    titleIcon: ImageVector? = null,
     headerActions: @Composable RowScope.() -> Unit = {},
     footer: @Composable (() -> Unit)? = null,
     content: @Composable BoxScope.() -> Unit
@@ -384,13 +422,24 @@ fun DeskSidePanel(
                 .padding(start = DeskSpace.md, end = DeskSpace.xxs, top = DeskSpace.sm, bottom = DeskSpace.sm)
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = glassContentColor(isDark),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (titleIcon != null) {
+                        Icon(
+                            titleIcon,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(DeskSpace.xs))
+                    }
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = glassContentColor(isDark),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
                 if (subtitle != null) {
                     Text(
                         text = subtitle,
