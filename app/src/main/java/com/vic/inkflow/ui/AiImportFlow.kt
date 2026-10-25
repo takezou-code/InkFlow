@@ -5,8 +5,10 @@ import android.content.Context
 import android.net.Uri
 import android.util.Log
 import android.widget.Toast
+import com.vic.inkflow.data.AI_MARGIN_H
 import com.vic.inkflow.data.AiBlock
 import com.vic.inkflow.data.AiMathBlock
+import com.vic.inkflow.data.MATH_RENDER_REFERENCE_W_PX
 import com.vic.inkflow.data.MathSourceEntity
 import com.vic.inkflow.data.Placed
 import com.vic.inkflow.data.RenderedMath
@@ -50,13 +52,16 @@ import java.io.FileOutputStream
 suspend fun renderMathBlocks(
     context: Context,
     mathBlocks: List<AiMathBlock>,
-    maxRender: Int = MAX_RENDER
+    maxRender: Int = MAX_RENDER,
+    useMathJax: Boolean = false
 ): Pair<Map<String, RenderedMath>, Int> {
     val rendered = mutableMapOf<String, RenderedMath>()
     var renderFail = 0
     if (mathBlocks.isNotEmpty()) {
         val act = context as? Activity
-        if (act != null) MathSnapshot.ensure(act)
+        if (act != null) {
+            if (useMathJax) MathSnapshotMj.ensure(act) else MathSnapshot.ensure(act)
+        }
         for ((i, mb) in mathBlocks.withIndex()) {
             var ok = false
             if (i >= maxRender) {
@@ -64,7 +69,10 @@ suspend fun renderMathBlocks(
                 continue
             }
             try {
-                val bmp = MathSnapshot.render(mathBlockHtml(katexSourceOf(mb)))
+                val src = katexSourceOf(mb)
+                val renderSrc = if (useMathJax) src else src.replace("\\boxed", "")
+                val bmp = if (useMathJax) MathSnapshotMj.render(mathBlockHtml(renderSrc))
+                else MathSnapshot.render(mathBlockHtml(renderSrc))
                 if (bmp != null) {
                     // 經 PdfManager 漏斗落 workingDir：跟圖庫/相機圖同一種命。
                     // 舊碼寫 filesDir 根，還原不斷不斷（見漏斗註解）。
@@ -103,6 +111,10 @@ fun CoroutineScope.importPickedJson(
     onRequestPage: (Int) -> Unit,
     activity: Activity?,
     webView: android.webkit.WebView?,
+    supportsMathCrop: Boolean = true,
+    promoteComplexParas: Boolean = true,
+    cropAllPicks: Boolean = false,
+    useMathJax: Boolean = false,
     // 錨定頁提供者：寫入前一刻重讀已提交當前頁（呼叫方傳 { currentPageIndex }）。
     // 使用者中途翻頁就跟著走，不寫回舊頁。
     latestPage: () -> Int = { sourcePage },
@@ -113,7 +125,7 @@ fun CoroutineScope.importPickedJson(
     launch {
         try {
             importMutex.withLock {
-                importPickedJsonInner(context, viewModel, pdfViewModel, repos, documentUri, sourcePage, latestPage, onRequestPage, activity, webView, json)
+                importPickedJsonInner(context, viewModel, pdfViewModel, repos, documentUri, sourcePage, latestPage, onRequestPage, activity, webView, supportsMathCrop, promoteComplexParas, cropAllPicks, useMathJax, json)
             }
         } catch (t: Throwable) {
             Log.e("InkFlowDbg", "import picked failed", t)
@@ -167,6 +179,10 @@ suspend fun importPickedJsonInner(
     onRequestPage: (Int) -> Unit,
     activity: Activity?,
     webView: android.webkit.WebView?,
+    supportsMathCrop: Boolean = true,
+    promoteComplexParas: Boolean = true,
+    cropAllPicks: Boolean = false,
+    useMathJax: Boolean = false,
     json: String
 ) {
     Log.d("InkFlowDbg", "IMPORT begin sourcePage=$sourcePage jsonLen=${json.length}")
@@ -175,61 +191,115 @@ suspend fun importPickedJsonInner(
         Toast.makeText(context, "沒有可插入的內容", Toast.LENGTH_SHORT).show()
         return
     }
-    // 保序拼塊：文字切分，含公式節點走像素裁圖（Main；失敗退文字路）
+    // 保序拼塊：ChatGPT 走「整塊像素裁圖（可分段）」，Gemini 走「文字切分＋數學味裁圖」。
+    // 兩條路共用同一套放置與寫入；差別只在取像方式。
     val blocks = mutableListOf<AiBlock>()
-    data class Shot(val id: String, val box: WebCrop.CssBox, val idx: Int, val fallback: String)
-    val shots = mutableListOf<Shot>()
+    val rendered = mutableMapOf<String, RenderedMath>()
+    var cropFail = 0
     var si = 0
-    for (p in picks) {
-        if (p.kind == 'm' && p.rect != null) {
-            val id = "s${si++}"
-            blocks.add(AiMathBlock(id, html = "", display = true, fallback = p.text))
-            shots.add(Shot(id, p.rect, p.idx, p.text))
-        } else if (p.text.isNotBlank()) {
-            // 數學味文字塊：整塊截圖（徽章會變，內容不會變）；截不到退文字路
-            if (p.rect != null && hasMathScent(p.text)) {
-                val id = "s${si++}"
-                blocks.add(AiMathBlock(id, html = "", display = false, fallback = p.text))
-                shots.add(Shot(id, p.rect, p.idx, p.text))
-            } else {
-                blocks.addAll(withContext(Dispatchers.Default) { splitAiBlocks(p.text) })
+    val canCrop = activity != null && webView != null
+    val hasRect = picks.any { it.rect != null || it.idx >= 0 }
+    val willCrop = canCrop && hasRect && (cropAllPicks || supportsMathCrop)
+    // F1：等一幀，讓圈選高亮殘影先退（否則裁到藍 tint，反白後變米黃）
+    if (willCrop) kotlinx.coroutines.delay(600)
+    // Gemini 舊路徑：批次前記下捲動位置，整批拍完捲回原位。
+    // ChatGPT 的分段裁圖自己管捲動（每個 pick 內 save/restore），不必在這裡包一層。
+    val legacyScroll = canCrop && !cropAllPicks && picks.any { it.rect != null }
+    if (legacyScroll) WebCrop.saveScroll(webView!!)
+    try {
+        for (p in picks) {
+            val blockCrop = cropAllPicks && canCrop && (p.rect != null || p.idx >= 0)
+            val mathCrop = !cropAllPicks && supportsMathCrop && p.rect != null && canCrop &&
+                (p.kind == 'm' || (p.text.isNotBlank() && hasMathScent(p.text)))
+            when {
+                blockCrop -> {
+                    // 自動分段：每一段都必須「放進一頁不被縮小」。
+                    // 顯示高 = 圖高(px) × 內容寬 / 參考寬，所以能容納的最大圖高由紙張決定；
+                    // 換算回 CSS px 就是這次裁圖的切塊高度。塊比它高 → 自動切成 N 段。
+                    val devScale = webView!!.scale.takeIf { it > 0f }
+                        ?: context.resources.displayMetrics.density
+                    val contentWpt = (viewModel.modelWidth - AI_MARGIN_H * 2f).coerceAtLeast(1f)
+                    val maxHpt = (viewModel.modelHeight - 128f).coerceAtLeast(1f)
+                    val boxW = (p.rect?.w ?: 400f).coerceAtLeast(1f)
+                    val pxW = (boxW * devScale).coerceAtLeast(1f)
+                    val shownScale = minOf(
+                        contentWpt / MATH_RENDER_REFERENCE_W_PX,
+                        contentWpt / pxW
+                    ).coerceAtLeast(0.0001f)
+                    val maxChunkCss = ((maxHpt / shownScale / devScale) * 0.94f)
+                        .coerceIn(240f, 1400f)
+                    val blockH = p.rect?.h ?: 0f
+                    if (blockH > 0f) {
+                        Log.d(
+                            "InkFlowDbg",
+                            "IMPORT-SPLIT idx=${p.idx} blockH=${blockH.toInt()} maxChunk=${maxChunkCss.toInt()} " +
+                                "expectN=${kotlin.math.ceil(blockH / maxChunkCss).toInt()}"
+                        )
+                    }
+                    val rms = try {
+                        WebCrop.cropPickedBlock(
+                            activity!!, webView!!, p.idx,
+                            p.rect ?: WebCrop.CssBox(0f, 0f, 1f, 1f),
+                            "p$si",
+                            maxChunkCss = maxChunkCss
+                        )
+                    } catch (t: Throwable) {
+                        Log.w("InkFlowDbg", "block crop failed p$si: $t")
+                        emptyList()
+                    }
+                    if (rms.isEmpty()) {
+                        cropFail++
+                        Log.w(
+                            "InkFlowDbg",
+                            "IMPORT-CROP-FAIL idx=${p.idx} h=${p.rect?.h} text=${p.text.take(40).replace("\n", " ")}"
+                        )
+                        // 退文字：含 TeX 的段落仍會被第二引擎（MathJax）補成圖。
+                        blocks.addAll(
+                            withContext(Dispatchers.Default) {
+                                splitAiBlocks(p.text, promoteInlineMath = true)
+                            }
+                        )
+                    } else {
+                        // 一個 pick 可能切成多張（超高塊）：依序排入，保原順序。
+                        for (rm in rms) {
+                            val id = "s${si++}"
+                            rendered[id] = rm
+                            blocks.add(AiMathBlock(id, html = "", display = true, fallback = ""))
+                        }
+                    }
+                }
+                mathCrop -> {
+                    val id = "s${si++}"
+                    val rm = try {
+                        WebCrop.cropFormula(activity!!, webView!!, p.idx, p.rect!!, id)
+                    } catch (t: Throwable) {
+                        Log.w("InkFlowDbg", "crop failed $id: $t")
+                        null
+                    }
+                    if (rm != null) rendered[id] = rm else cropFail++
+                    blocks.add(AiMathBlock(id, html = "", display = true, fallback = p.text))
+                }
+                p.text.isNotBlank() -> blocks.addAll(
+                    withContext(Dispatchers.Default) {
+                        splitAiBlocks(p.text, promoteInlineMath = promoteComplexParas)
+                    }
+                )
             }
         }
+    } finally {
+        if (legacyScroll) WebCrop.restoreScroll(webView!!)
     }
     if (blocks.isEmpty()) {
         Toast.makeText(context, "沒有可插入的內容", Toast.LENGTH_SHORT).show()
         return
     }
-    val rendered = mutableMapOf<String, RenderedMath>()
-    var cropFail = 0
-    if (shots.isNotEmpty() && activity != null && webView != null) {
-        // F1：等一幀，讓圈選高亮殘影先退（否則裁到藍 tint，反白後變米黃）
-        kotlinx.coroutines.delay(600)
-        // 批次前記下捲動位置：裁圖要把每個 shot 捲進畫面，結束後捲回原位。
-        WebCrop.saveScroll(webView)
-        try {
-            for (s in shots) {
-                try {
-                    val rm = WebCrop.cropFormula(activity, webView, s.idx, s.box, s.id)
-                    if (rm != null) rendered[s.id] = rm else cropFail++
-                } catch (t: Throwable) {
-                    Log.w("InkFlowDbg", "crop failed ${s.id}: $t")
-                    cropFail++
-                }
-            }
-        } finally {
-            WebCrop.restoreScroll(webView)
-        }
-    } else if (shots.isNotEmpty()) {
-        cropFail = shots.size
-    }
-    // 第二引擎：裁圖失敗但還有 TeX 的塊走離線 KaTeX（MathSnapshot）。
+    // 第二引擎：裁圖失敗但還有 TeX 的塊走離線渲染（ChatGPT=MathJax，Gemini=KaTeX）。
     // 必須在 resolveAiBlocks 之前：那一步會把沒有圖的數學塊換成文字。
     var katexFail = 0
     val katexTodo = katexTargets(blocks, rendered)
     if (katexTodo.isNotEmpty()) {
-        Log.d("InkFlowDbg", "KATEX begin n=${katexTodo.size} cropFail=$cropFail")
-        val (km, kf) = renderMathBlocks(context, katexTodo)
+        Log.d("InkFlowDbg", "KATEX begin n=${katexTodo.size} cropFail=$cropFail jax=$useMathJax")
+        val (km, kf) = renderMathBlocks(context, katexTodo, useMathJax = useMathJax)
         rendered.putAll(km)
         katexFail = kf
         Log.d("InkFlowDbg", "KATEX end ok=${km.size} fail=$kf")

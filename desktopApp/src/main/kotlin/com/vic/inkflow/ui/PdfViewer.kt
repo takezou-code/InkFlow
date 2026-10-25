@@ -16,6 +16,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
@@ -290,6 +291,7 @@ fun PdfViewer(
     var exportMessage by remember(documentUri) { mutableStateOf<String?>(null) }
 
     val handles = remember(documentUri) { mutableMapOf<Int, PageHandle>() }
+    val sharedZoom = remember(documentUri) { mutableFloatStateOf(1f) }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val focusRequester = remember { FocusRequester() }
@@ -348,7 +350,7 @@ fun PdfViewer(
         if (exporting) return
         val src = PdfManager.resolveFile(documentUri)
         if (src == null) {
-            exportMessage = "æ‰¾ä¸åˆ°åŽŸå§‹ PDFï¼Œç„¡æ³•åŒ¯å‡º"
+            exportMessage = "找不到原始 PDF，無法匯出"
             return
         }
         val base = documentTitle.substringBeforeLast('.').ifEmpty { "document" }
@@ -363,11 +365,11 @@ fun PdfViewer(
                 }
             if (mb == null) {
                 exporting = false
-                exportMessage = "åŒ¯å‡ºå¤±æ•—ï¼šè®€ä¸åˆ°é é¢å°ºå¯¸"
+                exportMessage = "匯出失敗：讀不到頁面尺寸"
                 return@launch
             }
             withContext(Dispatchers.Main) {
-                val fd = java.awt.FileDialog(null as java.awt.Frame?, "åŒ¯å‡º PDF", java.awt.FileDialog.SAVE)
+                val fd = java.awt.FileDialog(null as java.awt.Frame?, "匯出 PDF", java.awt.FileDialog.SAVE)
                 fd.file = "$base-annotated.pdf"
                 fd.filenameFilter = java.io.FilenameFilter { _, name -> name.lowercase().endsWith(".pdf") }
                 fd.isVisible = true
@@ -390,11 +392,11 @@ fun PdfViewer(
                     }
                 }.onSuccess { pages ->
                     exporting = false
-                    exportMessage = "å·²åŒ¯å‡º $pages é ï¼š${dest.absolutePath}"
+                    exportMessage = "已匯出 $pages 頁：${dest.absolutePath}"
                 }.onFailure { e ->
                     logger.error(e) { "Failed to export $documentUri" }
                     exporting = false
-                    exportMessage = "åŒ¯å‡ºå¤±æ•—ï¼š${e.message ?: e::class.simpleName}"
+                    exportMessage = "匯出失敗：${e.message ?: e::class.simpleName}"
                 }
             }
         }
@@ -490,47 +492,51 @@ fun PdfViewer(
                 onFitWidth = { h?.onFitWidth() },
                 onPrevPage = { scrollToPage(focusedPage - 1) },
                 onNextPage = { scrollToPage(focusedPage + 1) },
+                onGoToPage = { p -> scrollToPage(p) },
                 modifier = Modifier.fillMaxWidth()
             )
         }
-        if (pageCount == 0) {
-            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                if (docError != null) {
-                    Text(
-                        "ç„¡æ³•é–‹å•Ÿ PDFï¼š$docError",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.error
-                    )
-                } else {
-                    CircularProgressIndicator()
+        Row(Modifier.weight(1f).fillMaxWidth()) {
+            if (pageCount == 0) {
+                Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.Center) {
+                    if (docError != null) {
+                        Text(
+                            "無法開啟 PDF：$docError",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    } else {
+                        CircularProgressIndicator()
+                    }
                 }
-            }
-        } else {
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(pageCount, key = { "$documentUri:$it" }) { idx ->
-                    PageView(
-                        documentUri = documentUri,
-                        pageIndex = idx,
-                        databaseManager = databaseManager,
-                        proposalQueue = proposalQueue,
-                        editable = editable,
-                        onInkChanged = onInkChanged,
-                        refreshToken = refreshToken,
-                        docRefresh = docRefresh,
-                        onLocalEdit = onLocalEdit,
-                        tool = tool,
-                        inkColour = inkColour,
-                        inkWidthPt = inkWidthPt,
-                        shapeSubType = shapeSubType,
-                        handle = handles.getOrPut(idx) { PageHandle() },
-                        onFocused = { focusPage(idx) },
-                        onDocCleared = { docRefresh++ },
-                        noteLanding = if (idx == focusedPage) noteLanding else null
-                    )
+            } else {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.weight(1f).fillMaxHeight(),
+                    verticalArrangement = Arrangement.spacedBy((8f * sharedZoom.floatValue).dp)
+                ) {
+                    items(pageCount, key = { "$documentUri:$it" }) { idx ->
+                        PageView(
+                            documentUri = documentUri,
+                            pageIndex = idx,
+                            databaseManager = databaseManager,
+                            proposalQueue = proposalQueue,
+                            editable = editable,
+                            onInkChanged = onInkChanged,
+                            refreshToken = refreshToken,
+                            docRefresh = docRefresh,
+                            onLocalEdit = onLocalEdit,
+                            tool = tool,
+                            inkColour = inkColour,
+                            inkWidthPt = inkWidthPt,
+                            shapeSubType = shapeSubType,
+                            handle = handles.getOrPut(idx) { PageHandle() },
+                            sharedZoom = sharedZoom,
+                            onFocused = { focusPage(idx) },
+                            onDocCleared = { docRefresh++ },
+                            noteLanding = if (idx == focusedPage) noteLanding else null
+                        )
+                    }
                 }
             }
         }
@@ -554,6 +560,7 @@ private fun PageView(
     inkWidthPt: Float = INK_WIDTH_PT,
     shapeSubType: com.vic.inkflow.util.ShapeType = com.vic.inkflow.util.ShapeType.RECT,
     handle: PageHandle,
+    sharedZoom: androidx.compose.runtime.MutableFloatState,
     onFocused: () -> Unit = {},
     onDocCleared: () -> Unit = {},
     noteLanding: com.vic.inkflow.agent.NoteLandingHandle? = null,
@@ -637,7 +644,7 @@ private fun PageView(
     // â”€â”€ View transform â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Explicit states, not `by` delegates: the render pipeline reads these from a
     // coroutine, where only a stable reference to the state can be observed.
-    val zoom = remember(documentUri, pageIndex) { mutableFloatStateOf(1f) }
+    val zoom = sharedZoom
     val pan = remember(documentUri, pageIndex) { mutableStateOf(Offset.Zero) }
     val viewport = remember(documentUri, pageIndex) { mutableStateOf(Size.Zero) }
 
@@ -2429,7 +2436,7 @@ internal const val INK_WIDTH_PT = 1.6f
 private const val HIGHLIGHTER_WIDTH_MULT = 3f
 
 /** Width stops offered in the toolbar while a stroke tool is armed. */
-internal val INK_WIDTH_PRESETS = listOf("ç´°" to 1.0f, "æ¨™æº–" to 1.6f, "ç²—" to 2.6f)
+internal val INK_WIDTH_PRESETS = listOf("細" to 1.0f, "標準" to 1.6f, "粗" to 2.6f)
 
 /**
  * Floating ink toolbar: tool, colour, and a destructive clear.
@@ -2467,6 +2474,7 @@ private fun InkToolbar(
     onFitWidth: () -> Unit = {},
     onPrevPage: () -> Unit = {},
     onNextPage: () -> Unit = {},
+    onGoToPage: (Int) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     // One row, period: tools, history, colours, actions and AI ride a single
@@ -2482,14 +2490,14 @@ private fun InkToolbar(
         Row(
             modifier = modifier
                 .padding(12.dp)
-                .chromeGlass(isDark = InkThemeState.darkMode, shape = pillShape)
+                .background(MaterialTheme.colorScheme.surface, pillShape)
                 .clip(pillShape)
                 .horizontalScroll(rememberScrollState())
                 .padding(horizontal = 10.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(2.dp)
         ) {
-            InkToolbarTitle(documentTitle, focusedPage, pageCount, onPrevPage, onNextPage)
+            InkToolbarTitle(documentTitle, focusedPage, pageCount, onPrevPage, onNextPage, onGoToPage)
             InkToolbarTools(tool, selectionCount, onToolChange)
             androidx.compose.material3.VerticalDivider(
                 modifier = Modifier.height(24.dp).padding(horizontal = 6.dp),
@@ -2516,8 +2524,8 @@ private fun InkToolbar(
         // unsure whether the file was actually written.
         exportStatus?.let { status ->
             // Success reads primary, failure reads error: a single muted colour
-            // for both is how "åŒ¯å‡ºå¤±æ•—" went unnoticed under the toolbar.
-            val failed = status.startsWith("åŒ¯å‡ºå¤±æ•—") || status.startsWith("æ‰¾ä¸åˆ°")
+            // for both is how "匯出失敗" went unnoticed under the toolbar.
+            val failed = status.startsWith("匯出失敗") || status.startsWith("找不到")
             Text(
                 status,
                 modifier = Modifier.padding(bottom = 12.dp),
@@ -2592,10 +2600,10 @@ internal fun InkToolIcon(
 
 /** Labels for the shape subtypes, in the tablet's terms. */
 internal val SHAPE_LABELS: Map<com.vic.inkflow.util.ShapeType, String> = mapOf(
-    com.vic.inkflow.util.ShapeType.RECT to "çŸ©å½¢",
-    com.vic.inkflow.util.ShapeType.CIRCLE to "æ©¢åœ“",
-    com.vic.inkflow.util.ShapeType.LINE to "ç›´ç·š",
-    com.vic.inkflow.util.ShapeType.ARROW to "ç®­é ­"
+    com.vic.inkflow.util.ShapeType.RECT to "矩形",
+    com.vic.inkflow.util.ShapeType.CIRCLE to "圓形",
+    com.vic.inkflow.util.ShapeType.LINE to "直線",
+    com.vic.inkflow.util.ShapeType.ARROW to "箭頭"
 )
 
 internal val INK_PALETTE = listOf(

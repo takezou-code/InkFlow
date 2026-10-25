@@ -52,7 +52,7 @@ enum class AiProvider(
         "ChatGPT",
         "https://chatgpt.com/",
         "chatgpt.com",
-        AiCapabilities(sendImage = true, importReply = true, mathCrop = false)
+        AiCapabilities(sendImage = true, importReply = true, mathCrop = true)
     );
 
     val other: AiProvider get() = if (this == GEMINI) CHATGPT else GEMINI
@@ -136,7 +136,10 @@ fun AiProvider.pickJs(palette: PickPalette = PickPalette()): String =
     AiGeminiDriver.pickJs(replyChain = replyChain, palette = palette)
 
 /** 收集腳本，同上。 */
-fun AiProvider.collectJs(): String = AiGeminiDriver.collectJs(replyChain = replyChain)
+fun AiProvider.collectJs(): String = AiGeminiDriver.collectJs(
+    replyChain = replyChain,
+    cropFormulas = (this == AiProvider.CHATGPT)
+)
 
 /** 回覆容器候選鏈。 */
 val AiProvider.replyChain: List<String>

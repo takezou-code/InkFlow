@@ -172,7 +172,7 @@ private fun SyncStatusPill(text: String) {
         modifier = Modifier
             .then(
                 if (online) Modifier.glassSelectionPill(CircleShape)
-                else Modifier.chromeGlass(isDark, CircleShape)
+                else Modifier.background(MaterialTheme.colorScheme.surface, CircleShape)
             )
             .clip(CircleShape)
             .padding(horizontal = DeskSpace.sm, vertical = 8.dp)
@@ -246,7 +246,7 @@ private fun EmptyLibrary(query: String, onImport: () -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally,
             modifier = Modifier
                 .widthIn(max = 420.dp)
-                .chromeGlass(InkThemeState.darkMode, ShapeXl)
+                .background(MaterialTheme.colorScheme.surface, ShapeXl)
                 .padding(DeskSpace.lg)
         ) {
             Icon(
@@ -288,7 +288,7 @@ private fun DocumentCard(
     Column(
         modifier = Modifier
             .height(DeskDims.cardHeight)
-            .chromeGlass(isDark, ShapeMd)
+            .background(MaterialTheme.colorScheme.surface, ShapeMd)
             .glassClickable(onClick = onClick, shape = ShapeMd)
             .clip(ShapeMd)
     ) {

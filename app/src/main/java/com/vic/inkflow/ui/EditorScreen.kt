@@ -545,6 +545,10 @@ fun TabletEditorScreen(
     fun importPickedJson(json: String) {
         aiPlacing = true
         scope.importPickedJson(json, context, viewModel, pdfViewModel, repos, uri.toString(), currentPageIndex, onRequestPage, context as? android.app.Activity, aiWebView,
+            supportsMathCrop = aiProvider.capabilities.mathCrop,
+            promoteComplexParas = aiProvider == AiProvider.GEMINI,
+            cropAllPicks = aiProvider == AiProvider.CHATGPT,
+            useMathJax = (aiProvider == AiProvider.CHATGPT),
             latestPage = { currentPageIndex },
             onSettled = { aiPlacing = false })
     }
@@ -699,13 +703,18 @@ fun TabletEditorScreen(
                 // 互斥鎖上（與紙面同一個坑）。掛回時這個 effect 會因 sidebarStage
                 // 變回 PANEL/RAIL 再跑一次，屆時才定位。
                 if (sidebarStage != SidebarStage.GRID) {
-                    if (pdfViewModel.isScrollingFast.value) {
-                        // scrollToCenter 本身已對陳舊 index 做邊界檢查，這裡直接呼叫
-                        // （runCatching 的 block 不是 suspend lambda，會編譯不過）
-                        sidebarListState.scrollToCenter(currentPageIndex)
-                    } else {
-                        sidebarListState.animateScrollToCenter(currentPageIndex)
-                    }
+                    // 只做動畫，不做瞬時跳位（實機回報：滑紙面時側欄頁碼直接跳過去）。
+                    //
+                    // 不需要再看 isScrollingFast：上面 150ms 防抖本身就是節流——
+                    // 快滑時頁碼每 <150ms 就變，這個 effect 每次都被取消重進，
+                    // 根本輪不到動畫；等頁碼穩下來 150ms 才真的動一次。
+                    // 舊碼在防抖之後又用「快滑旗標」把它降級成瞬時 scrollToCenter
+                    // （旗標要落定後 500ms 才放，正常滑完一定還在旗標內），所以幾乎永遠瞬跳。
+                    //
+                    // 側欄自己正在被拖時不會打到這裡：側欄帶的頭 1 秒內走的是上面
+                    // lastSidebarDriveMs 的早退；就算撞上，LazyList 的 MutatorMutex
+                    // 也讓手指（UserInput）贏過程式捲動（Default）。
+                    sidebarListState.animateScrollToCenter(currentPageIndex)
                 }
             }
         } finally {

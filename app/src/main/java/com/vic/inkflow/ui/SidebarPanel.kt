@@ -1020,15 +1020,26 @@ internal suspend fun LazyListState.scrollToCenter(index: Int) {
     scroll { scrollBy(delta) }
 }
 
-/** 側欄置中捲動（動畫版）。與 [scrollToCenter] 同一套演算法，只是換成動畫。 */
+/**
+ * 側欄置中捲動（動畫版）。與 [scrollToCenter] 同一套置中算法，
+ * 但**從目前位置**動過去，不是先瞬移到目標再校正。
+ *
+ * 舊版第一行是 `scrollToItem(index)`（瞬時）再 `animateScrollBy(delta)`：
+ * 頁碼條一頁約 48～140dp、視窗卻有一整屏高，所以「瞬移」吃掉了幾乎所有距離，
+ * 眼睛只看到最後半個視窗的滑動 → 實機回報「滑主畫面時側欄數字直接跳過去、沒有動畫」。
+ *
+ * 目標不在可見範圍時用 `animateScrollToItem`（本身是動畫）而不是 `scrollToItem`，
+ * 落地後再補一次置中校正。
+ */
 internal suspend fun LazyListState.animateScrollToCenter(index: Int) {
-    // 使用者正在滑動時不要強制中斷
-    if (isScrollInProgress) return
     if (index < 0 || index >= layoutInfo.totalItemsCount) return
-    runCatching { scrollToItem(index) }.getOrNull() ?: return
+    val viewportCenter = (layoutInfo.viewportStartOffset + layoutInfo.viewportEndOffset) / 2f
+    val visible = layoutInfo.visibleItemsInfo.firstOrNull { it.index == index }
+    if (visible == null) {
+        runCatching { animateScrollToItem(index) }.getOrNull() ?: return
+    }
     val itemInfo = layoutInfo.visibleItemsInfo.firstOrNull { it.index == index } ?: return
-    val delta = (itemInfo.offset + itemInfo.size / 2f -
-        (layoutInfo.viewportStartOffset + layoutInfo.viewportEndOffset) / 2f)
+    val delta = itemInfo.offset + itemInfo.size / 2f - viewportCenter
     if (kotlin.math.abs(delta) < 0.5f) return
     runCatching { animateScrollBy(delta) }
 }

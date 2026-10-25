@@ -131,9 +131,9 @@ class AiContractTest {
             assertTrue("${it.name} 必須能送圖", it.capabilities.sendImage)
             assertTrue("${it.name} 必須能匯入", it.capabilities.importReply)
         }
-        // 數學裁圖只有 Gemini 驗過，ChatGPT 仍保守關閉。
+        // S4 交付 ChatGPT 匯入；S5 起 ChatGPT 也開啟數學裁圖（直接截 ChatGPT 自己渲染的公式）。
         assertTrue(AiProvider.GEMINI.capabilities.mathCrop)
-        assertFalse(AiProvider.CHATGPT.capabilities.mathCrop)
+        assertTrue(AiProvider.CHATGPT.capabilities.mathCrop)
     }
 
     @Test
@@ -209,6 +209,20 @@ class AiContractTest {
         // 漏掉的話匯入完成後網頁上還留著工具列，且下一輪圈選會疊兩層。
         val collect = AiProvider.GEMINI.collectJs()
         assertTrue("collectJs 要呼叫 teardown", collect.contains("__inkpickTeardown"))
+    }
+
+    @Test
+    fun `ChatGPT 收集腳本要真的走整塊裁圖分支`() {
+        // 踩過：Kotlin 參數名直接寫進 JS 字串，沒插值 → 執行時 ReferenceError，
+        // 每個勾選塊都在 push 前丟例外 → picks 空 → 「沒有可插入的內容」。
+        val chatgpt = AiProvider.CHATGPT.collectJs()
+        val gemini = AiProvider.GEMINI.collectJs()
+        assertFalse("JS 不可留裸變數 cropFormulas", chatgpt.contains("cropFormulas"))
+        assertTrue("ChatGPT 要展開成 true 分支", chatgpt.contains("if (true)"))
+        assertFalse("Gemini 不可走整塊裁圖", gemini.contains("if (true)"))
+        assertTrue("Gemini 保持文字／公式路徑", gemini.contains("if (false)"))
+        assertTrue("ChatGPT 要回報取像診斷", chatgpt.contains("SEG-DIAG"))
+        assertTrue("ChatGPT 每塊都要推 pick", chatgpt.contains("picks.push({k:'b'"))
     }
 
     @Test

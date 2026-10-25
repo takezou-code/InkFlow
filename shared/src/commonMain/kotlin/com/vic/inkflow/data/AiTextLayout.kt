@@ -80,8 +80,9 @@ private fun stripDisplayShell(s: String): String {
     return t
 }
 
-private fun isComplexPara(p: String): Boolean {
+private fun isComplexPara(p: String, promoteInlineMath: Boolean = true): Boolean {
     if (DISPLAY_MATH.containsMatchIn(p)) return true
+    if (!promoteInlineMath) return false
     // \(...\) 是顯式數學殼，有字就算數（ChatGPT 風格的 \(f(x)\) 不能漏）
     for (m in INLINE_PAREN.findAll(p)) if (m.groupValues[1].isNotBlank()) return true
     for (m in INLINE_DOLLAR.findAll(p)) if (looksLikeInlineMath(m.groupValues[1])) return true
@@ -131,7 +132,7 @@ fun hasMathScent(text0: String): Boolean {
 }
 
 /** 把原文切成保序的文字/數學塊（code fence 內不找數學）。 */
-fun splitAiBlocks(raw: String, maxChars: Int = AI_CHUNK_MAX_CHARS): List<AiBlock> {
+fun splitAiBlocks(raw: String, maxChars: Int = AI_CHUNK_MAX_CHARS, promoteInlineMath: Boolean = true): List<AiBlock> {
     val text = raw.replace("\r\n", "\n").trim()
     if (text.isEmpty()) return emptyList()
     val out = mutableListOf<AiBlock>()
@@ -145,7 +146,7 @@ fun splitAiBlocks(raw: String, maxChars: Int = AI_CHUNK_MAX_CHARS): List<AiBlock
         for (para in seg.split(Regex("\n\\s*\n"))) {
             val p = para.trim()
             if (p.isEmpty()) continue
-            if (isComplexPara(p)) {
+            if (isComplexPara(p, promoteInlineMath)) {
                 ti++
                 out.add(AiMathBlock(id = "m$ti", html = p, display = DISPLAY_MATH.containsMatchIn(p), fallback = convertLatexInProse(p)))
             } else {
@@ -529,6 +530,8 @@ fun convertLatexMath(m0: String): String {
         val name = r.groupValues[1]
         LATEX_GREEK[name] ?: LATEX_SYM[name] ?: r.value
     }
+    m = m.replace(Regex("\\\\displaystyle"), " ")
+    m = m.replace(Regex("\\\\boxed"), "")
     // 注意：殘留分組括號不 blanket 清除（未知指令原樣保留優先，如 \qwerty{z}）
     return m.split("\n").joinToString("\n") { it.replace(Regex("[ \\t]+"), " ").trim() }.trim()
         .replace("\u0001", "{").replace("\u0002", "}")

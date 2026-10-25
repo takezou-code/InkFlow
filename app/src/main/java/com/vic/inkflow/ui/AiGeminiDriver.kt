@@ -269,7 +269,7 @@ fun pickJs(
                     return true;
                 } catch(e){ return false; }
             }
-            var parts = container.querySelectorAll('p, li, h1, h2, h3, h4, pre, blockquote, div.math-block, span.math-inline, div.katex-display, span.katex');
+            var parts = container.querySelectorAll('p, li, h1, h2, h3, h4, h5, h6, pre, blockquote, table, thead, tbody, tfoot, tr, td, th, div.math-block, span.math-inline, div.katex-display, span.katex');
             var n = 0;
             if (parts.length === 0) {
                 if (mark(container)) n = 1;
@@ -341,7 +341,7 @@ fun pickJs(
             window.__inkpickHandler = function(ev) {
                 try {
                     if (!window.__inkpick) return;
-                    var t = (ev.target && ev.target.closest) ? ev.target.closest('p, li, h1, h2, h3, h4, pre, blockquote, div.math-block, span.math-inline, div.katex-display, span.katex') : null;
+                    var t = (ev.target && ev.target.closest) ? ev.target.closest('p, li, h1, h2, h3, h4, h5, h6, pre, blockquote, table, thead, tbody, tfoot, tr, td, th, div.math-block, span.math-inline, div.katex-display, span.katex') : null;
                     if (!t) return;
                     // 自癒：串流中重渲染導致容器換新時，不卡容器歸屬、有字就地標記（chrome 區除外）
                     if (inChrome(t)) return;
@@ -390,7 +390,10 @@ fun pickJs(
  * 一個都沒勾則回空陣列、不插入。清掉委派 listener、樣式與全部標記。
  * 結果經 AndroidBridge.onTextGrabbed 回傳（上限 20000 字）。
  */
-fun collectJs(replyChain: List<String> = REPLY_CHAIN): String {
+fun collectJs(
+        replyChain: List<String> = REPLY_CHAIN,
+        cropFormulas: Boolean = false
+    ): String {
     return """
     (function() {
             function note(s) {
@@ -412,6 +415,26 @@ fun collectJs(replyChain: List<String> = REPLY_CHAIN): String {
             function texify(root) {
                 var nb = 0, ni = 0;
                 try {
+                    // ChatGPT 新 DOM：LaTeX 來源搬到祖先元素的 data-math-source 屬性，
+                    // .katex 內部不再有 annotation[encoding*=tex]。先處理這條，整塊取代，
+                    // 避免後續 .katex 規則重複或遺漏。
+                    root.querySelectorAll('[data-math-source]').forEach(function(el) {
+                        var t = el.getAttribute('data-math-source') || '';
+                        if (t.trim().length > 0) {
+                            var disp = false;
+                            try {
+                                if (el.querySelector && el.querySelector('.katex-display')) disp = true;
+                                if (el.classList && el.classList.contains('katex-display')) disp = true;
+                                if (el.parentElement && el.parentElement.classList && el.parentElement.classList.contains('katex-display')) disp = true;
+                                if (el.getAttribute('role') === 'math') {
+                                    var k = el.querySelector('.katex');
+                                    if (k && k.parentElement && k.parentElement.classList && k.parentElement.classList.contains('katex-display')) disp = true;
+                                }
+                            } catch(e){}
+                            el.replaceWith(document.createTextNode(disp ? ('$$' + t.trim() + '$$') : ('$' + t.trim() + '$')));
+                            if (disp) nb++; else ni++;
+                        }
+                    });
                     root.querySelectorAll('.math-block[data-math]').forEach(function(el) {
                         var t = el.getAttribute('data-math') || '';
                         if (t.trim().length > 0) {
@@ -484,6 +507,7 @@ fun collectJs(replyChain: List<String> = REPLY_CHAIN): String {
             var census = {};
             var censusMath = 0, censusDataMath = 0, censusAnno = 0;
             var rects = [];
+            var segDiag = [];
             // 裁圖定位表：把節點「本尊」留在這裡，picks 的 i 指向它。
             // 為什麼不能只用 rect：rect 是「收集當下」量的，框若在畫面外就是出界值；
             // 裁圖前要 scrollIntoView 到畫面內再重量，這需要節點參考而不是座標猜。
@@ -506,17 +530,65 @@ fun collectJs(replyChain: List<String> = REPLY_CHAIN): String {
                         r = [Math.round(rr.x), Math.round(rr.y), Math.round(rr.width), Math.round(rr.height)];
                         rects.push(r);
                     } catch(e){}
-                    var clone = el.cloneNode(true);
-                    var cc = texify(clone);
-                    mathB += cc.b; mathI += cc.i;
-                    var t = clone.innerText || '';
-                    if (hasMath) {
-                        picks.push({k:'m', i:cropIdx, r:r, t:t.trim().slice(0, 20000)});
-                    } else if (t.trim().length > 0) {
-                        picks.push({k:'t', i:cropIdx, r:r, t:t.trim().slice(0, 20000)});
+                    if (${cropFormulas}) {
+                        // ChatGPT：整塊像素裁圖（所見即所得）。
+                        // 一個勾選塊 = 一張（超高時由 Kotlin 端分段接成一張）。
+                        // 先 push 再還原 TeX：TeX 只是退路，任何一步炸掉都不能吃掉這塊。
+                        var btext = '';
+                        try {
+                            var bclone = el.cloneNode(true);
+                            var bcc = texify(bclone);
+                            mathB += bcc.b; mathI += bcc.i;
+                            btext = (bclone.innerText || '').trim();
+                        } catch(e) {
+                            try { note('COLLECT-TEX-ERR ' + (e && e.message ? e.message : e)); } catch(e2){}
+                        }
+                        picks.push({k:'b', i:cropIdx, r:r, t:btext.slice(0, 20000)});
+                        // 幾何取證：捲動容器與可捲上限，判斷分段裁圖捲不捲得動。
+                        try {
+                            var sc = null, pp = el.parentElement;
+                            while (pp && pp.nodeType === 1) {
+                                var st = getComputedStyle(pp);
+                                if (/(auto|scroll|overlay)/.test(st.overflowY) && pp.scrollHeight > pp.clientHeight + 4) { sc = pp; break; }
+                                pp = pp.parentElement;
+                            }
+                            var dg = '#' + cropIdx + ' h=' + Math.round(r ? r[3] : -1);
+                            if (sc) {
+                                dg += ' sc=' + (sc.tagName || '?') +
+                                      '[' + Math.round(sc.scrollTop) + '/' + Math.max(0, sc.scrollHeight - sc.clientHeight) + ']';
+                            } else { dg += ' sc=none'; }
+                            try { dg += ' cv=' + getComputedStyle(el).contentVisibility; } catch(e){}
+                            segDiag.push(dg);
+                        } catch(e){}
+                    } else {
+                        var clone = el.cloneNode(true);
+                        var cc = texify(clone);
+                        mathB += cc.b; mathI += cc.i;
+                        var t = clone.innerText || '';
+                        if (hasMath) {
+                            picks.push({k:'m', i:cropIdx, r:r, t:t.trim().slice(0, 20000)});
+                        } else if (t.trim().length > 0) {
+                            picks.push({k:'t', i:cropIdx, r:r, t:t.trim().slice(0, 20000)});
+                        }
                     }
-                } catch(e){}
+                } catch(e) {
+                    try { note('COLLECT-ROOT-ERR ' + (e && e.message ? e.message : e)); } catch(e2){}
+                }
             });
+            // 保險：取像不能被「文字還原」的任何錯誤拖垮。
+            // 只要還有勾選節點，就至少讓每一塊都有機會被裁圖（rect 可後補，idx 才是定位依據）。
+            if (picks.length === 0 && roots.length > 0) {
+                roots.forEach(function(el) {
+                    try {
+                        var ri = -1;
+                        for (var k = 0; k < window.__inkcropEls.length; k++) {
+                            if (window.__inkcropEls[k] === el) { ri = k; break; }
+                        }
+                        picks.push({k:'b', i:ri, r:null, t:''});
+                    } catch(e){}
+                });
+                try { note('COLLECT-FALLBACK picks=' + picks.length); } catch(e){}
+            }
             // 未勾選 = 不插入：直接回空陣列，Kotlin 側 parsePicks 為空會 Toast「沒有可插入的內容」並返回。
             // （舊行為：退回最後回覆全文，已按需求拿掉。）
             var src = picks.length === 0 ? 'empty-nopick' : 'picked x' + picks.length;
@@ -525,7 +597,8 @@ fun collectJs(replyChain: List<String> = REPLY_CHAIN): String {
             } catch(e){}
             // F1：強制 reflow，逼殘影樣式先退，Kotlin 側 PixelCopy 前還會再等 600ms
             try { void document.body.offsetHeight; } catch(e){}
-            note('COLLECT src=' + src + ' mathB=' + mathB + ' mathI=' + mathI + ' census=' + JSON.stringify(census) + ' inMath=' + censusMath + ' dataMath=' + censusDataMath + ' anno=' + censusAnno + ' rects=' + JSON.stringify(rects) + ' dpr=' + window.devicePixelRatio);
+            note('COLLECT src=' + src + ' mathB=' + mathB + ' mathI=' + mathI + ' census=' + JSON.stringify(census) + ' inMath=' + censusMath + ' dataMath=' + censusDataMath + ' anno=' + censusAnno + ' rects=' + JSON.stringify(rects) + ' dpr=' + window.devicePixelRatio + ' cropF=' + ${cropFormulas} + ' roots=' + roots.length);
+            if (segDiag.length > 0) note('SEG-DIAG ' + segDiag.join(' || '));
             try { if (window.AndroidBridge && window.AndroidBridge.onPickedJson) window.AndroidBridge.onPickedJson(JSON.stringify(picks).slice(0, 200000)); } catch(e){}
         })();
     """.trimIndent()

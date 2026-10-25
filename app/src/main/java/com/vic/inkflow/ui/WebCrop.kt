@@ -358,7 +358,10 @@ object WebCrop {
         locY: Int,
         winW: Int,
         winH: Int,
-        insetPx: Int = 2
+        insetPx: Int = 2,
+        // 面積上限（佔視窗比例）。分段裁圖的一段本來就接近整條可見帶，
+        // 舊的 0.8 會把「一屏高的正常段」判成誤裁；分段路徑明確傳 1.0。
+        areaLimit: Float = 0.8f
     ): CropPx? {
         if (box.w <= 0f || box.h <= 0f || scale <= 0f) return null
         val l = locX + cssToDevice(box.x, scale) + insetPx
@@ -373,7 +376,7 @@ object WebCrop {
         // 太小的大概率是 UI 殘件不是公式
         if (w < 24 || h < 24) return null
         // 太大的整頁誤裁（>80% 窗）也不要
-        if (w.toLong() * h > winW.toLong() * winH * 8 / 10) return null
+        if (w.toLong() * h > winW.toLong() * winH * (areaLimit * 100).toLong() / 100) return null
         return CropPx(l, t, r, b)
     }
 
@@ -388,9 +391,10 @@ object WebCrop {
         locY: Int,
         winW: Int,
         winH: Int,
-        insetPx: Int = 2
+        insetPx: Int = 2,
+        areaLimit: Float = 0.8f
     ): Rect? {
-        val c = cropWindowPx(box, scale, locX, locY, winW, winH, insetPx) ?: return null
+        val c = cropWindowPx(box, scale, locX, locY, winW, winH, insetPx, areaLimit) ?: return null
         return Rect(c.l, c.t, c.r, c.b)
     }
 
@@ -865,6 +869,437 @@ object WebCrop {
         } finally {
             // 浮動層是使用者的頁面狀態，任何離開路徑都要還原（否則 AI 頁面永久缺一塊 UI）。
             if (hiddenOverlays > 0) restoreOverlays(webView)
+        }
+    }
+
+    // ================================================================
+    // 分段裁圖（ChatGPT）：捲到哪、拍到哪，超高勾選塊也能完整拍下。
+    // ================================================================
+
+    /** 分段裁圖的幾何（CSS px；viewport 相對，另含元素在捲動內容中的座標）。 */
+    data class SegGeom(
+        val x: Float, val y: Float, val w: Float, val h: Float,
+        /** 元素頂端在「捲動容器內容座標」的位置（不隨捲動改變）。 */
+        val contentTop: Float,
+        /** 真正可見帶（視窗 ∩ 祖先裁切容器）。 */
+        val bandTop: Float, val bandBottom: Float,
+        /** 捲動容器在 viewport 的 top、可見高、目前 scrollTop、可捲上限。 */
+        val scTop: Float, val scClientH: Float, val scScrollTop: Float, val scMax: Float,
+        /** `sc` = 內層捲動容器；`win` = 捲整個 document。 */
+        val scroller: String
+    )
+
+    /**
+     * 量測元素現況：rect、可見帶、捲動容器狀態。
+     * 捲動容器優先取呼叫前 [segSaveJs] 記下的那個（`__inkcropSc`），沒有才往上找。
+     */
+    internal fun segInfoJs(idx: Int): String = """
+        (function() {
+            try {
+                var el = (window.__inkcropEls || [])[$idx];
+                if (!el) return 'NONE';
+                if (el.isConnected === false) return 'DETACHED';
+                var sc = window.__inkcropSc || null;
+                if (sc && sc.isConnected === false) sc = null;
+                if (!sc) {
+                    var p0 = el.parentElement;
+                    while (p0 && p0.nodeType === 1) {
+                        var s0 = getComputedStyle(p0);
+                        if (/(auto|scroll|overlay)/.test(s0.overflowY) && p0.scrollHeight > p0.clientHeight + 4) { sc = p0; break; }
+                        p0 = p0.parentElement;
+                    }
+                }
+                var r = el.getBoundingClientRect();
+                var ct = 0, cb = window.innerHeight;
+                var q = el.parentElement;
+                while (q && q.nodeType === 1) {
+                    var s2 = getComputedStyle(q);
+                    if (/(hidden|auto|scroll|clip|overlay)/.test(s2.overflowY) || /(hidden|auto|scroll|clip|overlay)/.test(s2.overflowX)) {
+                        var qr = q.getBoundingClientRect();
+                        if (qr.height > 0) { ct = Math.max(ct, qr.top); cb = Math.min(cb, qr.bottom); }
+                    }
+                    q = q.parentElement;
+                }
+                var scTop = 0, scCh = window.innerHeight, scSt = window.scrollY || 0;
+                var scMax = Math.max(0, (document.documentElement ? document.documentElement.scrollHeight : 0) - window.innerHeight);
+                var contentTop = r.top + scSt;
+                if (sc) {
+                    var sr = sc.getBoundingClientRect();
+                    scTop = sr.top; scCh = sc.clientHeight; scSt = sc.scrollTop;
+                    scMax = Math.max(0, sc.scrollHeight - sc.clientHeight);
+                    contentTop = r.top - sr.top + sc.scrollTop;
+                }
+                return 'OK:' + [r.x, r.y, r.width, r.height, contentTop, ct, cb, scTop, scCh, scSt, scMax].join(',') + (sc ? '|sc' : '|win');
+            } catch(e) { return 'ERR'; }
+        })();
+    """.trimIndent()
+
+    /** 記下捲動容器與位置（批次前一次），並暫時關掉平滑捲動，讓每次定位是「立刻到點」。 */
+    internal fun segSaveJs(idx: Int): String = """
+        (function() {
+            try {
+                var el = (window.__inkcropEls || [])[$idx];
+                if (!el) return 'NONE';
+                var sc = null, p = el.parentElement;
+                while (p && p.nodeType === 1) {
+                    var s = getComputedStyle(p);
+                    if (/(auto|scroll|overlay)/.test(s.overflowY) && p.scrollHeight > p.clientHeight + 4) { sc = p; break; }
+                    p = p.parentElement;
+                }
+                window.__inkcropSc = sc;
+                window.__inkcropScTop = sc ? sc.scrollTop : null;
+                window.__inkcropWinY = window.scrollY || 0;
+                window.__inkcropSb = sc ? sc.style.scrollBehavior : null;
+                if (sc) sc.style.scrollBehavior = 'auto';
+                return 'OK';
+            } catch(e) { return 'ERR'; }
+        })();
+    """.trimIndent()
+
+    /** 把捲動容器移到指定 scrollTop（元素座標換算在 Kotlin 端做）。 */
+    internal fun segScrollJs(idx: Int, target: Float): String = """
+        (function() {
+            try {
+                var el = (window.__inkcropEls || [])[$idx];
+                if (el && el.isConnected === false) return 'DETACHED';
+                var sc = window.__inkcropSc || null;
+                if (sc) { sc.style.scrollBehavior = 'auto'; sc.scrollTop = $target; return 'OK:' + Math.round(sc.scrollTop); }
+                window.scrollTo(0, $target);
+                return 'OK:' + Math.round(window.scrollY || 0);
+            } catch(e) { return 'ERR'; }
+        })();
+    """.trimIndent()
+
+    /** 還原捲動位置與平滑捲動設定（批次結束一律呼叫）。 */
+    internal fun segRestoreJs(): String = """
+        (function() {
+            try {
+                var sc = window.__inkcropSc || null;
+                if (sc) {
+                    if (window.__inkcropScTop != null) sc.scrollTop = window.__inkcropScTop;
+                    try { sc.style.scrollBehavior = window.__inkcropSb == null ? '' : window.__inkcropSb; } catch(e) {}
+                } else if (window.__inkcropWinY != null) {
+                    window.scrollTo(0, window.__inkcropWinY);
+                }
+                window.__inkcropSc = null; window.__inkcropScTop = null;
+                window.__inkcropWinY = null; window.__inkcropSb = null;
+                return 'OK';
+            } catch(e) { return 'ERR'; }
+        })();
+    """.trimIndent()
+
+    /** 解析 [segInfoJs] 回傳。純函數，可單測。 */
+    fun parseSeg(raw: String?): SegGeom? {
+        val s0 = raw?.trim() ?: return null
+        if (s0 == "null" || s0.isEmpty()) return null
+        val s = s0.removeSurrounding("\"").replace("\\\"", "\"")
+        if (!s.startsWith("OK:")) return null
+        val body = s.removePrefix("OK:")
+        val bar = body.indexOf('|')
+        val numsPart = if (bar >= 0) body.substring(0, bar) else body
+        val scroller = if (bar >= 0) body.substring(bar + 1).trim() else "?"
+        val f = numsPart.split(',').map { it.trim().toFloatOrNull() ?: return null }
+        if (f.size < 11) return null
+        if (f[2] <= 0f || f[3] <= 0f) return null
+        return SegGeom(
+            x = f[0], y = f[1], w = f[2], h = f[3], contentTop = f[4],
+            bandTop = f[5], bandBottom = f[6],
+            scTop = f[7], scClientH = f[8], scScrollTop = f[9], scMax = f[10],
+            scroller = scroller
+        )
+    }
+
+    private suspend fun segEval(webView: WebView, js: String, timeoutMs: Long, tag: String): String? {
+        if (Looper.myLooper() != Looper.getMainLooper()) return null
+        val ret = CompletableDeferred<String?>()
+        try {
+            webView.evaluateJavascript(js) { v -> ret.complete(v) }
+        } catch (t: Throwable) {
+            Log.w(TAG, "$tag eval failed: $t")
+            return null
+        }
+        return withTimeoutOrNull(timeoutMs) { ret.await() } ?: run {
+            Log.w(TAG, "$tag timeout")
+            null
+        }
+    }
+
+    suspend fun segInfo(webView: WebView, idx: Int, timeoutMs: Long = 1500): SegGeom? =
+        parseSeg(segEval(webView, segInfoJs(idx), timeoutMs, "segInfo"))
+
+    suspend fun segSave(webView: WebView, idx: Int) {
+        segEval(webView, segSaveJs(idx), 1500, "segSave")
+    }
+
+    suspend fun segScroll(webView: WebView, idx: Int, target: Float) {
+        segEval(webView, segScrollJs(idx, target), 1500, "segScroll")
+    }
+
+    fun segRestore(webView: WebView) {
+        if (Looper.myLooper() != Looper.getMainLooper()) return
+        try {
+            webView.evaluateJavascript(segRestoreJs(), null)
+        } catch (t: Throwable) {
+            Log.w(TAG, "segRestore failed: $t")
+        }
+    }
+
+    /** 等捲動真的停：rect 與 scrollTop 連續兩次相同才放行（smooth scroll 會骗過單幀檢查）。 */
+    private suspend fun settleSeg(webView: WebView, idx: Int, timeoutMs: Long = 1800): SegGeom? {
+        val t0 = SystemClock.uptimeMillis()
+        var prev: SegGeom? = null
+        while (SystemClock.uptimeMillis() - t0 <= timeoutMs) {
+            waitFrame(webView, 500)
+            val cur = segInfo(webView, idx)
+            if (cur != null && prev != null &&
+                cur.y == prev.y && cur.h == prev.h && cur.scScrollTop == prev.scScrollTop
+            ) return cur
+            prev = cur
+            delay(40)
+        }
+        return prev
+    }
+
+    /** 截「視窗內的某個 CSS 框」，回傳裁好的點陣圖（未正規化）。 */
+    private suspend fun captureCss(
+        activity: Activity,
+        box: CssBox,
+        scale: Float,
+        loc: IntArray,
+        winW: Int,
+        winH: Int,
+        areaLimit: Float = 0.8f
+    ): Bitmap? {
+        val rect = cropWindowRect(box, scale, loc[0], loc[1], winW, winH, 2, areaLimit) ?: run {
+            Log.w(TAG, "seg capture rejected box=$box win=${winW}x$winH")
+            return null
+        }
+        val full = captureWindow(activity) ?: return null
+        val bmp = Bitmap.createBitmap(full, rect.left, rect.top, rect.width(), rect.height())
+        full.recycle()
+        return bmp
+    }
+
+    /** 正規化＋自檢＋存檔；空白圖回 null（呼叫方計失敗）。 */
+    private fun saveCrop(activity: Activity, bmp: Bitmap): RenderedMath? {
+        val norm = normalizeToWhite(bmp)
+        val ink = inkRatio(norm)
+        if (ink < 0.0005f) {
+            Log.w(TAG, "seg chunk blank, dropped")
+            norm.recycle()
+            return null
+        }
+        val f = com.vic.inkflow.util.PdfManager.newAnnotationImageFile(activity, ".png")
+        FileOutputStream(f).use { out -> norm.compress(Bitmap.CompressFormat.PNG, 100, out) }
+        val rm = RenderedMath(f.absolutePath, norm.width, norm.height)
+        Log.d(TAG, "seg img ${norm.width}x${norm.height} ink=${"%.3f".format(ink)}")
+        norm.recycle()
+        return rm
+    }
+
+    /** 整行是否同一色（＝沒有字／線穿過），用來找切塊點，避免切斷文字行。 */
+    private fun rowUniform(bmp: Bitmap, y: Int): Boolean {
+        val w = bmp.width
+        val first = bmp.getPixel(0, y)
+        val r = (first shr 16) and 0xff
+        val g = (first shr 8) and 0xff
+        val b = first and 0xff
+        var x = 0
+        while (x < w) {
+            if (!nearBg(bmp.getPixel(x, y), r, g, b, 6)) return false
+            x += 2
+        }
+        return true
+    }
+
+    /**
+     * 把累積的切片合成一張，找空白列切成「一塊」，剩下的帶到下一塊。
+     * @return 下一塊的起始（元素本地 CSS y）
+     */
+    private fun flushChunk(
+        activity: Activity,
+        parts: MutableList<Pair<Float, Bitmap>>,
+        chunkStart: Float,
+        scale: Float,
+        wPx: Int,
+        out: MutableList<RenderedMath>,
+        tail: Boolean,
+        maxChunkCss: Float
+    ): Float {
+        if (parts.isEmpty()) return chunkStart
+        val endCss = parts.maxOf { it.first + it.second.height / scale }
+        val hPx = ((endCss - chunkStart) * scale).roundToInt().coerceIn(1, 20000)
+        val full = Bitmap.createBitmap(wPx, hPx, Bitmap.Config.ARGB_8888)
+        val cv = Canvas(full)
+        for ((st, b) in parts) {
+            cv.drawBitmap(b, 0f, (st - chunkStart) * scale, null)
+            b.recycle()
+        }
+        parts.clear()
+        val limitPx = (maxChunkCss * scale).roundToInt().coerceIn(16, hPx)
+        var split = hPx
+        if (!tail) {
+            // 只在「不超過一頁」的範圍內找空白列：找不到就硬切在頁界，絕不讓圖超高被縮小。
+            val floorY = (limitPx * 0.6f).toInt().coerceAtLeast(8)
+            var y = minOf(hPx - 2, limitPx)
+            while (y > floorY) {
+                if (rowUniform(full, y)) { split = y; break }
+                y--
+            }
+            if (split >= hPx) split = limitPx
+        }
+        if (split < 16) split = hPx
+        if (split >= hPx) {
+            saveCrop(activity, full)?.let { out.add(it) }
+            return chunkStart + hPx / scale
+        }
+        val top = Bitmap.createBitmap(full, 0, 0, wPx, split)
+        val carry = Bitmap.createBitmap(full, 0, split, wPx, hPx - split)
+        full.recycle()
+        saveCrop(activity, top)?.let { out.add(it) }
+        val nextStart = chunkStart + split / scale
+        parts.add(nextStart to carry)
+        return nextStart
+    }
+
+    /**
+     * ChatGPT 專用：把一個勾選塊完整拍成一張或多張圖（像素級，所見即所得）。
+     *
+     * 舊路徑 `cropFormula` 要求整個框一次塞進視窗，ChatGPT 的勾選塊動輒數千 px，
+     * 永遠 `fit=false` → 整批退文字。這裡改成：
+     *  1. 逐段把「還沒拍到的元素本地 y」對齊可見帶頂端；
+     *  2. 每段只裁元素當下真正可見的那一條，按元素座標貼回大圖；
+     *  3. 累積約一個螢幕高就用「整行同色」切塊（不切斷文字行），多的帶到下一塊。
+     * 全程量測用捲動後實測 rect，不用收集當下的舊座標。
+     *
+     * @return 依序排好的圖（可能 0 張＝失敗，上層退文字）
+     */
+    suspend fun cropPickedBlock(
+        activity: Activity,
+        webView: WebView,
+        idx: Int,
+        fallbackBox: CssBox,
+        tag: String,
+        maxChunkCss: Float = 640f
+    ): List<RenderedMath> {
+        if (Looper.myLooper() != Looper.getMainLooper()) return emptyList()
+        val out = mutableListOf<RenderedMath>()
+        var hidden = 0
+        var saved = false
+        return try {
+            @Suppress("DEPRECATION")
+            val scale = webView.scale.takeIf { it > 0f }
+                ?: webView.resources.displayMetrics.density
+            val loc = IntArray(2)
+            (webView as View).getLocationInWindow(loc)
+            val decor = activity.window?.decorView ?: return emptyList()
+            val winW = decor.width
+            val winH = decor.height
+
+            // 沒有節點索引（舊資料）：退成單張直裁，仍然受窗內檢查保護。
+            if (idx < 0) {
+                captureCss(activity, fallbackBox, scale, loc, winW, winH)?.let { bmp ->
+                    saveCrop(activity, bmp)?.let { out.add(it) }
+                }
+                return out
+            }
+
+            segSave(webView, idx)
+            saved = true
+            val g = segInfo(webView, idx)
+            if (g == null) {
+                Log.w(TAG, "seg skipped no-element idx=$idx tag=$tag")
+                return emptyList()
+            }
+            val bandH = g.bandBottom - g.bandTop
+            Log.d(
+                TAG,
+                "seg start idx=$idx tag=$tag h=${g.h} y=${g.y} band=${g.bandTop}..${g.bandBottom} " +
+                    "sc=${g.scroller} st=${g.scScrollTop}/${g.scMax} w=${g.w}"
+            )
+            if (bandH < 120f || g.w < 24f || g.h < 8f) {
+                Log.w(TAG, "seg skipped geometry idx=$idx bandH=$bandH w=${g.w} h=${g.h}")
+                return emptyList()
+            }
+
+            val covered0 = probe(webView, idx)?.covered == true
+            if (!covered0 && g.h <= bandH - 6f &&
+                g.y >= g.bandTop - 1f && g.y + g.h <= g.bandBottom + 1f
+            ) {
+                val bmp = captureCss(activity, CssBox(g.x, g.y, g.w, g.h), scale, loc, winW, winH)
+                    ?: return emptyList()
+                saveCrop(activity, bmp)?.let { out.add(it) }
+                Log.d(TAG, "seg single idx=$idx h=${g.h} imgs=${out.size}")
+                return out
+            }
+
+            val parts = mutableListOf<Pair<Float, Bitmap>>()
+            var chunkStart = 0f
+            var s = 0f
+            var guard = 0
+            val wPx = (g.w * scale).roundToInt().coerceAtLeast(1)
+            while (s < g.h - 0.5f && guard++ < 240) {
+                val target = g.contentTop + s - (g.bandTop - g.scTop + 6f)
+                segScroll(webView, idx, target.coerceIn(0f, g.scMax))
+                val m = settleSeg(webView, idx)
+                if (m == null) {
+                    Log.w(TAG, "seg settle lost idx=$idx s=$s")
+                    break
+                }
+                if (kotlin.math.abs(m.h - g.h) > 2f) {
+                    Log.w(TAG, "seg height drift idx=$idx ${g.h}->${m.h}, abort")
+                    break
+                }
+                var mm = m
+                val cov = hideOverlays(webView, idx)
+                if (cov > 0) {
+                    hidden += cov
+                    mm = segInfo(webView, idx) ?: m
+                }
+                val e0 = maxOf(s, mm.bandTop - mm.y)
+                val e1 = minOf(g.h, mm.bandBottom - mm.y)
+                if (e1 <= e0 + 0.5f) {
+                    Log.w(TAG, "seg stuck idx=$idx s=$s y=${mm.y} band=${mm.bandTop}..${mm.bandBottom}")
+                    if (cov > 0) { restoreOverlays(webView); hidden = 0 }
+                    break
+                }
+                val slice = captureCss(
+                    activity, CssBox(mm.x, mm.y + e0, mm.w, e1 - e0),
+                    scale, loc, winW, winH, areaLimit = 1.0f
+                )
+                if (cov > 0) { restoreOverlays(webView); hidden = 0 }
+                if (slice == null) {
+                    Log.w(
+                        TAG,
+                        "seg slice rejected idx=$idx e=$e0..$e1 y=${mm.y} " +
+                            "band=${mm.bandTop}..${mm.bandBottom} cov=$cov"
+                    )
+                    break
+                }
+                parts.add(e0 to slice)
+                s = e1
+                Log.d(TAG, "seg slice idx=$idx e=$e0..$e1 px=${slice.width}x${slice.height} s=$s/${g.h}")
+                if (s - chunkStart >= maxChunkCss || s >= g.h - 0.5f) {
+                    chunkStart = flushChunk(
+                        activity, parts, chunkStart, scale, wPx, out,
+                        tail = s >= g.h - 0.5f,
+                        maxChunkCss = maxChunkCss
+                    )
+                }
+                if (out.size >= 16) {
+                    Log.w(TAG, "seg chunk cap reached idx=$idx, rest dropped")
+                    break
+                }
+            }
+            if (parts.isNotEmpty()) flushChunk(activity, parts, chunkStart, scale, wPx, out, tail = true, maxChunkCss = maxChunkCss)
+            Log.d(TAG, "seg done idx=$idx imgs=${out.size} covered=$s/${g.h}")
+            out
+        } catch (t: Throwable) {
+            Log.w(TAG, "cropPickedBlock failed: $t")
+            out
+        } finally {
+            if (hidden > 0) restoreOverlays(webView)
+            if (saved) segRestore(webView)
         }
     }
 }

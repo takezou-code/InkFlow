@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.MenuBook
@@ -38,8 +39,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.vic.inkflow.DesktopSettings
+import com.vic.inkflow.agent.EditPlan
 import com.vic.inkflow.agent.NoteLanding
 import com.vic.inkflow.agent.NoteLandingHandle
+import com.vic.inkflow.data.DatabaseManager
+import com.vic.inkflow.data.LessonNote
+import com.vic.inkflow.sync.ProposalQueue
 import com.vic.inkflow.ui.kit.DeskPrimaryButton
 import com.vic.inkflow.ui.kit.DeskSidePanel
 import com.vic.inkflow.ui.kit.DeskSpace
@@ -49,7 +54,7 @@ import com.vic.inkflow.ui.GlassOptionChip
 import com.vic.inkflow.ui.GlassTextButton
 
 /**
- * The AI panel: an agent that turns a page into a study note.
+ * The AI panel: an agent that edits the whole document.
  */
 @Composable
 fun AgentPanel(
@@ -57,11 +62,13 @@ fun AgentPanel(
     pageIndex: Int,
     landing: NoteLandingHandle,
     onToggleCollapsed: () -> Unit,
+    databaseManager: DatabaseManager,
+    proposalQueue: ProposalQueue,
     modifier: Modifier = Modifier
 ) {
     val scope = rememberCoroutineScope()
-    val vm = remember(documentUri, pageIndex) {
-        AgentPanelViewModel(documentUri, pageIndex, landing, scope)
+    val vm = remember(documentUri, pageIndex, databaseManager, proposalQueue) {
+        AgentPanelViewModel(documentUri, pageIndex, landing, scope, databaseManager, proposalQueue)
     }
     val state by vm.state.collectAsState()
 
@@ -73,8 +80,18 @@ fun AgentPanel(
         subtitle = if (modelSet) DesktopSettings.modelName else "未設定模型",
         onClose = onToggleCollapsed,
         modifier = modifier,
-        footer = state.note?.let {
-            {
+        footer = {
+            val hasNote = state.note != null
+            val hasPlan = state.editPlan != null && state.editPlan!!.ops.isNotEmpty()
+            if (hasPlan) {
+                DeskPrimaryButton(
+                    text = "套用編輯計畫",
+                    icon = Icons.Default.Check,
+                    onClick = { vm.onEvent(AgentPanelViewModel.AgentEvent.ApplyEditPlan) },
+                    enabled = !state.busy,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            } else if (hasNote) {
                 DeskPrimaryButton(
                     text = "寫進文件",
                     icon = Icons.Default.Check,
@@ -82,7 +99,7 @@ fun AgentPanel(
                     enabled = !state.busy,
                     modifier = Modifier.fillMaxWidth()
                 )
-            }
+            } else null
         }
     ) {
         Column(modifier = Modifier.fillMaxSize().padding(DeskSpace.md)) {
@@ -126,7 +143,7 @@ fun AgentPanel(
             DeskTextField(
                 value = state.instruction,
                 onValueChange = { vm.onEvent(AgentPanelViewModel.AgentEvent.SetInstruction(it)) },
-                placeholder = "把這一頁整理成教材筆記",
+                placeholder = "把這一份文件整理成教材：重點、範例、字卡與自測題",
                 singleLine = false,
                 minLines = 2,
                 maxLines = 4,
@@ -136,7 +153,7 @@ fun AgentPanel(
             Spacer(Modifier.height(DeskSpace.xs))
 
             DeskPrimaryButton(
-                text = if (state.busy) "進行中…" else "產生教材筆記",
+                text = if (state.busy) "進行中…" else "產生編輯計畫",
                 icon = Icons.Default.AutoAwesome,
                 onClick = { vm.onEvent(AgentPanelViewModel.AgentEvent.Generate) },
                 enabled = !state.busy,
@@ -149,7 +166,7 @@ fun AgentPanel(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(DeskSpace.xs)
             ) {
-                if (state.steps.isEmpty() && state.failure == null && state.note == null && !state.busy) {
+                if (state.steps.isEmpty() && state.failure == null && state.note == null && state.editPlan == null && !state.busy) {
                     item {
                         Box(
                             modifier = Modifier
@@ -172,7 +189,7 @@ fun AgentPanel(
                                 )
                                 Spacer(Modifier.height(2.dp))
                                 Text(
-                                    "輸入指令後點「產生教材筆記」",
+                                    "輸入指令後點「產生編輯計畫」",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -204,6 +221,9 @@ fun AgentPanel(
                 state.note?.let { preview ->
                     item { NotePreview(preview) }
                 }
+                state.editPlan?.let { plan ->
+                    item { EditPlanPreview(plan) }
+                }
                 state.landed?.let { message ->
                     item {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -234,7 +254,7 @@ private fun StepRow(step: com.vic.inkflow.agent.AgentStep) {
             "${step.tool}：${step.summary}",
             if (step.ok) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error
         )
-        is com.vic.inkflow.agent.AgentStep.NoteProduced -> Triple(Icons.Default.MenuBook, "筆記完成", MaterialTheme.colorScheme.primary)
+        is com.vic.inkflow.agent.AgentStep.NoteProduced -> Triple(Icons.Default.MenuBook, "計畫完成", MaterialTheme.colorScheme.primary)
         is com.vic.inkflow.agent.AgentStep.Warning -> Triple(Icons.Default.WarningAmber, step.message, MaterialTheme.colorScheme.error)
     }
     Row(verticalAlignment = Alignment.Top) {
@@ -244,9 +264,9 @@ private fun StepRow(step: com.vic.inkflow.agent.AgentStep) {
     }
 }
 
-/** The produced note, shown before it lands. */
+/** The produced note, shown before it lands (legacy single-page mode). */
 @Composable
-private fun NotePreview(note: com.vic.inkflow.data.LessonNote) {
+private fun NotePreview(note: LessonNote) {
     Column(Modifier.fillMaxWidth()) {
         Text(
             note.title,
@@ -261,6 +281,53 @@ private fun NotePreview(note: com.vic.inkflow.data.LessonNote) {
                 color = MaterialTheme.colorScheme.onSurface
             )
         }
+    }
+}
+
+/** The edit plan preview: shows each op as a diff line. */
+@Composable
+private fun EditPlanPreview(plan: EditPlan) {
+    Column(Modifier.fillMaxWidth()) {
+        Text(
+            text = "編輯計畫（${plan.ops.size} 項操作）",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold
+        )
+        Spacer(Modifier.height(4.dp))
+        plan.ops.forEachIndexed { index, op ->
+            Row(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+                Icon(
+                    Icons.Default.Edit,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.width(16.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = opSummary(op),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = "第 ${index + 1} 項",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun opSummary(op: com.vic.inkflow.agent.EditOp): String {
+    return when (op) {
+        is com.vic.inkflow.agent.EditOp.UpsertText -> {
+            "upsert_text 第 ${op.pageIndex + 1} 頁：${op.text.take(60)}${if (op.text.length > 60) "…" else ""}"
+        }
+        is com.vic.inkflow.agent.EditOp.DeleteText -> "delete_text：${op.id}"
+        is com.vic.inkflow.agent.EditOp.UpsertStroke -> "upsert_stroke 第 ${op.pageIndex + 1} 頁（尚未實作）"
+        is com.vic.inkflow.agent.EditOp.DeleteStroke -> "delete_stroke：${op.id}（尚未實作）"
     }
 }
 

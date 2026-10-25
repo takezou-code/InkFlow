@@ -204,4 +204,60 @@ class WebCropTest {
         // 自訂容限
         assertTrue(WebCrop.nearBg((200 shl 16) or (200 shl 8) or 200, 235, 230, 210, tol = 40))
     }
+
+    // ---- 分段裁圖（ChatGPT）：幾何解析與腳本契約 ----
+
+    @Test fun parseSeg_readsGeometry() {
+        val g = WebCrop.parseSeg("\"OK:16,137,388,3726,5010,120,880,64,816,4800,12000|sc\"")!!
+        assertEquals(16f, g.x)
+        assertEquals(137f, g.y)
+        assertEquals(388f, g.w)
+        assertEquals(3726f, g.h)
+        assertEquals(5010f, g.contentTop)
+        assertEquals(120f, g.bandTop)
+        assertEquals(880f, g.bandBottom)
+        assertEquals(64f, g.scTop)
+        assertEquals(816f, g.scClientH)
+        assertEquals(4800f, g.scScrollTop)
+        assertEquals(12000f, g.scMax)
+        assertEquals("sc", g.scroller)
+        // 捲整個 document 的情況
+        val win = WebCrop.parseSeg("\"OK:0,0,400,900,900,0,900,0,900,0,5000|win\"")!!
+        assertEquals("win", win.scroller)
+        // 壞資料一律 null
+        assertNull(WebCrop.parseSeg(null))
+        assertNull(WebCrop.parseSeg("\"NONE\""))
+        assertNull(WebCrop.parseSeg("\"DETACHED\""))
+        assertNull(WebCrop.parseSeg("\"OK:1,2,3\""))
+        assertNull(WebCrop.parseSeg("\"OK:0,0,0,0,0,0,0,0,0,0,0|sc\""))
+    }
+
+    @Test fun segJs_contract() {
+        val info = WebCrop.segInfoJs(2)
+        assertTrue("要用節點表", info.contains("__inkcropEls"))
+        assertTrue("要指名第 2 個節點", info.contains("[2]"))
+        assertTrue("要找內層捲動容器", info.contains("scrollHeight >"))
+        assertTrue("要算可見帶", info.contains("bandTop") || info.contains("var ct"))
+        assertFalse("量測腳本不可自己捲動", info.contains("scrollTop ="))
+
+        val save = WebCrop.segSaveJs(1)
+        assertTrue("要記下捲動位置", save.contains("__inkcropScTop"))
+        assertTrue("要關掉平滑捲動（否則定位永遠慢半拍）", save.contains("scrollBehavior = 'auto'"))
+
+        val scroll = WebCrop.segScrollJs(1, 1234f)
+        assertTrue("要設定容器 scrollTop", scroll.contains("sc.scrollTop = 1234.0"))
+        assertTrue("要回報實際落點", scroll.contains("Math.round(sc.scrollTop)"))
+
+        val back = WebCrop.segRestoreJs()
+        assertTrue("要還原捲動位置", back.contains("__inkcropScTop"))
+        assertTrue("要還原 scroll-behavior", back.contains("scrollBehavior"))
+    }
+
+    @Test fun crop_areaLimit_canAllowFullBand() {
+        // 分段裁圖的一段本來就接近整條可見帶：預設 0.8 會誤殺，分段路徑傳 1.0 要放行。
+        val box = WebCrop.CssBox(0f, 0f, 900f, 900f)
+        assertNull(WebCrop.cropWindowPx(box, 1f, 0, 0, 1000, 1000))
+        val ok = WebCrop.cropWindowPx(box, 1f, 0, 0, 1000, 1000, areaLimit = 1.0f)
+        assertEquals(WebCrop.CropPx(2, 2, 898, 898), ok)
+    }
 }

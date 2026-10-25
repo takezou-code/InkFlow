@@ -117,7 +117,7 @@ internal fun SidebarPageGrid(
 
     val bookmarkedPages by pdfViewModel.getBookmarkedPages(documentUri)
         .collectAsState(initial = emptyList())
-    val thumbnailVersion by pdfViewModel.thumbnailVersion.collectAsState()
+    val liveThumbnailVersion by pdfViewModel.thumbnailVersion.collectAsState()
     val isPageOperationInProgress by pdfViewModel.isPageOperationInProgress.collectAsState()
 
     val visibleIndices = remember(pageCount, showOnlyBookmarked, bookmarkedPages) {
@@ -134,42 +134,84 @@ internal fun SidebarPageGrid(
     var reorderStartPage by remember { mutableStateOf(-1) }
     // 重建套件狀態用的計數（見下方 epoch 說明）。
     var reorderEpoch by remember { mutableIntStateOf(0) }
+    // 放手後「等移頁真的落地，才把預覽順序翻回身分順序」的旗標。
+    var pendingMoveLanding by remember { mutableStateOf(false) }
+    // 翻正那一幀關掉 animateItem：key 換位但內容沒變，不該有滑動。
+    var suppressItemAnimation by remember { mutableStateOf(false) }
+
+    // 移頁落地時 **thumbnailVersion 會先跳**（新版縮圖用「新頁碼」當 key），
+    // 但畫面此刻還是拖下來的順序；提早換版會有一格閃成別頁的紙，
+    // 等我們翻正又換回來——實機看到的那一下閃就是這個。
+    // 所以在 pendingMoveLanding 期間把版本凍結在放手當下，翻正那一幀才一起換。
+    // 凍結期間卡片沿用舊 flow（bitmap 還在記憶體裡，不會變 spinner）。
+    var pinnedThumbnailVersion by remember { mutableIntStateOf(liveThumbnailVersion) }
+    val thumbnailVersion = if (pendingMoveLanding) pinnedThumbnailVersion else liveThumbnailVersion
 
     // 業務邏輯（與手感無關）：起拖拍快照、放手從 key 序列反查目標位置一次 movePage。
     // R2：移頁是結構操作，清棧。
     fun commitReorder() {
         val initial = reorderInitial
         val page = reorderStartPage
-        if (isExportingSelection) {
-            reorderInitial = null
-            reorderStartPage = -1
-            // 選擇模式下不允許排序 → 格線必須回到原順序（拖過的預覽要收掉）。
+        reorderInitial = null
+        reorderStartPage = -1
+        // 選擇模式／書籤篩選不允許排序；拖到一半狀態被切換也要把預覽收掉。
+        if (isExportingSelection || showOnlyBookmarked || initial == null || page < 0) {
+            previewOrder = visibleIndices
+            reorderEpoch++
+            return
+        }
+        val targetPos = reorderTargetPos(initial, previewOrder, page)
+        if (targetPos == null) {
+            // 沒有實際換位：預覽順序本來就等於身分順序，翻回去是 no-op。
+            // 這裡**不能**重建套件狀態，否則會把剛放手的落定彈簧砍掉。
             previewOrder = visibleIndices
             return
         }
-        if (!showOnlyBookmarked && initial != null) {
-            val targetPos = reorderTargetPos(initial, previewOrder, page)
-            if (targetPos != null) {
-                onStructureChanged()
-                pdfViewModel.movePage(documentUri, page, targetPos)
-            }
+        onStructureChanged()
+        pdfViewModel.movePage(documentUri, page, targetPos)
+        // movePage 會「同步」把 isPageOperationInProgress 設 true；沒設起來代表被擋掉了
+        // （頁碼越界、上一次操作還沒完），那就沒有東西會落地，立刻翻回身分順序。
+        if (pdfViewModel.isPageOperationInProgress.value) {
+            // 凍結縮圖版本（見 pinnedThumbnailVersion 說明）。
+            pinnedThumbnailVersion = pdfViewModel.thumbnailVersion.value
+            pendingMoveLanding = true
+        } else {
+            previewOrder = visibleIndices
+            reorderEpoch++
         }
-        reorderInitial = null
-        reorderStartPage = -1
-        // 移頁之後**頁碼是依位置重編的** → 格線必須回到身分順序。
-        // 不回來的話，每一格顯示的是「頁碼 N」的內容，而內容已經換位了——
-        // 畫面看起來就是「順序沒換」（實際上文件換了）。
+    }
+
+    // 移頁落地（PDF 已重寫、renderer 已重開）之後，才把預覽順序翻回身分順序。
+    //
+    // 舊碼在放手那一刻就翻：movePage 是背景工作，文件還是舊的，於是
+    //   ①每一格用 animateItem 從「拖下來的順序」滑回原位（放手時的「跳一下」）
+    //   ②等移頁完成內容再換一次 → 看起來像被彈回去又換人。
+    //
+    // 新做法：放手後維持使用者放下的順序（每一格都還是它自己的頁），
+    // 等文件真的換好再一次翻正。翻正那一刻**每一格顯示的紙其實沒變**
+    // （頁碼依位置重編 → 第 j 格還是同一張紙），只有 key 換位、內容位置不變，
+    // 所以關掉 animateItem 就是無感換位。
+    LaunchedEffect(pendingMoveLanding, isPageOperationInProgress) {
+        if (!pendingMoveLanding || isPageOperationInProgress) return@LaunchedEffect
         previewOrder = visibleIndices
-        // 重建套件狀態：它內部還記著「拖曳中的排列」，不重建的話放開後會把格線
-        // 動畫送回拖曳前的樣子。
+        suppressItemAnimation = true
         reorderEpoch++
+        pendingMoveLanding = false
+    }
+
+    // 翻正後兩幀恢復 animateItem（第一幀讓新排列先以「無動畫」落地）。
+    LaunchedEffect(reorderEpoch) {
+        if (!suppressItemAnimation) return@LaunchedEffect
+        androidx.compose.runtime.withFrameNanos { }
+        androidx.compose.runtime.withFrameNanos { }
+        suppressItemAnimation = false
     }
 
     // 套件狀態：onMove 必須在 return 前同步改清單（FAQ 明文，延後會 flicker）。
     //
-    // **epoch**：移頁之後頁碼依位置重編 → 格線要回到身分順序 → 每一格的 key 都變了 →
-    // 套件會把「剛拖下來的那一格」動畫送回原位（看起來像跳回去）。
-    // 重建一次套件狀態（key(epoch)）就不會有那段動畫：新的狀態本來就等於身分順序。
+    // **epoch**：移頁落地後把預覽順序翻回身分順序時，每一格的 key 都換位。
+    // 重建一次套件狀態（key(epoch)）順便清掉套件記著的「剛放手的那一格」，
+    // 否則它還會把殘餘位移疊在新位置上，看起來像有東西晃一下。
     val reorderState = key(reorderEpoch) {
         rememberReorderableLazyGridState(gridState) { from, to ->
             val newOrder = previewOrder.toMutableList()
@@ -426,7 +468,13 @@ internal fun SidebarPageGrid(
                     label = "GridCardScale"
                 )
                 // 套件 ReorderableItem 內部處理 animateItem／zIndex／位移，並回傳 isDragging。
-                ReorderableItem(reorderState, key = index) { isDragging ->
+                // 翻正那一幀把 animateItem 關掉（見上方 pendingMoveLanding 說明）：
+                // 內容沒變、只有 key 換位，不該讓整片卡片滑回原位。
+                ReorderableItem(
+                    state = reorderState,
+                    key = index,
+                    animateItemModifier = if (suppressItemAnimation) Modifier else Modifier.animateItem()
+                ) { isDragging ->
                     Box(
                         modifier = Modifier
                             // 觸控框要是**圓角**的：長按把手掛在整張卡上，沒有 clip 的話
@@ -434,7 +482,9 @@ internal fun SidebarPageGrid(
                             .clip(ShapeLg)
                             // 長按整卡起拖（套件的長按把手；選擇模式/書籤過濾時不啟用）。
                             .then(
-                                if (!showOnlyBookmarked && !isSelectionMode && !isPageOperationInProgress && !isExportingSelection) {
+                                if (!showOnlyBookmarked && !isSelectionMode && !isPageOperationInProgress &&
+                                    !isExportingSelection && !pendingMoveLanding
+                                ) {
                                     Modifier.longPressDraggableHandle(
                                         onDragStarted = {
                                             reorderInitial = orderForGrid

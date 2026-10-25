@@ -42,6 +42,10 @@ import com.vic.inkflow.ui.PdfViewer
 import com.vic.inkflow.ui.InkFlowTheme
 import com.vic.inkflow.ui.InkThemeState
 import com.vic.inkflow.ui.LibraryView
+import com.vic.inkflow.ui.MicaBackground
+import com.vic.inkflow.ui.ModernIconButton
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import com.vic.inkflow.ui.SettingsViewModel
 import com.vic.inkflow.ui.theme.ShapeXl
 import com.vic.inkflow.ui.theme.ShapeMd
@@ -54,6 +58,7 @@ import com.vic.inkflow.ui.glassFieldColors
 import com.vic.inkflow.ui.glassSelectionPill
 import com.vic.inkflow.ui.GlassOptionChip
 import com.vic.inkflow.ui.kit.DeskDivider
+import com.vic.inkflow.ui.kit.DeskDims
 import com.vic.inkflow.ui.kit.DeskScreen
 import com.vic.inkflow.ui.kit.DeskSectionLabel
 import com.vic.inkflow.ui.kit.DeskSpace
@@ -242,15 +247,12 @@ fun App(uiPreview: String? = null) {
         // resized, contradicting the comment right above it. The real one derives
         // every position from the actual constraints.
         Box(modifier = Modifier.fillMaxSize()) {
-            AuroraBackground(
-                isDarkTheme = InkThemeState.darkMode,
-                // 12 orbs is what the tablet's library uses; the editor drops to 5
-                // because paper covers most of the window there.
-                orbCount = 12,
-                theme = InkThemeState.backdropTheme,
+            MicaBackground(
+                isDark = InkThemeState.darkMode,
                 modifier = Modifier.fillMaxSize()
-            )
-            InkFlowApp(uiPreview)
+            ) {
+                InkFlowApp(uiPreview)
+            }
         }
     }
 }
@@ -400,71 +402,68 @@ fun InkFlowApp(uiPreview: String? = null) {
         // self-drawn rail items, so the desktop does the same. Destinations stay
         // desktop ones (Library/Sync/Settings); only the material changes.
         Row(modifier = Modifier.fillMaxSize()) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier
-                    .fillMaxHeight()
-                    .padding(start = 12.dp, top = 12.dp, bottom = 12.dp)
-                    .width(76.dp)
-                    .chromeGlass(isDark = InkThemeState.darkMode, shape = ShapeMd)
-                    .padding(vertical = 8.dp)
+            // Windows-style left navigation rail: a fixed-width surface instead of
+            // the tablet's floating glass capsule. Keeps the same destinations.
+            Surface(
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 1.dp,
+                modifier = Modifier.fillMaxHeight().width(DeskDims.railWidth)
             ) {
-                Spacer(Modifier.height(8.dp))
-                // The real app artwork (same PNG the window icon and the EXE use),
-                // not a gradient dot with a letter: one mark everywhere.
-                BrandIcon(modifier = Modifier.size(40.dp))
-                Spacer(Modifier.height(16.dp))
-                DesktopRailItem(
-                    selected = selectedDocument == null && !showSettings,
-                    onClick = { selectedDocument = null; showSettings = false },
-                    icon = Icons.Outlined.Home,
-                    label = "文件庫"
-                )
-                DesktopRailItem(
-                    selected = false,
-                    busy = isSyncing || syncManager.isSyncing,
-                    badgeCount = peerCount,
-                    onClick = { requestManualSync() },
-                    icon = Icons.Outlined.Sync,
-                    label = "同步"
-                )
-                DesktopRailItem(
-                    selected = showSettings,
-                    onClick = { showSettings = true; selectedDocument = null },
-                    icon = Icons.Outlined.Settings,
-                    label = "設定"
-                )
-                // The AI panel only exists for a document — it turns the page in
-                // front of the user into a study note.
-                if (selectedDocument != null) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.fillMaxSize().padding(vertical = 8.dp)
+                ) {
+                    Spacer(Modifier.height(8.dp))
+                    BrandIcon(modifier = Modifier.size(40.dp))
+                    Spacer(Modifier.height(16.dp))
                     DesktopRailItem(
-                        selected = showAgent,
-                        onClick = { showAgent = !showAgent },
-                        icon = Icons.Filled.AutoAwesome,
-                        label = "AI"
+                        selected = selectedDocument == null && !showSettings,
+                        onClick = { selectedDocument = null; showSettings = false },
+                        icon = Icons.Outlined.Home,
+                        label = "文件庫"
+                    )
+                    DesktopRailItem(
+                        selected = false,
+                        busy = isSyncing || syncManager.isSyncing,
+                        badgeCount = peerCount,
+                        onClick = { requestManualSync() },
+                        icon = Icons.Outlined.Sync,
+                        label = "同步"
+                    )
+                    DesktopRailItem(
+                        selected = showSettings,
+                        onClick = { showSettings = true; selectedDocument = null },
+                        icon = Icons.Outlined.Settings,
+                        label = "設定"
+                    )
+                    if (selectedDocument != null) {
+                        DesktopRailItem(
+                            selected = showAgent,
+                            onClick = { showAgent = !showAgent },
+                            icon = Icons.Filled.AutoAwesome,
+                            label = "AI"
+                        )
+                    }
+                    Spacer(Modifier.weight(1f))
+                    IconButton(onClick = {
+                        val next = !InkThemeState.darkMode
+                        InkThemeState.darkMode = next
+                        DesktopSettings.darkMode = next
+                    }) {
+                        Icon(
+                            imageVector = if (InkThemeState.darkMode) Icons.Outlined.LightMode else Icons.Outlined.DarkMode,
+                            contentDescription = "切換主題",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Text(
+                        if (peerCount > 0) "$peerCount 在線" else "離線",
+                        color = if (peerCount > 0) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.outline,
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(bottom = 4.dp)
                     )
                 }
-                Spacer(Modifier.weight(1f))
-                IconButton(onClick = {
-                    val next = !InkThemeState.darkMode
-                    InkThemeState.darkMode = next
-                    DesktopSettings.darkMode = next
-                }) {
-                    Icon(
-                        imageVector = if (InkThemeState.darkMode) Icons.Outlined.LightMode else Icons.Outlined.DarkMode,
-                        contentDescription = "切換主題",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                // Peer presence as words, not just a coloured dot: colour-only
-                // status is invisible to anyone who cannot distinguish it.
-                Text(
-                    if (peerCount > 0) "$peerCount 在線" else "離線",
-                    color = if (peerCount > 0) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.outline,
-                    style = MaterialTheme.typography.labelSmall,
-                    modifier = Modifier.padding(bottom = 4.dp)
-                )
             }
 
             // Screen transitions speak the tablet's language: the incoming screen
@@ -571,7 +570,9 @@ fun InkFlowApp(uiPreview: String? = null) {
                                     documentUri = doc,
                                     pageIndex = currentPageIndex,
                                     landing = noteLanding,
-                                    onToggleCollapsed = { showAgent = false }
+                                    onToggleCollapsed = { showAgent = false },
+                                    databaseManager = databaseManager,
+                                    proposalQueue = proposalQueue
                                 )
                             }
                         }
@@ -622,48 +623,50 @@ private fun BrandIcon(modifier: Modifier = Modifier) {
 private fun DesktopRailItem(
     selected: Boolean,
     onClick: () -> Unit,
-    icon: ImageVector,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
     busy: Boolean = false,
     badgeCount: Int = 0
 ) {
-    // Tablet GlassRailItem in desktop material: selected state rides the shared
-    // selection pill, press rides glassClickable, and the icon/label follow the
-    // same selected-primary / unselected-muted language. Desktop has no Haze, so
-    // the pill is the faux shared one, not the tablet's Haze-backed panel.
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(2.dp),
         modifier = Modifier
             .padding(vertical = 4.dp)
-            .then(if (selected) Modifier.glassSelectionPill(CircleShape) else Modifier)
-            .glassClickable(onClick = onClick, shape = CircleShape)
-            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .fillMaxWidth()
+                    .background(
+                        if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                        else Color.Transparent,
+                        CircleShape
+                    )
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = null,
+                interactionSource = remember { MutableInteractionSource() }
+            )
+            .padding(horizontal = 12.dp, vertical = 8.dp)
     ) {
         if (busy) {
-            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+            androidx.compose.material3.CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
         } else {
-            Box(contentAlignment = Alignment.Center) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = if (badgeCount > 0) "$label（$badgeCount 台在線）" else label,
-                    tint = if (selected) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                // Peer count rides the icon: the top bar that used to carry
-                // "N 台設備在線" is gone, and the number has to live somewhere
-                // that is visible on every screen.
-                if (badgeCount > 0) {
-                    Text(
-                        text = if (badgeCount > 99) "99+" else badgeCount.toString(),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.align(Alignment.BottomEnd)
-                            .background(MaterialTheme.colorScheme.surface, CircleShape)
-                            .padding(horizontal = 3.dp)
-                    )
-                }
-            }
+            ModernIconButton(
+                selected = selected,
+                onClick = {},
+                icon = icon,
+                contentDescription = if (badgeCount > 0) "$label（$badgeCount 台在線）" else label,
+                size = 36.dp,
+                iconSize = 20.dp
+            )
+        }
+        if (badgeCount > 0) {
+            Text(
+                text = if (badgeCount > 99) "99+" else badgeCount.toString(),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier
+                    .background(MaterialTheme.colorScheme.surface, CircleShape)
+                    .padding(horizontal = 3.dp)
+            )
         }
         Text(
             text = label,
@@ -671,7 +674,7 @@ private fun DesktopRailItem(
             color = if (selected) MaterialTheme.colorScheme.primary
             else MaterialTheme.colorScheme.onSurfaceVariant
         )
-    }
+}
 }
 
 @Composable
@@ -695,8 +698,9 @@ private fun SettingsView(
         ) {
             Column(
                 modifier = Modifier
-                    .widthIn(max = 760.dp)
-                    .chromeGlass(isDark = InkThemeState.darkMode, shape = ShapeXl)
+                            .widthIn(max = 760.dp)
+                            .background(MaterialTheme.colorScheme.surface, ShapeXl)
+                            .clip(ShapeXl)
                     .padding(DeskSpace.lg),
                 verticalArrangement = Arrangement.spacedBy(DeskSpace.sm)
             ) {

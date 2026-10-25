@@ -1036,6 +1036,12 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
             )
             PageOpJournal.write(getApplication(), entry)
 
+            // 移頁前拍下所有縮圖：移頁只是重排，每一格顯示的紙其實沒變，
+            // 之後把舊縮圖搬到新索引，避免所有卡片先閃 spinner 再重渲
+            // （手感像「放手跳一下」）。拍在 closeRendererOnly 之前，否則 cache 已空。
+            val carriedThumbs = thumbnailCache.snapshot()
+            var pageMoved = false
+
             val ok = runCatching {
                 val tOp0 = System.currentTimeMillis()
                 renderMutex.withLock { closeRendererOnly() }
@@ -1047,6 +1053,7 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
 
                 if (moved) {
                     PageOpJournal.markFileDone(getApplication(), entry)
+                    pageMoved = true
 
                     // 2. Transact DB index updates
                     val tDb0 = System.currentTimeMillis()
@@ -1091,6 +1098,19 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                 _pageCount.value = renderer.pageCount
                 _firstPageSize.value = firstSize
                 scheduleRemainingPageSizeScan(renderer.pageCount)
+                // 移頁只是重排：把舊縮圖搬到新索引，避免所有卡片先閃 spinner 再重渲。
+                // 只在真的搬成功時才搬（失敗時文件沒變、搬了反而錯）。
+                if (pageMoved) {
+                    carriedThumbs.forEach { (oldIndex, bmp) ->
+                        val newIndex = when {
+                            oldIndex == fromIndex -> toIndex
+                            fromIndex < toIndex && oldIndex in (fromIndex + 1)..toIndex -> oldIndex - 1
+                            fromIndex > toIndex && oldIndex in toIndex until fromIndex -> oldIndex + 1
+                            else -> oldIndex
+                        }
+                        if (newIndex in 0 until currentCount) thumbnailCache.put(newIndex, bmp)
+                    }
+                }
                 _thumbnailVersion.value++ // ? UI ??渡?蝮桀?
             } catch (e: Exception) {
                 android.util.Log.e("PdfViewModel", "movePage reopen failed", e)

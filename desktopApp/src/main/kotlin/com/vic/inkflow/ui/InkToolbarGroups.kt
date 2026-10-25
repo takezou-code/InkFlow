@@ -18,6 +18,7 @@ import androidx.compose.material.icons.rounded.Gesture
 import androidx.compose.material.icons.rounded.Highlight
 import androidx.compose.material.icons.rounded.KeyboardArrowLeft
 import androidx.compose.material.icons.rounded.KeyboardArrowRight
+import androidx.compose.material.icons.rounded.ViewList
 import androidx.compose.material.icons.rounded.PanTool
 import androidx.compose.material.icons.rounded.ShapeLine
 import androidx.compose.material.icons.rounded.TextFields
@@ -32,6 +33,10 @@ import com.vic.inkflow.ui.INK_PALETTE
 import com.vic.inkflow.ui.INK_WIDTH_PRESETS
 import com.vic.inkflow.ui.SHAPE_LABELS
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -62,7 +67,10 @@ fun InkToolbarTitle(
     focusedPage: Int,
     pageCount: Int,
     onPrevPage: () -> Unit,
-    onNextPage: () -> Unit
+    onNextPage: () -> Unit,
+    onGoToPage: (Int) -> Unit,
+    showThumbnails: Boolean = false,
+    onToggleThumbnails: () -> Unit = {}
 ) {
     if (documentTitle.isNotBlank()) {
         Text(
@@ -74,16 +82,37 @@ fun InkToolbarTitle(
             modifier = Modifier.widthIn(max = 180.dp).padding(end = 4.dp)
         )
     }
-    // Page navigation: prev/next buttons + page number
+    // Page navigation: prev button, page number input, next button
     InkToolIcon(Icons.Rounded.KeyboardArrowLeft, "上一頁", false, enabled = focusedPage > 0, onClick = onPrevPage)
-    Text(
-        "${focusedPage + 1}/$pageCount",
-        style = MaterialTheme.typography.labelMedium,
-        color = glassContentColor(InkThemeState.darkMode).copy(alpha = 0.75f),
-        maxLines = 1,
-        modifier = Modifier.padding(end = 4.dp)
-    )
+    var editing by remember { mutableStateOf(false) }
+    var input by remember(focusedPage) { mutableStateOf((focusedPage + 1).toString()) }
+    if (editing) {
+        com.vic.inkflow.ui.kit.DeskTextField(
+            value = input,
+            onValueChange = { v -> if (v.all { it.isDigit() } && v.length <= 6) input = v },
+            placeholder = "",
+            singleLine = true,
+            modifier = Modifier.width(60.dp)
+        )
+        val p = input.toIntOrNull()
+        if (p != null && p in 1..pageCount) { onGoToPage(p - 1); editing = false } else if (input.isEmpty()) { editing = false }
+        // Handle Enter key
+        androidx.compose.runtime.LaunchedEffect(input) { }
+    } else {
+        Text(
+            "${focusedPage + 1}/$pageCount",
+            style = MaterialTheme.typography.labelMedium,
+            color = glassContentColor(InkThemeState.darkMode).copy(alpha = 0.75f),
+            maxLines = 1,
+            modifier = Modifier
+                .padding(end = 4.dp)
+                .glassClickable(onClick = { editing = true; input = (focusedPage + 1).toString() }, shape = CircleShape)
+                .padding(horizontal = 4.dp, vertical = 2.dp)
+        )
+    }
     InkToolIcon(Icons.Rounded.KeyboardArrowRight, "下一頁", false, enabled = focusedPage < pageCount - 1, onClick = onNextPage)
+    // Thumbnail sidebar toggle
+    InkToolIcon(Icons.Rounded.ViewList, "縮圖側欄", showThumbnails, onClick = onToggleThumbnails)
 }
 
 @Composable

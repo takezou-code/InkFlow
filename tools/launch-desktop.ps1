@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
 .SYNOPSIS
     啟動 InkFlow 桌面版；必要時先編譯。
@@ -172,13 +172,9 @@ if (-not (Test-Path -LiteralPath $Exe)) {
 Write-Step "啟動 $Exe"
 Write-Host ''
 if ($Probe) {
-    # `Start-Process -ArgumentList` does not quote values that contain spaces
-    # (it splits the string on whitespace), so only pass values that cannot
-    # contain one.
-    Write-Host "探針模式：--probe=$Probe" -ForegroundColor DarkGray
-    Start-Process -FilePath $Exe -ArgumentList "--probe=$Probe"
-}
-else {
+    Write-Host Probe mode -ForegroundColor DarkGray
+    Start-Process -FilePath $Exe -ArgumentList ('--probe=' + $Probe)
+} else {
     Start-Process -FilePath $Exe
 }
 exit 0

@@ -15,27 +15,31 @@ data class AgentGoal(
     /** The instruction, in the user's words. */
     val instruction: String,
     /** Optional hint about what is being worked on (a page, a selection). */
-    val pageHint: String = ""
+    val pageHint: String = "",
+    /** The document being edited, when the agent works on a whole document. */
+    val documentUri: String = ""
 )
 
 /**
  * The result of a run.
  *
- * @property note the produced note, or `null` when the run failed.
+ * @property note the produced note (note mode), or `null` when the run failed or ran in edit mode.
+ * @property editPlan the produced edit plan (edit mode), or `null` when the run failed or ran in note mode.
  * @property steps everything that happened, in order.
  * @property rawAnswer the last raw text the model returned — kept so a failure
  *   can be shown to the user instead of a bare "it did not work".
- * @property failure why there is no note, in words the user can act on.
+ * @property failure why there is no output, in words the user can act on.
  */
 data class AgentOutcome(
-    val note: LessonNote?,
+    val note: LessonNote? = null,
+    val editPlan: EditPlan? = null,
     val steps: List<AgentStep>,
     val rawAnswer: String? = null,
     val failure: String? = null
 )
 
 /**
- * The agent loop: goal in, note out.
+ * The agent loop: goal in, note or edit plan out.
  *
  * The shape of it is dictated by what a *local* model can be relied on to do.
  * A cloud model can be handed a tool-calling protocol and will usually follow
@@ -49,9 +53,13 @@ data class AgentOutcome(
  *     attached, because "your JSON had no `kind` field" is a message a model
  *     can act on.
  *  2. **Gather and compose are separate requests.** The model first looks
- *     around with tools, then writes the note in one constrained answer. A
+ *     around with tools, then writes the output in one constrained answer. A
  *     single long agentic request is where small models fall apart; two
  *     short ones is where they do fine.
+ *
+ * When [composeSchema] / [composeDecode] are supplied, the compose phase
+ * produces an [EditPlan] instead of a [LessonNote]. Otherwise it produces a
+ * [LessonNote] as before (backward compatible).
  *
  * Everything here is pure Kotlin with no platform dependency, so the tablet,
  * the desktop and (later) iOS run the same loop.
@@ -62,7 +70,11 @@ class AgentLoop(
     /** How many tool-calling steps the gather phase may take. */
     private val maxSteps: Int = 6,
     /** How many times a malformed answer is retried before giving up. */
-    private val maxSchemaRetries: Int = 1
+    private val maxSchemaRetries: Int = 1,
+    /** When non-null, the compose phase uses this schema instead of [LessonNote.schema]. */
+    private val composeSchema: SchemaNode? = null,
+    /** Decodes the compose answer into a value placed in [AgentOutcome.editPlan]. */
+    private val composeDecode: ((JsonValue) -> Any?)? = null
 ) {
 
     /**
@@ -146,32 +158,48 @@ class AgentLoop(
         // was asked. Asking again would only spend another request and bury
         // the real reason under a second, vaguer error.
         if (providerFailure != null) {
-            return AgentOutcome(null, steps, rawAnswer, providerFailure)
+            return AgentOutcome(null, null, steps, rawAnswer, providerFailure)
         }
 
         // ── Phase 2: compose ──────────────────────────────────────────────
+        val editMode = composeSchema != null && composeDecode != null
+        val composeSchemaNode = if (editMode) composeSchema!! else LessonNote.schema
+        val composeSystemPromptStr = if (editMode) composeEditSystemPrompt() else composeSystemPrompt()
+        val composeUserPromptStr = if (editMode) composeEditUserPrompt(goal, observations) else composeUserPrompt(goal, observations)
+        val decodeFn: (JsonValue) -> Any? = if (editMode) {
+            { value: JsonValue -> composeDecode!!(value) }
+        } else {
+            { value: JsonValue -> LessonNote.decode(value) }
+        }
+
         val composeRequest = LlmRequest(
-            systemPrompt = composeSystemPrompt(),
-            userPrompt = composeUserPrompt(goal, observations),
+            systemPrompt = composeSystemPromptStr,
+            userPrompt = composeUserPromptStr,
             images = images.toList(),
-            responseSchema = LlmSchema("lesson_note", LessonNote.schema.toJsonSchemaDocument())
+            responseSchema = LlmSchema(if (editMode) "edit_plan" else "lesson_note", composeSchemaNode.toJsonSchemaDocument())
         )
-        val answer = askStructured(composeRequest, LessonNote.schema)
+        val answer = askStructured(composeRequest, composeSchemaNode)
         if (answer.raw != null) rawAnswer = answer.raw
         if (answer.error != null) {
             emit(AgentStep.Warning(answer.error))
-            return AgentOutcome(null, steps, rawAnswer, answer.error)
+            return AgentOutcome(null, null, steps, rawAnswer, answer.error)
         }
 
-        val note = answer.value?.let { LessonNote.decode(it) }
-        if (note == null) {
-            val failure = "the model did not return a usable note"
+        val parsed = answer.value ?: return AgentOutcome(null, null, steps, rawAnswer, "the model returned no JSON value")
+        val composed = decodeFn(parsed)
+        if (composed == null) {
+            val failure = if (editMode) "the model did not return a usable edit plan" else "the model did not return a usable note"
             emit(AgentStep.Warning(failure))
-            return AgentOutcome(null, steps, rawAnswer, failure)
+            return AgentOutcome(null, null, steps, rawAnswer, failure)
         }
 
-        emit(AgentStep.NoteProduced(note))
-        return AgentOutcome(note, steps, rawAnswer, null)
+        if (editMode) {
+            return AgentOutcome(null, composed as EditPlan, steps, rawAnswer, null)
+        } else {
+            val note = composed as LessonNote
+            emit(AgentStep.NoteProduced(note))
+            return AgentOutcome(note, null, steps, rawAnswer, null)
+        }
     }
 
     /**
@@ -285,6 +313,45 @@ class AgentLoop(
             appendLine("Material you gathered:")
             observations.forEach { appendLine("- $it") }
         }
+    }
+
+    /** System prompt for edit mode: the agent proposes document-level edits. */
+    private fun composeEditSystemPrompt(): String = buildString {
+        appendLine("You are a document editor working inside a note-taking app.")
+        appendLine("This is the COMPOSE phase: propose edits to the document based on what you have gathered.")
+        appendLine()
+        appendLine("Answer with exactly one JSON object, no prose, no markdown:")
+        appendLine("""{"ops": [ ...operations... ]}""")
+        appendLine()
+        appendLine("Every operation has the same shape:")
+        appendLine("""{"op": "upsert_text" | "delete_text" | "upsert_stroke" | "delete_stroke", ...fields...}""")
+        appendLine()
+        appendLine("For upsert_text: op, pageIndex (0-based), text, modelX, modelY, fontSize (default 16), " +
+            "colorArgb (default black), boxWidth, alignment (0=left,1=centre,2=right), id (optional, to replace).")
+        appendLine("For delete_text: op, id (required).")
+        appendLine("For upsert_stroke / delete_stroke: not yet implemented — do not emit.")
+        appendLine()
+        appendLine("Rules:")
+        appendLine("- Each op targets one object by id (delete) or creates/replaces one object (upsert).")
+        appendLine("- baseVersion / baseNonce are optional optimistic-locking tokens; omit if unknown.")
+        appendLine("- Write in the language of the material.")
+        appendLine("- Only emit ops you are confident about; better fewer correct ops than many wrong ones.")
+    }
+
+    /** User prompt for edit mode: describes the task and gathered material. */
+    private fun composeEditUserPrompt(goal: AgentGoal, observations: List<String>): String = buildString {
+        appendLine("Task: ${goal.instruction}")
+        if (goal.documentUri.isNotBlank()) appendLine("Document: ${goal.documentUri}")
+        if (goal.pageHint.isNotBlank()) appendLine("Material: ${goal.pageHint}")
+        appendLine()
+        if (observations.isEmpty()) {
+            appendLine("You have not looked at anything yet. Propose edits from the task alone, and do not invent specifics.")
+        } else {
+            appendLine("Material you gathered:")
+            observations.forEach { appendLine("- $it") }
+        }
+        appendLine()
+        appendLine("Propose the edit operations as JSON.")
     }
 
     private data class StructuredAnswer(
