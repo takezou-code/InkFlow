@@ -149,7 +149,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -158,6 +157,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -233,6 +234,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -442,15 +444,7 @@ internal fun Sidebar(
 
                     // 1. 即時計算中心項目
                     val centerItemIndex by androidx.compose.runtime.remember {
-                        androidx.compose.runtime.derivedStateOf {
-                            val layoutInfo = listState.layoutInfo
-                            if (layoutInfo.visibleItemsInfo.isEmpty()) return@derivedStateOf null
-                            val center = (layoutInfo.viewportStartOffset + layoutInfo.viewportEndOffset) / 2
-                            val centerItemInfo = layoutInfo.visibleItemsInfo.minByOrNull { item ->
-                                kotlin.math.abs((item.offset + item.size / 2) - center)
-                            }
-                            centerItemInfo?.index
-                        }
+                        androidx.compose.runtime.derivedStateOf { listState.centeredItemIndex() }
                     }
 
                     // 2. 只有頁碼模式才隨滑動翻頁：預覽/全頁模式滑動只用來看，點了才翻。
@@ -462,6 +456,39 @@ internal fun Sidebar(
                     var lastSidebarDragEndMs by remember { mutableStateOf(0L) }
                     val sidebarStageRef = androidx.compose.runtime.rememberUpdatedState(sidebarStage)
                     val sidebarCurrentRef = androidx.compose.runtime.rememberUpdatedState(currentPageIndex)
+
+                    // 高亮（主題色）跟隨：**捲動時完全不上色，停穩才亮**。
+                    //
+                    // 實機回報兩個症狀：換頁時主題色先跳到新頁碼、清單才滑到中間（順序反了）；
+                    // 而且滑動過程中舊頁碼一直亮著，看起來像「亮錯頁」。
+                    // 現在一律：一換頁／一拖曳就熄燈，等清單真的停下來才在正中央那頁點燈。
+                    //
+                    // 判定用「清單是否在捲」而不是旗標；「紙面跟隨」是 EditorScreen 150ms 防抖後
+                    // 才排動畫，所以先等 250ms 看有沒有捲動要開始，避免「先亮再熄」的閃爍。
+                    // 拖曳中不亮（跟手會變成拖過去的每一頁都在閃），放手＋慣性停穩才亮。
+                    var highlightedPage by remember { mutableStateOf<Int?>(currentPageIndex) }
+                    LaunchedEffect(currentPageIndex, sidebarUserScrolling) {
+                        if (currentPageIndex == highlightedPage) return@LaunchedEffect
+                        highlightedPage = null
+                        // 已經在捲（手指拖曳）就不用等：等停穩由下面的 watcher 點燈。
+                        if (listState.isScrollInProgress) return@LaunchedEffect
+                        val started = withTimeoutOrNull(250L) {
+                            snapshotFlow { listState.isScrollInProgress }.first { it }
+                        }
+                        // 有捲動 → 交給 watcher；沒有 → 這次換頁不會動清單，直接亮。
+                        if (started == null) highlightedPage = currentPageIndex
+                    }
+                    LaunchedEffect(listState) {
+                        snapshotFlow { listState.isScrollInProgress }.collect { scrolling ->
+                            if (scrolling) {
+                                highlightedPage = null
+                            } else if (highlightedPage == null) {
+                                // 停穩那一幀 currentPageIndex 可能還沒落定，讓一幀再點燈。
+                                withFrameNanos { }
+                                highlightedPage = sidebarCurrentRef.value
+                            }
+                        }
+                    }
                     androidx.compose.runtime.LaunchedEffect(listState) {
                         listState.interactionSource.interactions.collect { interaction ->
                             when (interaction) {
@@ -556,7 +583,9 @@ internal fun Sidebar(
                                         strokes = strokes,
                                         imageAnnotations = images,
                                         textAnnotations = texts,
-                                        isSelected = index == currentPageIndex,
+                                        // 高亮不跟 currentPageIndex 即時跳：等它滑到中央才亮
+                                        // （見上方 highlightedPage 的說明）。
+                                        isSelected = index == highlightedPage,
                                         isBookmarked = index in bookmarkedPages,
                                         onBookmarkToggle = { newState -> pdfViewModel.toggleBookmark(documentUri, index, newState) },
                                         boxModifier = Modifier.width(88.dp).aspectRatio(pdfViewModel.getPageAspectRatio(index)),
@@ -576,7 +605,7 @@ internal fun Sidebar(
                                 ) {
                                     PageIcon(
                                         pageIndex = index,
-                                        isSelected = index == currentPageIndex,
+                                        isSelected = index == highlightedPage,
                                         hazeState = hazeState,
                                         isDarkTheme = isDarkTheme
                                     )
@@ -1009,6 +1038,20 @@ internal fun PageIcon(
  * 結果就是整條頁碼看起來沒置中、正好對不到中央玻璃丸。
  * (start + end) / 2 才是可見區中心，也跟 Compose 自己的 [SnapPosition.Center] 一致。
  */
+/**
+ * 目前最靠近視窗中央的那一項（清單還沒量好時回 null）。
+ *
+ * 中心點用 (viewportStart + viewportEnd) / 2，理由見 [scrollToCenter]。
+ */
+private fun LazyListState.centeredItemIndex(): Int? {
+    val info = layoutInfo
+    if (info.visibleItemsInfo.isEmpty()) return null
+    val center = (info.viewportStartOffset + info.viewportEndOffset) / 2
+    return info.visibleItemsInfo.minByOrNull { item ->
+        kotlin.math.abs((item.offset + item.size / 2) - center)
+    }?.index
+}
+
 internal suspend fun LazyListState.scrollToCenter(index: Int) {
     // 陳舊頁碼（刪頁/空文件）直接捲會閃退，先擋
     if (index < 0 || index >= layoutInfo.totalItemsCount) return

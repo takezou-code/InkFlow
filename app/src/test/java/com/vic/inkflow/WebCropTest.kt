@@ -253,6 +253,36 @@ class WebCropTest {
         assertTrue("要還原 scroll-behavior", back.contains("scrollBehavior"))
     }
 
+    @Test fun parseSegBand_readsBand() {
+        val b = WebCrop.parseSegBand("\"BAND:132,806,3,64,880\"")!!
+        assertEquals(132f, b.top)
+        assertEquals(806f, b.bottom)
+        assertEquals(3, b.hidden)
+        assertEquals(64f, b.vTop)
+        assertEquals(880f, b.vBot)
+        // 找不到可用帶：top/bottom = 0（呼叫方會退回祖先 band）
+        val none = WebCrop.parseSegBand("\"BAND:0,0,0,64,880\"")!!
+        assertEquals(0f, none.top)
+        assertEquals(0f, none.bottom)
+        assertNull(WebCrop.parseSegBand(null))
+        assertNull(WebCrop.parseSegBand("\"NONE\""))
+        assertNull(WebCrop.parseSegBand("\"ERR\""))
+        assertNull(WebCrop.parseSegBand("\"BAND:1,2\""))
+    }
+
+    @Test fun segScanJs_excludesChromeWithoutTouchingDom() {
+        val js = WebCrop.segScanJs(4)
+        assertTrue("要指名第 4 個節點", js.contains("[4]"))
+        assertTrue("要沿可見區打點找遮擋", js.contains("elementsFromPoint"))
+        assertTrue("容器外的登入條／輸入框要排除", js.contains("sc.contains(top)"))
+        assertTrue("容器內 fixed/sticky 浮動層也要排除", js.contains("position === 'fixed'") && js.contains("position === 'sticky'"))
+        assertTrue("要回報帶", js.contains("'BAND:'"))
+        assertTrue("要取最長連續帶", js.contains("bestS") && js.contains("bestE"))
+        assertFalse("掃描腳本不可自己捲動", js.contains("scrollTop ="))
+        assertFalse("掃描腳本不可改 DOM（藏東西會誤傷內容元素）", js.contains("style.visibility"))
+        assertFalse("掃描腳本不可改版面流", js.contains("display = 'none'"))
+    }
+
     @Test fun crop_areaLimit_canAllowFullBand() {
         // 分段裁圖的一段本來就接近整條可見帶：預設 0.8 會誤殺，分段路徑傳 1.0 要放行。
         val box = WebCrop.CssBox(0f, 0f, 900f, 900f)

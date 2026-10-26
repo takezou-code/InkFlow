@@ -1009,6 +1009,107 @@ object WebCrop {
         )
     }
 
+    /**
+     * 掃描結果：這一段真正能拍的帶（viewport 座標）＋為了它藏了幾個浮動層。
+     *
+     * 為什麼不直接用 [SegGeom.bandTop]/[SegGeom.bandBottom]：那是「祖先 overflow 裁切」，
+     * 只看得到版面容器，看不到**疊在內容上面的**登入條／輸入框（它們是 fixed/sticky 兄弟）。
+     * 全選長回覆時段數多、步長大，舊的網格取樣會整段跳過這些遮擋 → 圖上多一條 UI。
+     */
+    data class SegBand(
+        val top: Float, val bottom: Float,
+        /** 這次掃描藏了幾個浮動層（目前一律 0：改用「排除列」而不是改 DOM）。 */
+        val hidden: Int,
+        val vTop: Float, val vBot: Float
+    )
+
+    /**
+     * 沿著「元素寬度 × 捲動視窗高度」打點，找出**最長一段連續沒有 chrome 的列**。
+     *
+     * 判定「這列能不能拍」＝三個橫向取樣點的最上層元素同時滿足：
+     *  1. 在捲動容器內（`sc.contains`）——容器外的登入條／輸入框／工具列直接排除；
+     *  2. 往上找不到 fixed/sticky 浮動根（容器內浮動的「回到底部」按鈕也排除）。
+     *
+     * 刻意**不改 DOM**（不 visibility:hidden）：藏東西會動到使用者頁面，而且 sticky 分隔線
+     * 之類的內容元素也會被誤藏。排除列不會漏內容——我們自己控制捲動，任何一段都能被捲進帶裡。
+     */
+    internal fun segScanJs(idx: Int): String = """
+        (function() {
+            try {
+                var el = (window.__inkcropEls || [])[$idx];
+                if (!el) return 'NONE';
+                if (el.isConnected === false) return 'DETACHED';
+                var sc = window.__inkcropSc || null;
+                if (sc && sc.isConnected === false) sc = null;
+                var vTop = 0, vBot = window.innerHeight;
+                if (sc) {
+                    var sr = sc.getBoundingClientRect();
+                    vTop = Math.max(0, Math.ceil(sr.top));
+                    vBot = Math.min(window.innerHeight, Math.floor(sr.bottom));
+                }
+                if (vBot - vTop < 80) return 'ERR';
+                var r0 = el.getBoundingClientRect();
+                var x0 = Math.max(2, r0.left + 4);
+                var x1 = Math.min(window.innerWidth - 2, r0.right - 4);
+                if (x1 - x0 < 8) return 'ERR';
+                var xs = [x0 + 6, (x0 + x1) / 2, x1 - 6];
+                var cache = (typeof WeakMap === 'function') ? new WeakMap() : null;
+                function fr(n) {
+                    if (cache && cache.has(n)) return cache.get(n);
+                    var p = n, d = 0, out = null;
+                    while (p && p.nodeType === 1 && d < 24) {
+                        if (p === el || p.contains(el)) { out = null; break; }
+                        var s = getComputedStyle(p);
+                        if (s.position === 'fixed' || s.position === 'sticky') { out = p; break; }
+                        var q = p.parentElement;
+                        if (!q && p.getRootNode) {
+                            var rt = p.getRootNode();
+                            if (rt && rt.host) q = rt.host;
+                        }
+                        p = q; d++;
+                    }
+                    if (cache) cache.set(n, out);
+                    return out;
+                }
+                function rowOk(y) {
+                    for (var i = 0; i < xs.length; i++) {
+                        var st = document.elementsFromPoint(xs[i], y) || [];
+                        if (!st.length) return false;
+                        var top = st[0];
+                        if (sc && !(top === sc || sc.contains(top))) return false;
+                        if (fr(top)) return false;
+                    }
+                    return true;
+                }
+                var bestS = -1, bestE = -1, cs = -1, ce = -1;
+                for (var y2 = vTop + 1; y2 <= vBot - 1; y2 += 6) {
+                    if (rowOk(y2)) {
+                        if (cs < 0) cs = y2;
+                        ce = y2;
+                        if (bestS < 0 || (ce - cs) > (bestE - bestS)) { bestS = cs; bestE = ce; }
+                    } else { cs = -1; ce = -1; }
+                }
+                if (bestS < 0) return 'BAND:0,0,0,' + Math.round(vTop) + ',' + Math.round(vBot);
+                // 邊界往內縮：bestS/bestE 是「第一個/最後一個可用列」，往外擴就會把遮擋邊緣帶進來。
+                var bt = Math.max(vTop, bestS + 3);
+                var bb = Math.min(vBot, bestE - 3);
+                if (bb - bt < 40) return 'BAND:0,0,0,' + Math.round(vTop) + ',' + Math.round(vBot);
+                return 'BAND:' + bt + ',' + bb + ',0,' + Math.round(vTop) + ',' + Math.round(vBot);
+            } catch (e) { return 'ERR'; }
+        })();
+    """.trimIndent()
+
+    /** 解析 [segScanJs] 回傳（純函數，可單測）。 */
+    fun parseSegBand(raw: String?): SegBand? {
+        val s0 = raw?.trim() ?: return null
+        if (s0 == "null" || s0.isEmpty()) return null
+        val s = s0.removeSurrounding("\"").replace("\\\"", "\"")
+        if (!s.startsWith("BAND:")) return null
+        val f = s.removePrefix("BAND:").split(',').map { it.trim().toFloatOrNull() ?: return null }
+        if (f.size < 5) return null
+        return SegBand(top = f[0], bottom = f[1], hidden = f[2].toInt(), vTop = f[3], vBot = f[4])
+    }
+
     private suspend fun segEval(webView: WebView, js: String, timeoutMs: Long, tag: String): String? {
         if (Looper.myLooper() != Looper.getMainLooper()) return null
         val ret = CompletableDeferred<String?>()
@@ -1034,6 +1135,10 @@ object WebCrop {
     suspend fun segScroll(webView: WebView, idx: Int, target: Float) {
         segEval(webView, segScrollJs(idx, target), 1500, "segScroll")
     }
+
+    /** 掃描可用帶（會順手藏掉 fixed/sticky 遮擋；呼叫方最後務必 [restoreOverlays]）。 */
+    suspend fun segScan(webView: WebView, idx: Int, timeoutMs: Long = 2500): SegBand? =
+        parseSegBand(segEval(webView, segScanJs(idx), timeoutMs, "segScan"))
 
     fun segRestore(webView: WebView) {
         if (Looper.myLooper() != Looper.getMainLooper()) return
@@ -1211,10 +1316,37 @@ object WebCrop {
                 Log.w(TAG, "seg skipped no-element idx=$idx tag=$tag")
                 return emptyList()
             }
-            val bandH = g.bandBottom - g.bandTop
+            // 真正可拍的帶：先藏掉 fixed/sticky 遮擋（登入條、輸入框），再取最長連續可用列。
+            // 祖先 overflow 的 band 只看得到版面容器，看不到「疊在內容上」的 UI——全選時就是它漏的。
+            val tScan = SystemClock.uptimeMillis()
+            val scan = segScan(webView, idx)
+            hidden = scan?.hidden ?: 0
+            val scanMs = SystemClock.uptimeMillis() - tScan
+            // 掃到帶就用掃到的；掃不到（全被非浮動層蓋住）就退成「祖先帶的中央 64%」，
+            // 寧可少拍一點、多分幾段，也不要把上下 UI 接進筆記。
+            val bandTop: Float
+            val bandBottom: Float
+            if (scan != null && scan.top > 0f && scan.bottom - scan.top >= 120f) {
+                bandTop = scan.top
+                bandBottom = scan.bottom
+            } else {
+                // 掃不到帶：退成「捲動視窗」的中央 64%。不能信祖先帶——它常常只等於元素本身高
+                //（log 實測：h=24 的塊拿到 24px 的帶，整批被判幾何不合格）。
+                val top0 = if (g.scClientH > 80f) g.scTop else g.bandTop
+                val h0 = if (g.scClientH > 80f) g.scClientH else (g.bandBottom - g.bandTop)
+                bandTop = top0 + h0 * 0.18f
+                bandBottom = top0 + h0 * 0.82f
+                Log.w(
+                    TAG,
+                    "seg band fallback idx=$idx band=$bandTop..$bandBottom " +
+                        "scan=${scan?.top}..${scan?.bottom} hidden=$hidden vp=${scan?.vTop}..${scan?.vBot}"
+                )
+            }
+            val bandH = bandBottom - bandTop
             Log.d(
                 TAG,
-                "seg start idx=$idx tag=$tag h=${g.h} y=${g.y} band=${g.bandTop}..${g.bandBottom} " +
+                "seg start idx=$idx tag=$tag h=${g.h} y=${g.y} band=$bandTop..$bandBottom " +
+                    "hidden=$hidden scanMs=$scanMs vp=${scan?.vTop}..${scan?.vBot} " +
                     "sc=${g.scroller} st=${g.scScrollTop}/${g.scMax} w=${g.w}"
             )
             if (bandH < 120f || g.w < 24f || g.h < 8f) {
@@ -1224,7 +1356,7 @@ object WebCrop {
 
             val covered0 = probe(webView, idx)?.covered == true
             if (!covered0 && g.h <= bandH - 6f &&
-                g.y >= g.bandTop - 1f && g.y + g.h <= g.bandBottom + 1f
+                g.y >= bandTop - 1f && g.y + g.h <= bandBottom + 1f
             ) {
                 val bmp = captureCss(activity, CssBox(g.x, g.y, g.w, g.h), scale, loc, winW, winH)
                     ?: return emptyList()
@@ -1239,7 +1371,7 @@ object WebCrop {
             var guard = 0
             val wPx = (g.w * scale).roundToInt().coerceAtLeast(1)
             while (s < g.h - 0.5f && guard++ < 240) {
-                val target = g.contentTop + s - (g.bandTop - g.scTop + 6f)
+                val target = g.contentTop + s - (bandTop - g.scTop + 6f)
                 segScroll(webView, idx, target.coerceIn(0f, g.scMax))
                 val m = settleSeg(webView, idx)
                 if (m == null) {
@@ -1250,29 +1382,21 @@ object WebCrop {
                     Log.w(TAG, "seg height drift idx=$idx ${g.h}->${m.h}, abort")
                     break
                 }
-                var mm = m
-                val cov = hideOverlays(webView, idx)
-                if (cov > 0) {
-                    hidden += cov
-                    mm = segInfo(webView, idx) ?: m
-                }
-                val e0 = maxOf(s, mm.bandTop - mm.y)
-                val e1 = minOf(g.h, mm.bandBottom - mm.y)
+                val e0 = maxOf(s, bandTop - m.y)
+                val e1 = minOf(g.h, bandBottom - m.y)
                 if (e1 <= e0 + 0.5f) {
-                    Log.w(TAG, "seg stuck idx=$idx s=$s y=${mm.y} band=${mm.bandTop}..${mm.bandBottom}")
-                    if (cov > 0) { restoreOverlays(webView); hidden = 0 }
+                    Log.w(TAG, "seg stuck idx=$idx s=$s y=${m.y} band=$bandTop..$bandBottom st=${m.scScrollTop}")
                     break
                 }
                 val slice = captureCss(
-                    activity, CssBox(mm.x, mm.y + e0, mm.w, e1 - e0),
+                    activity, CssBox(m.x, m.y + e0, m.w, e1 - e0),
                     scale, loc, winW, winH, areaLimit = 1.0f
                 )
-                if (cov > 0) { restoreOverlays(webView); hidden = 0 }
                 if (slice == null) {
                     Log.w(
                         TAG,
-                        "seg slice rejected idx=$idx e=$e0..$e1 y=${mm.y} " +
-                            "band=${mm.bandTop}..${mm.bandBottom} cov=$cov"
+                        "seg slice rejected idx=$idx e=$e0..$e1 y=${m.y} " +
+                            "band=$bandTop..$bandBottom st=${m.scScrollTop}"
                     )
                     break
                 }
@@ -1286,8 +1410,8 @@ object WebCrop {
                         maxChunkCss = maxChunkCss
                     )
                 }
-                if (out.size >= 16) {
-                    Log.w(TAG, "seg chunk cap reached idx=$idx, rest dropped")
+                if (out.size >= 48) {
+                    Log.w(TAG, "seg chunk cap reached idx=$idx imgs=${out.size} s=$s/${g.h}, rest dropped")
                     break
                 }
             }
