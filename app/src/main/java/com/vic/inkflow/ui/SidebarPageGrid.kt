@@ -168,16 +168,19 @@ internal fun SidebarPageGrid(
             return
         }
         onStructureChanged()
+        // 先凍結畫面（縮圖版本 + 筆跡/圖片/文字快照），再開始搬。
+        // 搬頁的 DB 交易可能在下一幀之前就完成並讓 annotation flow 換內容；
+        // 晚一步凍結就會看到筆跡先跳到別的卡片上（另一種閃）。
+        pinnedThumbnailVersion = pdfViewModel.thumbnailVersion.value
+        pendingMoveLanding = true
         pdfViewModel.movePage(documentUri, page, targetPos)
         // movePage 會「同步」把 isPageOperationInProgress 設 true；沒設起來代表被擋掉了
         // （頁碼越界、上一次操作還沒完），那就沒有東西會落地，立刻翻回身分順序。
-        if (pdfViewModel.isPageOperationInProgress.value) {
-            // 凍結縮圖版本（見 pinnedThumbnailVersion 說明）。
-            pinnedThumbnailVersion = pdfViewModel.thumbnailVersion.value
-            pendingMoveLanding = true
-        } else {
+        if (!pdfViewModel.isPageOperationInProgress.value) {
+            suppressItemAnimation = true
             previewOrder = visibleIndices
             reorderEpoch++
+            pendingMoveLanding = false
         }
     }
 
@@ -454,6 +457,17 @@ internal fun SidebarPageGrid(
                 val images by imagesFlow.collectAsState(initial = emptyList())
                 val textsFlow = remember(index) { repos.texts.getForPage(documentUri, index) }
                 val texts by textsFlow.collectAsState(initial = emptyList())
+                // 放手後到翻正前，筆跡/圖片/文字先凍結在放手當下的樣子：
+                // movePage 的 DB 交易會讓這些 flow 提早換成「新頁碼」的內容，
+                // 但畫面此刻還是拖下來的順序 → 會看到筆跡先跳到別張卡上（另一種閃）。
+                // remember(pendingMoveLanding) 只在狀態翻轉那次重組拍一次快照，
+                // 之後 flow 再變也不會重拍；翻正（false）時自動回到即時值。
+                val frozenStrokes = remember(pendingMoveLanding) { if (pendingMoveLanding) strokes else null }
+                val frozenImages = remember(pendingMoveLanding) { if (pendingMoveLanding) images else null }
+                val frozenTexts = remember(pendingMoveLanding) { if (pendingMoveLanding) texts else null }
+                val strokesShown = frozenStrokes ?: strokes
+                val imagesShown = frozenImages ?: images
+                val textsShown = frozenTexts ?: texts
                 val currentListIndex = it
                 val isCurrent = !isSelectionMode && index == currentPageIndex
                 // 選中放大必須套在「整張卡」（玻璃框＋白紙）上。
@@ -541,9 +555,9 @@ internal fun SidebarPageGrid(
                                 // 顯示真正的頁碼。
                                 pageLabel = if (showOnlyBookmarked) index + 1 else it + 1,
                                 bitmap = thumb,
-                                strokes = strokes,
-                                imageAnnotations = images,
-                                textAnnotations = texts,
+                                strokes = strokesShown,
+                                imageAnnotations = imagesShown,
+                                textAnnotations = textsShown,
                                 isSelected = index in selectedPages ||
                                     (!isSelectionMode && index == currentPageIndex),
                                 isBookmarked = index in bookmarkedPages,
