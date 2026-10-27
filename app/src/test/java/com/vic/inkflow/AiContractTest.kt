@@ -17,6 +17,10 @@ import com.vic.inkflow.ui.pickJs
 import com.vic.inkflow.ui.promptSendJs
 import com.vic.inkflow.ui.replyChain
 import com.vic.inkflow.ui.replyIdleSelector
+import com.vic.inkflow.ui.parseEnabledProviders
+import com.vic.inkflow.ui.encodeEnabledProviders
+import com.vic.inkflow.ui.nextEnabledProvider
+import com.vic.inkflow.ui.coerceEnabledProvider
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -323,5 +327,57 @@ class AiContractTest {
         assertNull(aiProviderForUrl(""))
         // query 里带站名也不算：这是登录中转页，不是本站。
         assertNull(aiProviderForUrl("https://accounts.google.com/v3/signin?continue=https://gemini.google.com"))
+    }
+
+    // ── 啟用清單（設定頁多選）──────────────────────────────────────
+
+    @Test
+    fun `啟用清單預設兩家`() {
+        assertEquals(listOf(AiProvider.GEMINI, AiProvider.CHATGPT), parseEnabledProviders(null))
+        assertEquals(listOf(AiProvider.GEMINI, AiProvider.CHATGPT), parseEnabledProviders("   "))
+    }
+
+    @Test
+    fun `啟用清單忽略亂碼並去重`() {
+        assertEquals(listOf(AiProvider.CHATGPT), parseEnabledProviders("CHATGPT,CHATGPT,NOPE"))
+    }
+
+    @Test
+    fun `啟用清單全部認不得時回預設`() {
+        assertEquals(
+            listOf(AiProvider.GEMINI, AiProvider.CHATGPT),
+            parseEnabledProviders("GROK,CLAUDE")
+        )
+    }
+
+    @Test
+    fun `編碼照 enum 順序且可往返`() {
+        assertEquals("CHATGPT", encodeEnabledProviders(listOf(AiProvider.CHATGPT)))
+        val roundTrip = parseEnabledProviders(
+            encodeEnabledProviders(listOf(AiProvider.CHATGPT, AiProvider.GEMINI))
+        )
+        assertEquals(listOf(AiProvider.GEMINI, AiProvider.CHATGPT), roundTrip)
+    }
+
+    @Test
+    fun `切換只在啟用清單內循環`() {
+        val onlyChatGpt = listOf(AiProvider.CHATGPT)
+        assertEquals(AiProvider.CHATGPT, nextEnabledProvider(AiProvider.CHATGPT, onlyChatGpt))
+        assertEquals(
+            AiProvider.GEMINI,
+            nextEnabledProvider(AiProvider.CHATGPT, listOf(AiProvider.GEMINI, AiProvider.CHATGPT))
+        )
+    }
+
+    @Test
+    fun `目前 provider 被關掉時退回第一家`() {
+        assertEquals(
+            AiProvider.CHATGPT,
+            coerceEnabledProvider(AiProvider.GEMINI, listOf(AiProvider.CHATGPT))
+        )
+        assertEquals(
+            AiProvider.GEMINI,
+            coerceEnabledProvider(AiProvider.GEMINI, listOf(AiProvider.GEMINI, AiProvider.CHATGPT))
+        )
     }
 }

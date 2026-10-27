@@ -20,7 +20,23 @@ val barBtn: String = "rgba(255,255,255,0.14)"
 )
 
 
-internal object AiGeminiDriver {
+internal object AiGeminiDriver : AiDriver {
+
+    override val label = "Gemini"
+    override val startUrl = "https://gemini.google.com/app"
+    override val host = "gemini.google.com"
+    override val capabilities = AiCapabilities(sendImage = true, importReply = true, mathCrop = true)
+    override val importStrategy = AiImportStrategy(
+        blockCrop = false,
+        promoteInlineMath = true,
+        mathEngine = MathEngine.KATEX
+    )
+    override val glyph = AiGlyph.CHAT
+    override val replyIdleSelector: String? = null
+    override val imagePasteInputSelector =
+        "rich-textarea, div[role=\"textbox\"][contenteditable=\"true\"]"
+    override val replyChain: List<String> get() = REPLY_CHAIN
+    override fun domProbeJs(): String = buildDomProbeJs()
 
     /**
      * 回覆容器候選鏈（唯一真正需要隨 provider 變的東西）。
@@ -53,7 +69,7 @@ internal object AiGeminiDriver {
  * 與貼圖腳本並行執行，內部延遲 2.5s 等圖片先附著，避免圖文分家。
  * 執行結果透過 AndroidBridge.onPasteResult 回報（PROMPT_SENT / PROMPT_SENT_ENTER / …），可用 logcat 觀察。
  */
-fun promptSendJs(promptQuoted: String, send: Boolean = true): String {
+override fun promptSendJs(promptQuoted: String, send: Boolean): String {
     return """
         (function() {
             var PROMPT = $promptQuoted;
@@ -183,9 +199,14 @@ fun promptSendJs(promptQuoted: String, send: Boolean = true): String {
  * 打勾樣式走 <style> + ::before（不插入 DOM，innerText 永遠乾淨）。
  * 回報 PICK_MODE_ON:N（N=當下可點段落數）。
  */
-fun pickJs(
-        replyChain: List<String> = REPLY_CHAIN,
-        palette: PickPalette = PickPalette()
+    /** 介面入口：切換到這個 provider 自己的回覆容器鏈。 */
+    override fun pickJs(palette: PickPalette): String =
+        pickJs(replyChain = replyChain, palette = palette)
+
+    /** 共用的圈選腳本本體（ChatGPT 也呼叫這一份，只換鏈）。 */
+    fun pickJs(
+        replyChain: List<String>,
+        palette: PickPalette
     ): String {
     val chainsJs = chainJs(replyChain)
     val p = palette
@@ -390,9 +411,14 @@ fun pickJs(
  * 一個都沒勾則回空陣列、不插入。清掉委派 listener、樣式與全部標記。
  * 結果經 AndroidBridge.onTextGrabbed 回傳（上限 20000 字）。
  */
-fun collectJs(
-        replyChain: List<String> = REPLY_CHAIN,
-        cropFormulas: Boolean = false
+    /** 介面入口：Gemini 走文字／公式路徑（cropFormulas=false）。 */
+    override fun collectJs(): String =
+        collectJs(replyChain = replyChain, cropFormulas = false)
+
+    /** 共用的收集腳本本體（ChatGPT 以 cropFormulas=true 呼叫同一份）。 */
+    fun collectJs(
+        replyChain: List<String>,
+        cropFormulas: Boolean
     ): String {
     return """
     (function() {

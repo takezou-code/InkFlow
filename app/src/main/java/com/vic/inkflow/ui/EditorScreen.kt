@@ -277,12 +277,17 @@ fun TabletEditorScreen(
     val docKey = uri.toString()
     // AI 來源：工具列小圖示切換，持久化在設定 prefs（重開 App 記得）。
     // 第一優先是「這份文件上次用的站」，沒有才退回全局（老版本只有全局）。
+    // 設定頁可以關掉某些 AI：所有入口都先經 coerceEnabledProvider 收斂到啟用清單。
+    val enabledAi = parseEnabledProviders(prefs.getString(KEY_AI_ENABLED_PROVIDERS, null))
     var aiProvider by rememberSaveable {
         mutableStateOf(
-            runCatching {
-                prefs.getString(aiDocProviderKey(docKey), null)?.let { AiProvider.valueOf(it) }
-                    ?: AiProvider.valueOf(prefs.getString(KEY_AI_PROVIDER, AiProvider.GEMINI.name) ?: AiProvider.GEMINI.name)
-            }.getOrDefault(AiProvider.GEMINI)
+            coerceEnabledProvider(
+                runCatching {
+                    prefs.getString(aiDocProviderKey(docKey), null)?.let { AiProvider.valueOf(it) }
+                        ?: AiProvider.valueOf(prefs.getString(KEY_AI_PROVIDER, AiProvider.GEMINI.name) ?: AiProvider.GEMINI.name)
+                }.getOrDefault(AiProvider.GEMINI),
+                enabledAi
+            )
         )
     }
     // 切文件＝換記憶：先把這份文件記的站讀回來（沒有記錄就沿用全局，不強跳）。
@@ -290,7 +295,17 @@ fun TabletEditorScreen(
         val saved = runCatching {
             prefs.getString(aiDocProviderKey(docKey), null)?.let { AiProvider.valueOf(it) }
         }.getOrNull()
-        if (saved != null && saved != aiProvider) aiProvider = saved
+        if (saved != null) {
+            val enabled = parseEnabledProviders(prefs.getString(KEY_AI_ENABLED_PROVIDERS, null))
+            val next = coerceEnabledProvider(saved, enabled)
+            if (next != aiProvider) aiProvider = next
+        }
+    }
+    // 從設定頁回來：目前這家可能被關掉，退回啟用清單第一家。
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        val enabled = parseEnabledProviders(prefs.getString(KEY_AI_ENABLED_PROVIDERS, null))
+        val next = coerceEnabledProvider(aiProvider, enabled)
+        if (next != aiProvider) aiProvider = next
     }
     // 這份文件＋這個站該進的地址（記憶沒有就進站首頁）。provider 切換會重建
     // WebView（key 在面板裡），factory 用這個值當出生第一頁；同站切文件則
@@ -361,7 +376,12 @@ fun TabletEditorScreen(
         }
     }
     fun switchAiProvider() {
-        val next = aiProvider.other
+        val enabled = parseEnabledProviders(prefs.getString(KEY_AI_ENABLED_PROVIDERS, null))
+        val next = nextEnabledProvider(aiProvider, enabled)
+        if (next == aiProvider) {
+            android.widget.Toast.makeText(context, "只有一個 AI 啟用，請到設定開啟更多", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
         aiProvider = next
         // 全局照寫（新文件預設站），這份文件的站另外記（切文件回來還認得）。
         prefs.edit().putString(KEY_AI_PROVIDER, next.name).apply()
@@ -544,11 +564,12 @@ fun TabletEditorScreen(
     var aiPlacing by remember { mutableStateOf(false) }
     fun importPickedJson(json: String) {
         aiPlacing = true
+        val strategy = aiProvider.importStrategy
         scope.importPickedJson(json, context, viewModel, pdfViewModel, repos, uri.toString(), currentPageIndex, onRequestPage, context as? android.app.Activity, aiWebView,
             supportsMathCrop = aiProvider.capabilities.mathCrop,
-            promoteComplexParas = aiProvider == AiProvider.GEMINI,
-            cropAllPicks = aiProvider == AiProvider.CHATGPT,
-            useMathJax = (aiProvider == AiProvider.CHATGPT),
+            promoteComplexParas = strategy.promoteInlineMath,
+            cropAllPicks = strategy.blockCrop,
+            useMathJax = strategy.mathEngine == MathEngine.MATHJAX,
             latestPage = { currentPageIndex },
             onSettled = { aiPlacing = false })
     }
@@ -1600,12 +1621,15 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
-                            imageVector = if (aiProvider == AiProvider.CHATGPT) {
-                                Icons.Outlined.AutoAwesome
-                            } else {
-                                Icons.Filled.ChatBubble
+                            imageVector = when (aiProvider.glyph) {
+                                AiGlyph.SPARK -> Icons.Outlined.AutoAwesome
+                                AiGlyph.CHAT -> Icons.Filled.ChatBubble
                             },
-                            contentDescription = "切換 AI 到 ${aiProvider.other.label}",
+                            contentDescription = "切換 AI 到 " +
+                                nextEnabledProvider(
+                                    aiProvider,
+                                    parseEnabledProviders(prefs.getString(KEY_AI_ENABLED_PROVIDERS, null))
+                                ).label,
                             modifier = Modifier.size(14.dp),
                             tint = glassContentColor(isEditorDark)
                         )

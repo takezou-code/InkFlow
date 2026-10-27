@@ -149,6 +149,12 @@ fun GlobalSettingsScreen(
         }
     }
 
+    // --- AI 來源（可多選）-----------------------------------------------------
+    // 只有列在清單裡的 AI 會出現在工具列切換；至少保留一個，否則使用者會把自己鎖死。
+    var enabledAiState by remember {
+        mutableStateOf(parseEnabledProviders(prefs.getString(KEY_AI_ENABLED_PROVIDERS, null)))
+    }
+
     var showPenColorPicker by remember { mutableStateOf(false) }
     var showHighlighterColorPicker by remember { mutableStateOf(false) }
     var showAccentPicker by remember { mutableStateOf(false) }
@@ -394,6 +400,38 @@ fun GlobalSettingsScreen(
                                 onBackdropThemeChanged(BackdropTheme.SOFT)
                             },
                             color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                // ===== AI 來源 ============================================
+                SettingsSection("AI 來源", isDarkSettings) {
+                    SettingsHint("勾選要出現在工具列切換的 AI；未勾選的不會被切到。至少保留一個。")
+                    AiProvider.entries.forEach { provider ->
+                        val isOn = provider in enabledAiState
+                        SettingsSwitchRow(
+                            title = provider.label,
+                            subtitle = aiCapabilitySummary(provider),
+                            checked = isOn,
+                            onCheckedChange = { on ->
+                                val next = if (on) {
+                                    AiProvider.entries.filter { it in enabledAiState || it == provider }
+                                } else {
+                                    enabledAiState.filter { it != provider }
+                                }
+                                if (next.isEmpty()) {
+                                    android.widget.Toast.makeText(
+                                        context,
+                                        "至少要保留一個 AI",
+                                        android.widget.Toast.LENGTH_SHORT
+                                    ).show()
+                                } else {
+                                    enabledAiState = next
+                                    prefs.edit()
+                                        .putString(KEY_AI_ENABLED_PROVIDERS, encodeEnabledProviders(next))
+                                        .apply()
+                                }
+                            }
                         )
                     }
                 }
@@ -902,6 +940,17 @@ private fun SettingsTopBar(isDark: Boolean, onNavigateBack: () -> Unit) {
 }
 
 // ---- 區塊與列 ---------------------------------------------------------------
+
+/** 設定頁 AI 列的副標：把 capabilities 轉成人話，讓使用者一眼知道哪家能做什麼。 */
+private fun aiCapabilitySummary(provider: AiProvider): String {
+    val caps = provider.capabilities
+    val parts = buildList {
+        if (caps.sendImage) add("送圖")
+        if (caps.importReply) add("匯入回覆")
+        if (caps.mathCrop) add("數學裁圖")
+    }
+    return if (parts.isEmpty()) "僅手動對話" else parts.joinToString("・")
+}
 
 @Composable
 private fun SettingsSection(

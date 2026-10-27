@@ -18,7 +18,18 @@ package com.vic.inkflow.ui
  *
  * 實機驗證前，所有 selector 都是「待確認」，不是「已知正確」。
  */
-internal object AiChatGptDriver {
+internal object AiChatGptDriver : AiDriver {
+
+    override val label = "ChatGPT"
+    override val startUrl = "https://chatgpt.com/"
+    override val host = "chatgpt.com"
+    override val capabilities = AiCapabilities(sendImage = true, importReply = true, mathCrop = true)
+    override val importStrategy = AiImportStrategy(
+        blockCrop = true,
+        promoteInlineMath = false,
+        mathEngine = MathEngine.MATHJAX
+    )
+    override val glyph = AiGlyph.SPARK
 
     /** 輸入框候選：由具體到泛用。每個都會穿 shadow root 去找。 */
     private val INPUT_CANDIDATES = listOf(
@@ -36,7 +47,7 @@ internal object AiChatGptDriver {
         "button[aria-label*=\"Send\"]",
         "button[aria-label*=\"傳送\"]"
     )
-    val REPLY_CHAIN = listOf(
+    override val replyChain = listOf(
         "article[data-message-author-role=\"assistant\"]",
         "[data-message-author-role=\"assistant\"]",
         "article[data-message-author-role]",
@@ -51,14 +62,14 @@ internal object AiChatGptDriver {
      * ChatGPT 長對話會虛擬滾動，畫面外的訊息根本不在 DOM 裡，所以這道閘門是必需的。
      * 回傳 null＝不用等（Gemini 沒有停止鈕這個語意）。
      */
-    val REPLY_IDLE_SELECTOR: String? = "[data-testid=\"stop-button\"]"
+    override val replyIdleSelector: String? = "[data-testid=\"stop-button\"]"
 
     /** 探針用：確認停止鈕／回覆容器到底存不存在。 */
     fun idleProbeJs(): String = "(function(){try{return document.querySelectorAll('$STOP_SELECTOR').length;}catch(e){return -1;}})()"
 
     /** 探針用：確認回覆容器候選命中數（穿 shadow）。 */
     fun replyProbeJs(): String {
-        val replies = REPLY_CHAIN.joinToString(", ") { "\"$it\"" }
+        val replies = replyChain.joinToString(", ") { "\"$it\"" }
         return """
             (function(){
                 function deepCount(root, sel, out) {
@@ -81,14 +92,22 @@ internal object AiChatGptDriver {
     }
 
     /** 貼圖時瞄準的輸入框（與 [buildImagePasteJs] 的 selector 同一套）。 */
-    const val IMAGE_PASTE_INPUT_SELECTOR = "#prompt-textarea, div[contenteditable=\"true\"]"
+    override val imagePasteInputSelector = "#prompt-textarea, div[contenteditable=\"true\"]"
 
     /** 供探針與 log 使用：候選清單本體（保持 JS 與 Kotlin 單一真相）。 */
     fun candidatesForLog(): String = buildString {
         append("input=").append(INPUT_CANDIDATES.joinToString("|"))
         append(" send=").append(SEND_CANDIDATES.joinToString("|"))
-        append(" reply=").append(REPLY_CHAIN.joinToString("|"))
+        append(" reply=").append(replyChain.joinToString("|"))
     }
+
+    /** 圈選腳本：與 Gemini 共用同一份，只換成 assistant 候選鏈。 */
+    override fun pickJs(palette: PickPalette): String =
+        AiGeminiDriver.pickJs(replyChain = replyChain, palette = palette)
+
+    /** 收集腳本：整塊像素裁圖（cropFormulas=true），其餘共用。 */
+    override fun collectJs(): String =
+        AiGeminiDriver.collectJs(replyChain = replyChain, cropFormulas = true)
 
     /**
      * 填入提示詞並視需要送出。
@@ -100,7 +119,7 @@ internal object AiChatGptDriver {
      *
      * 兩種都失敗才回報 PROMPT_INSERT_FAILED——寧可明確失敗，也不要假裝填進去了。
      */
-    fun promptSendJs(promptQuoted: String, send: Boolean): String {
+    override fun promptSendJs(promptQuoted: String, send: Boolean): String {
         val inputs = INPUT_CANDIDATES.joinToString(", ") { "\"$it\"" }
         val sends = SEND_CANDIDATES.joinToString(", ") { "\"$it\"" }
         return """
@@ -221,10 +240,10 @@ internal object AiChatGptDriver {
      * 這是臨時診斷，S3 定完 selector 就整段刪掉（見 env.md：定案即刪，不留過夜）。
      * 存在的唯一理由：**不要再靠猜**。
      */
-    fun domProbeJs(): String {
+    override fun domProbeJs(): String {
         val inputs = INPUT_CANDIDATES.joinToString(", ") { "\"$it\"" }
         val sends = SEND_CANDIDATES.joinToString(", ") { "\"$it\"" }
-        val replies = REPLY_CHAIN.joinToString(", ") { "\"$it\"" }
+        val replies = replyChain.joinToString(", ") { "\"$it\"" }
         return """
             (function() {
                 function deepCount(root, sel, out) {

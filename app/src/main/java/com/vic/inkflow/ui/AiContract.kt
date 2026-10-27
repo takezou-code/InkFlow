@@ -12,54 +12,80 @@ import android.net.Uri
  *   L2 驅動  ：每個 AI 一份 driver，差異的容身處（AiGeminiDriver／AiChatGptDriver…）。
  *   L3 效應  ：AiImportFlow／AiTextImport／WebCrop／MathSnapshot，只吃結果，不知道來源。
  *
- * 加第 3、第 4 個 AI 時，**只新增 L2 一個檔案**，其餘三層零改動。
+ * 加第 3、第 4 個 AI 時，**只新增 L2 一個檔案**（driver）＋[AiProvider] 加一行，
+ * 契約層不再有 `when (provider)` 需要補分支。
  */
 
 /**
- * AI 來源。開關放在工具列（EditorChrome），面板本身只是被動的 view。
+ * AI 來源。**每一格只綁一個 [AiDriver]，行為全部委派給它**——
+ * 契約層不再有 `when (provider)`，加一家 AI 只需新增 driver 檔＋這裡加一行。
  *
- * host 是 onPageFinished 的閘門：換 host 卻沒同步換這裡，整套注入會靜默失效，
- * 所以每個 provider 的 URL／host 綁在同一個 enum，避免再次分家。
+ * 持久化用的是 enum 的 `.name`（`ai_provider` / `ai_doc_provider_*` / `ai_doc_url_*`），
+ * 所以 **GEMINI／CHATGPT 這兩個名字永遠不可改**，改了舊 prefs 會還原失敗。
  *
- * [capabilities] 說明這個站**現在真的能做什麼**。按鈕的啟用與提示一律讀它，
- * 不要在呼叫端寫 `if (provider != GEMINI)` 這種守衛——那會隨 provider 增加而爆炸，
- * 而且新 provider 沒被加進那些 if 就會靜默失效。
+ * host 是 onPageFinished 的閘門，label/host/startUrl/capabilities 都從 driver 取，
+ * 避免「URL 在一處、host 在另一處」再次分家。
  */
-enum class AiProvider(
-    val label: String,
-    val startUrl: String,
-    val host: String,
-    val capabilities: AiCapabilities
-) {
+enum class AiProvider(val driver: AiDriver) {
     /** Gemini：貼圖、匯入、數學裁圖全部已接上（既有功能，行為不可變）。 */
-    GEMINI(
-        "Gemini",
-        "https://gemini.google.com/app",
-        "gemini.google.com",
-        AiCapabilities(sendImage = true, importReply = true, mathCrop = true)
-    ),
+    GEMINI(AiGeminiDriver),
+
+    /** ChatGPT：貼圖、整塊像素裁圖、匯入（共用圈選／收集實作）。 */
+    CHATGPT(AiChatGptDriver);
+
+    val label: String get() = driver.label
+    val startUrl: String get() = driver.startUrl
+    val host: String get() = driver.host
+    val capabilities: AiCapabilities get() = driver.capabilities
+    val importStrategy: AiImportStrategy get() = driver.importStrategy
+    val glyph: AiGlyph get() = driver.glyph
 
     /**
-     * ChatGPT：Phase 0 實測頁面可開、可登入、可對話（沒被 Cloudflare 擋）。
+     * 舊版二元切換。
      *
-     * S4 起 [importReply] 開啟：圈選＋抓回覆。與 Gemini **共用同一份實作**，
-     * 只換回覆容器候選（assistant vs model）＋收集前等停止鈕消失（串流中會抓到半截）。
-     *
-     * [mathCrop] 仍關閉：ChatGPT 的 KaTeX 版面還沒實機驗證過裁圖座標。
-     * 匯入會先用文字（LaTeX）路徑，數學不會消失，只是不附裁切圖。
+     * Phase 2 起工具列改用「設定頁勾選的啟用清單」輪替（見 [nextEnabledProvider]），
+     * 這裡只為既有單測與相容保留；三家以上請勿再呼叫。
      */
-    CHATGPT(
-        "ChatGPT",
-        "https://chatgpt.com/",
-        "chatgpt.com",
-        AiCapabilities(sendImage = true, importReply = true, mathCrop = true)
-    );
-
-    val other: AiProvider get() = if (this == GEMINI) CHATGPT else GEMINI
+    val other: AiProvider get() = AiProvider.entries.firstOrNull { it != this } ?: this
 }
 
 /** AI 來源持久化 key（與 AppNav 的 theme_mode／power_saver 共用同一份 prefs）。 */
 const val KEY_AI_PROVIDER = "ai_provider"
+
+/** 設定頁勾選的 AI 清單（逗號分隔 enum 名）；空／壞值 → 預設兩家。 */
+const val KEY_AI_ENABLED_PROVIDERS = "ai_enabled_providers"
+
+/** 沒設定過時預設啟用的兩家（既有已驗收功能）。 */
+val DEFAULT_ENABLED_AI_PROVIDERS: List<AiProvider> = listOf(AiProvider.GEMINI, AiProvider.CHATGPT)
+
+/**
+ * 解析 prefs 裡逗號分隔的 provider 名。
+ *
+ * 認不得的名字忽略、重複去重，結果一律照 [AiProvider.entries] 的順序（切換可預期）。
+ * 空或全部認不得 → 回預設兩家，避免使用者把自己鎖在「沒有任何 AI」。
+ */
+fun parseEnabledProviders(raw: String?): List<AiProvider> {
+    val names = raw.orEmpty().split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+    val picked = AiProvider.entries.filter { it.name in names }
+    return picked.ifEmpty { DEFAULT_ENABLED_AI_PROVIDERS }
+}
+
+/** 把啟用清單寫回 prefs 字串（照 enum 順序）。 */
+fun encodeEnabledProviders(providers: List<AiProvider>): String =
+    AiProvider.entries.filter { it in providers }.joinToString(",") { it.name }
+
+/** 在啟用清單裡找下一家（工具列切換用）；只有一家時停在原地。 */
+fun nextEnabledProvider(current: AiProvider, enabled: List<AiProvider>): AiProvider {
+    val list = enabled.ifEmpty { DEFAULT_ENABLED_AI_PROVIDERS }
+    val idx = list.indexOf(current)
+    return if (idx < 0) list.first() else list[(idx + 1) % list.size]
+}
+
+/** 目前 provider 被設定頁關掉時，退回啟用清單第一家。 */
+fun coerceEnabledProvider(current: AiProvider, enabled: List<AiProvider>): AiProvider {
+    val list = enabled.ifEmpty { DEFAULT_ENABLED_AI_PROVIDERS }
+    return if (current in list) current else list.first()
+}
 
 /**
  * 每份文件的 AI 記憶（provider＋上次對話 URL），存在同一份 `inkflow_settings` prefs。
@@ -105,48 +131,30 @@ internal fun urlHost(url: String): String? {
 }
 
 /**
- * 產生填詞腳本。**這是面板與 driver 之間唯一的注入分歧點。**
- *
- * S3：以前這個 `buildPromptSendJs` 是 AiWebPanel 裡一整支 Gemini 專屬函式；
- * 現在由 provider 自己決定，避免面板裡長出 if/else provider 分支。
+ * 以下是對 [AiDriver] 的**薄委派**：行為在 driver，契約層只負責轉發。
+ * 面板與 driver 之間唯一的注入分歧點仍是 [promptSendJs]，只是現在由 driver 自己回答。
  */
-fun AiProvider.promptSendJs(promptQuoted: String, send: Boolean): String = when (this) {
-    AiProvider.GEMINI -> AiGeminiDriver.promptSendJs(promptQuoted, send)
-    AiProvider.CHATGPT -> AiChatGptDriver.promptSendJs(promptQuoted, send)
-}
+fun AiProvider.promptSendJs(promptQuoted: String, send: Boolean): String =
+    driver.promptSendJs(promptQuoted, send)
 
-/** DOM 探針腳本（臨時診斷，S3 定完 selector 即刪）。 */
-fun AiProvider.domProbeJs(): String = when (this) {
-    AiProvider.GEMINI -> buildDomProbeJs()
-    AiProvider.CHATGPT -> AiChatGptDriver.domProbeJs()
-}
+/** DOM 探針腳本（臨時診斷，定完 selector 即刪）。 */
+fun AiProvider.domProbeJs(): String = driver.domProbeJs()
 
 /** 貼圖要瞄準的輸入框 selector——provider 專屬的部分就這一個字串。 */
 internal val AiProvider.imagePasteInputSelector: String
-    get() = when (this) {
-        AiProvider.GEMINI -> "rich-textarea, div[role=\"textbox\"][contenteditable=\"true\"]"
-        AiProvider.CHATGPT -> AiChatGptDriver.IMAGE_PASTE_INPUT_SELECTOR
-    }
+    get() = driver.imagePasteInputSelector
 
 /**
- * 圈選腳本。兩個 provider 共用同一份實作，只換回覆容器候選鏈
+ * 圈選腳本。所有 provider 共用同一份實作，只換回覆容器候選鏈
  * （Gemini 是 `model` 角色、ChatGPT 是 `assistant`）。
  */
-fun AiProvider.pickJs(palette: PickPalette = PickPalette()): String =
-    AiGeminiDriver.pickJs(replyChain = replyChain, palette = palette)
+fun AiProvider.pickJs(palette: PickPalette = PickPalette()): String = driver.pickJs(palette)
 
 /** 收集腳本，同上。 */
-fun AiProvider.collectJs(): String = AiGeminiDriver.collectJs(
-    replyChain = replyChain,
-    cropFormulas = (this == AiProvider.CHATGPT)
-)
+fun AiProvider.collectJs(): String = driver.collectJs()
 
 /** 回覆容器候選鏈。 */
-val AiProvider.replyChain: List<String>
-    get() = when (this) {
-        AiProvider.GEMINI -> AiGeminiDriver.REPLY_CHAIN
-        AiProvider.CHATGPT -> AiChatGptDriver.REPLY_CHAIN
-    }
+val AiProvider.replyChain: List<String> get() = driver.replyChain
 
 /**
  * 收集前必須等它消失的 selector（串流中的指標）。null＝不用等。
@@ -155,11 +163,7 @@ val AiProvider.replyChain: List<String>
  * 而且長對話會虛擬滾動，畫面外的訊息根本不在 DOM 裡。
  * 放在 Kotlin 側輪詢（不在 JS 裡改流程），是為了**完全不去動 Gemini 已驗收的腳本結構**。
  */
-val AiProvider.replyIdleSelector: String?
-    get() = when (this) {
-        AiProvider.GEMINI -> null
-        AiProvider.CHATGPT -> AiChatGptDriver.REPLY_IDLE_SELECTOR
-    }
+val AiProvider.replyIdleSelector: String? get() = driver.replyIdleSelector
 
 /** 這次請求要做什麼。 */
 enum class AiAction {
@@ -237,36 +241,49 @@ data class AiCapabilities(
     val mathCrop: Boolean = false
 )
 
+/** 匯入時用哪個離線數學引擎（裁圖失敗的第二引擎）。 */
+enum class MathEngine { KATEX, MATHJAX }
+
 /**
- * L2 驅動介面。**每個 provider 一份實作，差異全部關在這裡。**
+ * 匯入策略：把「這家 AI 的版面怎麼變成頁面」收斂成資料。
  *
- * 實作者要回答的問題只有四個，這個站怎麼：認得頁面、找到輸入框、把圖貼進去、把話送出去。
+ * 以前這三件事散在 `EditorScreen` 的 `provider ==` 比較裡，新增 provider 會走錯路
+ * 或靜默失效。現在由 driver 宣告，呼叫端只讀欄位。
+ */
+data class AiImportStrategy(
+    /** 整塊像素裁圖（所見即所得）。false＝文字切分＋公式裁圖。 */
+    val blockCrop: Boolean = false,
+    /** 是否把行內數學提升成獨立塊。 */
+    val promoteInlineMath: Boolean = true,
+    /** 裁圖失敗時的離線渲染引擎。 */
+    val mathEngine: MathEngine = MathEngine.KATEX
+)
+
+/** 工具列切換鈕用的圖示語意（不在 driver 裡碰 Compose）。 */
+enum class AiGlyph { CHAT, SPARK }
+
+/**
+ * L2 驅動契約。**每個 provider 一份實作，差異全部關在這裡。**
+ *
+ * 刻意只放「資料 + JS 工廠」，不持有 WebView、不搬面板流程：
+ * 貼圖／主題／投遞的單一路徑留在 [AiWebPanel]，這樣重構的風險最小。
+ *
+ * 新增一家 AI＝新增一個 `object XxxDriver : AiDriver` ＋ [AiProvider] 加一行。
  */
 interface AiDriver {
-    val provider: AiProvider
+    val label: String
+    val startUrl: String
+    val host: String
     val capabilities: AiCapabilities
-
-    /** 頁面可用（登入完成、SPA 渲染完）。回傳 false 代表還沒 ready，driver 可自己續等。 */
-    fun onPageReady(bridge: AiJsBridge): Boolean
-
-    /** 執行一次 [AiRequest]。 */
-    fun deliver(bridge: AiJsBridge, request: AiRequest): AiOutcome
-
-    /** 抓回覆回傳 JSON（圈選段落 / 整篇回覆）。 */
-    fun importReply(bridge: AiJsBridge): AiOutcome
-}
-
-/**
- * JS 注入通道。driver 只透過它碰 WebView，不直接持有 WebView 參考，
- * 避免 driver 變成另一個「到處直接摸 WebView」的隱性耦合點。
- */
-interface AiJsBridge {
-    /** 執行 JS，結果同步回呼（[onResult] 收到字串化結果，可能為 null）。 */
-    fun eval(js: String, onResult: (String?) -> Unit = {})
-
-    /** 把訊息回報給 Kotlin（對應 JS 側 window.AndroidBridge）。 */
-    fun report(code: String)
-
-    /** 延遲執行（等 SPA 渲染用）。 */
-    fun postDelayed(delayMs: Long, block: () -> Unit)
+    val importStrategy: AiImportStrategy
+    val glyph: AiGlyph
+    val replyChain: List<String>
+    /** 串流中必須等它消失的 selector；null＝這站沒有停止鈕語意。 */
+    val replyIdleSelector: String?
+    /** 貼圖要瞄準的輸入框 selector。 */
+    val imagePasteInputSelector: String
+    fun promptSendJs(promptQuoted: String, send: Boolean): String
+    fun pickJs(palette: PickPalette): String
+    fun collectJs(): String
+    fun domProbeJs(): String
 }
