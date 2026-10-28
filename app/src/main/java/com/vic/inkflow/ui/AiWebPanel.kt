@@ -301,10 +301,11 @@ fun AiWebPanel(
     val currentProvider = androidx.compose.runtime.rememberUpdatedState(provider)
     val urlChangedCallback = androidx.compose.runtime.rememberUpdatedState(onUrlChanged)
     // 同站才回報：登入中轉（accounts.google.com 等）不上報，還原才不會落在中轉頁。
-    // 比解析出的 host（見 urlHost），不用 contains：中轉頁 query 裡也帶著站名。
+    // 判定走 matchesHost（含 www. 等子網域）：比解析出的 host，不用 contains，
+    // 因為中轉頁 query 裡也帶著站名。
     fun reportUrl(url: String) {
         if (url.isBlank()) return
-        if (urlHost(url) != currentProvider.value.host) return
+        if (!currentProvider.value.matchesHost(url)) return
         try {
             urlChangedCallback.value(url)
         } catch (_: Throwable) { }
@@ -728,7 +729,7 @@ override fun onPageFinished(view: android.webkit.WebView?, url: String?) {
                             // provider 差異只表現在 capabilities 上。
                             val finishedUrl = url.orEmpty()
                             val provider = currentProvider.value
-                            if (!finishedUrl.contains(provider.host)) return
+                            if (!provider.matchesHost(finishedUrl)) return
 
                             uploadState.isPageLoaded = true
                             reportUrl(finishedUrl)

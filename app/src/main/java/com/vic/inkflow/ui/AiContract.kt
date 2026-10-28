@@ -31,7 +31,17 @@ enum class AiProvider(val driver: AiDriver) {
     GEMINI(AiGeminiDriver),
 
     /** ChatGPT：貼圖、整塊像素裁圖、匯入（共用圈選／收集實作）。 */
-    CHATGPT(AiChatGptDriver);
+    CHATGPT(AiChatGptDriver),
+
+    /**
+     * 以下四家是 **Tier 1**：開站、登入、送圖可用；匯入與數學裁圖等平板實測
+     * （`PROBE3` log 鎖定 selector）後才開。新增一家 AI 只要：
+     * ①新增 `AiXxxDriver.kt` ②這裡加一行。契約層不需要再補任何 `when` 分支。
+     */
+    CLAUDE(AiClaudeDriver),
+    GROK(AiGrokDriver),
+    KIMI(AiKimiDriver),
+    QWEN(AiQwenDriver);
 
     val label: String get() = driver.label
     val startUrl: String get() = driver.startUrl
@@ -105,19 +115,32 @@ fun aiDocUrlKey(docId: String, provider: AiProvider): String =
  * 只接受「同站」的記憶地址：登入跳轉（accounts.google.com 之類）不存，
  * 存了也不認——否則還原會落在登入中轉頁而不是對話。
  *
- * 注意比的是解析出的 host，不是子字串：中轉頁的 `?continue=https://gemini...`
- * 查詢參數裡也帶著站名，子字串比對會誤判（單測釘死）。
+ * 「同站」的判定走 [matchesHost]（含 `www.` 等子網域），不是子字串：
+ * 中轉頁的 `?continue=https://gemini...` 查詢參數裡也帶著站名，子字串比對會誤判（單測釘死）。
  */
 fun AiProvider.resolveRestoreUrl(savedUrl: String?): String {
     val s = savedUrl.orEmpty()
-    return if (s.isNotBlank() && urlHost(s) == host) s else startUrl
+    return if (s.isNotBlank() && matchesHost(s)) s else startUrl
+}
+
+/**
+ * 這個 URL 算不算「本站」。
+ *
+ * 除了 host 完全相符，也接受子網域（`www.kimi.com`）：多數站台會在裸網域與
+ * `www.` 之間跳轉，也可能把對話放在 `chat.` 之類的子網域。若只比完全相符，
+ * 使用者實際落在 `www.` 時就永遠記不住、也認不回自己的對話。
+ *
+ * 只認「點號分界」的子網域——`notkimi.com` 這種前綴相似的不算，
+ * 否則偽站或拼字相近的網域會被當成本站而注入腳本。
+ */
+fun AiProvider.matchesHost(url: String): Boolean {
+    val h = urlHost(url) ?: return false
+    return h == host || h.endsWith(".$host")
 }
 
 /** 從 URL 反推是哪個站；認不得回 null（呼叫端自行忽略，不存）。 */
-fun aiProviderForUrl(url: String): AiProvider? {
-    val h = urlHost(url) ?: return null
-    return AiProvider.entries.firstOrNull { it.host == h }
-}
+fun aiProviderForUrl(url: String): AiProvider? =
+    AiProvider.entries.firstOrNull { it.matchesHost(url) }
 
 /**
  * 取 URL 的 host（纯字串解析，不碰 android.net.Uri——单测里 Uri 是 stub）。
@@ -278,9 +301,17 @@ interface AiDriver {
     val importStrategy: AiImportStrategy
     val glyph: AiGlyph
     val replyChain: List<String>
-    /** 串流中必須等它消失的 selector；null＝這站沒有停止鈕語意。 */
+
+    /**
+     * 串流中必須等它消失的 selector；null＝這站沒有停止鈕語意。
+     *
+     * **不可含單引號**：[AiWebPanel] 的等待迴圈把這個字串直接插進單引號 JS 字串
+     * （`document.querySelectorAll('...')`）。要寫屬性選擇器請用雙引號
+     * （`[data-is-streaming="true"]`），否則整段腳本語法錯誤，匯入永遠逾時。
+     */
     val replyIdleSelector: String?
-    /** 貼圖要瞄準的輸入框 selector。 */
+
+    /** 貼圖要瞄準的輸入框 selector（可為逗號分隔的候選鏈，取第一個命中）。 */
     val imagePasteInputSelector: String
     fun promptSendJs(promptQuoted: String, send: Boolean): String
     fun pickJs(palette: PickPalette): String

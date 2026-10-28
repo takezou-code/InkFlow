@@ -21,6 +21,7 @@ import com.vic.inkflow.ui.parseEnabledProviders
 import com.vic.inkflow.ui.encodeEnabledProviders
 import com.vic.inkflow.ui.nextEnabledProvider
 import com.vic.inkflow.ui.coerceEnabledProvider
+import com.vic.inkflow.ui.matchesHost
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -129,15 +130,70 @@ class AiContractTest {
     }
 
     @Test
-    fun `S4 兩個 provider 都具備完整匯入能力`() {
+    fun `S4 兩個已驗收的 provider 都具備完整匯入能力`() {
         // S4 交付 ChatGPT 匯入；Gemini 的三項能力不許因為重構而退化。
-        AiProvider.values().forEach {
+        // 只驗這兩家：新加入的 Claude／Grok／Kimi／Qwen 是 Tier 1，
+        // 匯入要等平板實測鎖定 selector 才會開（見 `Tier 1 新 provider 只開送圖`）。
+        listOf(AiProvider.GEMINI, AiProvider.CHATGPT).forEach {
             assertTrue("${it.name} 必須能送圖", it.capabilities.sendImage)
             assertTrue("${it.name} 必須能匯入", it.capabilities.importReply)
         }
         // S4 交付 ChatGPT 匯入；S5 起 ChatGPT 也開啟數學裁圖（直接截 ChatGPT 自己渲染的公式）。
         assertTrue(AiProvider.GEMINI.capabilities.mathCrop)
         assertTrue(AiProvider.CHATGPT.capabilities.mathCrop)
+    }
+
+    @Test
+    fun `Tier 1 新 provider 只開送圖`() {
+        // 這是刻意的降級保護：匯入／數學裁圖沒實測就開，使用者會匯入半截回覆或抓不到公式。
+        listOf(AiProvider.CLAUDE, AiProvider.GROK, AiProvider.KIMI, AiProvider.QWEN).forEach {
+            assertTrue("${it.name} 必須能送圖", it.capabilities.sendImage)
+            assertFalse("${it.name} 匯入未實測，不可開", it.capabilities.importReply)
+            assertFalse("${it.name} 數學裁圖未實測，不可開", it.capabilities.mathCrop)
+            // Phase 4 要靠這行 log 鎖 selector：探針必須真的回報候選命中數。
+            assertTrue("${it.name} 探針要回報 PROBE3", it.domProbeJs().contains("PROBE3"))
+        }
+    }
+
+    @Test
+    fun `每個 provider 都真的有 driver 且腳本可產生`() {
+        // 加一家 AI 只要「driver 檔＋enum 一行」，但漏掉其中一半會在這裡炸，
+        // 而不是等到使用者切過去才發現一片空白。
+        AiProvider.values().forEach {
+            assertTrue("${it.name} 的 startUrl 必須是 https", it.startUrl.startsWith("https://"))
+            assertTrue("${it.name} 的 host 不可空白", it.host.isNotBlank())
+            assertTrue("${it.name} 的輸入框候選不可空白", it.imagePasteInputSelector.isNotBlank())
+            assertTrue("${it.name} 的回覆候選鏈不可空", it.replyChain.isNotEmpty())
+            assertTrue("${it.name} 要能產生注入腳本", it.promptSendJs("\"hi\"", true).isNotBlank())
+            assertTrue("${it.name} 要能產生探針腳本", it.domProbeJs().isNotBlank())
+        }
+    }
+
+    // ── 子網域比對（www. 變體）────────────────────────────────────
+
+    @Test
+    fun `同站比對接受子網域但不接受前綴相似的偽站`() {
+        // Kimi 的 startUrl 是 www.kimi.com、host 是 kimi.com：不支援子網域就永遠記不住對話。
+        assertTrue(AiProvider.KIMI.matchesHost("https://www.kimi.com/chat/abc"))
+        assertTrue(AiProvider.KIMI.matchesHost("https://kimi.com/"))
+        assertFalse("前綴相似不是同站", AiProvider.KIMI.matchesHost("https://notkimi.com/"))
+        assertFalse(AiProvider.KIMI.matchesHost("https://kimi.com.evil.example/"))
+        // 反推站台也要走同一套規則。
+        assertEquals(AiProvider.KIMI, aiProviderForUrl("https://www.kimi.com/chat/abc"))
+        assertEquals(AiProvider.QWEN, aiProviderForUrl("https://chat.qwen.ai/c/1"))
+        assertEquals(AiProvider.CLAUDE, aiProviderForUrl("https://claude.ai/new"))
+        assertEquals(AiProvider.GROK, aiProviderForUrl("https://grok.com/"))
+    }
+
+    @Test
+    fun `記憶地址會接受子網域版本`() {
+        val url = "https://www.kimi.com/chat/abc"
+        assertEquals(url, AiProvider.KIMI.resolveRestoreUrl(url))
+        // 別站的地址仍然要退回起始頁。
+        assertEquals(
+            AiProvider.KIMI.startUrl,
+            AiProvider.KIMI.resolveRestoreUrl("https://chatgpt.com/c/abc")
+        )
     }
 
     @Test
@@ -346,7 +402,16 @@ class AiContractTest {
     fun `啟用清單全部認不得時回預設`() {
         assertEquals(
             listOf(AiProvider.GEMINI, AiProvider.CHATGPT),
-            parseEnabledProviders("GROK,CLAUDE")
+            parseEnabledProviders("NOPE,UNKNOWN")
+        )
+    }
+
+    @Test
+    fun `新加入的四家也能被勾選，且照 enum 順序回傳`() {
+        // 加了新 provider 之後，「認不得就回預設」不再適用於它們——這是回歸點。
+        assertEquals(
+            listOf(AiProvider.CLAUDE, AiProvider.GROK, AiProvider.KIMI, AiProvider.QWEN),
+            parseEnabledProviders("QWEN,KIMI,GROK,CLAUDE")
         )
     }
 
