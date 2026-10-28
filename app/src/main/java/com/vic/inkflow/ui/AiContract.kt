@@ -41,7 +41,19 @@ enum class AiProvider(val driver: AiDriver) {
     CLAUDE(AiClaudeDriver),
     GROK(AiGrokDriver),
     KIMI(AiKimiDriver),
-    QWEN(AiQwenDriver);
+    QWEN(AiQwenDriver),
+
+    /**
+     * 自訂 AI：**沒有預設網站**，名稱與網址都由使用者在設定頁填。
+     *
+     * 為什麼要有這一格：新 AI 一直出，每次都要等我們發版才能用不合理；
+     * 網站改版或擋區時，使用者自己換網址就能繼續。
+     *
+     * 契約上它跟其他家完全一樣（一支 driver），差別只在 [startUrl]／[host] 是空的，
+     * 實際值由 `ai_custom_url_CUSTOM` 推導（見 [effectiveStartUrl]／[effectiveHost]）。
+     * 沒填網址時不可用，由 [coerceUsableProvider] 退回其他家。
+     */
+    CUSTOM(AiCustomDriver);
 
     val label: String get() = driver.label
     val startUrl: String get() = driver.startUrl
@@ -98,6 +110,34 @@ fun coerceEnabledProvider(current: AiProvider, enabled: List<AiProvider>): AiPro
 }
 
 /**
+ * 目前 provider 是否「真的能用」；不能用就退回啟用清單裡第一個有預設站台的。
+ *
+ * 只有一個情境：自訂 AI 還沒填網址（或填了壞掉的字串）。它沒有預設網站，
+ * 硬留下來只會讓 WebView 開一個錯誤頁，使用者看到的是「壞了」而不是「還沒填」。
+ */
+fun coerceUsableProvider(
+    current: AiProvider,
+    enabled: List<AiProvider>,
+    customUrl: String?
+): AiProvider {
+    val coerced = coerceEnabledProvider(current, enabled)
+    if (coerced != AiProvider.CUSTOM) return coerced
+    if (normalizeCustomAiUrl(customUrl) != null) return coerced
+    val list = enabled.ifEmpty { DEFAULT_ENABLED_AI_PROVIDERS }
+    return list.firstOrNull { it != AiProvider.CUSTOM } ?: DEFAULT_ENABLED_AI_PROVIDERS.first()
+}
+
+/** 自訂 AI 的顯示名稱（設定頁可改）；空＝預設名。 */
+const val KEY_AI_CUSTOM_NAME = "ai_custom_name"
+
+/** 自訂 AI 沒取名時用的名字。 */
+const val DEFAULT_AI_CUSTOM_NAME = "自訂 AI"
+
+/** 把 prefs 裡的名字正規化成可顯示的字串。 */
+fun aiCustomDisplayName(raw: String?): String =
+    raw?.trim()?.takeIf { it.isNotEmpty() } ?: DEFAULT_AI_CUSTOM_NAME
+
+/**
  * 每份文件的 AI 記憶（provider＋上次對話 URL），存在同一份 `inkflow_settings` prefs。
  *
  * 為什麼不用 DB／document_preferences：這只是「打開哪頁」的 UI 記憶，
@@ -109,6 +149,46 @@ fun aiDocProviderKey(docId: String): String = "ai_doc_provider_$docId"
 fun aiDocUrlKey(docId: String, provider: AiProvider): String =
     "ai_doc_url_${provider.name}_$docId"
 
+// ── 自訂起始網址 ---------------------------------------------------------------
+
+/**
+ * 每家 AI 的自訂起始網址（prefs key）。
+ *
+ * 為什麼需要：同一家 AI 常有多個入口（Kimi 國際版 `kimi.ai` vs 中國版 `kimi.com`、
+ * Qwen 的不同區域站），哪個進得去是「網站政策」決定的，改版或擋區時不該逼使用者
+ * 等我們重新出包。使用者自己填一次就換得過去。
+ *
+ * 空值＝用 driver 的預設 [AiProvider.startUrl]（driver 仍是唯一預設來源）。
+ */
+fun aiCustomUrlKey(provider: AiProvider): String = "ai_custom_url_${provider.name}"
+
+/**
+ * 使用者輸入的網址正規化。
+ *
+ * 只收 `http://` / `https://` 且解析得出 host 的字串——WebView 什麼都吃，
+ * 但把 `kimi.ai` 當相對路徑載入會變成一片空白，使用者只會覺得「壞了」。
+ * 不合法回 null（呼叫端顯示錯誤，不要靜默存進去）。
+ */
+fun normalizeCustomAiUrl(raw: String?): String? {
+    val s = raw.orEmpty().trim()
+    if (s.isEmpty()) return null
+    if (!s.startsWith("http://") && !s.startsWith("https://")) return null
+    return if (urlHost(s) == null) null else s
+}
+
+/** 這次要進的起始網址：自訂優先，否則 driver 預設。 */
+fun AiProvider.effectiveStartUrl(customUrl: String? = null): String =
+    normalizeCustomAiUrl(customUrl) ?: startUrl
+
+/**
+ * 這次的「本站」host：有自訂網址就用它的 host。
+ *
+ * 少了這一步，自訂網址會被注入閘門擋掉（`onPageFinished` 比的是 provider.host），
+ * 症狀是「網站開得起來、但送圖／探針完全不動作」——比壞掉更難查。
+ */
+fun AiProvider.effectiveHost(customUrl: String? = null): String =
+    normalizeCustomAiUrl(customUrl)?.let { urlHost(it) } ?: host
+
 /**
  * 算出這份文件這次該進的地址。純函數，單測釘住。
  *
@@ -117,25 +197,36 @@ fun aiDocUrlKey(docId: String, provider: AiProvider): String =
  *
  * 「同站」的判定走 [matchesHost]（含 `www.` 等子網域），不是子字串：
  * 中轉頁的 `?continue=https://gemini...` 查詢參數裡也帶著站名，子字串比對會誤判（單測釘死）。
+ *
+ * @param customUrl 使用者自訂的起始網址；有值時「同站」以它的 host 為準，
+ *   否則存了 `kimi.com` 的舊記憶會蓋掉使用者剛填的 `kimi.ai`。
  */
-fun AiProvider.resolveRestoreUrl(savedUrl: String?): String {
+fun AiProvider.resolveRestoreUrl(savedUrl: String?, customUrl: String? = null): String {
     val s = savedUrl.orEmpty()
-    return if (s.isNotBlank() && matchesHost(s)) s else startUrl
+    val base = customUrl?.let { normalizeCustomAiUrl(it) }
+    return if (s.isNotBlank() && matchesHost(s, base?.let { urlHost(it) })) {
+        s
+    } else {
+        effectiveStartUrl(base)
+    }
 }
 
 /**
  * 這個 URL 算不算「本站」。
  *
- * 除了 host 完全相符，也接受子網域（`www.kimi.com`）：多數站台會在裸網域與
+ * 除了 host 完全相符，也接受子網域（`www.kimi.ai`）：多數站台會在裸網域與
  * `www.` 之間跳轉，也可能把對話放在 `chat.` 之類的子網域。若只比完全相符，
  * 使用者實際落在 `www.` 時就永遠記不住、也認不回自己的對話。
  *
- * 只認「點號分界」的子網域——`notkimi.com` 這種前綴相似的不算，
+ * 只認「點號分界」的子網域——`notkimi.ai` 這種前綴相似的不算，
  * 否則偽站或拼字相近的網域會被當成本站而注入腳本。
+ *
+ * @param overrideHost 自訂網址帶進來的 host（見 [effectiveHost]）；null＝用 driver 的 host。
  */
-fun AiProvider.matchesHost(url: String): Boolean {
+fun AiProvider.matchesHost(url: String, overrideHost: String? = null): Boolean {
+    val base = overrideHost?.takeIf { it.isNotBlank() } ?: host
     val h = urlHost(url) ?: return false
-    return h == host || h.endsWith(".$host")
+    return h == base || h.endsWith(".$base")
 }
 
 /** 從 URL 反推是哪個站；認不得回 null（呼叫端自行忽略，不存）。 */

@@ -279,6 +279,9 @@ fun AiWebPanel(
     onClose: () -> Unit,
     // 由工具列切換帶進來；面板不持有也不持久化，避免兩處狀態打架。
     provider: AiProvider = AiProvider.GEMINI,
+    // 自訂起始網址推導出的 host（設定頁可改）。null＝用 provider 內建 host。
+    // 少了這個，「網站開得起來但送圖／探針完全不動作」——注入閘門會把自訂站擋掉。
+    hostOverride: String? = null,
     // 每份文件的 AI 記憶：初次建 WebView 時進這個地址（null／空白＝進站首頁）。
     // 切文件不重建 WebView，還原由呼叫端 loadUrl；這裡只管「出生第一頁」。
     initialUrl: String? = null,
@@ -299,13 +302,14 @@ fun AiWebPanel(
     val webViewCallback = androidx.compose.runtime.rememberUpdatedState(onWebView)
     val currentWebLight = androidx.compose.runtime.rememberUpdatedState(webLight)
     val currentProvider = androidx.compose.runtime.rememberUpdatedState(provider)
+    val currentHostGate = androidx.compose.runtime.rememberUpdatedState(hostOverride)
     val urlChangedCallback = androidx.compose.runtime.rememberUpdatedState(onUrlChanged)
     // 同站才回報：登入中轉（accounts.google.com 等）不上報，還原才不會落在中轉頁。
-    // 判定走 matchesHost（含 www. 等子網域）：比解析出的 host，不用 contains，
-    // 因為中轉頁 query 裡也帶著站名。
+    // 判定走 matchesHost（含 www. 等子網域，以及設定頁填的自訂 host）：
+    // 比解析出的 host，不用 contains，因為中轉頁 query 裡也帶著站名。
     fun reportUrl(url: String) {
         if (url.isBlank()) return
-        if (!currentProvider.value.matchesHost(url)) return
+        if (!currentProvider.value.matchesHost(url, currentHostGate.value)) return
         try {
             urlChangedCallback.value(url)
         } catch (_: Throwable) { }
@@ -579,7 +583,7 @@ val isDarkPanel = MaterialTheme.colorScheme.background.luminance() < 0.5f
     ) {
         // 切換 provider = 換站點，必須重建 WebView（loadUrl 只在 factory 跑一次）。
         // key 放這裡而不是外面，是為了讓「按一下切換」有明確的一次完整換血。
-        androidx.compose.runtime.key(provider) {
+        androidx.compose.runtime.key(provider, hostOverride) {
         androidx.compose.ui.viewinterop.AndroidView(
             factory = { ctx ->
                 android.util.Log.d("InkFlowDbg", "WebView factory start ${System.currentTimeMillis()}")
@@ -729,7 +733,7 @@ override fun onPageFinished(view: android.webkit.WebView?, url: String?) {
                             // provider 差異只表現在 capabilities 上。
                             val finishedUrl = url.orEmpty()
                             val provider = currentProvider.value
-                            if (!provider.matchesHost(finishedUrl)) return
+                            if (!provider.matchesHost(finishedUrl, currentHostGate.value)) return
 
                             uploadState.isPageLoaded = true
                             reportUrl(finishedUrl)
@@ -746,7 +750,9 @@ override fun onPageFinished(view: android.webkit.WebView?, url: String?) {
                         }
                     }
 
-                    loadUrl(initialUrl?.takeIf { it.isNotBlank() } ?: provider.startUrl)
+                    // 自訂 AI 沒填網址時兩者都空：不要 loadUrl("")，留給使用者去設定頁填。
+                    val birthUrl = initialUrl?.takeIf { it.isNotBlank() } ?: provider.startUrl
+                    if (birthUrl.isNotBlank()) loadUrl(birthUrl)
                 }
             },
 update = { view ->

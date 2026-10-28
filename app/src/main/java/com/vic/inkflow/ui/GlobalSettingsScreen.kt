@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -153,6 +154,43 @@ fun GlobalSettingsScreen(
     // 只有列在清單裡的 AI 會出現在工具列切換；至少保留一個，否則使用者會把自己鎖死。
     var enabledAiState by remember {
         mutableStateOf(parseEnabledProviders(prefs.getString(KEY_AI_ENABLED_PROVIDERS, null)))
+    }
+    // 自訂網址編輯中的 provider（null＝沒開對話框）。同一家 AI 常有國際版／中國版
+    // 兩個入口，哪個登得進去是網站政策，不該逼使用者等我們出包才能改。
+    var aiUrlEditing by remember { mutableStateOf<AiProvider?>(null) }
+    var aiUrlInput by remember { mutableStateOf("") }
+    // 這份畫面看得到的自訂網址（存 prefs，改完重讀一次觸發重畫）。
+    var aiCustomUrls by remember { mutableStateOf(readAiCustomUrls(prefs)) }
+    // 自訂 AI 的名稱（使用者自己取，預設「自訂 AI」）。
+    var aiCustomNameState by remember {
+        mutableStateOf(aiCustomDisplayName(prefs.getString(KEY_AI_CUSTOM_NAME, null)))
+    }
+    var aiNameInput by remember { mutableStateOf("") }
+
+    /**
+     * 勾選／取消一家 AI。
+     *
+     * 抽成一支是因為「至少留一家」與寫回 prefs 的規則只能有一份；
+     * 六家固定列與自訂列若各寫一次，遲早有一邊漏掉保護。
+     */
+    fun applyAiEnabled(provider: AiProvider, on: Boolean) {
+        val next = if (on) {
+            AiProvider.entries.filter { it in enabledAiState || it == provider }
+        } else {
+            enabledAiState.filter { it != provider }
+        }
+        if (next.isEmpty()) {
+            android.widget.Toast.makeText(
+                context,
+                "至少要保留一個 AI",
+                android.widget.Toast.LENGTH_SHORT
+            ).show()
+        } else {
+            enabledAiState = next
+            prefs.edit()
+                .putString(KEY_AI_ENABLED_PROVIDERS, encodeEnabledProviders(next))
+                .apply()
+        }
     }
 
     var showPenColorPicker by remember { mutableStateOf(false) }
@@ -407,33 +445,74 @@ fun GlobalSettingsScreen(
                 // ===== AI 來源 ============================================
                 SettingsSection("AI 來源", isDarkSettings) {
                     SettingsHint("勾選要出現在工具列切換的 AI；未勾選的不會被切到。至少保留一個。")
-                    AiProvider.entries.forEach { provider ->
+                    // 自訂 AI 另外一節（它有名字欄位，列在這裡會擠壞版面）。
+                    AiProvider.entries.filter { it != AiProvider.CUSTOM }.forEach { provider ->
                         val isOn = provider in enabledAiState
+                        val customUrl = aiCustomUrls[provider]
+                        val startUrl = provider.effectiveStartUrl(customUrl)
                         SettingsSwitchRow(
                             title = provider.label,
-                            subtitle = aiCapabilitySummary(provider),
+                            // 副標＝能力＋（自訂網址時）實際會開的站，使用者一眼看出改到哪。
+                            subtitle = aiCapabilitySummary(provider) + if (customUrl.isNullOrBlank()) {
+                                ""
+                            } else {
+                                "・${urlHost(startUrl) ?: startUrl}"
+                            },
                             checked = isOn,
-                            onCheckedChange = { on ->
-                                val next = if (on) {
-                                    AiProvider.entries.filter { it in enabledAiState || it == provider }
-                                } else {
-                                    enabledAiState.filter { it != provider }
-                                }
-                                if (next.isEmpty()) {
-                                    android.widget.Toast.makeText(
-                                        context,
-                                        "至少要保留一個 AI",
-                                        android.widget.Toast.LENGTH_SHORT
-                                    ).show()
-                                } else {
-                                    enabledAiState = next
-                                    prefs.edit()
-                                        .putString(KEY_AI_ENABLED_PROVIDERS, encodeEnabledProviders(next))
-                                        .apply()
-                                }
-                            }
+                            trailing = {
+                                SettingsPillButton(
+                                    text = "網址",
+                                    isDark = isDarkSettings,
+                                    onClick = {
+                                        // 預填目前實際用的網址，方便只改路徑／改回預設。
+                                        aiUrlInput = startUrl
+                                        aiUrlEditing = provider
+                                    },
+                                    modifier = Modifier.padding(end = 4.dp)
+                                )
+                            },
+                            onCheckedChange = { on -> applyAiEnabled(provider, on) }
                         )
+                        // 已知的網站限制先講清楚，比讓使用者自己撞牆好。
+                        aiProviderNote(provider)?.let { SettingsCaption(it) }
                     }
+                }
+
+                // ===== 自訂 AI（你的 AI）=====================================
+                // 排在六家後面：新 AI 一直出，這裡填名稱＋網址就能用，不必等 App 發版。
+                SettingsSection("自訂 AI", isDarkSettings) {
+                    SettingsHint("填名稱與完整網址（https://…），就會出現在工具列切換。送圖可用，匯入尚未實測。")
+                    val customUrl = aiCustomUrls[AiProvider.CUSTOM]
+                    val customHost = customUrl?.let { urlHost(it) ?: it }
+                    SettingsSwitchRow(
+                        title = aiCustomNameState,
+                        subtitle = if (customHost.isNullOrBlank()) "還沒設定網址" else customHost,
+                        checked = AiProvider.CUSTOM in enabledAiState,
+                        trailing = {
+                            SettingsPillButton(
+                                text = "設定",
+                                isDark = isDarkSettings,
+                                onClick = {
+                                    aiNameInput = aiCustomNameState
+                                    aiUrlInput = customUrl ?: "https://"
+                                    aiUrlEditing = AiProvider.CUSTOM
+                                },
+                                modifier = Modifier.padding(end = 4.dp)
+                            )
+                        },
+                        onCheckedChange = { on ->
+                            // 沒網址就打開只會得到空白面板，先擋下來並指路。
+                            if (on && normalizeCustomAiUrl(customUrl) == null) {
+                                android.widget.Toast.makeText(
+                                    context,
+                                    "請先按「設定」填一個網址",
+                                    android.widget.Toast.LENGTH_SHORT
+                                ).show()
+                            } else {
+                                applyAiEnabled(AiProvider.CUSTOM, on)
+                            }
+                        }
+                    )
                 }
 
                 // ===== 操作 ================================================
@@ -852,6 +931,105 @@ fun GlobalSettingsScreen(
         )
     }
 
+    // 自訂起始網址：一家 AI 可能有多個入口（kimi.ai／kimi.com、不同區域站），
+    // 哪個登得進去由網站決定，所以讓使用者自己填；留白＝回到 driver 預設。
+    aiUrlEditing?.let { provider ->
+        val isCustom = provider == AiProvider.CUSTOM
+        GlassDialogCustom(
+            onDismissRequest = { aiUrlEditing = null },
+            isDark = isDarkSettings,
+            title = { Text(if (isCustom) "自訂 AI" else "${provider.label} 網址") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    if (isCustom) {
+                        androidx.compose.material3.OutlinedTextField(
+                            value = aiNameInput,
+                            onValueChange = { aiNameInput = it },
+                            singleLine = true,
+                            label = { Text("名稱（顯示在工具列）") },
+                            colors = glassFieldColors(isDarkSettings),
+                            shape = ShapeLg,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    Text(
+                        text = if (isCustom) {
+                            "貼上這家 AI 的網址，例如 https://chat.deepseek.com/"
+                        } else {
+                            "留白＝使用預設 ${provider.startUrl}"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    androidx.compose.material3.OutlinedTextField(
+                        value = aiUrlInput,
+                        onValueChange = { aiUrlInput = it },
+                        singleLine = true,
+                        label = { Text("https://…") },
+                        colors = glassFieldColors(isDarkSettings),
+                        shape = ShapeLg,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            buttons = {
+                // 自訂 AI 沒有預設網站，所以不給「用預設」。
+                if (!isCustom) {
+                    GlassTextButton(
+                        text = "用預設",
+                        onClick = {
+                            prefs.edit().remove(aiCustomUrlKey(provider)).apply()
+                            aiCustomUrls = readAiCustomUrls(prefs)
+                            aiUrlEditing = null
+                        },
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.width(8.dp))
+                }
+                GlassTextButton(
+                    text = "取消",
+                    onClick = { aiUrlEditing = null },
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.width(8.dp))
+                GlassTextButton(
+                    text = "儲存",
+                    onClick = {
+                        val norm = normalizeCustomAiUrl(aiUrlInput)
+                        // 自訂 AI 沒有網址就等於沒有站台：不許存成空，否則會打開空白面板。
+                        if (isCustom && norm == null) {
+                            android.widget.Toast.makeText(
+                                context,
+                                "請填完整網址，例如 https://chat.deepseek.com/",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                            return@GlassTextButton
+                        }
+                        if (aiUrlInput.isBlank()) {
+                            prefs.edit().remove(aiCustomUrlKey(provider)).apply()
+                        } else if (norm == null) {
+                            android.widget.Toast.makeText(
+                                context,
+                                "網址要完整，例如 https://kimi.ai/",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                            return@GlassTextButton
+                        } else {
+                            prefs.edit().putString(aiCustomUrlKey(provider), norm).apply()
+                        }
+                        if (isCustom) {
+                            val name = aiCustomDisplayName(aiNameInput)
+                            prefs.edit().putString(KEY_AI_CUSTOM_NAME, name).apply()
+                            aiCustomNameState = name
+                        }
+                        aiCustomUrls = readAiCustomUrls(prefs)
+                        aiUrlEditing = null
+                    }
+                )
+            }
+        )
+    }
+
     if (showHighlighterColorPicker) {
         ColorPickerDialog(
             initialColor = Color(defaultHighlighterColor),
@@ -952,6 +1130,26 @@ private fun aiCapabilitySummary(provider: AiProvider): String {
     return if (parts.isEmpty()) "僅手動對話" else parts.joinToString("・")
 }
 
+/**
+ * 一次讀齊每家的自訂網址（null＝用預設）。
+ *
+ * 走 prefs 而不是 state 的原因：編輯器在另一個畫面讀同一份 prefs，
+ * 兩邊都只認 prefs 為真相，才不會出現「設定頁顯示改了、編輯器還在舊網址」。
+ */
+private fun readAiCustomUrls(prefs: SharedPreferences): Map<AiProvider, String?> =
+    AiProvider.entries.associateWith { prefs.getString(aiCustomUrlKey(it), null) }
+
+/**
+ * 已知的網站限制（實測得到的事實，不是推測）。
+ *
+ * 寫在設定頁而不是默默留著：使用者有權在切過去之前就知道哪家會卡，
+ * 才不會以為是 App 壞了。
+ */
+private fun aiProviderNote(provider: AiProvider): String? = when (provider) {
+    AiProvider.CLAUDE -> "Claude 官網目前會擋 App 內建瀏覽器登入；帳號沒問題，用系統瀏覽器仍可登入。"
+    else -> null
+}
+
 @Composable
 private fun SettingsSection(
     title: String,
@@ -1019,12 +1217,13 @@ private fun SettingsCaption(text: String) {
     )
 }
 
-/** 標題＋一行副標＋右側開關，整列可點。 */
+/** 標題＋一行副標＋右側開關，整列可點。[trailing] 放開關左邊的動作鈕（例如「網址」）。 */
 @Composable
 private fun SettingsSwitchRow(
     title: String,
     subtitle: String,
     checked: Boolean,
+    trailing: (@Composable () -> Unit)? = null,
     onCheckedChange: (Boolean) -> Unit
 ) {
     Row(
@@ -1042,6 +1241,7 @@ private fun SettingsSwitchRow(
             Text(text = title, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
             Text(text = subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
+        trailing?.invoke()
         Switch(checked = checked, onCheckedChange = onCheckedChange)
     }
 }

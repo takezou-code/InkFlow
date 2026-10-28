@@ -301,17 +301,29 @@ fun TabletEditorScreen(
             if (next != aiProvider) aiProvider = next
         }
     }
-    // 從設定頁回來：目前這家可能被關掉，退回啟用清單第一家。
+    // 從設定頁回來：目前這家可能被關掉、或自訂 AI 還沒填網址，退回可用的那家。
     androidx.compose.runtime.LaunchedEffect(Unit) {
         val enabled = parseEnabledProviders(prefs.getString(KEY_AI_ENABLED_PROVIDERS, null))
-        val next = coerceEnabledProvider(aiProvider, enabled)
+        val next = coerceUsableProvider(
+            aiProvider,
+            enabled,
+            prefs.getString(aiCustomUrlKey(aiProvider), null)
+        )
         if (next != aiProvider) aiProvider = next
     }
     // 這份文件＋這個站該進的地址（記憶沒有就進站首頁）。provider 切換會重建
     // WebView（key 在面板裡），factory 用這個值當出生第一頁；同站切文件則
     // 走下面的還原 effect（不重建，只 loadUrl）。
-    val aiInitialUrl = androidx.compose.runtime.remember(docKey, aiProvider) {
-        aiProvider.resolveRestoreUrl(prefs.getString(aiDocUrlKey(docKey, aiProvider), null))
+    // 自訂起始網址（設定頁可改，例如 Kimi 國際版／中國版）：空值＝driver 預設。
+    val aiCustomUrl = prefs.getString(aiCustomUrlKey(aiProvider), null)
+    val aiStartUrl = aiProvider.effectiveStartUrl(aiCustomUrl)
+    // 注入閘門用的 host 也要跟著自訂網址走，否則自訂站只開得起來、送圖與探針全不動。
+    val aiHost = aiProvider.effectiveHost(aiCustomUrl)
+    val aiInitialUrl = androidx.compose.runtime.remember(docKey, aiProvider, aiStartUrl) {
+        aiProvider.resolveRestoreUrl(
+            prefs.getString(aiDocUrlKey(docKey, aiProvider), null),
+            aiCustomUrl
+        ).takeIf { it.isNotBlank() }
     }
     // P2：整個畫面只建一次 repository 容器，取代到處直接摸 AppDatabase。
     val repos = remember(db) { InkFlowRepositories(db) }
@@ -365,9 +377,14 @@ fun TabletEditorScreen(
     val docKeyRef = androidx.compose.runtime.rememberUpdatedState(docKey)
     // 切文件／切站還原：目标地址跟 WebView 当前地址一样就不动，避免无谓重载
     // （SPA 切对话不闪）。WebView 还没出生（null）时跳过，factory 会用 aiInitialUrl。
-    androidx.compose.runtime.LaunchedEffect(docKey, aiProvider, aiWebView) {
+    androidx.compose.runtime.LaunchedEffect(docKey, aiProvider, aiWebView, aiStartUrl) {
         val wv = aiWebView ?: return@LaunchedEffect
-        val target = aiProvider.resolveRestoreUrl(prefs.getString(aiDocUrlKey(docKey, aiProvider), null))
+        val target = aiProvider.resolveRestoreUrl(
+            prefs.getString(aiDocUrlKey(docKey, aiProvider), null),
+            aiCustomUrl
+        )
+        // 自訂 AI 還沒填網址時 target 是空字串：不要 loadUrl("")，那只會留下空白面板。
+        if (target.isBlank()) return@LaunchedEffect
         if (wv.url != target) {
             try {
                 android.util.Log.d("InkFlowDbg", "AI restore doc=$docKey -> $target")
@@ -1530,12 +1547,16 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                         pickCollectId = aiPickCollectId,
                         webLight = !isEditorDark,
                         provider = aiProvider,
+                        hostOverride = aiHost,
                         initialUrl = aiInitialUrl,
                         // 地址落定就记到这份文件名下。站从 URL 反推，不读 aiProvider state：
                         // 回调异步，state 可能已经是切站后的值，按 URL 记才不会串站。
+                        // 自訂網址的站反推不到既知 provider，退回「當前 provider ＋ 自訂 host」比對。
                         // 只写 prefs，不碰任何 state，所以不会触发重组、无循环。
                         onUrlChanged = { url ->
-                            aiProviderForUrl(url)?.let { p ->
+                            val owner = aiProviderForUrl(url)
+                                ?: aiProvider.takeIf { it.matchesHost(url, aiHost) }
+                            owner?.let { p ->
                                 prefs.edit().putString(aiDocUrlKey(docKeyRef.value, p), url).apply()
                             }
                         },

@@ -1,19 +1,19 @@
 package com.vic.inkflow.ui
 
 /**
- * Kimi（kimi.com）。
+ * Kimi（kimi.ai，Moonshot 國際版）。
  *
  * **Tier 1：開站＋送圖已開，匯入／數學裁圖尚未實測**。
  *
- * 注意 host 只寫 `kimi.com`，startUrl 卻是 `www.kimi.com`——這是刻意的：
- * [AiProvider.matchesHost] 接受子網域，所以 `www.` 變體與登入後的跳轉都認得，
- * 但持久化的 host 不會因為使用者剛好落在哪個子網域而分家。
+ * 預設刻意指國際版：中國版 `kimi.com` 需要中國手機號，海外帳號登不進去。
+ * 若使用者在中國或已有 `kimi.com` 帳號，到「設定 → AI 來源 → Kimi 網址」
+ * 改成 `https://www.kimi.com/` 即可（自訂網址會一併改掉注入閘門的 host）。
  */
 internal object AiKimiDriver : CandidateChainDriver() {
 
     override val label = "Kimi"
-    override val startUrl = "https://www.kimi.com/"
-    override val host = "kimi.com"
+    override val startUrl = "https://kimi.ai/"
+    override val host = "kimi.ai"
     override val capabilities = AiCapabilities(sendImage = true)
 
     override val inputCandidates = listOf(

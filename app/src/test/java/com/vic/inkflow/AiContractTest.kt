@@ -22,6 +22,11 @@ import com.vic.inkflow.ui.encodeEnabledProviders
 import com.vic.inkflow.ui.nextEnabledProvider
 import com.vic.inkflow.ui.coerceEnabledProvider
 import com.vic.inkflow.ui.matchesHost
+import com.vic.inkflow.ui.effectiveStartUrl
+import com.vic.inkflow.ui.effectiveHost
+import com.vic.inkflow.ui.normalizeCustomAiUrl
+import com.vic.inkflow.ui.coerceUsableProvider
+import com.vic.inkflow.ui.aiCustomDisplayName
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -96,9 +101,10 @@ class AiContractTest {
     @Test
     fun `每個 provider 都有自己專屬的 host`() {
         // host 是注入總閘門，兩個 provider 共用同一個 host 會讓閘門失效。
+        // 自訂 AI 的 host 由使用者填，沒有預設值，所以只比對內建的。
         val hosts = AiProvider.values().map { it.host }
         assertEquals("provider 的 host 不可重複", hosts.size, hosts.toSet().size)
-        AiProvider.values().forEach {
+        AiProvider.values().filter { it != AiProvider.CUSTOM }.forEach {
             assertTrue("${it.name} 的 startUrl 必須含自己的 host", it.startUrl.contains(it.host))
         }
     }
@@ -156,10 +162,9 @@ class AiContractTest {
     }
 
     @Test
-    fun `每個 provider 都真的有 driver 且腳本可產生`() {
-        // 加一家 AI 只要「driver 檔＋enum 一行」，但漏掉其中一半會在這裡炸，
-        // 而不是等到使用者切過去才發現一片空白。
-        AiProvider.values().forEach {
+    fun `每個內建 provider 都真的有 driver 且腳本可產生`() {
+        // 自訂 AI 沒有預設站台，另外驗（見下一條）。
+        AiProvider.values().filter { it != AiProvider.CUSTOM }.forEach {
             assertTrue("${it.name} 的 startUrl 必須是 https", it.startUrl.startsWith("https://"))
             assertTrue("${it.name} 的 host 不可空白", it.host.isNotBlank())
             assertTrue("${it.name} 的輸入框候選不可空白", it.imagePasteInputSelector.isNotBlank())
@@ -169,31 +174,118 @@ class AiContractTest {
         }
     }
 
+    @Test
+    fun `自訂 AI 沒有預設站台但填了網址就能用`() {
+        val custom = AiProvider.CUSTOM
+        // 沒有預設網站是刻意的：留空不可用，避免開一個空白面板。
+        assertEquals("", custom.startUrl)
+        assertEquals("", custom.host)
+        assertTrue(custom.capabilities.sendImage)
+        assertFalse("自訂站的匯入未實測，不可開", custom.capabilities.importReply)
+        // 填了網址：起始頁與注入閘門的 host 都跟著它。
+        val url = "https://chat.deepseek.com/"
+        assertEquals(url, custom.effectiveStartUrl(url))
+        assertEquals("chat.deepseek.com", custom.effectiveHost(url))
+        assertTrue(custom.matchesHost("https://chat.deepseek.com/a/1", "chat.deepseek.com"))
+        // 沒填＝什麼都不認，不會誤注入別人的頁面。
+        assertFalse(custom.matchesHost("https://chat.deepseek.com/"))
+        assertTrue(custom.domProbeJs().contains("PROBE3"))
+    }
+
+    @Test
+    fun `自訂 AI 沒填網址時退回其他可用的一家`() {
+        val enabled = listOf(AiProvider.CUSTOM, AiProvider.CLAUDE)
+        // 沒網址 → 退 CLAUDE（第一個不是自訂的）。
+        assertEquals(
+            AiProvider.CLAUDE,
+            coerceUsableProvider(AiProvider.CUSTOM, enabled, null)
+        )
+        assertEquals(
+            AiProvider.CLAUDE,
+            coerceUsableProvider(AiProvider.CUSTOM, enabled, "不是網址")
+        )
+        // 有網址 → 留在自訂。
+        assertEquals(
+            AiProvider.CUSTOM,
+            coerceUsableProvider(AiProvider.CUSTOM, enabled, "https://chat.deepseek.com/")
+        )
+    }
+
+    @Test
+    fun `自訂 AI 名稱留白時用預設名`() {
+        assertEquals("自訂 AI", aiCustomDisplayName(null))
+        assertEquals("自訂 AI", aiCustomDisplayName("   "))
+        assertEquals("DeepSeek", aiCustomDisplayName("  DeepSeek "))
+    }
+
     // ── 子網域比對（www. 變體）────────────────────────────────────
 
     @Test
     fun `同站比對接受子網域但不接受前綴相似的偽站`() {
-        // Kimi 的 startUrl 是 www.kimi.com、host 是 kimi.com：不支援子網域就永遠記不住對話。
-        assertTrue(AiProvider.KIMI.matchesHost("https://www.kimi.com/chat/abc"))
-        assertTrue(AiProvider.KIMI.matchesHost("https://kimi.com/"))
-        assertFalse("前綴相似不是同站", AiProvider.KIMI.matchesHost("https://notkimi.com/"))
-        assertFalse(AiProvider.KIMI.matchesHost("https://kimi.com.evil.example/"))
+        // 使用者實際可能落在 www.kimi.ai：不支援子網域就永遠記不住、認不回對話。
+        assertTrue(AiProvider.KIMI.matchesHost("https://www.kimi.ai/chat/abc"))
+        assertTrue(AiProvider.KIMI.matchesHost("https://kimi.ai/"))
+        assertFalse("前綴相似不是同站", AiProvider.KIMI.matchesHost("https://notkimi.ai/"))
+        assertFalse(AiProvider.KIMI.matchesHost("https://kimi.ai.evil.example/"))
         // 反推站台也要走同一套規則。
-        assertEquals(AiProvider.KIMI, aiProviderForUrl("https://www.kimi.com/chat/abc"))
+        assertEquals(AiProvider.KIMI, aiProviderForUrl("https://www.kimi.ai/chat/abc"))
         assertEquals(AiProvider.QWEN, aiProviderForUrl("https://chat.qwen.ai/c/1"))
         assertEquals(AiProvider.CLAUDE, aiProviderForUrl("https://claude.ai/new"))
         assertEquals(AiProvider.GROK, aiProviderForUrl("https://grok.com/"))
     }
 
     @Test
+    fun `Kimi 預設指國際版而不是中國版`() {
+        // 中國版 kimi.com 要中國手機號，海外帳號登不進去（實測）。
+        // 想用中國版的人走「設定 → AI 來源 → Kimi 網址」自訂，不靠改 driver。
+        assertTrue(AiProvider.KIMI.startUrl.contains("kimi.ai"))
+        assertEquals("kimi.ai", AiProvider.KIMI.host)
+        assertFalse(AiProvider.KIMI.matchesHost("https://www.kimi.com/"))
+    }
+
+    @Test
     fun `記憶地址會接受子網域版本`() {
-        val url = "https://www.kimi.com/chat/abc"
+        val url = "https://www.kimi.ai/chat/abc"
         assertEquals(url, AiProvider.KIMI.resolveRestoreUrl(url))
         // 別站的地址仍然要退回起始頁。
         assertEquals(
             AiProvider.KIMI.startUrl,
             AiProvider.KIMI.resolveRestoreUrl("https://chatgpt.com/c/abc")
         )
+    }
+
+    // ── 自訂起始網址（設定頁可填）──────────────────────────────────
+
+    @Test
+    fun `自訂網址只收完整 http(s)`() {
+        assertEquals("https://kimi.com/", normalizeCustomAiUrl("  https://kimi.com/ "))
+        assertEquals("http://192.168.1.9:8080/x", normalizeCustomAiUrl("http://192.168.1.9:8080/x"))
+        assertNull("沒 scheme 會被當相對路徑載入，頁面一片空白", normalizeCustomAiUrl("kimi.com"))
+        assertNull(normalizeCustomAiUrl("javascript:alert(1)"))
+        assertNull(normalizeCustomAiUrl(""))
+        assertNull(normalizeCustomAiUrl(null))
+    }
+
+    @Test
+    fun `有自訂網址時起始網址與 host 都跟著換`() {
+        val custom = "https://www.kimi.com/"
+        assertEquals(custom, AiProvider.KIMI.effectiveStartUrl(custom))
+        assertEquals("www.kimi.com", AiProvider.KIMI.effectiveHost(custom))
+        // 沒填／壞值＝回 driver 預設，不會讓使用者卡在空白頁。
+        assertEquals(AiProvider.KIMI.startUrl, AiProvider.KIMI.effectiveStartUrl(null))
+        assertEquals("kimi.ai", AiProvider.KIMI.effectiveHost("壞掉的字串"))
+    }
+
+    @Test
+    fun `自訂網址的站要認得回同一家 AI`() {
+        // 注入閘門與對話記憶都靠這條：自訂站的 URL 必須被當成「本站」。
+        val custom = "https://www.kimi.com/"
+        assertTrue(AiProvider.KIMI.matchesHost("https://www.kimi.com/chat/1", "www.kimi.com"))
+        // 換站後舊網域的記憶不再算同站，否則會把人載回舊站。
+        assertFalse(AiProvider.KIMI.matchesHost("https://kimi.ai/chat/1", "www.kimi.com"))
+        // 還原：自訂站優先，且不接受預設站的舊地址。
+        assertEquals("https://www.kimi.com/chat/1", AiProvider.KIMI.resolveRestoreUrl("https://www.kimi.com/chat/1", custom))
+        assertEquals(custom, AiProvider.KIMI.resolveRestoreUrl("https://kimi.ai/chat/1", custom))
     }
 
     @Test
