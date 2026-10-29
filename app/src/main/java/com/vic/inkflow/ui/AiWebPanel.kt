@@ -289,6 +289,11 @@ fun AiWebPanel(
     // 不觸發 onPageFinished，只靠後者）。只報同站 URL，登入中轉頁不上報。
     // 面板只管報，存不存由呼叫端決定（面板不持有文件概念）。
     onUrlChanged: (String) -> Unit = {},
+    // DOM 探針結果（PROBE3）。面板只負責「量」與回報，存不存、存到哪由呼叫端決定
+    // ——與 onUrlChanged 同一個理由：面板不持有文件／設定概念。
+    // 為什麼要回報：選擇器只能靠實機資料鎖定，logcat 只有開發者看得到；
+    // 存進 prefs 後設定頁就能顯示，使用者不必學 adb。
+    onProbe: (provider: AiProvider, tag: String, raw: String) -> Unit = { _, _, _ -> },
     // 抽屜收起來＝false：WebView 熄燈（onPause）省電，但**物件與網頁狀態全留著**，
     // 下次打開立刻見到原畫面，不重載。true 時 onResume。
     active: Boolean = true,
@@ -304,6 +309,7 @@ fun AiWebPanel(
     val currentProvider = androidx.compose.runtime.rememberUpdatedState(provider)
     val currentHostGate = androidx.compose.runtime.rememberUpdatedState(hostOverride)
     val urlChangedCallback = androidx.compose.runtime.rememberUpdatedState(onUrlChanged)
+    val probeResultCallback = androidx.compose.runtime.rememberUpdatedState(onProbe)
     // 同站才回報：登入中轉（accounts.google.com 等）不上報，還原才不會落在中轉頁。
     // 判定走 matchesHost（含 www. 等子網域，以及設定頁填的自訂 host）：
     // 比解析出的 host，不用 contains，因為中轉頁 query 裡也帶著站名。
@@ -414,6 +420,10 @@ fun AiWebPanel(
         try {
             target?.evaluateJavascript(currentProvider.value.domProbeJs()) { v ->
                 android.util.Log.d("InkFlowDbg", "AI probe[$tag]: $v")
+                // v 是 JSON 字串（外層引號＋\" 轉義）；先解碼再回報，
+                // 否則存進 prefs 的報告滿是反斜線，設定頁也沒法讀。
+                val raw = decodeJsString(v) ?: return@evaluateJavascript
+                try { probeResultCallback.value(currentProvider.value, tag, raw) } catch (_: Throwable) { }
             }
         } catch (e: Exception) {
             android.util.Log.e("AiWebPanel", "dom probe failed", e)

@@ -58,6 +58,7 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -166,6 +167,8 @@ fun GlobalSettingsScreen(
         mutableStateOf(aiCustomDisplayName(prefs.getString(KEY_AI_CUSTOM_NAME, null)))
     }
     var aiNameInput by remember { mutableStateOf("") }
+    // 診斷紀錄存 prefs，改動（清除）後 +1 觸發重畫。
+    var aiProbeVersion by remember { mutableIntStateOf(0) }
 
     /**
      * 勾選／取消一家 AI。
@@ -513,6 +516,41 @@ fun GlobalSettingsScreen(
                             }
                         }
                     )
+                }
+
+                // ===== AI 診斷 ============================================
+                // 探針（PROBE3）在每次開站時自動量，結果存進 prefs。搬到畫面上的理由：
+                // 選擇器只能靠實機 DOM 鎖定，而 logcat 只有開發者看得到。顯示在這裡，
+                // 使用者換一家測一輪、回來看一眼就知道哪家抓得到輸入框／回覆區。
+                SettingsSection("AI 診斷", isDarkSettings) {
+                    SettingsHint("每開一次 AI 會自動量一次網頁結構。開過某家之後回來這裡，就看得到它有沒有抓到輸入框與回覆區。")
+                    aiProbeVersion // 清除後重畫
+                    val records = AiProvider.entries.mapNotNull { p ->
+                        decodeProbeRecord(prefs.getString(aiProbeKey(p), null))?.let { p to it }
+                    }
+                    if (records.isEmpty()) {
+                        SettingsCaption("還沒有資料：到編輯器切到某家 AI，等頁面開好，再回來這裡。")
+                    } else {
+                        records.forEach { (p, rec) -> SettingsProbeRow(p, rec) }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 20.dp, vertical = 6.dp),
+                            horizontalArrangement = Arrangement.End
+                        ) {
+                            SettingsPillButton(
+                                text = "清除診斷",
+                                isDark = isDarkSettings,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                onClick = {
+                                    prefs.edit().apply {
+                                        AiProvider.entries.forEach { remove(aiProbeKey(it)) }
+                                    }.apply()
+                                    aiProbeVersion++
+                                }
+                            )
+                        }
+                    }
                 }
 
                 // ===== 操作 ================================================
@@ -1140,8 +1178,61 @@ private fun readAiCustomUrls(prefs: SharedPreferences): Map<AiProvider, String?>
     AiProvider.entries.associateWith { prefs.getString(aiCustomUrlKey(it), null) }
 
 /**
- * 已知的網站限制（實測得到的事實，不是推測）。
+ * 一家 AI 的探針結果。
  *
+ * 只顯示「命中的第一條」，不列全部候選：要鎖選擇器只需要那一條，
+ * 其餘十幾條會把設定頁變成一堵牆。完整原始資料仍留在 prefs（`ai_probe_*`）。
+ */
+@Composable
+private fun SettingsProbeRow(provider: AiProvider, record: AiProbeRecord) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(3.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = provider.label,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(Modifier.width(10.dp))
+            Text(
+                text = record.report.summary(),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.weight(1f)
+            )
+            // 「初載」代表 4 秒那次還沒跑到，數字可能還是空殼，別當真。
+            Text(
+                text = if (record.isHydrated) "已載入" else "初載",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        ProbeLine("輸入框", record.report.firstInput())
+        ProbeLine("送出鈕", record.report.firstSend())
+        ProbeLine("回覆區", record.report.firstReply())
+        ProbeLine("停止鈕", record.report.idle)
+    }
+}
+
+/** 一行 `標籤：selector（命中數）`；null＝這個角色在頁面上找不到。 */
+@Composable
+private fun ProbeLine(label: String, hit: AiProbeHit?) {
+    Text(
+        text = if (hit == null) "$label：沒有" else "$label：${hit.selector}（${hit.count}）",
+        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+}
+
+/**
+ * 已知的網站限制（實測得到的事實，不是推測）。
  * 寫在設定頁而不是默默留著：使用者有權在切過去之前就知道哪家會卡，
  * 才不會以為是 App 壞了。
  */

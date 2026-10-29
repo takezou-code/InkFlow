@@ -36,7 +36,10 @@ internal abstract class CandidateChainDriver : AiDriver {
         AiGeminiDriver.pickJs(replyChain = replyChain, palette = palette)
 
     override fun collectJs(): String =
-        AiGeminiDriver.collectJs(replyChain = replyChain, cropFormulas = false)
+        // cropFormulas 跟著 capabilities 走：以前寫死 false，即使 driver 把
+        // mathCrop 打開，收集腳本也不會回報公式座標，裁圖永遠沒東西可裁。
+        // 「開一個 flag 就生效」是這裡唯一的正確形狀。
+        AiGeminiDriver.collectJs(replyChain = replyChain, cropFormulas = capabilities.mathCrop)
 }
 
 /**

@@ -1560,6 +1560,19 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                                 prefs.edit().putString(aiDocUrlKey(docKeyRef.value, p), url).apply()
                             }
                         },
+                        // 探針結果存進 prefs：設定頁「AI 診斷」看得到，不必撈 logcat。
+                        // 只寫 prefs、不碰 state，所以不會觸發重組。
+                        onProbe = { p, tag, raw ->
+                            val stored = encodeProbeRecord(tag, System.currentTimeMillis(), raw)
+                            if (stored != null) {
+                                val prev = decodeProbeRecord(prefs.getString(aiProbeKey(p), null))
+                                // 剛載入那次量到的常是空殼（SPA 還沒渲染），
+                                // 別讓它蓋掉先前 4 秒那次（hydrated）的真資料。
+                                if (!(prev?.isHydrated == true && tag != "hydrated")) {
+                                    prefs.edit().putString(aiProbeKey(p), stored).apply()
+                                }
+                            }
+                        },
                         onPickedJson = { json ->
                             scope.launch {
                                 if (json.isBlank()) {
