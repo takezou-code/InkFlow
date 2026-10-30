@@ -85,6 +85,14 @@ object AiDiag {
     fun q(value: String?): String =
         "\"" + value.orEmpty().replace('"', '\'').replace('\n', ' ').replace('\r', ' ') + "\""
 
+    /**
+     * 網址欄位專用：先脫敏再包引號。
+     *
+     * 一律走這支而不是 `q(url)`：OAuth 回呼會把 token 放在網址上（見
+     * [redactSecrets]），直接記等於把登入憑證抄進明文檔。
+     */
+    fun url(raw: String?): String = q(redactSecrets(raw))
+
     /** 讀最後 [maxLines] 行（設定頁要給使用者看／貼給我看）。 */    fun readTail(context: Context, maxLines: Int = 200): String {
         val file = File(context.applicationContext.filesDir, FILE_NAME)
         if (!file.exists()) return ""

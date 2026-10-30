@@ -316,6 +316,12 @@ fun AiWebPanel(
     fun reportUrl(url: String) {
         if (url.isBlank()) return
         if (!currentProvider.value.matchesHost(url, currentHostGate.value)) return
+        // 登入回呼頁不是對話頁：記成「這份文件上次待的地方」只會讓下次進來
+        // 繼續落在空白頁，而且那串網址帶著登入權杖，不該進 prefs。
+        if (looksLikeAuthCallback(url)) {
+            AiDiag.log(context, currentProvider.value, "URL_SKIP", "reason=auth_callback")
+            return
+        }
         try {
             urlChangedCallback.value(url)
         } catch (_: Throwable) { }
@@ -332,6 +338,19 @@ fun AiWebPanel(
             var fedImageKey: String? = null
         }
     }
+
+    // 站方 window.open() 開的子視窗（Google／Apple／Microsoft 登入）。null＝目前沒有。
+    var authPopup by androidx.compose.runtime.remember {
+        androidx.compose.runtime.mutableStateOf<AiAuthPopup?>(null)
+    }
+    // 已經「救回首頁」的回呼網址：同一個網址只救一次，否則會無限重載。
+    var callbackRecovered by androidx.compose.runtime.remember {
+        androidx.compose.runtime.mutableStateOf<String?>(null)
+    }
+
+    /** 面板的首頁：使用者自訂網址優先，否則站方內建首頁（自訂 AI 未填時是空字串）。 */
+    fun panelHomeUrl(): String =
+        initialUrl?.takeIf { it.isNotBlank() } ?: currentProvider.value.startUrl
 
     // ── 使用者手動上傳：WebView file chooser 橋（圖片／PDF／文件） ──
     // 與 app 自動貼圖共用 onShowFileChooser 入口：自動退路先餵 pending 圖（每請求一次），
@@ -430,15 +449,17 @@ fun AiWebPanel(
             context,
             currentProvider.value,
             "PROBE",
-            "tag=$tag state=${readiness.state} url=${AiDiag.q(report.url)}" +
+            "tag=$tag state=${readiness.state} url=${AiDiag.url(report.url)}" +
                 " input=${report.inputScore()} send=${report.sendScore()} reply=${report.replyScore()}" +
                 " idle=${report.idle?.count ?: 0} katex=${report.katex} mathjax=${report.mathjax}" +
                 " file=${report.fileInputs} pwd=${report.passwordFields} captcha=${report.captcha}" +
                 " title=${AiDiag.q(report.title)}"
         )
         // 原始資料只在 hydrated（4 秒後）存一次：0ms 那次幾乎都是空殼，存了只會誤導。
+        // 寫檔前先把網址欄位脫敏：PROBE3 的網址可能帶著 id_token（OAuth 回呼），
+        // 選擇器要留、權杖不能留。
         if (tag == "hydrated") {
-            AiDiag.log(context, currentProvider.value, "PROBE_RAW", raw)
+            AiDiag.log(context, currentProvider.value, "PROBE_RAW", redactProbeUrl(raw))
         }
     }
 
@@ -451,7 +472,47 @@ fun AiWebPanel(
                 // v 是 JSON 字串（外層引號＋\" 轉義）；先解碼再回報，
                 // 否則存進 prefs 的報告滿是反斜線，設定頁也沒法讀。
                 val raw = decodeJsString(v) ?: return@evaluateJavascript
+                val report = parseProbeReport(raw)
                 logProbe(tag, raw)
+                if (report == null) return@evaluateJavascript
+
+                // 換站那一瞬間，前一個站的延遲探針還會打回來（實測：切到 CLAUDE
+                // 卻量到 Gemini 的 DOM，還被寫進 CLAUDE 的診斷格，之後看診斷只會
+                // 一直修錯地方）。host 不符就只留紀錄、不採信、也不回報。
+                val gate = currentHostGate.value?.takeIf { it.isNotBlank() }
+                    ?: currentProvider.value.host
+                val onSite = gate.isBlank() || currentProvider.value.matchesHost(report.url, gate)
+                if (!onSite) {
+                    AiDiag.log(
+                        context, currentProvider.value, "PROBE_STALE",
+                        "tag=$tag url=${AiDiag.url(report.url)} gate=${AiDiag.q(gate)}"
+                    )
+                    return@evaluateJavascript
+                }
+
+                // ①登入回呼頁卡住：這種頁面永遠不會是對話頁，回首頁一定比留在空白好。
+                //   同一個網址只救一次，否則會 loadUrl→onPageFinished→探針→再 loadUrl 無限繞。
+                if (tag == "hydrated" && report.firstInput() == null && looksLikeAuthCallback(report.url)) {
+                    val home = panelHomeUrl()
+                    if (home.isNotBlank() && callbackRecovered != report.url) {
+                        callbackRecovered = report.url
+                        AiDiag.log(
+                            context, currentProvider.value, "AUTH_STUCK",
+                            "url=${AiDiag.url(report.url)} home=${AiDiag.url(home)}"
+                        )
+                        target.loadUrl(home)
+                        return@evaluateJavascript
+                    }
+                }
+
+                // ②登入子視窗剛關：session 可能已經在 cookie 裡，但主頁還是登入前的畫面。
+                //   重載一次讓它自己認人；還是不行就只是多一次載入，不會壞。
+                if (tag == "after-login" && report.firstInput() == null) {
+                    AiDiag.log(context, currentProvider.value, "LOGIN_RELOAD", "reason=no_input_after_popup")
+                    target.reload()
+                    return@evaluateJavascript
+                }
+
                 try { probeResultCallback.value(currentProvider.value, tag, raw) } catch (_: Throwable) { }
             }
         } catch (e: Exception) {
@@ -626,6 +687,11 @@ val isDarkPanel = MaterialTheme.colorScheme.background.luminance() < 0.5f
     // Fix2d: WebView 原生底預設透明→首幀前是黑洞；鋪一層極淡的底頂著，
     // 但不能是不透明 surface 色：容器本身是玻璃，不透明底會把玻璃整片蓋死。
     // 半透明黑只在「還沒載入」時當底，載入後由網頁自己的內容接手。
+    // 換站／收面板時把登入子視窗一起關掉：留著會變成一個蓋在別的站上面的殭屍視窗。
+    androidx.compose.runtime.DisposableEffect(provider, hostOverride) {
+        onDispose { authPopup?.close() }
+    }
+
     val webViewBgArgb = android.graphics.Color.TRANSPARENT
     androidx.compose.foundation.layout.Box(
         modifier = modifier
@@ -663,7 +729,11 @@ val isDarkPanel = MaterialTheme.colorScheme.background.luminance() < 0.5f
                         // 啟用縮放但隱藏縮放按鈕
                         builtInZoomControls = true
                         displayZoomControls = false
-                        setSupportMultipleWindows(false)
+                        // 一定要開：站方的登入（Google／Apple／Microsoft OAuth）走 window.open()，
+                        // 關掉的話回呼頁會直接蓋掉主頁、window.opener 變 null，
+                        // 權杖交不回來 → 使用者看到一片空白（實測 Kimi 就是這樣）。
+                        setSupportMultipleWindows(true)
+                        javaScriptCanOpenWindowsAutomatically = true
                         mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                         mediaPlaybackRequiresUserGesture = false
                         
@@ -752,6 +822,46 @@ val isDarkPanel = MaterialTheme.colorScheme.background.luminance() < 0.5f
                                 try { request?.deny() } catch (_: Throwable) { }
                             }
                         }
+                        /**
+                         * 站方開新視窗：登入用（Google／Apple／Microsoft OAuth 幾乎都是 popup）。
+                         *
+                         * 不接這個回呼，`window.open()` 等於沒發生，站方永遠等不到登入結果；
+                         * 讓它「就地開在同一頁」更糟——回呼頁的 `window.opener` 是 null，
+                         * 站方的 `opener.postMessage()` 直接 TypeError，權杖交不回主頁，
+                         * 使用者看到的就是一片空白（Kimi 實測）。所以一定要真的開子視窗。
+                         */
+                        override fun onCreateWindow(
+                            view: android.webkit.WebView?,
+                            isDialog: Boolean,
+                            isUserGesture: Boolean,
+                            resultMsg: android.os.Message?
+                        ): Boolean {
+                            val transport =
+                                resultMsg?.obj as? android.webkit.WebView.WebViewTransport
+                                    ?: return false
+                            val popup = (authPopup ?: AiAuthPopup(
+                                context = context,
+                                provider = currentProvider.value,
+                                // 與主面板同一個（去掉 wv 字樣的）UA：換 UA 會被 Google 當成可疑裝置。
+                                userAgent = view?.settings?.userAgentString.orEmpty(),
+                                onClosed = {
+                                    authPopup = null
+                                    // 登入有沒有成功只信 DOM：cookie 生效與否，探針量的才是實話。
+                                    // 延遲一下讓 SPA 先把 postMessage 處理完。
+                                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                        webView?.let { runProbe(it, "after-login") }
+                                    }, 1200L)
+                                }
+                            ).also { authPopup = it }).show() ?: return false
+                            transport.webView = popup
+                            resultMsg.sendToTarget()
+                            AiDiag.log(
+                                context, currentProvider.value, "POPUP_OPEN",
+                                "dialog=$isDialog gesture=$isUserGesture"
+                            )
+                            return true
+                        }
+
                         override fun onShowFileChooser(
                             webView: android.webkit.WebView?,
                             filePathCallback: android.webkit.ValueCallback<Array<android.net.Uri>>?,
@@ -783,7 +893,7 @@ val isDarkPanel = MaterialTheme.colorScheme.background.luminance() < 0.5f
                             if (m != null && m.messageLevel() == android.webkit.ConsoleMessage.MessageLevel.ERROR) {
                                 AiDiag.log(
                                     context, currentProvider.value, "CONSOLE",
-                                    "msg=${AiDiag.q(m.message())}" +
+                                    "msg=${AiDiag.q(redactSecrets(m.message(), 300))}" +
                                         " src=${AiDiag.q("${m.sourceId()}:${m.lineNumber()}")}"
                                 )
                             }
@@ -809,14 +919,14 @@ override fun onPageFinished(view: android.webkit.WebView?, url: String?) {
                                 // 這一行少了，就會變成「什麼都沒發生」的假死。
                                 AiDiag.log(
                                     context, provider, "PAGE_OTHER",
-                                    "url=${AiDiag.q(finishedUrl)} gate=${AiDiag.q(currentHostGate.value ?: provider.host)}"
+                                    "url=${AiDiag.url(finishedUrl)} gate=${AiDiag.q(currentHostGate.value ?: provider.host)}"
                                 )
                                 return
                             }
 
                             AiDiag.log(
                                 context, provider, "PAGE",
-                                "url=${AiDiag.q(finishedUrl)} capabilities=${provider.capabilities}"
+                                "url=${AiDiag.url(finishedUrl)} capabilities=${provider.capabilities}"
                             )
                             uploadState.isPageLoaded = true
                             reportUrl(finishedUrl)
@@ -838,7 +948,7 @@ override fun onPageFinished(view: android.webkit.WebView?, url: String?) {
                             AiDiag.log(
                                 context, currentProvider.value, "NETERR",
                                 "code=${error?.errorCode} desc=${AiDiag.q(error?.description?.toString())}" +
-                                    " url=${AiDiag.q(request.url.toString())}"
+                                    " url=${AiDiag.url(request.url.toString())}"
                             )
                         }
 
@@ -852,7 +962,7 @@ override fun onPageFinished(view: android.webkit.WebView?, url: String?) {
                             if (request?.isForMainFrame != true) return
                             AiDiag.log(
                                 context, currentProvider.value, "HTTPERR",
-                                "status=${response?.statusCode} url=${AiDiag.q(request.url.toString())}"
+                                "status=${response?.statusCode} url=${AiDiag.url(request.url.toString())}"
                             )
                         }
 
@@ -863,7 +973,7 @@ override fun onPageFinished(view: android.webkit.WebView?, url: String?) {
                         ) {
                             AiDiag.log(
                                 context, currentProvider.value, "SSLERR",
-                                "primary=${error?.primaryError} url=${AiDiag.q(error?.url.orEmpty())}"
+                                "primary=${error?.primaryError} url=${AiDiag.url(error?.url.orEmpty())}"
                             )
                             // 行為不變：預設就是取消，不降級驗證。
                             super.onReceivedSslError(view, handler, error)
@@ -881,7 +991,7 @@ override fun onPageFinished(view: android.webkit.WebView?, url: String?) {
                     val birthUrl = initialUrl?.takeIf { it.isNotBlank() } ?: provider.startUrl
                     AiDiag.log(
                         context, provider, "OPEN",
-                        "url=${AiDiag.q(birthUrl)}" +
+                        "url=${AiDiag.url(birthUrl)}" +
                             " gate=${AiDiag.q(hostOverride?.takeIf { it.isNotBlank() } ?: provider.host)}" +
                             " customOverride=${!hostOverride.isNullOrBlank()}" +
                             " capabilities=${provider.capabilities} strategy=${provider.importStrategy}"

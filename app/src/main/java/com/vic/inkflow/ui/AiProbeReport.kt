@@ -229,3 +229,74 @@ fun decodeJsString(raw: String?): String? {
         null
     }
 }
+
+/**
+ * 這個網址是不是「登入回呼頁」？
+ *
+ * 判準刻意窄（誤判成本高：會被當成該回首頁）：路徑含 `callback`／`oauth`，
+ * 或查詢／片段帶著 `id_token=`／`access_token=`／`code=`＋`state=`。
+ * 一般對話頁不會長這樣，所以命中就能安全地「回首頁」。
+ *
+ * 為什麼需要：站方用 popup 登入時，回呼頁不該蓋掉主頁；但有些站走整頁跳轉，
+ * 一旦回呼頁在 App 內壞掉（opener 為 null、腳本 TypeError），使用者就卡在
+ * 一片空白，而這個網址還會被記成「上次待的地方」，下次進來繼續空白。
+ */
+fun looksLikeAuthCallback(url: String?): Boolean {
+    val s = url.orEmpty().lowercase()
+    if (s.isEmpty()) return false
+    val path = s.substringAfter("://", "")
+        .substringAfter('/', "")
+        .substringBefore('?')
+        .substringBefore('#')
+    if (path.contains("callback") || path.contains("oauth")) return true
+    val tail = if (s.contains('?')) s.substringAfter('?') else s.substringAfter('#', "")
+    return tail.contains("id_token=") ||
+        tail.contains("access_token=") ||
+        (tail.contains("code=") && tail.contains("state="))
+}
+
+/**
+ * PROBE3 原始字串裡的網址欄位先脫敏，其餘原封不動（選擇器要完整留著才鎖得住）。
+ */
+fun redactProbeUrl(raw: String): String {
+    val start = raw.indexOf("url=")
+    if (start < 0) return raw
+    val valueStart = start + 4
+    val valueEnd = raw.indexOf(" | ", valueStart).let { if (it < 0) raw.length else it }
+    return raw.substring(0, valueStart) +
+        redactSecrets(raw.substring(valueStart, valueEnd), maxLen = 200) +
+        raw.substring(valueEnd)
+}
+
+/**
+ * 清掉早期版本留下的壞資料（一次性掃描，啟動時呼叫）。兩種：
+ *
+ * 1. **含登入憑證**：那時網址還沒脫敏，`google-callback#id_token=…` 整串進了
+ *    prefs 與還原網址。留著等於把可用的權杖留在磁碟上，而且對診斷沒有價值。
+ * 2. **記錯站的探針**：切站瞬間，前一個站的延遲探針會打回來，於是
+ *    `ai_probe_CLAUDE` 裡存著 Gemini 的 DOM（實測）。這種資料比沒有更糟——
+ *    照著它去改 CLAUDE 的選擇器只會愈改愈歪。
+ */
+fun sanitizeAiDiagnostics(prefs: android.content.SharedPreferences) {
+    val edit = prefs.edit()
+    var dirty = false
+    prefs.all.forEach { (key, value) ->
+        val v = value as? String ?: return@forEach
+        val ours = key.startsWith("ai_probe_") || key.startsWith("ai_doc_url_")
+        if (ours && containsSecret(v)) {
+            edit.remove(key)
+            dirty = true
+        }
+    }
+    AiProvider.entries.forEach { p ->
+        val key = aiProbeKey(p)
+        val stored = prefs.getString(key, null) ?: return@forEach
+        val report = decodeProbeRecord(stored)?.report ?: return@forEach
+        // 自訂 AI 沒有內建 host，比不了站，就不動它。
+        if (p.host.isNotBlank() && !p.matchesHost(report.url)) {
+            edit.remove(key)
+            dirty = true
+        }
+    }
+    if (dirty) edit.apply()
+}

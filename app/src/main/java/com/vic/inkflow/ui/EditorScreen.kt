@@ -1576,13 +1576,10 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                         // 只寫 prefs、不碰 state，所以不會觸發重組。
                         onProbe = { p, tag, raw ->
                             val stored = encodeProbeRecord(tag, System.currentTimeMillis(), raw)
-                            if (stored != null) {
-                                val prev = decodeProbeRecord(prefs.getString(aiProbeKey(p), null))
-                                // 剛載入那次量到的常是空殼（SPA 還沒渲染），
-                                // 別讓它蓋掉先前 4 秒那次（hydrated）的真資料。
-                                if (!(prev?.isHydrated == true && tag != "hydrated")) {
-                                    prefs.edit().putString(aiProbeKey(p), stored).apply()
-                                }
+                            // 只有 hydrated（4 秒後）那次代表真的 DOM；0ms 那次幾乎都是空殼，
+                            // 存了只會讓設定頁顯示假的「未就緒」。
+                            if (stored != null && tag == "hydrated") {
+                                prefs.edit().putString(aiProbeKey(p), stored).apply()
                             }
                         },
                         onPickedJson = { json ->

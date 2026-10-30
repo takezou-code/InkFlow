@@ -30,6 +30,10 @@ class MainActivity : ComponentActivity() {
 PDFBoxResourceLoader.init(applicationContext)
         val db = AppDatabase.getDatabase(this)
         val settings = getSharedPreferences("inkflow_settings", 0)
+        // 一次性打掃：早期版本的診斷格與「上次待的地方」把 OAuth 回呼網址
+        // （含 id_token）原封不動存進 prefs，還把別站的 DOM 記成這家的。
+        // 含憑證的一律刪，記錯站的也刪（照著它改選擇器只會愈改愈歪）。
+        runCatching { com.vic.inkflow.ui.sanitizeAiDiagnostics(settings) }
         // 靜模式不回來排備份（開機時就已經在靜，排了等於白排）
         val quiet = settings.getBoolean("power_saver", false)
         AutoBackupScheduler.ensureScheduled(this, quiet)

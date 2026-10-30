@@ -204,7 +204,9 @@ fun AiProvider.effectiveHost(customUrl: String? = null): String =
 fun AiProvider.resolveRestoreUrl(savedUrl: String?, customUrl: String? = null): String {
     val s = savedUrl.orEmpty()
     val base = customUrl?.let { normalizeCustomAiUrl(it) }
-    return if (s.isNotBlank() && matchesHost(s, base?.let { urlHost(it) })) {
+    // 登入回呼頁不算對話頁：早期版本會把它記成「上次待的地方」（還帶著 id_token），
+    // 還原到那裡只會得到一片空白。這種記憶一律當成沒記過。
+    return if (s.isNotBlank() && !looksLikeAuthCallback(s) && matchesHost(s, base?.let { urlHost(it) })) {
         s
     } else {
         effectiveStartUrl(base)
