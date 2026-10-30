@@ -1,9 +1,11 @@
 package com.vic.inkflow
 
+import com.vic.inkflow.ui.AiReadiness
 import com.vic.inkflow.ui.aiProbeKey
 import com.vic.inkflow.ui.decodeProbeRecord
 import com.vic.inkflow.ui.encodeProbeRecord
 import com.vic.inkflow.ui.parseProbeReport
+import com.vic.inkflow.ui.readiness
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -110,5 +112,68 @@ class AiProbeReportTest {
         val keys = com.vic.inkflow.ui.AiProvider.entries.map { aiProbeKey(it) }
         assertEquals("診斷格不可與別家共用", keys.size, keys.toSet().size)
         assertTrue(aiProbeKey(com.vic.inkflow.ui.AiProvider.KIMI).contains("KIMI"))
+    }
+
+    // ── 新欄位：登入／驗證／標題 ──────────────────────────────────
+
+    private fun probe(
+        input: String = "div[contenteditable=\"true\"]=1",
+        reply: String = "article=1",
+        pwd: Int = 0,
+        captcha: Int = 0,
+        title: String = ""
+    ) = "PROBE3 url=https://x.ai/ | input=[$input] | send=[button=1] | reply=[$reply]" +
+        " | idle=none | katex=0 | mathjax=0 | fileInput=0 | pwd=$pwd | captcha=$captcha | title=$title"
+
+    @Test
+    fun `舊格式沒有新欄位也能解析`() {
+        val r = parseProbeReport(sample)!!
+        assertEquals(0, r.passwordFields)
+        assertEquals(0, r.captcha)
+        assertEquals("", r.title)
+        // 舊格式的 fileInput 仍要讀得到（吃整段尾巴會變成 0）。
+        assertEquals(1, r.fileInputs)
+    }
+
+    @Test
+    fun `新欄位解析密碼欄與驗證元素`() {
+        val r = parseProbeReport(probe(pwd = 2, captcha = 3, title = "Just a moment"))!!
+        assertEquals(2, r.passwordFields)
+        assertEquals(3, r.captcha)
+        assertEquals("Just a moment", r.title)
+    }
+
+    @Test
+    fun `可用狀態由 DOM 推論而不是猜`() {
+        assertEquals(AiReadiness.READY, parseProbeReport(sample)!!.readiness().state)
+        // 有輸入框但抓不到回覆區 → 只能送。
+        assertEquals(
+            AiReadiness.SEND_ONLY,
+            parseProbeReport(probe(reply = "div[class*=\"nope\"]=0"))!!.readiness().state
+        )
+        // 沒有輸入框但有登入表單 → 需登入（不是「版面改了」）。
+        assertEquals(
+            AiReadiness.LOGIN_REQUIRED,
+            parseProbeReport(probe(input = "textarea=0", pwd = 2))!!.readiness().state
+        )
+        // 被驗證頁擋住時，即使有密碼欄也要先講「被擋」。
+        assertEquals(
+            AiReadiness.CAPTCHA,
+            parseProbeReport(probe(input = "textarea=0", pwd = 1, captcha = 3))!!.readiness().state
+        )
+        // 什麼都沒有 → 未就緒。
+        assertEquals(
+            AiReadiness.NOT_READY,
+            parseProbeReport(probe(input = "textarea=0"))!!.readiness().state
+        )
+    }
+
+    @Test
+    fun `狀態標籤給人看的是短字`() {
+        assertEquals("就緒", parseProbeReport(sample)!!.readiness().label)
+        assertEquals(
+            "需登入",
+            parseProbeReport(probe(input = "textarea=0", pwd = 1))!!.readiness().label
+        )
     }
 }

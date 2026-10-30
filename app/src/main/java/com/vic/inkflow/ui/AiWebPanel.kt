@@ -414,6 +414,34 @@ fun AiWebPanel(
         } catch (_: Throwable) { }
     }
 
+    /**
+     * 探針結果落檔。
+     *
+     * 這是整條診斷鏈的核心：一行就能回答「這頁到底是沒登入、被擋、還是版面改了」，
+     * 不必再回頭問使用者看到什麼。`hydrated` 那次另存原始資料，供事後鎖選擇器。
+     */
+    fun logProbe(tag: String, raw: String) {
+        val report = parseProbeReport(raw) ?: run {
+            AiDiag.log(context, currentProvider.value, "PROBE_BAD", "tag=$tag raw=${AiDiag.q(raw.take(200))}")
+            return
+        }
+        val readiness = report.readiness()
+        AiDiag.log(
+            context,
+            currentProvider.value,
+            "PROBE",
+            "tag=$tag state=${readiness.state} url=${AiDiag.q(report.url)}" +
+                " input=${report.inputScore()} send=${report.sendScore()} reply=${report.replyScore()}" +
+                " idle=${report.idle?.count ?: 0} katex=${report.katex} mathjax=${report.mathjax}" +
+                " file=${report.fileInputs} pwd=${report.passwordFields} captcha=${report.captcha}" +
+                " title=${AiDiag.q(report.title)}"
+        )
+        // 原始資料只在 hydrated（4 秒後）存一次：0ms 那次幾乎都是空殼，存了只會誤導。
+        if (tag == "hydrated") {
+            AiDiag.log(context, currentProvider.value, "PROBE_RAW", raw)
+        }
+    }
+
     // Phase 1 取證用 DOM 探針。刻意做成可延遲、可重複呼叫：
     // onPageFinished 會早於 SPA 渲染，單次探針量到的是空殼（實測一進頁面全 0）。
     fun runProbe(target: android.webkit.WebView?, tag: String) {
@@ -423,6 +451,7 @@ fun AiWebPanel(
                 // v 是 JSON 字串（外層引號＋\" 轉義）；先解碼再回報，
                 // 否則存進 prefs 的報告滿是反斜線，設定頁也沒法讀。
                 val raw = decodeJsString(v) ?: return@evaluateJavascript
+                logProbe(tag, raw)
                 try { probeResultCallback.value(currentProvider.value, tag, raw) } catch (_: Throwable) { }
             }
         } catch (e: Exception) {
@@ -497,6 +526,11 @@ fun AiWebPanel(
         val req = request ?: return
         val provider = currentProvider.value
         val uri = req.image
+        AiDiag.log(
+            context, provider, "DELIVER",
+            "tag=$tag kind=${if (uri != null) "image" else "prompt"}" +
+                " sendImage=${provider.capabilities.sendImage} autoSend=${req.autoSend}"
+        )
         if (uri != null && provider.capabilities.sendImage) {
             try {
                 val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
@@ -509,8 +543,13 @@ fun AiWebPanel(
                 }
             } catch (e: Exception) {
                 android.util.Log.e("InkFlowDbg", "UPLOAD $tag failed", e)
+                AiDiag.log(context, provider, "DELIVER_FAIL", "tag=$tag err=${AiDiag.q(e.message.orEmpty())}")
                 toastUploadError(e.message)
             }
+        } else if (uri != null) {
+            // 圖被 capability 擋掉（Tier 1 以外的站）：使用者看到「沒反應」，
+            // 這裡留一行才不會被誤判成貼圖壞掉。
+            AiDiag.log(context, provider, "DELIVER_SKIP", "tag=$tag reason=sendImage_false")
         }
         injectPromptIfNeeded(target, req)
     }
@@ -566,6 +605,7 @@ val isDarkPanel = MaterialTheme.colorScheme.background.luminance() < 0.5f
             if (idleSelector != null) {
                 if (!awaitReplyIdle(webView, idleSelector)) {
                     android.util.Log.d("InkFlowDbg", "COLLECT aborted: reply still streaming after timeout")
+                    AiDiag.log(context, provider, "IMPORT_ABORT", "reason=still_streaming idle=${AiDiag.q(idleSelector)}")
                     try {
                         android.widget.Toast.makeText(
                             context,
@@ -577,6 +617,7 @@ val isDarkPanel = MaterialTheme.colorScheme.background.luminance() < 0.5f
                 }
             }
             webView?.evaluateJavascript(provider.collectJs(), null)
+            AiDiag.log(context, provider, "IMPORT_COLLECT", "idle=${idleSelector != null}")
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -644,6 +685,9 @@ val isDarkPanel = MaterialTheme.colorScheme.background.luminance() < 0.5f
                             try {
                                 android.util.Log.d("AiWebPanel", "onPasteResult: $result")
                                 android.util.Log.d("InkFlowDbg", "UPLOAD result=$result")
+                                // 每一條結果都落檔（成功也要）：判斷「卡在哪一步」靠的是順序，
+                                // 不是只有失敗。
+                                AiDiag.log(context, currentProvider.value, "JS", result)
                                 // 終端失敗才 Toast（成功只記 log；PASTE_DISPATCH_FAILED 會走 file-input 退路，不算死）
                                 if (result == "NO_CHAT_INPUT_FOUND" || result == "PASTE_EXCEPTION" ||
                                     result == "PROMPT_INSERT_FAILED" || result == "PROMPT_EXCEPTION" ||
@@ -667,6 +711,7 @@ val isDarkPanel = MaterialTheme.colorScheme.background.luminance() < 0.5f
                         fun onPickedJson(json: String) {
                             try {
                                 android.util.Log.d("AiWebPanel", "onPickedJson len=${json.length}")
+                                AiDiag.log(context, currentProvider.value, "PICK", "len=${json.length}")
                                 pickedCallback.value(json)
                             } catch (t: Throwable) { }
                         }
@@ -728,6 +773,22 @@ val isDarkPanel = MaterialTheme.colorScheme.background.luminance() < 0.5f
                             launchFilePicker(fileChooserParams)
                             return true
                         }
+
+                        override fun onConsoleMessage(
+                            consoleMessage: android.webkit.ConsoleMessage?
+                        ): Boolean {
+                            // 只收 error：warning／info 幾乎都是雜訊，但擋站、CSP、
+                            // 登入被 403 這種事一定以 error 出現在 console。
+                            val m = consoleMessage
+                            if (m != null && m.messageLevel() == android.webkit.ConsoleMessage.MessageLevel.ERROR) {
+                                AiDiag.log(
+                                    context, currentProvider.value, "CONSOLE",
+                                    "msg=${AiDiag.q(m.message())}" +
+                                        " src=${AiDiag.q("${m.sourceId()}:${m.lineNumber()}")}"
+                                )
+                            }
+                            return super.onConsoleMessage(m)
+                        }
                     }
 
                     webViewClient = object : android.webkit.WebViewClient() {
@@ -743,13 +804,69 @@ override fun onPageFinished(view: android.webkit.WebView?, url: String?) {
                             // provider 差異只表現在 capabilities 上。
                             val finishedUrl = url.orEmpty()
                             val provider = currentProvider.value
-                            if (!provider.matchesHost(finishedUrl, currentHostGate.value)) return
+                            if (!provider.matchesHost(finishedUrl, currentHostGate.value)) {
+                                // 載入了但不是本站：最常見是登入中轉或站方把人踢到別網域。
+                                // 這一行少了，就會變成「什麼都沒發生」的假死。
+                                AiDiag.log(
+                                    context, provider, "PAGE_OTHER",
+                                    "url=${AiDiag.q(finishedUrl)} gate=${AiDiag.q(currentHostGate.value ?: provider.host)}"
+                                )
+                                return
+                            }
 
+                            AiDiag.log(
+                                context, provider, "PAGE",
+                                "url=${AiDiag.q(finishedUrl)} capabilities=${provider.capabilities}"
+                            )
                             uploadState.isPageLoaded = true
                             reportUrl(finishedUrl)
                             applyTheme(view, "load")
                             probeOnce(view, finishedUrl)
                             deliverPendingRequest(view, UPLOAD_ATTEMPTS_LOAD, "load")
+                        }
+
+                        // ── 診斷：載入失敗的真相 ───────────────────────────
+                        // 這三個回呼不改變任何行為，只記錄。少了它們，「頁面一片白」
+                        // 就只剩猜測：是 DNS、被擋 403/429、還是憑證被拒。
+                        override fun onReceivedError(
+                            view: android.webkit.WebView?,
+                            request: android.webkit.WebResourceRequest?,
+                            error: android.webkit.WebResourceError?
+                        ) {
+                            super.onReceivedError(view, request, error)
+                            if (request?.isForMainFrame != true) return
+                            AiDiag.log(
+                                context, currentProvider.value, "NETERR",
+                                "code=${error?.errorCode} desc=${AiDiag.q(error?.description?.toString())}" +
+                                    " url=${AiDiag.q(request.url.toString())}"
+                            )
+                        }
+
+                        override fun onReceivedHttpError(
+                            view: android.webkit.WebView?,
+                            request: android.webkit.WebResourceRequest?,
+                            response: android.webkit.WebResourceResponse?
+                        ) {
+                            super.onReceivedHttpError(view, request, response)
+                            // 只記主文件：子資源（追蹤腳本、字型）的 4xx 天天有，記了只是噪音。
+                            if (request?.isForMainFrame != true) return
+                            AiDiag.log(
+                                context, currentProvider.value, "HTTPERR",
+                                "status=${response?.statusCode} url=${AiDiag.q(request.url.toString())}"
+                            )
+                        }
+
+                        override fun onReceivedSslError(
+                            view: android.webkit.WebView?,
+                            handler: android.webkit.SslErrorHandler?,
+                            error: android.net.http.SslError?
+                        ) {
+                            AiDiag.log(
+                                context, currentProvider.value, "SSLERR",
+                                "primary=${error?.primaryError} url=${AiDiag.q(error?.url.orEmpty())}"
+                            )
+                            // 行為不變：預設就是取消，不降級驗證。
+                            super.onReceivedSslError(view, handler, error)
                         }
 
                         // SPA 內跳轉（切對話）不走 onPageFinished，這裡才抓得到。
@@ -762,6 +879,13 @@ override fun onPageFinished(view: android.webkit.WebView?, url: String?) {
 
                     // 自訂 AI 沒填網址時兩者都空：不要 loadUrl("")，留給使用者去設定頁填。
                     val birthUrl = initialUrl?.takeIf { it.isNotBlank() } ?: provider.startUrl
+                    AiDiag.log(
+                        context, provider, "OPEN",
+                        "url=${AiDiag.q(birthUrl)}" +
+                            " gate=${AiDiag.q(hostOverride?.takeIf { it.isNotBlank() } ?: provider.host)}" +
+                            " customOverride=${!hostOverride.isNullOrBlank()}" +
+                            " capabilities=${provider.capabilities} strategy=${provider.importStrategy}"
+                    )
                     if (birthUrl.isNotBlank()) loadUrl(birthUrl)
                 }
             },

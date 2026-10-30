@@ -23,7 +23,13 @@ data class AiProbeReport(
     val katex: Int,
     val mathjax: Int,
     /** 頁面上的 `input[type=file]` 數量（送圖退路用得到）。 */
-    val fileInputs: Int
+    val fileInputs: Int,
+    /** 登入表單的密碼欄數量：>0 幾乎等於「還沒登入」。 */
+    val passwordFields: Int = 0,
+    /** 驗證／擋機器人元素（captcha、turnstile、challenge）數量 >0 就是被擋。 */
+    val captcha: Int = 0,
+    /** 頁面標題，判斷「這是登入頁還是對話頁」最快的一條線索。 */
+    val title: String = ""
 ) {
     /** 實際命中的輸入框（候選鏈由具體到泛用，第一個命中最可信）。 */
     fun firstInput(): AiProbeHit? = inputs.firstOrNull { it.isHit }
@@ -48,6 +54,60 @@ data class AiProbeReport(
         "${list.count { it.isHit }}/${list.size}"
 }
 
+/** 這家 AI 現在到底能不能用。由探針量到的 DOM 推論，不猜。 */
+enum class AiReadiness {
+    /** 輸入框與回覆區都抓到。 */
+    READY,
+
+    /** 能送出，但抓不到回覆區（匯入會拿不到東西）。 */
+    SEND_ONLY,
+
+    /** 頁面上有登入表單。 */
+    LOGIN_REQUIRED,
+
+    /** 有驗證／擋機器人頁面。 */
+    CAPTCHA,
+
+    /** 兩者都沒有：未登入，或版面改了。 */
+    NOT_READY
+}
+
+data class AiReadinessResult(val state: AiReadiness, val hint: String) {
+    /** 設定頁那一小格用的短標。 */
+    val label: String
+        get() = when (state) {
+            AiReadiness.READY -> "就緒"
+            AiReadiness.SEND_ONLY -> "只能送"
+            AiReadiness.LOGIN_REQUIRED -> "需登入"
+            AiReadiness.CAPTCHA -> "驗證頁"
+            AiReadiness.NOT_READY -> "未就緒"
+        }
+}
+
+/**
+ * 由探針結果推論可用狀態。
+ *
+ * 判斷順序刻意是「驗證頁 → 登入頁 → 找輸入框」：被擋或被登入頁卡住時，
+ * 硬去比對輸入框只會得到「沒有輸入框」，然後被誤判成「版面改了」，
+ * 害人去改選擇器。先把真正的原因說出來，才不會修錯地方。
+ */
+fun AiProbeReport.readiness(): AiReadinessResult = when {
+    firstInput() == null && captcha > 0 ->
+        AiReadinessResult(AiReadiness.CAPTCHA, "被驗證／擋機器人頁面擋住，登入與送圖都不會動")
+
+    firstInput() == null && passwordFields > 0 ->
+        AiReadinessResult(AiReadiness.LOGIN_REQUIRED, "頁面有登入表單，先用這個面板登入")
+
+    firstInput() == null ->
+        AiReadinessResult(AiReadiness.NOT_READY, "找不到輸入框（未登入或版面改了；看標題判斷）")
+
+    firstReply() == null ->
+        AiReadinessResult(AiReadiness.SEND_ONLY, "可以送出，但抓不到回覆區（匯入不可用）")
+
+    else ->
+        AiReadinessResult(AiReadiness.READY, "可以送圖；回覆區也抓得到")
+}
+
 /**
  * 解析探針輸出。認不得就回 null（呼叫端顯「尚未記錄」，不要顯示半截垃圾）。
  *
@@ -70,7 +130,6 @@ fun parseProbeReport(raw: String?): AiProbeReport? {
     val idleSec = s.section("] | idle=", " | katex=") ?: return null
     val katexSec = s.section(" | katex=", " | mathjax=") ?: return null
     val mathjaxSec = s.section(" | mathjax=", " | fileInput=") ?: return null
-    val fileSec = s.substringAfter(" | fileInput=", "")
 
     return AiProbeReport(
         url = url,
@@ -80,9 +139,22 @@ fun parseProbeReport(raw: String?): AiProbeReport? {
         idle = idleSec.takeIf { it != "none" }?.let { parseHits(it).firstOrNull() },
         katex = katexSec.toIntOrNull() ?: 0,
         mathjax = mathjaxSec.toIntOrNull() ?: 0,
-        fileInputs = fileSec.toIntOrNull() ?: 0
+        fileInputs = fieldInt(s, " | fileInput="),
+        passwordFields = fieldInt(s, " | pwd="),
+        captcha = fieldInt(s, " | captcha="),
+        title = s.substringAfter(" | title=", "").trim()
     )
 }
+
+/**
+ * 取 `key=數字` 的數字。
+ *
+ * 用「到第一個 ` | ` 為止」而不是吃整段尾巴：新欄位一直往後加，
+ * 舊的解析器若吃尾巴，`fileInput=1 | pwd=0` 會變成 `toIntOrNull() == null` → 0，
+ * 看起來像「這頁沒有 file input」，是安靜的錯資料。
+ */
+private fun fieldInt(s: String, marker: String): Int =
+    s.substringAfter(marker, "").substringBefore(" | ").trim().toIntOrNull() ?: 0
 
 /** 取 [from] 之後、[to] 之前的內容；任一標記缺席回 null（代表格式不符，不要硬湊）。 */
 private fun String.section(from: String, to: String): String? {

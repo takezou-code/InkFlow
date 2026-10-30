@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -169,6 +170,9 @@ fun GlobalSettingsScreen(
     var aiNameInput by remember { mutableStateOf("") }
     // 診斷紀錄存 prefs，改動（清除）後 +1 觸發重畫。
     var aiProbeVersion by remember { mutableIntStateOf(0) }
+    // 流水帳檢視（一次性讀進 state：檔案不大，且看完就關）。
+    var aiDiagVisible by remember { mutableStateOf(false) }
+    var aiDiagText by remember { mutableStateOf("") }
 
     /**
      * 勾選／取消一家 AI。
@@ -193,6 +197,7 @@ fun GlobalSettingsScreen(
             prefs.edit()
                 .putString(KEY_AI_ENABLED_PROVIDERS, encodeEnabledProviders(next))
                 .apply()
+            AiDiag.log(context, provider, "CFG", "enabled=${encodeEnabledProviders(next)}")
         }
     }
 
@@ -519,11 +524,11 @@ fun GlobalSettingsScreen(
                 }
 
                 // ===== AI 診斷 ============================================
-                // 探針（PROBE3）在每次開站時自動量，結果存進 prefs。搬到畫面上的理由：
-                // 選擇器只能靠實機 DOM 鎖定，而 logcat 只有開發者看得到。顯示在這裡，
-                // 使用者換一家測一輪、回來看一眼就知道哪家抓得到輸入框／回覆區。
+                // 探針（PROBE3）在每次開站時自動量，結果存 prefs；完整流水帳落檔
+                // （filesDir/ai_diag.log）。兩份理由不同：設定頁看「現在能不能用」，
+                // 檔案看「剛剛那一次到底卡在哪一步」。
                 SettingsSection("AI 診斷", isDarkSettings) {
-                    SettingsHint("每開一次 AI 會自動量一次網頁結構。開過某家之後回來這裡，就看得到它有沒有抓到輸入框與回覆區。")
+                    SettingsHint("每開一次 AI 會自動量一次網頁結構。開過某家之後回來這裡，就看得到它能不能送圖、能不能匯入。")
                     aiProbeVersion // 清除後重畫
                     val records = AiProvider.entries.mapNotNull { p ->
                         decodeProbeRecord(prefs.getString(aiProbeKey(p), null))?.let { p to it }
@@ -532,24 +537,42 @@ fun GlobalSettingsScreen(
                         SettingsCaption("還沒有資料：到編輯器切到某家 AI，等頁面開好，再回來這裡。")
                     } else {
                         records.forEach { (p, rec) -> SettingsProbeRow(p, rec) }
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 20.dp, vertical = 6.dp),
-                            horizontalArrangement = Arrangement.End
-                        ) {
-                            SettingsPillButton(
-                                text = "清除診斷",
-                                isDark = isDarkSettings,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                onClick = {
-                                    prefs.edit().apply {
-                                        AiProvider.entries.forEach { remove(aiProbeKey(it)) }
-                                    }.apply()
-                                    aiProbeVersion++
-                                }
-                            )
-                        }
+                    }
+                    // 流水帳：這裡才是「整段流程」的證據（開站→送圖→匯入→錯誤）。
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "記錄檔 ${AiDiag.sizeInfo(context)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f)
+                        )
+                        SettingsPillButton(
+                            text = "看記錄",
+                            isDark = isDarkSettings,
+                            onClick = {
+                                aiDiagText = AiDiag.readTail(context, 400)
+                                    .ifBlank { "還沒有記錄。先到編輯器開一次 AI。" }
+                                aiDiagVisible = true
+                            }
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        SettingsPillButton(
+                            text = "清除",
+                            isDark = isDarkSettings,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            onClick = {
+                                AiDiag.clear(context)
+                                prefs.edit().apply {
+                                    AiProvider.entries.forEach { remove(aiProbeKey(it)) }
+                                }.apply()
+                                aiProbeVersion++
+                            }
+                        )
                     }
                 }
 
@@ -1018,6 +1041,7 @@ fun GlobalSettingsScreen(
                         onClick = {
                             prefs.edit().remove(aiCustomUrlKey(provider)).apply()
                             aiCustomUrls = readAiCustomUrls(prefs)
+                            AiDiag.log(context, provider, "CFG", "url=default")
                             aiUrlEditing = null
                         },
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1061,8 +1085,43 @@ fun GlobalSettingsScreen(
                             aiCustomNameState = name
                         }
                         aiCustomUrls = readAiCustomUrls(prefs)
+                        AiDiag.log(
+                            context, provider, "CFG",
+                            "url=${AiDiag.q(prefs.getString(aiCustomUrlKey(provider), null) ?: "default")}" +
+                                if (isCustom) " name=${AiDiag.q(aiCustomNameState)}" else ""
+                        )
                         aiUrlEditing = null
                     }
+                )
+            }
+        )
+    }
+
+    // 診斷流水帳：整段流程（開站→探針→送圖→匯入→錯誤）都在這裡。
+    // 用可捲動的 monospace 呈現，因為要對齊欄位才看得出順序。
+    if (aiDiagVisible) {
+        GlassDialogCustom(
+            onDismissRequest = { aiDiagVisible = false },
+            isDark = isDarkSettings,
+            title = { Text("AI 診斷記錄") },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 420.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    Text(
+                        text = aiDiagText,
+                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            buttons = {
+                GlassTextButton(
+                    text = "關閉",
+                    onClick = { aiDiagVisible = false }
                 )
             }
         )
@@ -1185,6 +1244,7 @@ private fun readAiCustomUrls(prefs: SharedPreferences): Map<AiProvider, String?>
  */
 @Composable
 private fun SettingsProbeRow(provider: AiProvider, record: AiProbeRecord) {
+    val readiness = record.report.readiness()
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1207,9 +1267,29 @@ private fun SettingsProbeRow(provider: AiProvider, record: AiProbeRecord) {
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.weight(1f)
             )
-            // 「初載」代表 4 秒那次還沒跑到，數字可能還是空殼，別當真。
+            // 「就緒／需登入／驗證頁」是從 DOM 推論的結論；後面的「初載」代表
+            // 4 秒那次還沒跑到，數字可能還是空殼，別當真。
             Text(
-                text = if (record.isHydrated) "已載入" else "初載",
+                text = "${readiness.label}・${if (record.isHydrated) "已載入" else "初載"}",
+                style = MaterialTheme.typography.labelSmall,
+                color = if (readiness.state == AiReadiness.READY) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                }
+            )
+        }
+        // 不是「就緒」就把原因寫出來：使用者不必猜，我也不必問。
+        if (readiness.state != AiReadiness.READY) {
+            Text(
+                text = readiness.hint,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        if (record.report.title.isNotBlank()) {
+            Text(
+                text = "標題：${record.report.title}",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

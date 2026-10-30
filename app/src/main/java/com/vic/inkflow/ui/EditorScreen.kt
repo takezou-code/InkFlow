@@ -396,9 +396,11 @@ fun TabletEditorScreen(
         val enabled = parseEnabledProviders(prefs.getString(KEY_AI_ENABLED_PROVIDERS, null))
         val next = nextEnabledProvider(aiProvider, enabled)
         if (next == aiProvider) {
+            AiDiag.log(context, aiProvider, "SWITCH_BLOCK", "reason=single_enabled enabled=${enabled.map { it.name }}")
             android.widget.Toast.makeText(context, "只有一個 AI 啟用，請到設定開啟更多", android.widget.Toast.LENGTH_SHORT).show()
             return
         }
+        AiDiag.log(context, next, "SWITCH", "from=${aiProvider.name} to=${next.name} doc=${docKey}")
         aiProvider = next
         // 全局照寫（新文件預設站），這份文件的站另外記（切文件回來還認得）。
         prefs.edit().putString(KEY_AI_PROVIDER, next.name).apply()
@@ -582,6 +584,12 @@ fun TabletEditorScreen(
     fun importPickedJson(json: String) {
         aiPlacing = true
         val strategy = aiProvider.importStrategy
+        AiDiag.log(
+            context, aiProvider, "IMPORT_JSON",
+            "len=${json.length} mathCrop=${aiProvider.capabilities.mathCrop}" +
+                " blockCrop=${strategy.blockCrop} engine=${strategy.mathEngine}" +
+                " page=$currentPageIndex"
+        )
         scope.importPickedJson(json, context, viewModel, pdfViewModel, repos, uri.toString(), currentPageIndex, onRequestPage, context as? android.app.Activity, aiWebView,
             supportsMathCrop = aiProvider.capabilities.mathCrop,
             promoteComplexParas = strategy.promoteInlineMath,
@@ -597,6 +605,7 @@ fun TabletEditorScreen(
         // S2：能力檢查讀 capabilities，不再寫 `if (aiProvider != GEMINI)`。
         // 換 provider 時這裡不用動，開啟條件由 AiProvider 自己宣告。
         if (!aiProvider.capabilities.importReply) {
+            AiDiag.log(context, aiProvider, "IMPORT_BLOCK", "reason=capability importReply=false")
             android.widget.Toast.makeText(
                 context,
                 "${aiProvider.label} 還沒支援匯入回覆",
@@ -608,10 +617,12 @@ fun TabletEditorScreen(
             aiPickMode = true
             aiPickEnterId++
             if (!showAiPanel) showAiPanel = true
+            AiDiag.log(context, aiProvider, "IMPORT_ARM", "mode=pick")
             android.widget.Toast.makeText(context, "點 ${aiProvider.label} 回覆的段落打勾，再按一次匯入抓取", android.widget.Toast.LENGTH_SHORT).show()
         } else {
             aiPickMode = false
             aiPickCollectId++
+            AiDiag.log(context, aiProvider, "IMPORT_COLLECT_REQ", "picks=${aiPickCollectId}")
         }
     }
 
@@ -621,6 +632,7 @@ fun TabletEditorScreen(
         if (isSendingPage) return
         // S2：同上，讀 capabilities。
         if (!aiProvider.capabilities.sendImage) {
+            AiDiag.log(context, aiProvider, "SEND_BLOCK", "reason=capability sendImage=false")
             android.widget.Toast.makeText(
                 context,
                 "${aiProvider.label} 還沒支援自動送圖",

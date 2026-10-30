@@ -211,7 +211,12 @@ internal object AiGenericScripts {
                     + ' | idle=' + (idleSel ? report(idleSel) : 'none')
                     + ' | katex=' + report('.katex')
                     + ' | mathjax=' + report('mjx-container')
-                    + ' | fileInput=' + report('input[type="file"]');
+                    + ' | fileInput=' + report('input[type="file"]')
+                    // 以下三欄用來判斷「是沒登入、被擋、還是版面改了」。
+                    // 標題放最後（可能含 `|`，先在 JS 裡清掉），前面的欄位才不會被污染。
+                    + ' | pwd=' + report('input[type="password"]')
+                    + ' | captcha=' + report('[class*="captcha"], iframe[src*="captcha"], [class*="turnstile"], [id*="challenge"]')
+                    + ' | title=' + ((document.title || '').slice(0, 60).replace(/[|\n\r]/g, ' '));
             })();
         """.trimIndent()
     }
