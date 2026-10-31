@@ -89,67 +89,122 @@ internal object AiGenericScripts {
                         var hit = findByCandidates([$inputs]);
                         if (!hit) return 'PROMPT_NO_INPUT';
                         var el = hit.el;
+                        var tag = (el.tagName || '').toLowerCase();
+                        var isField = tag === 'textarea' || tag === 'input';
                         try { el.focus(); } catch(e){}
 
-                        // 方式一：合成 paste（ProseMirror 類輸入框會走 paste handler）
-                        var filledBy = null;
-                        try {
-                            var dt = new DataTransfer();
-                            dt.setData('text/plain', text);
-                            var pe = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
-                            el.dispatchEvent(pe);
-                            filledBy = 'PASTE_TEXT';
-                        } catch(e){}
-
-                        // 方式二：execCommand（contenteditable 的通用退路）
-                        if (filledBy === null) {
+                        function norm(s) { return (s || '').replace(/\s+/g, ' ').trim(); }
+                        function readText() {
                             try {
+                                if (tag === 'textarea' || tag === 'input') return el.value || '';
+                                return el.innerText || el.textContent || el.value || '';
+                            } catch(e) { return ''; }
+                        }
+                        // 原生 setter＋input 事件：React/Vue 的受控 textarea 只吃這條，
+                        // 直接 el.value = x 會被框架的下一次 render 蓋回去。
+                        function setNativeValue() {
+                            try {
+                                var proto = Object.getPrototypeOf(el);
+                                var desc = Object.getOwnPropertyDescriptor(proto, 'value');
+                                if (desc && desc.set) desc.set.call(el, text); else el.value = text;
+                                el.dispatchEvent(new Event('input', { bubbles: true }));
+                                el.dispatchEvent(new Event('change', { bubbles: true }));
+                                return true;
+                            } catch(e) { return false; }
+                        }
+                        // contenteditable：先真的把光標放到內容尾端，再讓瀏覽器插入。
+                        // Lexical/ProseMirror 會收到 beforeinput/input，才會更新自己的 state。
+                        function execInsert() {
+                            try {
+                                el.focus();
                                 var range = document.createRange();
                                 range.selectNodeContents(el);
                                 range.collapse(false);
                                 var sel = window.getSelection();
                                 sel.removeAllRanges();
                                 sel.addRange(range);
-                                if (document.execCommand('insertText', false, text)) filledBy = 'EXEC_TEXT';
-                            } catch(e){}
+                                return !!(document.execCommand && document.execCommand('insertText', false, text));
+                            } catch(e) { return false; }
+                        }
+                        function pasteInsert() {
+                            try {
+                                var dt = new DataTransfer();
+                                dt.setData('text/plain', text);
+                                el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+                                return true;
+                            } catch(e) { return false; }
+                        }
+                        function domInsert() {
+                            try {
+                                el.textContent = text;
+                                el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+                                return true;
+                            } catch(e) { return false; }
                         }
 
-                        // 驗收：有沒有真的把字放進去（貼上事件可能被忽略）
-                        var got = '';
-                        try { got = el.innerText || el.textContent || el.value || ''; } catch(e){}
-                        if (filledBy !== null && text && got.indexOf(text) < 0 && got.trim().length === 0) {
-                            report('GENERIC_INSERT_UNCONFIRMED:' + filledBy + ':sel=' + hit.sel);
-                            filledBy = null;
+                        // 依元素型別排優先序，逐一嘗試。**不能只看 dispatch 的回傳值**：
+                        // 站方的 handler 常常是非同步的，當下讀不到字不代表沒插進去。
+                        var strategies = isField
+                            ? [['VALUE_SET', setNativeValue], ['PASTE_TEXT', pasteInsert]]
+                            : [['EXEC_TEXT', execInsert], ['PASTE_TEXT', pasteInsert], ['DOM_SET', domInsert]];
+                        var si = 0;
+                        var used = '';
+                        function attempt() {
+                            while (si < strategies.length) {
+                                var name = strategies[si][0], fn = strategies[si][1];
+                                si++;
+                                if (fn()) { used = name; return true; }
+                            }
+                            return false;
                         }
-                        if (filledBy === null) return 'PROMPT_INSERT_FAILED';
-                        if (!SEND) { report('PROMPT_FILLED:' + filledBy + ':sel=' + hit.sel); return 'PROMPT_FILLED'; }
+                        attempt();
 
+                        // 驗收：非同步輪詢，直到真的讀得到字才回報成功。
+                        // 舊版在 dispatch 後「立刻」讀一次，Qwen 的 React、Kimi 的 Lexical
+                        // 都還沒把字寫回 DOM → 明明填好了卻報 PROMPT_INSERT_FAILED（假失敗）。
+                        var target = norm(text);
+                        var head = target.slice(0, 24);
+                        function looksFilled(got) {
+                            var g = norm(got);
+                            if (!g) return false;
+                            if (g === target || g.indexOf(target) >= 0) return true;
+                            if (head.length >= 6 && g.indexOf(head) >= 0) return true;
+                            return false;
+                        }
                         var tries = 0;
                         var waiter = setInterval(function() {
-                            var got2 = '';
-                            try { got2 = el.innerText || el.textContent || el.value || ''; } catch(e){}
-                            var sendHit = findByCandidates([$sends]);
-                            var btnOn = false;
-                            try { btnOn = !!sendHit && !sendHit.el.disabled && sendHit.el.getAttribute('aria-disabled') !== 'true'; } catch(e){}
-                            if ((text && got2.indexOf(text) >= 0) || btnOn) {
+                            var got = readText();
+                            if (looksFilled(got)) {
                                 clearInterval(waiter);
-                                if (sendHit) {
+                                report('PROMPT_FILLED:' + used + ':sel=' + hit.sel + ':t=' + tries);
+                                if (!SEND) return;
+                                var sendHit = findByCandidates([$sends]);
+                                var canSend = false;
+                                try {
+                                    canSend = !!sendHit && !sendHit.el.disabled && sendHit.el.getAttribute('aria-disabled') !== 'true';
+                                } catch(e){}
+                                if (canSend) {
                                     sendHit.el.click();
-                                    report('PROMPT_SENT:' + filledBy + ':btn=' + sendHit.sel);
+                                    report('PROMPT_SENT:' + used + ':btn=' + sendHit.sel);
                                 } else {
                                     var ev;
                                     try {
                                         ev = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true });
                                     } catch(e) { ev = document.createEvent('Event'); ev.initEvent('keydown', true, true); }
                                     (document.activeElement || el).dispatchEvent(ev);
-                                    report('PROMPT_SENT_ENTER:' + filledBy);
+                                    report('PROMPT_SENT_ENTER:' + used);
                                 }
-                            } else {
-                                tries++;
-                                if (tries >= 12) { clearInterval(waiter); report('PROMPT_SEND_NOT_READY'); }
+                                return;
                             }
-                        }, 250);
-                        return 'PROMPT_FILL_WAIT_SEND';
+                            tries++;
+                            // 每 ~450ms 換下一招（前一次可能只是還沒 render）。
+                            if (tries % 3 === 0) attempt();
+                            if (tries >= 20) {
+                                clearInterval(waiter);
+                                report('PROMPT_INSERT_FAILED:sel=' + hit.sel + ':by=' + used + ':read=' + norm(got).length);
+                            }
+                        }, 150);
+                        return 'PROMPT_FILL_WAIT';
                     } catch(err) {
                         return 'PROMPT_EXCEPTION';
                     }
@@ -160,7 +215,11 @@ internal object AiGenericScripts {
                     if (hit) {
                         clearInterval(interval);
                         report('GENERIC_INPUT_FOUND:sel=' + hit.sel + ':n=' + hit.n);
-                        setTimeout(function() { report(fillAndSend(PROMPT)); }, 800);
+                        setTimeout(function() {
+                            var r = fillAndSend(PROMPT);
+                            // 成功路徑由輪詢回報 PROMPT_FILLED／PROMPT_SENT，這裡只報「一開始就失敗」。
+                            if (r !== 'PROMPT_FILL_WAIT') report(r);
+                        }, 800);
                     } else {
                         attempts++;
                         if (attempts >= 20) { clearInterval(interval); report('PROMPT_NO_INPUT_FOUND'); }
@@ -194,6 +253,26 @@ internal object AiGenericScripts {
                     return out;
                 }
                 function report(sel) { return sel + '=' + deepCount(document, sel, 0); }
+                function deepAll(root, sel, out) {
+                    try {
+                        var found = root.querySelectorAll(sel);
+                        for (var i = 0; i < found.length; i++) out.push(found[i]);
+                        var all = root.querySelectorAll('*');
+                        for (var j = 0; j < all.length; j++) {
+                            try { if (all[j].shadowRoot) deepAll(all[j].shadowRoot, sel, out); } catch(e){}
+                        }
+                    } catch(e){}
+                    return out;
+                }
+                // 元素的「身分證」：tag.class.class[data-testid] —— 只留排錯需要的部分。
+                function sig(el) {
+                    try {
+                        var t = (el.tagName || '?').toLowerCase();
+                        var cls = (el.getAttribute('class') || '').trim().split(/\s+/).slice(0, 2).join('.');
+                        var mark = el.getAttribute('data-testid') || el.getAttribute('data-message-author-role') || '';
+                        return (t + (cls ? '.' + cls : '') + (mark ? '[' + mark + ']' : '')).slice(0, 60);
+                    } catch(e) { return '?'; }
+                }
                 var inputCands = [$inputs];
                 var inputReport = [];
                 for (var k = 0; k < inputCands.length; k++) inputReport.push(report(inputCands[k]));
@@ -202,7 +281,36 @@ internal object AiGenericScripts {
                 for (var s = 0; s < sendCands.length; s++) sendReport.push(report(sendCands[s]));
                 var replyCands = [$replies];
                 var replyReport = [];
-                for (var r = 0; r < replyCands.length; r++) replyReport.push(report(replyCands[r]));
+                // 回覆容器 census：候選鏈命中之後，這個容器到底長怎樣？
+                // 只記「最後一個命中」的 tag.class、三層祖先、子節點 tag 分佈、文字長度、
+                // 串流屬性——這四樣就足以把候選收斂成單一 selector，並找到「停止鈕」。
+                // 有這件事，才不必靠猜 class 名再要使用者測一輪。
+                var census = [];
+                for (var r = 0; r < replyCands.length; r++) {
+                    replyReport.push(report(replyCands[r]));
+                    var hits = deepAll(document, replyCands[r], []);
+                    if (!hits.length) continue;
+                    var el = hits[hits.length - 1];
+                    var tags = {};
+                    var kids = el.querySelectorAll('*');
+                    for (var q = 0; q < kids.length && q < 500; q++) {
+                        var tn = (kids[q].tagName || '?').toLowerCase();
+                        tags[tn] = (tags[tn] || 0) + 1;
+                    }
+                    var top = Object.keys(tags).sort(function(a, b) { return tags[b] - tags[a]; })
+                        .slice(0, 6).map(function(k) { return k + ':' + tags[k]; }).join(',');
+                    var anc = [];
+                    var par = el.parentElement;
+                    for (var d = 0; d < 3 && par; d++) { anc.push(sig(par)); par = par.parentElement; }
+                    var runAttr = el.getAttribute('data-is-streaming') || el.getAttribute('aria-busy') || '';
+                    census.push(
+                        replyCands[r] + '=>' + sig(el) + '{n=' + hits.length +
+                        ',anc=' + anc.join('>') +
+                        ',kids=' + top +
+                        ',txt=' + ((el.innerText || '').length) +
+                        ',run=' + (runAttr || 'none') + '}'
+                    );
+                }
                 var idleSel = $idle;
                 return 'PROBE3 url=' + location.href
                     + ' | input=[' + inputReport.join(' | ') + ']'
@@ -212,6 +320,9 @@ internal object AiGenericScripts {
                     + ' | katex=' + report('.katex')
                     + ' | mathjax=' + report('mjx-container')
                     + ' | fileInput=' + report('input[type="file"]')
+                    // census 放在 title 之前：title 吃掉尾巴（可能含 `|`），放後面會污染它。
+                    // census 內部的 `|` 先換成 `/`，否則前面的 ` | ` 分隔會被切壞。
+                    + ' | replyCensus=[' + census.join(' ; ').replace(/\|/g, '/').slice(0, 900) + ']'
                     // 以下三欄用來判斷「是沒登入、被擋、還是版面改了」。
                     // 標題放最後（可能含 `|`，先在 JS 裡清掉），前面的欄位才不會被污染。
                     + ' | pwd=' + report('input[type="password"]')

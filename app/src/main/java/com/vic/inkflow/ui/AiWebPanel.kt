@@ -597,7 +597,16 @@ fun AiWebPanel(
                 val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                 if (bytes != null) {
                     val base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
-                    target?.evaluateJavascript(buildImagePasteJs(base64, attempts, currentProvider.value.imagePasteInputSelector), null)
+                    target?.evaluateJavascript(
+                        buildImagePasteJs(
+                            base64 = base64,
+                            attempts = attempts,
+                            inputSelector = provider.imagePasteInputSelector,
+                            requestKey = req.dedupeKey(),
+                            fileInputFirst = provider.capabilities.fileInputFirst
+                        ),
+                        null
+                    )
                     android.util.Log.d("InkFlowDbg", "UPLOAD paste dispatched ($tag) b64len=${base64.length}")
                 } else {
                     android.util.Log.d("InkFlowDbg", "UPLOAD read failed ($tag)")
@@ -1069,20 +1078,38 @@ private const val UPLOAD_ATTEMPTS_LOAD = 20
 private const val UPLOAD_ATTEMPTS_UPDATE = 10
 
 /**
- * 貼上圖片時要瞄准的輸入框由 provider 決定（見 AiProvider.imagePasteInputSelector）。
- * 退路（input[type=file] + onShowFileChooser）則與 provider 無關。
- */
-
-/**
- * 貼圖腳本（S1：**原本整段複製兩份**，`onPageFinished` 一份、`update` 一份，
- * 逐字相同只差重試次數——兩份會各自腐爛，是「加更多 AI」最先爆的地方，故合成一份）。
+ * 貼圖腳本。
  *
- * 策略不變：先試模擬貼上，失敗退回 file input（provider 無關），再退回上傳鈕。
- * [inputCandidates] 是唯一該隨 provider 變的參數，目前仍是 Gemini 的 rich-textarea。
+ * ## 為什麼不再「paste 失敗就點 file input」
+ *
+ * `dispatchEvent(paste)` 的回傳值只代表**有沒有 listener 取消預設行為**，
+ * 不代表圖真的進去了。實測 Kimi／Qwen／Grok 一律回 `PASTE_DISPATCH_FAILED`，
+ * 但其中有些站其實已經在 paste handler 裡非同步把圖塞進去了——我們照著這個
+ * 假訊號再點一次 file input，同一張圖就進去兩份（使用者看到的「變成 2 張」）。
+ *
+ * 現在依 provider 宣告的 [AiCapabilities.fileInputFirst] 選**一條**路徑：
+ * file input 優先（站方自己的上傳入口，成不成看得到），沒有才退回模擬 paste。
+ * 再加一道「同一請求只注入一次」的頁面級護欄，就算 Kotlin 端重複投遞也不會貼兩次。
  */
-private fun buildImagePasteJs(base64: String, attempts: Int, inputSelector: String): String {
+internal fun buildImagePasteJs(
+    base64: String,
+    attempts: Int,
+    inputSelector: String,
+    requestKey: String,
+    fileInputFirst: Boolean
+): String {
+    // 單引號包字串：selector 裡有雙引號（見 AiGenericScripts 的說明）。
+    val reqKey = requestKey.replace("'", "")
     return """
         (function() {
+            function report(s) {
+                try { if (window.AndroidBridge && AndroidBridge.onPasteResult) AndroidBridge.onPasteResult(s); } catch(e){}
+            }
+            var REQ = '$reqKey';
+            // 頁面級去重：同一筆請求只注入一次。Kotlin 端已有 lastHandledKey，
+            // 但「load／update 兩條路都投遞」曾讓同一張圖進去兩份，這裡是最後一道。
+            if (window.__inkImgReq === REQ) { report('IMAGE_SKIP_DUP'); return; }
+
             function simulateImagePaste(target, base64Data) {
                 try {
                     const byteCharacters = atob(base64Data);
@@ -1106,20 +1133,46 @@ private fun buildImagePasteJs(base64: String, attempts: Int, inputSelector: Stri
 
                     target.focus();
                     const dispatched = target.dispatchEvent(pasteEvent);
-                    try { if (window.AndroidBridge && AndroidBridge.onPasteResult) AndroidBridge.onPasteResult(dispatched ? 'PASTE_DISPATCHED' : 'PASTE_DISPATCH_FAILED'); } catch(e){}
+                    report(dispatched ? 'PASTE_DISPATCHED' : 'PASTE_DISPATCH_FAILED');
                     return dispatched;
                 } catch (e) {
-                    console.error('Paste simulation failed:', e);
-                    try { if (window.AndroidBridge && AndroidBridge.onPasteResult) AndroidBridge.onPasteResult('PASTE_EXCEPTION'); } catch(e){}
+                    report('PASTE_EXCEPTION');
                     return false;
                 }
             }
 
+            /**
+             * 站方真正的上傳入口。頁面上可能有好幾個 file input（頭像、側欄、
+             * 對話上傳），第一個不一定是對的——挑錯就等於「圖填到別的地方」。
+             * 評分：accept 是圖片加分、在 composer／form 內加分、在 header／側欄／
+             * 頭像裡扣分；同分取 document 後面那個（對話區通常在側欄之後）。
+             */
+            function pickFileInput() {
+                var all = [];
+                try { all = Array.prototype.slice.call(document.querySelectorAll('input[type="file"]')); } catch(e) {}
+                var best = null, bestScore = -1000;
+                for (var i = 0; i < all.length; i++) {
+                    var inp = all[i];
+                    var score = 0;
+                    var accept = (inp.getAttribute('accept') || '').toLowerCase();
+                    if (accept.indexOf('image') >= 0) score += 3;
+                    else if (accept && accept.indexOf('*') < 0) score -= 2;
+                    try {
+                        if (inp.closest('header, nav, [class*="avatar"], [class*="profile"], [class*="sidebar"], [class*="user-menu"]')) score -= 6;
+                        if (inp.closest('form, [class*="chat"], [class*="composer"], [class*="input"], [class*="upload"]')) score += 3;
+                    } catch(e) {}
+                    if (inp.disabled) score -= 5;
+                    if (score >= bestScore) { bestScore = score; best = inp; }
+                }
+                if (best) report('FILE_INPUT_PICK:n=' + all.length + ':score=' + bestScore);
+                return best;
+            }
+
             function tryFileInputClick() {
-                var input = document.querySelector('input[type="file"]');
+                var input = pickFileInput();
                 if (input) {
                     input.click();
-                    try { if (window.AndroidBridge && AndroidBridge.onPasteResult) AndroidBridge.onPasteResult('FILE_INPUT_CLICKED'); } catch(e){}
+                    report('FILE_INPUT_CLICKED');
                     return true;
                 }
                 return false;
@@ -1138,11 +1191,31 @@ private fun buildImagePasteJs(base64: String, attempts: Int, inputSelector: Stri
                     var btn = document.querySelector(selectors[i]);
                     if (btn) {
                         btn.click();
-                        try { if (window.AndroidBridge && AndroidBridge.onPasteResult) AndroidBridge.onPasteResult('UPLOAD_BUTTON_CLICKED'); } catch(e){}
+                        report('UPLOAD_BUTTON_CLICKED');
                         return true;
                     }
                 }
                 return false;
+            }
+
+            var FILE_FIRST = $fileInputFirst;
+            var delivered = false;
+            function deliver(chatInput) {
+                if (delivered) return;
+                delivered = true;
+                // 真正投遞時才上鎖：輸入框還沒出現就鎖，會讓重試永遠被跳過。
+                window.__inkImgReq = REQ;
+                if (FILE_FIRST) {
+                    report('IMAGE_PATH:file_input');
+                    if (tryFileInputClick()) return;
+                    if (simulateImagePaste(chatInput, "$base64")) return;
+                    tryUploadButtonClick();
+                    return;
+                }
+                report('IMAGE_PATH:paste');
+                if (simulateImagePaste(chatInput, "$base64")) return;
+                if (tryFileInputClick()) return;
+                tryUploadButtonClick();
             }
 
             var attempts = 0;
@@ -1150,17 +1223,12 @@ private fun buildImagePasteJs(base64: String, attempts: Int, inputSelector: Stri
                 var chatInput = document.querySelector('$inputSelector');
                 if (chatInput) {
                     clearInterval(interval);
-                    var ok = simulateImagePaste(chatInput, "$base64");
-                    if (!ok) {
-                        if (!tryFileInputClick()) {
-                            tryUploadButtonClick();
-                        }
-                    }
+                    deliver(chatInput);
                 } else {
                     attempts++;
                     if (attempts >= $attempts) {
                         clearInterval(interval);
-                        try { if (window.AndroidBridge && AndroidBridge.onPasteResult) AndroidBridge.onPasteResult('NO_CHAT_INPUT_FOUND'); } catch(e){}
+                        report('NO_CHAT_INPUT_FOUND');
                     }
                 }
             }, 500);

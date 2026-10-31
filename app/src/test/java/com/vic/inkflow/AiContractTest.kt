@@ -139,7 +139,7 @@ class AiContractTest {
     fun `S4 兩個已驗收的 provider 都具備完整匯入能力`() {
         // S4 交付 ChatGPT 匯入；Gemini 的三項能力不許因為重構而退化。
         // 只驗這兩家：新加入的 Claude／Grok／Kimi／Qwen 是 Tier 1，
-        // 匯入要等平板實測鎖定 selector 才會開（見 `Tier 1 新 provider 只開送圖`）。
+        // 能力逐項開放（見 `新 provider 的能力按實測逐項開放`）。
         listOf(AiProvider.GEMINI, AiProvider.CHATGPT).forEach {
             assertTrue("${it.name} 必須能送圖", it.capabilities.sendImage)
             assertTrue("${it.name} 必須能匯入", it.capabilities.importReply)
@@ -150,13 +150,23 @@ class AiContractTest {
     }
 
     @Test
-    fun `Tier 1 新 provider 只開送圖`() {
-        // 這是刻意的降級保護：匯入／數學裁圖沒實測就開，使用者會匯入半截回覆或抓不到公式。
-        listOf(AiProvider.CLAUDE, AiProvider.GROK, AiProvider.KIMI, AiProvider.QWEN).forEach {
+    fun `新 provider 的能力按實測逐項開放`() {
+        // 匯入／數學裁圖沒實測就開，使用者會匯入半截回覆或抓不到公式。
+        // Kimi／Qwen 已改成「送圖走站方 file input＋匯入走段落圈選」（2026-10 實測後開），
+        // 所以清單只剩 Claude／Grok 仍在 Tier 1。
+        listOf(AiProvider.CLAUDE, AiProvider.GROK).forEach {
             assertTrue("${it.name} 必須能送圖", it.capabilities.sendImage)
             assertFalse("${it.name} 匯入未實測，不可開", it.capabilities.importReply)
             assertFalse("${it.name} 數學裁圖未實測，不可開", it.capabilities.mathCrop)
             // Phase 4 要靠這行 log 鎖 selector：探針必須真的回報候選命中數。
+            assertTrue("${it.name} 探針要回報 PROBE3", it.domProbeJs().contains("PROBE3"))
+        }
+        // Kimi／Qwen：送回覆是「使用者自己圈選」，容器抓不準時會退回 main，
+        // 不會硬塞錯誤內容，所以可先開；數學裁圖仍關（WebView 未必可見）。
+        listOf(AiProvider.KIMI, AiProvider.QWEN).forEach {
+            assertTrue("${it.name} 必須能送圖", it.capabilities.sendImage)
+            assertTrue("${it.name} 匯入要用戶圈選才安全", it.capabilities.importReply)
+            assertFalse("${it.name} 數學裁圖未實測，不可開", it.capabilities.mathCrop)
             assertTrue("${it.name} 探針要回報 PROBE3", it.domProbeJs().contains("PROBE3"))
         }
     }
@@ -181,7 +191,9 @@ class AiContractTest {
         assertEquals("", custom.startUrl)
         assertEquals("", custom.host)
         assertTrue(custom.capabilities.sendImage)
-        assertFalse("自訂站的匯入未實測，不可開", custom.capabilities.importReply)
+        // 不知道對方網站長怎樣，所以匯入一律走「使用者自己圈選」，容器抓不到就退回 main。
+        assertTrue("自訂站要靠圈選匯入，不能因為沒實測就整條關掉", custom.capabilities.importReply)
+        assertFalse("自訂站不保證 WebView 可見，數學裁圖不開", custom.capabilities.mathCrop)
         // 填了網址：起始頁與注入閘門的 host 都跟著它。
         val url = "https://chat.deepseek.com/"
         assertEquals(url, custom.effectiveStartUrl(url))

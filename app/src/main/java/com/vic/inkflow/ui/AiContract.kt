@@ -354,7 +354,18 @@ data class AiCapabilities(
     /** 能不能抓回覆匯入筆記。 */
     val importReply: Boolean = false,
     /** 匯入時能不能做數學裁圖（需要 WebView 可見，見 WebCrop.cropFormula）。 */
-    val mathCrop: Boolean = false
+    val mathCrop: Boolean = false,
+    /**
+     * 送圖優先用站方自己的 `input[type=file]`（由 `onShowFileChooser` 餵檔），
+     * 而不是合成 `paste` 事件。
+     *
+     * 為什麼要分：合成 paste 的 `dispatchEvent` 回傳值 **不代表圖真的進去了**，
+     * 只代表「沒有 listener 取消預設行為」。實測 Kimi／Qwen／Grok 都回
+     * `PASTE_DISPATCH_FAILED`，其中有些其實已經把圖非同步塞進去了——我們卻照著
+     * 這個假訊號又點了一次 file input，結果同一張圖進去兩份。
+     * 這類站台就別猜了：直接走它自己的上傳入口，一條路，不可能重複。
+     */
+    val fileInputFirst: Boolean = false
 )
 
 /** 匯入時用哪個離線數學引擎（裁圖失敗的第二引擎）。 */

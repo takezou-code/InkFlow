@@ -8,7 +8,8 @@ package com.vic.inkflow.ui
  * 只有 `startUrl`／`host` 是空的——實際值由 `ai_custom_url_CUSTOM` 推導。
  *
  * 候選鏈刻意寫得**很泛用**：不知道對方的 DOM，就先猜常見寫法，讓
- * `PROBE3` 探針回報命中數，之後再收斂。（匯入未實測，所以 `importReply` 關著。）
+ * `PROBE3` 探針回報命中數，之後再收斂。匯入用「段落圈選」：容器抓不準時
+ * 腳本會退回整個 `main`，使用者點哪段就匯哪段，不會硬塞。
  */
 internal object AiCustomDriver : CandidateChainDriver() {
 
@@ -18,7 +19,12 @@ internal object AiCustomDriver : CandidateChainDriver() {
     override val startUrl = ""
     override val host = ""
 
-    override val capabilities = AiCapabilities(sendImage = true)
+    // 不知道對方吃不吃合成 paste，走它自己的 file input 最不會出錯。
+    override val capabilities = AiCapabilities(
+        sendImage = true,
+        importReply = true,
+        fileInputFirst = true
+    )
 
     override val inputCandidates = listOf(
         "div[contenteditable=\"true\"]",

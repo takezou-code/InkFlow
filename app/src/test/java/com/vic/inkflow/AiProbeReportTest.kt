@@ -144,6 +144,28 @@ class AiProbeReportTest {
     }
 
     @Test
+    fun `多出回覆容器 census 也不影響其他欄位`() {
+        // census 是後來加在中段的欄位（fileInput 之後、pwd 之前），而且內容含
+        // `{n=1,anc=div.a>div.b,kids=div:12,p:3,...}` 這種大量 `,` 與 `=`。
+        // 它若把後面的 pwd／title 擠歪，設定頁會顯示「0 個密碼欄」這種假訊號。
+        val censusProbe = probe(pwd = 1, title = "Kimi AI 官網")
+            .replace(
+                " | pwd=",
+                " | replyCensus=[div.segment-content=>div.segment-content{n=2," +
+                    "anc=div.chat>div.main,kids=div:12,p:3,span:8,txt=540,run=none}] | pwd="
+            )
+        val r = parseProbeReport(censusProbe)!!
+        assertEquals(1, r.passwordFields)
+        assertEquals("Kimi AI 官網", r.title)
+        assertEquals(1, r.inputs.size)
+        assertEquals("article", r.firstReply()?.selector)
+        // census 內部若混進 `|`（例如使用者回的內容含直線），欄位會被切壞；
+        // JS 端已把 `|` 換成 `/`，這裡釘住「就算有，也不進 parser 的判斷」。
+        val withPipe = censusProbe.replace("txt=540", "txt=5/40")
+        assertEquals(1, parseProbeReport(withPipe)!!.passwordFields)
+    }
+
+    @Test
     fun `可用狀態由 DOM 推論而不是猜`() {
         assertEquals(AiReadiness.READY, parseProbeReport(sample)!!.readiness().state)
         // 有輸入框但抓不到回覆區 → 只能送。

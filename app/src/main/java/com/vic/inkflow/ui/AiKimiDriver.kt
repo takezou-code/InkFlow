@@ -3,7 +3,7 @@ package com.vic.inkflow.ui
 /**
  * Kimi（kimi.ai，Moonshot 國際版）。
  *
- * **Tier 1：開站＋送圖已開，匯入／數學裁圖尚未實測**。
+ * **送圖走站方自己的 file input；匯入用「段落圈選」（容器選擇器待實測收斂）。**
  *
  * 預設刻意指國際版：中國版 `kimi.com` 需要中國手機號，海外帳號登不進去。
  * 若使用者在中國或已有 `kimi.com` 帳號，到「設定 → AI 來源 → Kimi 網址」
@@ -14,7 +14,13 @@ internal object AiKimiDriver : CandidateChainDriver() {
     override val label = "Kimi"
     override val startUrl = "https://kimi.ai/"
     override val host = "kimi.ai"
-    override val capabilities = AiCapabilities(sendImage = true)
+    // fileInputFirst：合成 paste 在 Kimi 一律回 PASTE_DISPATCH_FAILED，但圖有時已經
+    // 進去了（非同步），再點 file input 就變兩張。走它自己的上傳入口只有一條路。
+    override val capabilities = AiCapabilities(
+        sendImage = true,
+        importReply = true,
+        fileInputFirst = true
+    )
 
     override val inputCandidates = listOf(
         "div[contenteditable=\"true\"].chat-input-editor",
@@ -36,6 +42,7 @@ internal object AiKimiDriver : CandidateChainDriver() {
         "div.segment-content",
         "div.markdown-container",
         "div[class*=\"assistant\"]",
+        "div[class*=\"markdown\"]",
         "div[class*=\"message\"]:last-child"
     )
 

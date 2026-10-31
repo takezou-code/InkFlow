@@ -3,7 +3,8 @@ package com.vic.inkflow.ui
 /**
  * Grok（grok.com）。
  *
- * **Tier 1：開站＋送圖已開，匯入／數學裁圖尚未實測**。
+ * 送圖走站方自己的 file input（合成 paste 的 dispatch 回傳值不可信）。
+ * 匯入暫不開：回覆容器只知道是 `div[class*="message"]`，還沒實測，等 census 收斂。
  * 選的候選都是「先能命中就好」，等 `PROBE3` 回報命中數再收斂成單一 selector。
  */
 internal object AiGrokDriver : CandidateChainDriver() {
@@ -11,7 +12,7 @@ internal object AiGrokDriver : CandidateChainDriver() {
     override val label = "Grok"
     override val startUrl = "https://grok.com/"
     override val host = "grok.com"
-    override val capabilities = AiCapabilities(sendImage = true)
+    override val capabilities = AiCapabilities(sendImage = true, fileInputFirst = true)
 
     override val inputCandidates = listOf(
         "textarea[aria-label=\"Ask Grok anything\"]",
