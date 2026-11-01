@@ -162,12 +162,22 @@ class AiContractTest {
             assertTrue("${it.name} 探針要回報 PROBE3", it.domProbeJs().contains("PROBE3"))
         }
         // Kimi／Qwen：送回覆是「使用者自己圈選」，容器抓不準時會退回 main，
-        // 不會硬塞錯誤內容，所以可先開；數學裁圖仍關（WebView 未必可見）。
+        // 不會硬塞錯誤內容，所以可先開。
+        // 數學裁圖也開：實測它們的公式**沒有**可還原的 TeX 來源（`anno=0`），
+        // 不裁像素就只能退成殘缺文字（使用者回報「公式可以選但截圖不對」）。
         listOf(AiProvider.KIMI, AiProvider.QWEN).forEach {
             assertTrue("${it.name} 必須能送圖", it.capabilities.sendImage)
             assertTrue("${it.name} 匯入要用戶圈選才安全", it.capabilities.importReply)
-            assertFalse("${it.name} 數學裁圖未實測，不可開", it.capabilities.mathCrop)
+            assertTrue("${it.name} 公式只能靠像素裁圖", it.capabilities.mathCrop)
             assertTrue("${it.name} 探針要回報 PROBE3", it.domProbeJs().contains("PROBE3"))
+        }
+        // DeepSeek：全新站台，一切都靠「自己的上傳入口＋使用者圈選」，
+        // 不走任何需要精準 selector 的捷徑。公式還沒實測，裁圖先關。
+        with(AiProvider.DEEPSEEK) {
+            assertTrue("DEEPSEEK 必須能送圖", capabilities.sendImage)
+            assertTrue("DEEPSEEK 匯入要用戶圈選才安全", capabilities.importReply)
+            assertFalse("DEEPSEEK 數學裁圖未實測，不可開", capabilities.mathCrop)
+            assertTrue("DEEPSEEK 送圖走站方 file input", capabilities.fileInputFirst)
         }
     }
 

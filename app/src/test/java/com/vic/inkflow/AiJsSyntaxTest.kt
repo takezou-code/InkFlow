@@ -1,6 +1,8 @@
 package com.vic.inkflow
 
 import com.vic.inkflow.ui.AiGenericScripts
+import com.vic.inkflow.ui.IMAGE_MODE_CLICK
+import com.vic.inkflow.ui.IMAGE_MODE_PASTE
 import com.vic.inkflow.ui.buildImagePasteJs
 import org.junit.Assert.assertEquals
 import org.junit.Assume.assumeTrue
@@ -53,13 +55,23 @@ class AiJsSyntaxTest {
             )
         )
         check(
-            "image",
+            "image_click",
+            buildImagePasteJs(
+                base64 = "",
+                attempts = 3,
+                inputSelector = "textarea, div[class*=\"chat-input\"]",
+                requestKey = "7_INSERT_PAGE",
+                mode = IMAGE_MODE_CLICK
+            )
+        )
+        check(
+            "image_paste",
             buildImagePasteJs(
                 base64 = "iVBORw0KGgo=",
                 attempts = 3,
                 inputSelector = "textarea, div[class*=\"chat-input\"]",
                 requestKey = "7_INSERT_PAGE",
-                fileInputFirst = true
+                mode = IMAGE_MODE_PASTE
             )
         )
     }

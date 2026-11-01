@@ -33,13 +33,28 @@ internal abstract class CandidateChainDriver : AiDriver {
         AiGenericScripts.domProbeJs(inputCandidates, sendCandidates, replyChain, replyIdleSelector)
 
     override fun pickJs(palette: PickPalette): String =
-        AiGeminiDriver.pickJs(replyChain = replyChain, palette = palette)
+        AiGeminiDriver.pickJs(replyChain = pickChain, palette = palette)
+
+    /**
+     * 圈選容器：**整個 `main`**，不是 [replyChain] 裡那幾個猜出來的容器。
+     *
+     * 實測代價：Kimi 的 `replyChain` 最後命中 `div.message-list`（空殼，`txt=0`），
+     * Qwen 的 `div[class*="message"]` 甚至命中送鈕容器——用它們當圈選範圍，
+     * 使用者只選得到最後一則或什麼都選不到。`main` 之外還有 body 退路，
+     * 選不到東西的情況不會發生；精準度由「文字葉節點 → 區塊祖先」補足。
+     */
+    override val pickChain: List<String> get() = listOf("main")
 
     override fun collectJs(): String =
-        // cropFormulas 跟著 capabilities 走：以前寫死 false，即使 driver 把
-        // mathCrop 打開，收集腳本也不會回報公式座標，裁圖永遠沒東西可裁。
-        // 「開一個 flag 就生效」是這裡唯一的正確形狀。
-        AiGeminiDriver.collectJs(replyChain = replyChain, cropFormulas = capabilities.mathCrop)
+        // cropFormulas＝「整塊像素裁圖」。它對應的是 importStrategy.blockCrop（ChatGPT），
+        // **不是** capabilities.mathCrop。這兩件事以前在這裡被綁死，結果一開
+        // mathCrop，收集腳本就把每一段都標成 k='b'（整塊裁圖），
+        // 「只裁公式」那條路（k='m'）永遠收不到東西——公式就退成殘缺文字。
+        // 現在語意對齊：blockCrop → 整塊裁圖；mathCrop → 文字切分＋公式裁圖。
+        AiGeminiDriver.collectJs(
+            replyChain = replyChain,
+            cropFormulas = importStrategy.blockCrop
+        )
 }
 
 /**

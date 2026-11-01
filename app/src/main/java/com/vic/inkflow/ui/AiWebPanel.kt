@@ -595,21 +595,65 @@ fun AiWebPanel(
         if (uri != null && provider.capabilities.sendImage) {
             try {
                 val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                if (bytes != null) {
-                    val base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
-                    target?.evaluateJavascript(
-                        buildImagePasteJs(
-                            base64 = base64,
-                            attempts = attempts,
-                            inputSelector = provider.imagePasteInputSelector,
-                            requestKey = req.dedupeKey(),
-                            fileInputFirst = provider.capabilities.fileInputFirst
-                        ),
-                        null
-                    )
-                    android.util.Log.d("InkFlowDbg", "UPLOAD paste dispatched ($tag) b64len=${base64.length}")
-                } else {
+                if (bytes == null || bytes.isEmpty()) {
+                    // 這裡以前只寫 android.util.Log：使用者看到「圖完全沒反應」，
+                    // 而診斷頁一個字都沒有。讀不到檔就是讀不到，要留下證據。
+                    AiDiag.log(context, provider, "DELIVER_FAIL", "tag=$tag reason=image_unreadable")
                     android.util.Log.d("InkFlowDbg", "UPLOAD read failed ($tag)")
+                } else {
+                    val base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+                    val key = req.dedupeKey()
+                    val sel = provider.imagePasteInputSelector
+                    if (provider.capabilities.fileInputFirst) {
+                        // 第一段：只點站方上傳入口（不夾帶 base64）。chooser 有沒有開，
+                        // 只有 onShowFileChooser 知道，所以第二段由這裡延遲決定。
+                        AiDiag.log(context, provider, "IMG_JS", "mode=click key=$key b64=${base64.length}")
+                        target?.evaluateJavascript(
+                            buildImagePasteJs(
+                                base64 = "",
+                                attempts = attempts,
+                                inputSelector = sel,
+                                requestKey = key,
+                                mode = IMAGE_MODE_CLICK
+                            ),
+                            null
+                        )
+                        target?.postDelayed({
+                            // chooser 沒開（fedImageKey 沒被設）＝`input.click()` 被 WebView 擋掉，
+                            // 圖根本沒進去。這時才補合成 paste——只補一次，所以不會兩張。
+                            if (uploadState.fedImageKey != key) {
+                                AiDiag.log(
+                                    context, provider, "IMG_FALLBACK",
+                                    "reason=chooser_not_fired wait=${CHOOSER_WAIT_MS}ms"
+                                )
+                                target?.evaluateJavascript(
+                                    buildImagePasteJs(
+                                        base64 = base64,
+                                        attempts = attempts,
+                                        inputSelector = sel,
+                                        requestKey = key,
+                                        mode = IMAGE_MODE_PASTE
+                                    ),
+                                    null
+                                )
+                            } else {
+                                AiDiag.log(context, provider, "IMG_OK", "path=chooser key=$key")
+                            }
+                        }, CHOOSER_WAIT_MS)
+                    } else {
+                        AiDiag.log(context, provider, "IMG_JS", "mode=paste key=$key b64=${base64.length}")
+                        target?.evaluateJavascript(
+                            buildImagePasteJs(
+                                base64 = base64,
+                                attempts = attempts,
+                                inputSelector = sel,
+                                requestKey = key,
+                                mode = IMAGE_MODE_PASTE
+                            ),
+                            null
+                        )
+                    }
+                    android.util.Log.d("InkFlowDbg", "UPLOAD dispatched ($tag) b64len=${base64.length}")
                 }
             } catch (e: Exception) {
                 android.util.Log.e("InkFlowDbg", "UPLOAD $tag failed", e)
@@ -882,10 +926,20 @@ val isDarkPanel = MaterialTheme.colorScheme.background.luminance() < 0.5f
                             val pendingImage = req?.image
                             if (pendingImage != null && !req.isEmpty && uploadState.fedImageKey != req.dedupeKey()) {
                                 uploadState.fedImageKey = req.dedupeKey()
+                                // 這一行是「圖到底有沒有交到網頁手上」的唯一證據：
+                                // 有 CHOOSER tag=feed 才代表點上傳入口那一步真的成功。
+                                AiDiag.log(
+                                    context, currentProvider.value, "CHOOSER",
+                                    "tag=feed key=${req.dedupeKey()}"
+                                )
                                 filePathCallback?.onReceiveValue(arrayOf(pendingImage))
                                 return true
                             }
                             // 使用者手動點上傳：開系統檔案選擇器（圖片／PDF／文件）。
+                            AiDiag.log(
+                                context, currentProvider.value, "CHOOSER",
+                                "tag=picker pending=${pendingImage != null}"
+                            )
                             if (filePathCallback == null) return false
                             try { fileChooser.callback?.onReceiveValue(null) } catch (_: Throwable) { }
                             fileChooser.callback = filePathCallback
@@ -1078,7 +1132,21 @@ private const val UPLOAD_ATTEMPTS_LOAD = 20
 private const val UPLOAD_ATTEMPTS_UPDATE = 10
 
 /**
- * 貼圖腳本。
+ * 等站方開檔案選擇器的時間。
+ *
+ * 為什麼要有這個等待：`input[type=file]` 的 `click()` 在 WebView 裡**不一定**會
+ * 觸發 `onShowFileChooser`（沒有使用者手勢時可能被擋）。以前我們點完就當成功了，
+ * 圖就安靜地消失——實測 Kimi／Qwen／Grok「填詞成功但圖沒進去」就是這個。
+ * 現在點完等一段，chooser 沒開才改走模擬 paste（只走一條，不會兩張）。
+ */
+private const val CHOOSER_WAIT_MS = 1500L
+
+/** [buildImagePasteJs] 的兩種模式：只點站方上傳入口／只合成 paste。 */
+internal const val IMAGE_MODE_CLICK = "click"
+internal const val IMAGE_MODE_PASTE = "paste"
+
+/**
+ * 貼圖腳本（單一路徑，`mode` 決定走哪一條）。
  *
  * ## 為什麼不再「paste 失敗就點 file input」
  *
@@ -1087,28 +1155,40 @@ private const val UPLOAD_ATTEMPTS_UPDATE = 10
  * 但其中有些站其實已經在 paste handler 裡非同步把圖塞進去了——我們照著這個
  * 假訊號再點一次 file input，同一張圖就進去兩份（使用者看到的「變成 2 張」）。
  *
- * 現在依 provider 宣告的 [AiCapabilities.fileInputFirst] 選**一條**路徑：
- * file input 優先（站方自己的上傳入口，成不成看得到），沒有才退回模擬 paste。
- * 再加一道「同一請求只注入一次」的頁面級護欄，就算 Kotlin 端重複投遞也不會貼兩次。
+ * ## 現在的分工
+ *
+ * - [`IMAGE_MODE_CLICK`]：只點站方自己的上傳入口，等 `onShowFileChooser` 餵檔。
+ *   這一步不夾帶 base64（少幾 MB 的字串跨層，也讓 click 不受圖檔大小影響）。
+ * - [`IMAGE_MODE_PASTE`]：只合成 paste。**不會**再點 file input。
+ *
+ * 兩條路由 [AiCapabilities.fileInputFirst] 決定先後，並由 Kotlin 端的
+ * `CHOOSER_WAIT_MS` 判斷要不要補 paste，所以同一次請求最多注入一次。
  */
 internal fun buildImagePasteJs(
     base64: String,
     attempts: Int,
     inputSelector: String,
     requestKey: String,
-    fileInputFirst: Boolean
+    mode: String = IMAGE_MODE_PASTE
 ): String {
     // 單引號包字串：selector 裡有雙引號（見 AiGenericScripts 的說明）。
     val reqKey = requestKey.replace("'", "")
+    val safeMode = if (mode == IMAGE_MODE_CLICK) IMAGE_MODE_CLICK else IMAGE_MODE_PASTE
+    // click 模式不需要圖：把 base64 留在 Kotlin 端。少一次幾 MB 的字串跨層，
+    // 也讓「點上傳入口」這一步不受圖檔大小影響。
+    val b64 = if (safeMode == IMAGE_MODE_CLICK) "" else base64
     return """
         (function() {
             function report(s) {
                 try { if (window.AndroidBridge && AndroidBridge.onPasteResult) AndroidBridge.onPasteResult(s); } catch(e){}
             }
             var REQ = '$reqKey';
-            // 頁面級去重：同一筆請求只注入一次。Kotlin 端已有 lastHandledKey，
-            // 但「load／update 兩條路都投遞」曾讓同一張圖進去兩份，這裡是最後一道。
-            if (window.__inkImgReq === REQ) { report('IMAGE_SKIP_DUP'); return; }
+            var MODE = '$safeMode';
+            var CLICK = MODE === 'click';
+            // 兩條路**各一把鎖**（不能共用）：click 這一步若鎖住 paste 的鎖，
+            // 等不到 chooser 時的貼圖退路就永遠不會跑；反之 paste 先跑也不能擋掉 click。
+            var lockName = CLICK ? '__inkClickReq' : '__inkImgReq';
+            if (window[lockName] === REQ) { report('IMAGE_SKIP_DUP:' + MODE); return; }
 
             function simulateImagePaste(target, base64Data) {
                 try {
@@ -1168,54 +1248,26 @@ internal fun buildImagePasteJs(
                 return best;
             }
 
-            function tryFileInputClick() {
-                var input = pickFileInput();
-                if (input) {
-                    input.click();
-                    report('FILE_INPUT_CLICKED');
-                    return true;
-                }
-                return false;
-            }
-
-            function tryUploadButtonClick() {
-                var selectors = [
-                    'button[aria-label*="Upload"]',
-                    'button[aria-label*="upload"]',
-                    'button[aria-label*="Add"]',
-                    'button[aria-label*="＋"]',
-                    '.upload-button',
-                    '.icon-button'
-                    ];
-                for (var i = 0; i < selectors.length; i++) {
-                    var btn = document.querySelector(selectors[i]);
-                    if (btn) {
-                        btn.click();
-                        report('UPLOAD_BUTTON_CLICKED');
-                        return true;
-                    }
-                }
-                return false;
-            }
-
-            var FILE_FIRST = $fileInputFirst;
             var delivered = false;
             function deliver(chatInput) {
                 if (delivered) return;
                 delivered = true;
                 // 真正投遞時才上鎖：輸入框還沒出現就鎖，會讓重試永遠被跳過。
-                window.__inkImgReq = REQ;
-                if (FILE_FIRST) {
+                window[lockName] = REQ;
+                if (CLICK) {
                     report('IMAGE_PATH:file_input');
-                    if (tryFileInputClick()) return;
-                    if (simulateImagePaste(chatInput, "$base64")) return;
-                    tryUploadButtonClick();
+                    var input = pickFileInput();
+                    if (!input) { report('FILE_INPUT_NONE'); return; }
+                    try {
+                        input.click();
+                        report('FILE_INPUT_CLICKED');
+                    } catch(e) {
+                        report('FILE_INPUT_CLICK_THREW');
+                    }
                     return;
                 }
                 report('IMAGE_PATH:paste');
-                if (simulateImagePaste(chatInput, "$base64")) return;
-                if (tryFileInputClick()) return;
-                tryUploadButtonClick();
+                if (!simulateImagePaste(chatInput, "$b64")) report('PASTE_ONLY_FAILED');
             }
 
             var attempts = 0;
@@ -1228,7 +1280,7 @@ internal fun buildImagePasteJs(
                     attempts++;
                     if (attempts >= $attempts) {
                         clearInterval(interval);
-                        report('NO_CHAT_INPUT_FOUND');
+                        report('NO_CHAT_INPUT_FOUND:' + MODE);
                     }
                 }
             }, 500);

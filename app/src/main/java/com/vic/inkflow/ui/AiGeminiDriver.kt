@@ -290,6 +290,50 @@ override fun promptSendJs(promptQuoted: String, send: Boolean): String {
                     return true;
                 } catch(e){ return false; }
             }
+            // 行內包裝（span／a／strong…）：往上爬到「一整段」再標記。
+            //
+            // 實測症狀：Kimi／Qwen 的**列點可以選、一般段落點不動**。原因不是圈選邏輯壞，
+            // 而是它們的一般段落是 `<div><span>文字</span></div>`——沒有 `<p>`，
+            // 下面那行候選標籤一個都對不上；`<li>` 有對上，所以只有列點能點。
+            var INLINE_TAGS = {
+                a: 1, abbr: 1, b: 1, bdi: 1, bdo: 1, cite: 1, code: 1, data: 1, dfn: 1, em: 1,
+                i: 1, kbd: 1, mark: 1, q: 1, s: 1, samp: 1, small: 1, span: 1, strong: 1,
+                sub: 1, sup: 1, time: 1, u: 1, var: 1
+            };
+            function isInlineEl(el) {
+                try {
+                    if (!el || !el.tagName) return false;
+                    if (INLINE_TAGS[el.tagName.toLowerCase()]) return true;
+                    var d = getComputedStyle(el).display;
+                    // inline-block／inline-flex 自己就是一個可選單位，不再往上爬。
+                    return d.indexOf('inline') === 0 &&
+                        d !== 'inline-block' && d !== 'inline-flex' && d !== 'inline-grid';
+                } catch(e) { return false; }
+            }
+            function resolveBlock(el, root) {
+                var cur = el, guard = 0;
+                while (cur && cur !== root && cur.nodeType === 1 && guard++ < 12) {
+                    if (!isInlineEl(cur)) return cur;
+                    cur = cur.parentElement;
+                }
+                return null;
+            }
+            /** 文字葉節點 → 最近的區塊祖先。補齊沒有 `<p>` 的站台。 */
+            function armTextBlocks(root) {
+                var extra = 0;
+                try {
+                    if (!document.createTreeWalker) return 0;
+                    var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+                    var node;
+                    while ((node = walker.nextNode())) {
+                        var v = node.nodeValue;
+                        if (!v || v.trim().length === 0) continue;
+                        var blk = resolveBlock(node.parentElement, root);
+                        if (blk && mark(blk)) extra++;
+                    }
+                } catch(e){}
+                return extra;
+            }
             var parts = container.querySelectorAll('p, li, h1, h2, h3, h4, h5, h6, pre, blockquote, table, thead, tbody, tfoot, tr, td, th, div.math-block, span.math-inline, div.katex-display, span.katex');
             var n = 0;
             if (parts.length === 0) {
@@ -297,6 +341,9 @@ override fun promptSendJs(promptQuoted: String, send: Boolean): String {
             } else {
                 parts.forEach(function(el) { if (mark(el)) n++; });
             }
+            // 候選標籤抓不到的段落（div 排版、公式所在的 span）：用文字節點補。
+            // 已標過的祖先會被 mark() 擋掉，不會重複也不會把整篇包成一塊。
+            n += armTextBlocks(container);
             window.__inkpickAnchor = null;
             function marked() {
                 return Array.prototype.slice.call(document.querySelectorAll('[data-inkpick]'));
@@ -362,7 +409,17 @@ override fun promptSendJs(promptQuoted: String, send: Boolean): String {
             window.__inkpickHandler = function(ev) {
                 try {
                     if (!window.__inkpick) return;
-                    var t = (ev.target && ev.target.closest) ? ev.target.closest('p, li, h1, h2, h3, h4, h5, h6, pre, blockquote, table, thead, tbody, tfoot, tr, td, th, div.math-block, span.math-inline, div.katex-display, span.katex') : null;
+                    var t = (ev.target && ev.target.closest) ? ev.target.closest('[data-inkpick]') : null;
+                    if (!t && ev.target) {
+                        // 沒現成標記：當場解析點到的區塊（div 段落自癒）。
+                        // 用 body 當邊界而不是 container——SPA 重渲染後 container 可能已作廢。
+                        var blk = resolveBlock(ev.target, document.body);
+                        if (blk && !inChrome(blk) &&
+                            blk.innerText && blk.innerText.trim().length > 0) {
+                            blk.setAttribute('data-inkpick', '0');
+                            t = blk;
+                        }
+                    }
                     if (!t) return;
                     // 自癒：串流中重渲染導致容器換新時，不卡容器歸屬、有字就地標記（chrome 區除外）
                     if (inChrome(t)) return;

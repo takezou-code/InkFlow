@@ -16,9 +16,12 @@ internal object AiKimiDriver : CandidateChainDriver() {
     override val host = "kimi.ai"
     // fileInputFirst：合成 paste 在 Kimi 一律回 PASTE_DISPATCH_FAILED，但圖有時已經
     // 進去了（非同步），再點 file input 就變兩張。走它自己的上傳入口只有一條路。
+    // mathCrop：Kimi 的公式沒有可還原的 TeX 來源（實測 `anno=0`），只能裁像素，
+    // 不開就會把公式退成殘缺文字（「公式可以選但截圖不對」）。
     override val capabilities = AiCapabilities(
         sendImage = true,
         importReply = true,
+        mathCrop = true,
         fileInputFirst = true
     )
 
@@ -38,12 +41,17 @@ internal object AiKimiDriver : CandidateChainDriver() {
         "button[type=\"submit\"]"
     )
 
+    /**
+     * 回覆容器候選。**只用於探針量測**（圈選走 `main`，見 CandidateChainDriver.pickChain）：
+     * 舊的 `div[class*="message"]:last-child` 實測命中 `div.message-list`（空殼，`txt=0`），
+     * 拿它當圈選範圍會只選到最後一則甚至什麼都選不到。
+     */
     override val replyChain = listOf(
         "div.segment-content",
         "div.markdown-container",
-        "div[class*=\"assistant\"]",
         "div[class*=\"markdown\"]",
-        "div[class*=\"message\"]:last-child"
+        "div[class*=\"message-content\"]",
+        "article"
     )
 
     /** 尚未實測：先不設閘門，匯入開啟前必須先確認這站的串流語意。 */

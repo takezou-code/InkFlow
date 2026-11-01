@@ -34,14 +34,15 @@ enum class AiProvider(val driver: AiDriver) {
     CHATGPT(AiChatGptDriver),
 
     /**
-     * 以下四家是 **Tier 1**：開站、登入、送圖可用；匯入與數學裁圖等平板實測
-     * （`PROBE3` log 鎖定 selector）後才開。新增一家 AI 只要：
+     * 以下幾家是 **Tier 1 起跳**：開站、登入、送圖可用；匯入／數學裁圖逐項實測後才開
+     * （`PROBE3` log 鎖定 selector）。新增一家 AI 只要：
      * ①新增 `AiXxxDriver.kt` ②這裡加一行。契約層不需要再補任何 `when` 分支。
      */
     CLAUDE(AiClaudeDriver),
     GROK(AiGrokDriver),
     KIMI(AiKimiDriver),
     QWEN(AiQwenDriver),
+    DEEPSEEK(AiDeepSeekDriver),
 
     /**
      * 自訂 AI：**沒有預設網站**，名稱與網址都由使用者在設定頁填。
@@ -405,6 +406,16 @@ interface AiDriver {
     val importStrategy: AiImportStrategy
     val glyph: AiGlyph
     val replyChain: List<String>
+
+    /**
+     * 圈選時要找的容器鏈；預設與 [replyChain] 相同。
+     *
+     * 為什麼要分開：`replyChain` 是「探針要量哪幾個候選」，越精確越好；
+     * 圈選要的是「整個對話區」，越寬越好。實測 Kimi／Qwen 的 `replyChain` 命中
+     * 的是單一訊息泡泡（甚至空殼 `div.message-list`），導致只有最後一則能選。
+     * 對版面還不熟的站台，圈選直接落在 `main` 最穩（見 CandidateChainDriver）。
+     */
+    val pickChain: List<String> get() = replyChain
 
     /**
      * 串流中必須等它消失的 selector；null＝這站沒有停止鈕語意。
