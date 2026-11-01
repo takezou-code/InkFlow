@@ -3,7 +3,6 @@ package com.vic.inkflow.ui
 import java.math.BigDecimal
 import java.math.MathContext
 import java.math.RoundingMode
-import java.util.Locale
 import kotlin.math.E
 import kotlin.math.PI
 import kotlin.math.abs
@@ -32,6 +31,17 @@ internal sealed interface CalcResult {
     data class Ok(val value: Double) : CalcResult
     data class Err(val message: String) : CalcResult
 }
+
+/**
+ * 顯示格式。
+ *
+ * - [AUTO]：像一般計算機，整數就整數、太大才轉科學記號。
+ * - [SCI]：一律 a×10ⁿ（a ∈ [1,10)）——課本、論文算式用。
+ * - [ENG]：指數固定 3 的倍數（a ∈ [1,1000)）——工程領域對應 k/M/G 字首，
+ *   看到 `12.5e3` 就等於 12.5k，不用自己數位數。實體工程計算機（HP／Casio／TI）
+ *   都有這一檔，這也是「工程用」與一般計算機真正的分界。
+ */
+internal enum class CalcNotation { AUTO, SCI, ENG }
 
 /**
  * 工程計算機的算式核心：純 Kotlin、無 Android 依賴、無第三方 parser。
@@ -109,12 +119,17 @@ internal object CalcEngine {
      * 收斂到固定 12 位有效數字（不是「固定小數位」）：1/3 顯示 0.333333333333，
      * 而 12345678901234 不會被截成 12345678901200。
      */
-    fun format(value: Double): String {
+    fun format(value: Double, notation: CalcNotation = CalcNotation.AUTO): String {
         if (value.isNaN()) return "錯誤"
         if (value.isInfinite()) return if (value > 0) "∞" else "−∞"
         if (value == 0.0) return "0"
+        if (notation != CalcNotation.AUTO) {
+            return scientificNotation(value, engineering = notation == CalcNotation.ENG)
+        }
         val magnitude = abs(value)
-        if (magnitude >= SCI_UPPER || magnitude < SCI_LOWER) return scientific(value)
+        if (magnitude >= SCI_UPPER || magnitude < SCI_LOWER) {
+            return scientificNotation(value, engineering = false)
+        }
         if (value == floor(value) && magnitude < SCI_UPPER) return value.toLong().toString()
         val rounded = BigDecimal(value)
             .round(MathContext(SIGNIFICANT_DIGITS, RoundingMode.HALF_UP))
@@ -122,13 +137,27 @@ internal object CalcEngine {
         return rounded.toPlainString()
     }
 
-    private fun scientific(value: Double): String {
-        // %.10e → "1.2345000000e+16"；尾零與多餘的點收掉，指數用 "e16" 這種寫法
-        val raw = String.format(Locale.US, "%.10e", value)
-        val parts = raw.split('e')
-        val mantissa = parts[0].trimEnd('0').trimEnd('.')
-        val exponent = parts[1].toInt()
-        return "${mantissa}e$exponent"
+    /**
+     * 科學／工程記號。
+     *
+     * 進位會把尾數推過界：`9.99999999999e5` 收到 10 位有效數字會變成 `10`，
+     * 那就不再是 `1 <= |a| < 10` 的形式了。所以收斂完要再檢查一次，
+     * 過界就把小數點挪回來、指數加一格（工程記號一次挪 3 格）。
+     */
+    private fun scientificNotation(value: Double, engineering: Boolean): String {
+        val magnitude = abs(value)
+        var exponent = floor(log10(magnitude)).toInt()
+        if (engineering) exponent = Math.floorDiv(exponent, 3) * 3
+        var mantissa = BigDecimal(value)
+            .movePointLeft(exponent)
+            .round(MathContext(SIGNIFICANT_DIGITS, RoundingMode.HALF_UP))
+        val limit = BigDecimal(if (engineering) 1000 else 10)
+        val step = if (engineering) 3 else 1
+        while (mantissa.abs() >= limit) {
+            mantissa = mantissa.movePointLeft(step)
+            exponent += step
+        }
+        return "${mantissa.stripTrailingZeros().toPlainString()}e$exponent"
     }
 
     /** 內部錯誤：只有 parser 自己丟，外面一律轉成 [CalcResult.Err]。 */
@@ -231,7 +260,7 @@ internal object CalcEngine {
                 }
                 ch.isDigit() || ch == '.' -> parseNumber()
                 ch == 'π' -> { index++; PI }
-                ch.isLetter() || ch == '√' -> parseIdentifier()
+                ch.isLetter() || ch == '√' || ch == '∛' -> parseIdentifier()
                 ch == '\u0000' -> fail("算式不完整")
                 else -> fail("看不懂的字元「$ch」")
             }
@@ -265,7 +294,7 @@ internal object CalcEngine {
             index++
             while (true) {
                 val ch = peek()
-                if (ch.isLetterOrDigit() || ch == '√') index++ else break
+                if (ch.isLetterOrDigit() || ch == '√' || ch == '∛') index++ else break
             }
             val name = text.substring(start, index).lowercase()
             skipSpaces()
@@ -309,7 +338,7 @@ internal object CalcEngine {
                 "log" -> { if (x <= 0) fail("log 只吃正數"); log10(x) }
                 "log2" -> { if (x <= 0) fail("log2 只吃正數"); log2(x) }
                 "sqrt", "√" -> { if (x < 0) fail("√ 只吃非負數"); sqrt(x) }
-                "cbrt" -> cbrt(x)
+                "cbrt", "∛" -> cbrt(x)
                 "exp" -> exp(x)
                 "abs" -> abs(x)
                 "floor" -> floor(x)
@@ -333,7 +362,8 @@ internal object CalcEngine {
 
         private fun startsPrimary(): Boolean {
             val ch = peek()
-            return ch.isDigit() || ch == '.' || ch == '(' || ch == 'π' || ch == '√' || ch.isLetter()
+            return ch.isDigit() || ch == '.' || ch == '(' || ch == 'π' ||
+                ch == '√' || ch == '∛' || ch.isLetter()
         }
 
         private fun peek(): Char = if (index < text.length) text[index] else '\u0000'

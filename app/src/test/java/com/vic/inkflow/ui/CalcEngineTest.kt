@@ -89,6 +89,9 @@ class CalcEngineTest {
         assertEquals(3.0, ok("√(9)"), 0.0)
         assertEquals(3.0, ok("sqrt(9)"), 0.0)
         assertEquals(-2.0, ok("cbrt(-8)"), 0.0)
+        // 鍵盤上的 2nd 直接送 ∛(，不是每個使用者都會打 cbrt
+        assertEquals(-2.0, ok("∛(-8)"), 0.0)
+        assertEquals(2.0, ok("∛(8)"), 0.0)
         assertEquals(3.0, ok("log(1000)"), 0.0)
         assertEquals(5.0, ok("log2(32)"), 0.0)
         assertClose(1.0, ok("ln(e)"))
@@ -133,6 +136,36 @@ class CalcEngineTest {
         assertEquals("∞", CalcEngine.format(Double.POSITIVE_INFINITY))
         assertEquals("−∞", CalcEngine.format(Double.NEGATIVE_INFINITY))
         assertEquals("錯誤", CalcEngine.format(Double.NaN))
+    }
+
+    @Test
+    fun scientificAndEngineeringNotation() {
+        // SCI：一律 a×10ⁿ，a ∈ [1,10)
+        assertEquals("1.2345e4", CalcEngine.format(12345.0, CalcNotation.SCI))
+        assertEquals("1e-3", CalcEngine.format(0.001, CalcNotation.SCI))
+        assertEquals("-2.5e0", CalcEngine.format(-2.5, CalcNotation.SCI))
+        // ENG：指數固定 3 的倍數，尾數 ∈ [1,1000)——看到 12.345e3 就是 12.345k
+        assertEquals("12.345e3", CalcEngine.format(12345.0, CalcNotation.ENG))
+        assertEquals("-12.345e3", CalcEngine.format(-12345.0, CalcNotation.ENG))
+        assertEquals("1e-3", CalcEngine.format(0.001, CalcNotation.ENG))
+        assertEquals("999.999e3", CalcEngine.format(999.999e3, CalcNotation.ENG))
+        assertEquals("1e6", CalcEngine.format(1e6, CalcNotation.ENG))
+        // 收斂到 12 位會把尾數推過界：999.999999999999 → 1000，要退回 1e3
+        assertEquals("1e3", CalcEngine.format(999.999999999999, CalcNotation.ENG))
+        assertEquals("1e1", CalcEngine.format(9.99999999999999, CalcNotation.SCI))
+        // AUTO 不受影響（預設外觀不變）
+        assertEquals("12345", CalcEngine.format(12345.0))
+    }
+
+    @Test
+    fun notationFormattedResultCanBeFedBackIn() {
+        listOf(12345.0, 0.001, -12345.0, 1e6, 999.999999999999).forEach { value ->
+            CalcNotation.values().forEach { notation ->
+                val text = CalcEngine.format(value, notation)
+                val again = CalcEngine.evaluate(text)
+                assertTrue("round-trip 失敗：$notation $text → $again", again is CalcResult.Ok)
+            }
+        }
     }
 
     @Test
