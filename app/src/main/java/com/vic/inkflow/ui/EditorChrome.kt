@@ -139,7 +139,7 @@ import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.TouchApp
 import androidx.compose.material.icons.outlined.BackHand
-import androidx.compose.material.icons.outlined.Spa
+import androidx.compose.material.icons.outlined.Calculate
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Psychology
 import androidx.compose.material.icons.rounded.Brush
@@ -261,8 +261,8 @@ fun TabletEditorTopBar(
     isAiPanelOpen: Boolean = false,
     isSendingPage: Boolean = false,
     aiProvider: AiProvider = AiProvider.GEMINI,
-    isPowerSaver: Boolean = false,
-    onTogglePowerSaver: () -> Unit = {},
+    /** 工具列上的工程計算機：只在這裡開關，狀態由 EditorScreen 持有（見 CalcSession）。 */
+    onOpenCalculator: () -> Unit = {},
     /**
      * 插圖：圖片鈕切到 IMAGE 工具，來源（圖庫／拍照）由工具列子選單選（見下方
      * activeTool == Tool.IMAGE 的 AnimatedVisibility，結構照抄圈選子選單）。
@@ -720,6 +720,9 @@ fun TabletEditorTopBar(
                     ) {
                         Icon(Icons.AutoMirrored.Outlined.Redo, contentDescription = "Redo", tint = glassContentColor(isDarkTheme).copy(alpha = if (canRedo) 1f else 0.35f))
                     }
+                    // 分組：歷史（undo/redo）｜文件（匯出/設定）｜工具（輸入模式/計算機）。
+                    // 以前六顆一字排開沒有分隔，使用者在平板上找不到「哪顆是文件層級」。
+                    VerticalDivider(Modifier.height(24.dp).padding(horizontal = 6.dp))
                     Box(
                         modifier = Modifier
                             .padding(horizontal = 4.dp)
@@ -740,6 +743,7 @@ fun TabletEditorTopBar(
                             tint = glassContentColor(isDarkTheme)
                         )
                     }
+                    VerticalDivider(Modifier.height(24.dp).padding(horizontal = 6.dp))
                     IconButton(onClick = { viewModel.cycleInputMode() }, modifier = Modifier.size(utilityButtonSize)) {
                         Icon(
                             imageVector = when (inputMode) {
@@ -759,13 +763,14 @@ fun TabletEditorTopBar(
                             }
                         )
                     }
-                    // 靜模式快捷：開＝靜，關＝流光（跟設定頁同一開關）
-                    IconButton(onClick = onTogglePowerSaver, modifier = Modifier.size(utilityButtonSize)) {
+                    // 靜模式快捷已從工具列移除：那是一個「一個月按不到一次」的設定，
+                    // 卻佔掉每天都要用的位置。功能還在「設定 → 外觀 → 靜模式」。
+                    // 這裡改成工程計算機——工具列上的按鈕只留「當場要用」的東西。
+                    IconButton(onClick = onOpenCalculator, modifier = Modifier.size(utilityButtonSize)) {
                         Icon(
-                            imageVector = Icons.Outlined.Spa,
-                            contentDescription = "靜模式",
-                            tint = if (isPowerSaver) MaterialTheme.colorScheme.primary
-                            else glassContentColor(isDarkTheme)
+                            imageVector = Icons.Outlined.Calculate,
+                            contentDescription = "工程計算機",
+                            tint = glassContentColor(isDarkTheme)
                         )
                     }
                 }

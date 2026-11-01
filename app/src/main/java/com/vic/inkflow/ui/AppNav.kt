@@ -413,7 +413,6 @@ fun InkLayerApp(db: AppDatabase) {
                 backdropKind = backdropKind,
                 backdropScene = backdropScene,
                 backdropImageUri = backdropImageUri,
-                onTogglePowerSaver = { setPowerSaver(!powerSaver, from = "library-dock") },
                 onToggleDarkTheme = {
                     val newMode = if (isDarkTheme) ThemeMode.LIGHT else ThemeMode.DARK
                     themeModeStr = newMode.name
@@ -456,8 +455,7 @@ fun InkLayerApp(db: AppDatabase) {
                     backdropTheme = backdropTheme,
                     backdropKind = backdropKind,
                     backdropScene = backdropScene,
-                    backdropImageUri = backdropImageUri,
-                    onTogglePowerSaver = { setPowerSaver(!powerSaver, from = "editor-toolbar") }
+                    backdropImageUri = backdropImageUri
                 )
             }
         }       // if (pdfUri != null) ＋ composable editor

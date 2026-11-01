@@ -267,8 +267,7 @@ fun TabletEditorScreen(
     backdropTheme: BackdropTheme = BackdropTheme.SOFT,
     backdropKind: BackdropKind = BackdropKind.ORB,
     backdropScene: BackdropScene = DuneScene,
-    backdropImageUri: android.net.Uri? = null,
-    onTogglePowerSaver: () -> Unit = {}
+    backdropImageUri: android.net.Uri? = null
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val prefs = remember { context.getSharedPreferences("inkflow_settings", 0) }
@@ -1014,6 +1013,9 @@ fun TabletEditorScreen(
 
     // Document settings dialog state
     var showDocumentSettingsDialog by remember { mutableStateOf(false) }
+    var showCalculator by remember { mutableStateOf(false) }
+    // 計算機狀態放在這裡（不是對話框裡）：關掉再開，算式與歷史還在。
+    val calcSession = remember { CalcSession() }
     var showExportConfirmDialog by remember { mutableStateOf(false) }
     var isExportingPdf by remember { mutableStateOf(false) }
     var selectedExportIndices by remember { mutableStateOf<List<Int>>(emptyList()) }
@@ -1035,6 +1037,15 @@ fun TabletEditorScreen(
             hazeState = editorHaze
         )
     }
+
+    // 工程計算機：工具列按鈕打開。狀態（算式／歷史／DEG）留在 calcSession，關掉再開不重來。
+    EngineeringCalculatorDialog(
+        visible = showCalculator,
+        session = calcSession,
+        isDark = isEditorDark,
+        hazeState = editorHaze,
+        onDismiss = { showCalculator = false }
+    )
 
     AnimatedDialog(visible = showExportConfirmDialog) {
         GlassDialogCustom(
@@ -1757,8 +1768,7 @@ onToggleAiPanel = { showAiPanel = !showAiPanel },
     aiProvider = aiProvider,
                 isAiPanelOpen = showAiPanel,
                 isSendingPage = isSendingPage,
-                isPowerSaver = isPowerSaver,
-                onTogglePowerSaver = onTogglePowerSaver,
+                onOpenCalculator = { showCalculator = true },
                 onPickImage = {
                     // 子選單「從檔案選擇」：工具已經是 IMAGE（按圖片鈕時切的），
                     // 直接開圖庫，行為與之前一致。

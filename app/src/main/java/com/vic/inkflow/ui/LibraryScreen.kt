@@ -125,7 +125,6 @@ import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.outlined.Spa
 import androidx.compose.material.icons.rounded.Brush
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Gesture
@@ -243,7 +242,6 @@ fun DocumentLibraryScreen(
     backdropKind: BackdropKind = BackdropKind.ORB,
     backdropScene: BackdropScene = DuneScene,
     backdropImageUri: android.net.Uri? = null,
-    onTogglePowerSaver: () -> Unit = {},
     onToggleDarkTheme: () -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -656,15 +654,8 @@ fun DocumentLibraryScreen(
                 isDarkTheme = isDarkTheme
             )
             Spacer(Modifier.weight(1f))
-            // 靜模式快捷：開＝靜，關＝流光（跟設定頁同一開關）
-            IconButton(onClick = onTogglePowerSaver) {
-                Icon(
-                    imageVector = Icons.Outlined.Spa,
-                    contentDescription = "靜模式",
-                    tint = if (isPowerSaver) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
+            // 靜模式快捷已移除（跟編輯器工具列同一條理由）：它是設定，不是每天要按的工具；
+            // 功能仍在「設定 → 外觀 → 靜模式」。省下的位置留給下面兩顆真正會用的。
             // Dark / Light mode toggle（Dock 自繪無 M3 contentColor，需顯式 tint）
             IconButton(onClick = onToggleDarkTheme) {
                 Icon(
