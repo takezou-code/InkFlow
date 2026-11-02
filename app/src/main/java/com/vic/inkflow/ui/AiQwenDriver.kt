@@ -15,7 +15,10 @@ internal object AiQwenDriver : CandidateChainDriver() {
     override val host = "chat.qwen.ai"
     // 合成 paste 對 <textarea> 不會改 .value，而且 Qwen 自己會非同步吃 paste →
     // 舊路徑「以為失敗→再點 file input」就是重複貼圖的來源。改走它自己的上傳入口。
-    // mathCrop：Qwen 的公式同樣沒有可還原的 TeX 來源，靠像素裁圖（見 Kimi 的說明）。
+    // mathCrop 仍開著，但**不再是最佳解**：Qwen 把 KaTeX 的
+    // <annotation encoding="application/x-tex"> 清掉（實測 .katex=45、<math>=45、annotation=0），
+    // 公式改用 `texify` 的 MathML 還原（見 AiMathmlTex.kt）走文字路徑；
+    // 裁圖只在「有公式還原不了」時接手（見 collectJs 的 recoveredByMathml）。
     override val capabilities = AiCapabilities(
         sendImage = true,
         importReply = true,

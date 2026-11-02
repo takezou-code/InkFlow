@@ -1,6 +1,9 @@
 package com.vic.inkflow
 
+import com.vic.inkflow.ui.AiChatGptDriver
+import com.vic.inkflow.ui.AiGeminiDriver
 import com.vic.inkflow.ui.AiGenericScripts
+import com.vic.inkflow.ui.AiQwenDriver
 import com.vic.inkflow.ui.IMAGE_MODE_CLICK
 import com.vic.inkflow.ui.IMAGE_MODE_PASTE
 import com.vic.inkflow.ui.buildImagePasteJs
@@ -74,5 +77,11 @@ class AiJsSyntaxTest {
                 mode = IMAGE_MODE_PASTE
             )
         )
+        // 收集腳本（含 MathML → LaTeX 那段）是**字串裡的 JS**：Kotlin 編譯器看不到它，
+        // 少了這一步，JS 打錯字要等到實機匯入才發現（錯誤只會出現在 WebView console，
+        // 不進 ai_diag）。
+        check("collect_gemini", AiGeminiDriver.collectJs())
+        check("collect_qwen", AiQwenDriver.collectJs())
+        check("collect_chatgpt", AiChatGptDriver.collectJs())
     }
 }

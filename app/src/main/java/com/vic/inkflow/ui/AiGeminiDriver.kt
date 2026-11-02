@@ -479,6 +479,7 @@ override fun promptSendJs(promptQuoted: String, send: Boolean): String {
     ): String {
     return """
     (function() {
+            ${MATHML_TO_TEX_JS}
             function note(s) {
                 try { if (window.AndroidBridge && window.AndroidBridge.onPasteResult) window.AndroidBridge.onPasteResult(s); } catch(e){}
             }
@@ -496,7 +497,7 @@ override fun promptSendJs(promptQuoted: String, send: Boolean): String {
             // TeX 還原：Gemini 用 KaTeX 渲染（copy-tex 沒開，innerText 沒源碼），
             // 真源在 .math-block/.math-inline 的 data-math；裸 .katex 看 annotation。
             function texify(root) {
-                var nb = 0, ni = 0;
+                var nb = 0, ni = 0, mm = 0;
                 try {
                     // ChatGPT 新 DOM：LaTeX 來源搬到祖先元素的 data-math-source 屬性，
                     // .katex 內部不再有 annotation[encoding*=tex]。先處理這條，整塊取代，
@@ -562,8 +563,31 @@ override fun promptSendJs(promptQuoted: String, send: Boolean): String {
                             if (disp) nb++; else ni++;
                         } catch(e){}
                     });
+                    // 最後一道：MathML 直出（Qwen 等把 TeX annotation 清掉的站台）。
+                    // 跑在 annotation 規則之後，所以「站台有給 TeX」的路徑完全不受影響；
+                    // 只剩版面結構的 <math> 才會走進來，還原成可再渲染的 LaTeX。
+                    root.querySelectorAll('math, mjx-container').forEach(function(el) {
+                        try {
+                            if (el.isConnected === false) return;
+                            var host = null;
+                            try { host = el.closest('.katex, .katex-display, mjx-container, .math-block, .math-inline'); } catch(e2){}
+                            var target = host || el;
+                            if (!target || !target.parentNode) return;
+                            var tex = mmlTex(el).replace(/\s+/g, ' ').trim();
+                            if (!tex) return;
+                            var disp = false;
+                            try {
+                                if (el.getAttribute && el.getAttribute('display') === 'block') disp = true;
+                                if (el.getAttribute && el.getAttribute('display') === 'true') disp = true;
+                                if (target.closest && target.closest('.katex-display, .math-block, math[display="block"]')) disp = true;
+                            } catch(e2){}
+                            target.replaceWith(document.createTextNode(disp ? ('$$' + tex + '$$') : ('$' + tex + '$')));
+                            mm++;
+                            if (disp) nb++; else ni++;
+                        } catch(e){}
+                    });
                 } catch(e){}
-                return { b: nb, i: ni };
+                return { b: nb, i: ni, m: mm };
             }
             try {
                 window.__inkpick = false;
@@ -586,6 +610,8 @@ override fun promptSendJs(promptQuoted: String, send: Boolean): String {
             });
             var picks = [];
             var mathB = 0, mathI = 0;
+            // 由 MathML 現場還原的公式數（＝站台沒給 TeX 的證據；Qwen 就是這一類）。
+            var mmlN = 0;
             // T-X1 取證：勾選節點標籤普查＋數學痕跡計數（data-math / annotation 有無）
             var census = {};
             var censusMath = 0, censusDataMath = 0, censusAnno = 0;
@@ -646,9 +672,18 @@ override fun promptSendJs(promptQuoted: String, send: Boolean): String {
                     } else {
                         var clone = el.cloneNode(true);
                         var cc = texify(clone);
-                        mathB += cc.b; mathI += cc.i;
+                        mathB += cc.b; mathI += cc.i; mmlN += cc.m;
                         var t = clone.innerText || '';
-                        if (hasMath) {
+                        // 這塊的公式是不是「站台沒給 TeX、由 MathML 現場還原」的？
+                        // 若全部都還原成功（沒有殘留的 math/mjx/katex），正文已經是乾淨的
+                        // $…$／$$…$$，走文字路徑讓離線 KaTeX 出圖即可——比整塊裁圖可靠：
+                        // Qwen 的答案常比可見區高，裁圖必失敗，退了文字就只剩壓平的
+                        // innerText（x2、分數變兩行），那正是使用者看到的「數學壞掉」。
+                        // 有任何一顆還原不了 → 維持原本的整塊裁圖（所見即所得，不會掉公式）。
+                        var leftover = 0;
+                        try { leftover = clone.querySelectorAll('math, mjx-container, span.katex').length; } catch(e){}
+                        var recoveredByMathml = cc.m > 0 && leftover === 0;
+                        if (hasMath && !recoveredByMathml) {
                             picks.push({k:'m', i:cropIdx, r:r, t:t.trim().slice(0, 20000)});
                         } else if (t.trim().length > 0) {
                             picks.push({k:'t', i:cropIdx, r:r, t:t.trim().slice(0, 20000)});
@@ -680,7 +715,7 @@ override fun promptSendJs(promptQuoted: String, send: Boolean): String {
             } catch(e){}
             // F1：強制 reflow，逼殘影樣式先退，Kotlin 側 PixelCopy 前還會再等 600ms
             try { void document.body.offsetHeight; } catch(e){}
-            note('COLLECT src=' + src + ' mathB=' + mathB + ' mathI=' + mathI + ' census=' + JSON.stringify(census) + ' inMath=' + censusMath + ' dataMath=' + censusDataMath + ' anno=' + censusAnno + ' rects=' + JSON.stringify(rects) + ' dpr=' + window.devicePixelRatio + ' cropF=' + ${cropFormulas} + ' roots=' + roots.length);
+            note('COLLECT src=' + src + ' mathB=' + mathB + ' mathI=' + mathI + ' mml=' + mmlN + ' census=' + JSON.stringify(census) + ' inMath=' + censusMath + ' dataMath=' + censusDataMath + ' anno=' + censusAnno + ' rects=' + JSON.stringify(rects) + ' dpr=' + window.devicePixelRatio + ' cropF=' + ${cropFormulas} + ' roots=' + roots.length);
             if (segDiag.length > 0) note('SEG-DIAG ' + segDiag.join(' || '));
             try { if (window.AndroidBridge && window.AndroidBridge.onPickedJson) window.AndroidBridge.onPickedJson(JSON.stringify(picks).slice(0, 200000)); } catch(e){}
         })();

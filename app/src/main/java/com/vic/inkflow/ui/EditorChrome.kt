@@ -617,6 +617,19 @@ fun TabletEditorTopBar(
 
                     VerticalDivider(Modifier.height(24.dp).padding(horizontal = 8.dp))
 
+                    // 工程計算機：工具叢集的一員（不是文件動作，也不是模式切換），
+                    // 跟畫筆／形狀／文字同一排。右側只留 undo/redo、文件與輸入模式。
+                    Box(modifier = Modifier.padding(horizontal = 3.dp, vertical = 3.dp)) {
+                        EditorIconButton(
+                            onClick = onOpenCalculator,
+                            isActive = false,
+                            icon = Icons.Outlined.Calculate,
+                            contentDescription = "工程計算機"
+                        )
+                    }
+
+                    VerticalDivider(Modifier.height(24.dp).padding(horizontal = 8.dp))
+
                     Row(
                         modifier = Modifier
                             .background(colorSelectorBg, CircleShape)
@@ -763,16 +776,8 @@ fun TabletEditorTopBar(
                             }
                         )
                     }
-                    // 靜模式快捷已從工具列移除：那是一個「一個月按不到一次」的設定，
-                    // 卻佔掉每天都要用的位置。功能還在「設定 → 外觀 → 靜模式」。
-                    // 這裡改成工程計算機——工具列上的按鈕只留「當場要用」的東西。
-                    IconButton(onClick = onOpenCalculator, modifier = Modifier.size(utilityButtonSize)) {
-                        Icon(
-                            imageVector = Icons.Outlined.Calculate,
-                            contentDescription = "工程計算機",
-                            tint = glassContentColor(isDarkTheme)
-                        )
-                    }
+                    // 計算機不再放這裡：右側三組是「歷史｜文件｜模式」，計算機是工具，
+                    // 已移到左邊工具叢集（色盤之前，見上方 onOpenCalculator）。
                 }
             }
         }
