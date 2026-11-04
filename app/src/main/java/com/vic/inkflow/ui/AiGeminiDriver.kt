@@ -480,6 +480,7 @@ override fun promptSendJs(promptQuoted: String, send: Boolean): String {
     return """
     (function() {
             ${MATHML_TO_TEX_JS}
+            ${DOM_TEXT_JS}
             function note(s) {
                 try { if (window.AndroidBridge && window.AndroidBridge.onPasteResult) window.AndroidBridge.onPasteResult(s); } catch(e){}
             }
@@ -648,7 +649,7 @@ override fun promptSendJs(promptQuoted: String, send: Boolean): String {
                             var bclone = el.cloneNode(true);
                             var bcc = texify(bclone);
                             mathB += bcc.b; mathI += bcc.i;
-                            btext = (bclone.innerText || '').trim();
+                            btext = domText(bclone).trim();
                         } catch(e) {
                             try { note('COLLECT-TEX-ERR ' + (e && e.message ? e.message : e)); } catch(e2){}
                         }
@@ -673,7 +674,9 @@ override fun promptSendJs(promptQuoted: String, send: Boolean): String {
                         var clone = el.cloneNode(true);
                         var cc = texify(clone);
                         mathB += cc.b; mathI += cc.i; mmlN += cc.m;
-                        var t = clone.innerText || '';
+                        // 一定要用 domText，不要讀複本的 innerText：複本是離線節點，
+                        // 依規格會退回 textContent（沒有換行）→ 段落與清單全黏在一起。
+                        var t = domText(clone);
                         // 這塊的公式是不是「站台沒給 TeX、由 MathML 現場還原」的？
                         // 若全部都還原成功（沒有殘留的 math/mjx/katex），正文已經是乾淨的
                         // $…$／$$…$$，走文字路徑讓離線 KaTeX 出圖即可——比整塊裁圖可靠：

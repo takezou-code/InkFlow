@@ -15,34 +15,140 @@ import com.vic.inkflow.ui.wrapTextLines
  *  - [fitMathSize] 的 `referenceWidthPx`（渲染器的參考寬，平板是 KaTeX 的 1500px）。
  */
 
-private fun splitProse(seg: String, maxChars: Int, out: MutableList<String>) {
+/** 東亞寬字（用來判斷句與句之間要不要補空格）。 */
+private fun isWideChar(ch: Char): Boolean {
+    val c = ch.code
+    return c in 0x1100..0x115F || c in 0x2E80..0xA4CF || c in 0xAC00..0xD7A3 ||
+        c in 0xF900..0xFAFF || c in 0xFE30..0xFE4F || c in 0xFF00..0xFF60 ||
+        c in 0xFFE0..0xFFE6
+}
+
+/** 兩句之間的連接字串：中文之間不補空白，英文之間補一個。 */
+private fun between(a: String, b: String): String =
+    if (a.isEmpty() || b.isEmpty()) ""
+    else if (isWideChar(a.last()) || isWideChar(b.first())) "" else " "
+
+/**
+ * 一句一句切（句末標點留在句尾）。
+ *
+ * 英文只認「句點＋空白／結尾」，所以 `3.14`、`e.g.`、`example.com` 不會被切開；
+ * 中文認 `。！？；`。這是「把長段落切小」用的，不是斷行規則——切完仍用原標點串回去。
+ */
+private fun sentencesOf(line: String): List<String> {
+    val out = ArrayList<String>()
+    val sb = StringBuilder()
+    var i = 0
+    while (i < line.length) {
+        val c = line[i]
+        sb.append(c)
+        val end =
+            c == '。' || c == '！' || c == '？' || c == '；' ||
+                c == '!' || c == '?' || c == ';' ||
+                (c == '.' && (i + 1 >= line.length || line[i + 1].isWhitespace()))
+        if (end) {
+            val s = sb.toString().trim()
+            if (s.isNotEmpty()) out.add(s)
+            sb.setLength(0)
+        }
+        i++
+    }
+    val tail = sb.toString().trim()
+    if (tail.isNotEmpty()) out.add(tail)
+    return out
+}
+
+/** 超長且無句讀：找一個「不切開英文單字」的位置，最多 [maxChars] 個字。 */
+private fun cutAt(line: String, from: Int, maxChars: Int): Int {
+    val hard = minOf(from + maxChars, line.length)
+    if (hard >= line.length) return line.length
+    val sp = line.substring(from, hard).lastIndexOf(' ')
+    return if (sp > maxChars / 2) from + sp else hard
+}
+
+/** Markdown 清單符號 → 紙上看得懂的圓點（只在行首，不動數學）。 */
+private fun normalizeBullets(s: String): String = s.split("\n").joinToString("\n") { line ->
+    when {
+        line.startsWith("- ") -> "• " + line.substring(2)
+        line.startsWith("* ") -> "• " + line.substring(2)
+        line.startsWith("+ ") -> "• " + line.substring(2)
+        else -> line
+    }
+}
+
+/**
+ * 一段文字切出來的塊。
+ *
+ * @property continuesPrevious 這塊是**同一段落**上一塊的續塊（不是新段落）。
+ *   排版端據此把段落間距歸零，否則一段長正文會被排成好幾段。
+ */
+private data class ProsePiece(val text: String, val continuesPrevious: Boolean = false)
+
+/**
+ * 段落 → 文字塊。
+ *
+ * **保結構**（2026-11-04 改寫）：空白行是段落邊界（呼叫端已按此切塊），
+ * 段落內的**單一換行**是結構（清單、表格、詩、AI 自己斷的行），一律保留；
+ * 只有「單行且超過 [maxChars]」才按句打包，打包時不丟字、不黏字。
+ *
+ * 舊版把 `\n` 當斷句點、`trim()` 掉之後直接串接，於是
+ * `第一行\n第二行` 變成 `第一行第二行`，英文單字也會黏在一起——這是
+ * 「AI 匯入後要自己重排格式」的另一個來源。
+ *
+ * 回傳的續塊帶 [ProsePiece.continuesPrevious]，讓分頁不必靠猜（例如用「上一塊
+ * 有沒有以標點結尾」判斷，AI 的段落本來就不一定收在標點）。
+ */
+private fun splitProse(seg: String, maxChars: Int): List<ProsePiece> {
+    val out = ArrayList<ProsePiece>()
     for (para in seg.split(Regex("\n\\s*\n"))) {
-        val p = para.trim()
+        val p = normalizeBullets(para.trim())
         if (p.isEmpty()) continue
         if (p.length <= maxChars) {
-            out.add(p)
+            out.add(ProsePiece(p))
             continue
         }
-        // 長段：按句打包（保留句末標點），無句讀才硬切
-        val sentences = p.split(Regex("(?<=[。！？!?\\n])")).map { it.trim() }.filter { it.isNotEmpty() }
-        if (sentences.size <= 1) {
-            var i = 0
-            while (i < p.length) {
-                out.add(p.substring(i, minOf(i + maxChars, p.length)))
-                i += maxChars
+        // 先把段落拆成「單位」：每個單位自帶它前面的分隔符（換行＝結構、空白＝句界）。
+        val units = ArrayList<Pair<String, String>>()
+        val lines = p.split("\n").map { it.trimEnd() }.filter { it.isNotEmpty() }
+        for ((li, line) in lines.withIndex()) {
+            val head = if (li == 0) "" else "\n"
+            val text = line.trim()
+            if (text.isEmpty()) continue
+            if (text.length <= maxChars) {
+                units.add(text to head)
+                continue
             }
-        } else {
-            val buf = StringBuilder()
-            for (s in sentences) {
-                if (buf.length + s.length > maxChars && buf.isNotEmpty()) {
-                    out.add(buf.toString())
-                    buf.clear()
+            val sentences = sentencesOf(text)
+            if (sentences.size <= 1) {
+                var i = 0
+                while (i < text.length) {
+                    val cut = cutAt(text, i, maxChars)
+                    val piece = text.substring(i, cut).trim()
+                    if (piece.isNotEmpty()) units.add(piece to if (i == 0) head else " ")
+                    i = cut
                 }
-                buf.append(s)
+            } else {
+                for ((si, s) in sentences.withIndex()) {
+                    val sep = if (si == 0) head else between(sentences[si - 1], s)
+                    units.add(s to sep)
+                }
             }
-            if (buf.isNotEmpty()) out.add(buf.toString())
         }
+        // 打包：不超過 maxChars；換塊時丟掉分隔符（續塊之間不補段落間距，接得剛好）。
+        var buf = StringBuilder()
+        var firstOfPara = true
+        for ((text, sep) in units) {
+            val add = if (buf.isEmpty()) text else sep + text
+            if (buf.isNotEmpty() && buf.length + add.length > maxChars) {
+                out.add(ProsePiece(buf.toString(), continuesPrevious = !firstOfPara))
+                firstOfPara = false
+                buf = StringBuilder(text)
+            } else {
+                buf.append(add)
+            }
+        }
+        if (buf.isNotEmpty()) out.add(ProsePiece(buf.toString(), continuesPrevious = !firstOfPara))
     }
+    return out
 }
 
 /**
@@ -56,7 +162,9 @@ private fun splitProse(seg: String, maxChars: Int, out: MutableList<String>) {
  */
 private fun layoutLines(body: String, fontSize: Float, contentWpt: Float): List<String> {
     if (body.isEmpty()) return emptyList()
-    return wrapTextLines(body, fontSize, contentWpt).filter { it.isNotEmpty() }
+    // 不濾空行：空行是段落間距。舊版 `filter { it.isNotEmpty() }` 會把 AI 的
+    // 段落結構整段吃掉（分頁時看起來就是「沒有換行」）。
+    return wrapTextLines(body, fontSize, contentWpt)
 }
 
 private val DISPLAY_MATH = Regex(
@@ -71,6 +179,31 @@ private fun chunkTitleOf(s: String): String {
         first.length <= 20 -> first
         else -> first.take(20) + "…"
     }
+}
+
+/** Markdown 標題：`## 標題`。只在整段就是一行標題時成立（標題＋正文沒有空行 → 交給一般文字）。 */
+private val HEADING = Regex("^(#{1,6})\\s+(.+)$")
+
+/** 標題字級：紙上要看得出來是標題，但不能大到換頁換得很難看。 */
+private fun headingSize(level: Int): Float = when (level) {
+    1 -> 22f
+    2 -> 19f
+    3 -> 17f
+    else -> DEFAULT_AI_FONT_SIZE
+}
+
+/**
+ * ```lang … ``` → 只留內容。
+ *
+ * 反引號是 Markdown 語法，不是內容；舊版把整段（含 ``` 與語言名）寫到紙上，
+ * 匯入後看起來像壞掉。
+ */
+private fun stripFence(raw: String): String {
+    val t = raw.trim()
+    if (!t.startsWith("```")) return t
+    val nl = t.indexOf('\n')
+    val body = if (nl >= 0) t.substring(nl + 1) else ""
+    return body.trimEnd().removeSuffix("```").trim()
 }
 
 private fun stripDisplayShell(s: String): String {
@@ -137,11 +270,18 @@ fun splitAiBlocks(raw: String, maxChars: Int = AI_CHUNK_MAX_CHARS, promoteInline
     if (text.isEmpty()) return emptyList()
     val out = mutableListOf<AiBlock>()
     var ti = 0
-    fun textBlocksOf(seg: String): List<AiTextBlock> {
-        val bodies = mutableListOf<String>()
-        splitProse(convertLatexInProse(seg), maxChars, bodies)
-        return bodies.map { b -> ti++; AiTextBlock(AiTextChunk(id = "c$ti", title = chunkTitleOf(b), body = b)) }
-    }
+    fun textBlocksOf(seg: String): List<AiTextBlock> =
+        splitProse(convertLatexInProse(seg), maxChars).map { piece ->
+            ti++
+            AiTextBlock(
+                AiTextChunk(
+                    id = "c$ti",
+                    title = chunkTitleOf(piece.text),
+                    body = piece.text,
+                    continuesPrevious = piece.continuesPrevious
+                )
+            )
+        }
     fun paraBlocks(seg: String) {
         for (para in seg.split(Regex("\n\\s*\n"))) {
             val p = para.trim()
@@ -150,6 +290,25 @@ fun splitAiBlocks(raw: String, maxChars: Int = AI_CHUNK_MAX_CHARS, promoteInline
                 ti++
                 out.add(AiMathBlock(id = "m$ti", html = p, display = DISPLAY_MATH.containsMatchIn(p), fallback = convertLatexInProse(p)))
             } else {
+                // Markdown 標題：去掉 `#`，用較大字級排，否則紙上會出現字面的「##」。
+                val h = HEADING.matchEntire(p)
+                if (h != null) {
+                    val body = h.groupValues[2].trim()
+                    if (body.isNotEmpty()) {
+                        ti++
+                        out.add(
+                            AiTextBlock(
+                                AiTextChunk(
+                                    id = "c$ti",
+                                    title = chunkTitleOf(body),
+                                    body = body,
+                                    fontSize = headingSize(h.groupValues[1].length)
+                                )
+                            )
+                        )
+                        continue
+                    }
+                }
                 out.addAll(textBlocksOf(p))
             }
         }
@@ -170,7 +329,7 @@ fun splitAiBlocks(raw: String, maxChars: Int = AI_CHUNK_MAX_CHARS, promoteInline
     var cursor = 0
     for (m in fence.findAll(text)) {
         pushOutside(text.substring(cursor, m.range.first))
-        val code = m.value.trim()
+        val code = stripFence(m.value)
         if (code.isNotEmpty()) { ti++; out.add(AiTextBlock(AiTextChunk(id = "c$ti", title = chunkTitleOf(code), body = code))) }
         cursor = m.range.last + 1
     }
@@ -215,11 +374,17 @@ fun katexTargets(blocks: List<AiBlock>, rendered: Map<String, RenderedMath>): Li
         .filter { it.id !in rendered && katexSourceOf(it).isNotBlank() }
 
 /** 未渲染成功的數學塊退回 Unicode 文字塊（保序 splice 用）。 */
-fun mathFallbackBlocks(b: AiMathBlock, maxChars: Int = AI_CHUNK_MAX_CHARS): List<AiTextBlock> {
-    val bodies = mutableListOf<String>()
-    splitProse(b.fallback, maxChars, bodies)
-    return bodies.mapIndexed { i, s -> AiTextBlock(AiTextChunk(id = "${b.id}f$i", title = chunkTitleOf(s), body = s)) }
-}
+fun mathFallbackBlocks(b: AiMathBlock, maxChars: Int = AI_CHUNK_MAX_CHARS): List<AiTextBlock> =
+    splitProse(b.fallback, maxChars).mapIndexed { i, piece ->
+        AiTextBlock(
+            AiTextChunk(
+                id = "${b.id}f$i",
+                title = chunkTitleOf(piece.text),
+                body = piece.text,
+                continuesPrevious = piece.continuesPrevious
+            )
+        )
+    }
 
 /** 把未渲染的數學換成 fallback 文字，保序。 */
 fun resolveAiBlocks(blocks: List<AiBlock>, rendered: Map<String, RenderedMath>, maxChars: Int = AI_CHUNK_MAX_CHARS): List<AiBlock> {
@@ -274,7 +439,9 @@ fun paginateAiBlocks(
     }
     // lines：已折好的行；必要時跨頁切段（一段一 annotation）。
     // 量測逐塊做：每塊可能有自己的字級（平板全 16，桌面標題 22）。
-    fun emitLines(lines: List<String>, size: Float) {
+    // gapAfter：這塊排完要留多少間距。同一段落被切開的續塊傳 0，
+    // 否則一段長正文會在紙上看起來變成好幾段。
+    fun emitLines(lines: List<String>, size: Float, gapAfter: Float) {
         val m = fontMetrics(size)
         val lineH = -m[0] + m[1] + m[2]
         val ascent = m[0]
@@ -300,7 +467,7 @@ fun paginateAiBlocks(
                     )
                 )
             )
-            cursorTop += take * lineH + blockGap
+            cursorTop += take * lineH + gapAfter
             idx += take
         }
     }
@@ -312,12 +479,15 @@ fun paginateAiBlocks(
         cursorTop += h0 + blockGap
     }
 
-    for (b in blocks) {
+    for ((bi, b) in blocks.withIndex()) {
         when (b) {
             is AiTextBlock -> {
                 val size = b.chunk.fontSize
                 val lines = layoutLines(b.chunk.body.trim(), size, contentWpt)
-                if (lines.isNotEmpty()) emitLines(lines, size)
+                // 下一塊若是同段落的續塊 → 之間只留行距，不補段落間距。
+                val next = blocks.getOrNull(bi + 1)
+                val gapAfter = if (next is AiTextBlock && next.chunk.continuesPrevious) 0f else blockGap
+                if (lines.isNotEmpty()) emitLines(lines, size, gapAfter)
             }
             is AiMathBlock -> {
                 val rm = rendered[b.id] ?: continue

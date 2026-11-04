@@ -30,7 +30,15 @@ data class AiTextChunk(
     val title: String,
     val body: String,
     val charCount: Int = body.length,
-    val fontSize: Float = DEFAULT_AI_FONT_SIZE
+    val fontSize: Float = DEFAULT_AI_FONT_SIZE,
+    /**
+     * 這一塊是**同一段落被切開後的續塊**。
+     *
+     * 為什麼需要：一段超過 [AI_CHUNK_MAX_CHARS] 的正文會切成多塊、各成一個 annotation。
+     * 排版時若每塊都補段落間距，紙上就會出現「一段變兩段」的假段落。
+     * 續塊之間只留行距，段落間距只加在真正的新段落後面。
+     */
+    val continuesPrevious: Boolean = false
 )
 
 /** AI 匯入的預設字級（model pt）：與分頁、寫入端共用的同一個數字。 */
