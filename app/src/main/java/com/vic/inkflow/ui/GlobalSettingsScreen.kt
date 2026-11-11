@@ -1,4 +1,4 @@
-﻿package com.vic.inkflow.ui
+package com.vic.inkflow.ui
 
 import android.content.SharedPreferences
 import androidx.compose.foundation.Canvas
@@ -232,9 +232,10 @@ fun GlobalSettingsScreen(
     var showRestartDialog by remember { mutableStateOf(false) }
     var confirmRestoreFile by remember { mutableStateOf<java.io.File?>(null) }
     var showAllBackups by remember { mutableStateOf(false) }
+    var confirmClearLegacy by remember { mutableStateOf(false) }
 
     var autoEnabled by remember { mutableStateOf(AutoBackupScheduler.isEnabled(context)) }
-    var privateLine by remember { mutableStateOf("讀取中…") }
+    var publicKeep by remember { mutableIntStateOf(AutoBackupScheduler.publicKeep(context)) }
     var publicLine by remember { mutableStateOf("讀取中…") }
     var allBackups by remember { mutableStateOf(emptyList<AutoBackupScheduler.BackupItem>()) }
     var isRefreshing by remember { mutableStateOf(false) }
@@ -253,16 +254,12 @@ fun GlobalSettingsScreen(
     }
     // 手動重新整理跟 8 秒輪詢走同一套載入，檔案讀寫走 IO 線程，絕不卡主線程
     val reloadBackups: suspend () -> Unit = {
-        val priv = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            lineFor(AutoBackupScheduler.TARGET_PRIVATE)
-        }
         val pub = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             lineFor(AutoBackupScheduler.TARGET_PUBLIC)
         }
         val files = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             AutoBackupScheduler.listAllBackups(context)
         }
-        privateLine = priv
         publicLine = pub
         allBackups = files
         hasAllFilesAccess = android.os.Environment.isExternalStorageManager()
@@ -450,134 +447,8 @@ fun GlobalSettingsScreen(
                     }
                 }
 
-                // ===== AI 來源 ============================================
-                SettingsSection("AI 來源", isDarkSettings) {
-                    SettingsHint("勾選要出現在工具列切換的 AI；未勾選的不會被切到。至少保留一個。")
-                    // 自訂 AI 另外一節（它有名字欄位，列在這裡會擠壞版面）。
-                    AiProvider.entries.filter { it != AiProvider.CUSTOM }.forEach { provider ->
-                        val isOn = provider in enabledAiState
-                        val customUrl = aiCustomUrls[provider]
-                        val startUrl = provider.effectiveStartUrl(customUrl)
-                        SettingsSwitchRow(
-                            title = provider.label,
-                            // 副標＝能力＋（自訂網址時）實際會開的站，使用者一眼看出改到哪。
-                            subtitle = aiCapabilitySummary(provider) + if (customUrl.isNullOrBlank()) {
-                                ""
-                            } else {
-                                "・${urlHost(startUrl) ?: startUrl}"
-                            },
-                            checked = isOn,
-                            trailing = {
-                                SettingsPillButton(
-                                    text = "網址",
-                                    isDark = isDarkSettings,
-                                    onClick = {
-                                        // 預填目前實際用的網址，方便只改路徑／改回預設。
-                                        aiUrlInput = startUrl
-                                        aiUrlEditing = provider
-                                    },
-                                    modifier = Modifier.padding(end = 4.dp)
-                                )
-                            },
-                            onCheckedChange = { on -> applyAiEnabled(provider, on) }
-                        )
-                        // 已知的網站限制先講清楚，比讓使用者自己撞牆好。
-                        aiProviderNote(provider)?.let { SettingsCaption(it) }
-                    }
-                }
-
-                // ===== 自訂 AI（你的 AI）=====================================
-                // 排在六家後面：新 AI 一直出，這裡填名稱＋網址就能用，不必等 App 發版。
-                SettingsSection("自訂 AI", isDarkSettings) {
-                    SettingsHint("填名稱與完整網址（https://…），就會出現在工具列切換。送圖可用，匯入尚未實測。")
-                    val customUrl = aiCustomUrls[AiProvider.CUSTOM]
-                    val customHost = customUrl?.let { urlHost(it) ?: it }
-                    SettingsSwitchRow(
-                        title = aiCustomNameState,
-                        subtitle = if (customHost.isNullOrBlank()) "還沒設定網址" else customHost,
-                        checked = AiProvider.CUSTOM in enabledAiState,
-                        trailing = {
-                            SettingsPillButton(
-                                text = "設定",
-                                isDark = isDarkSettings,
-                                onClick = {
-                                    aiNameInput = aiCustomNameState
-                                    aiUrlInput = customUrl ?: "https://"
-                                    aiUrlEditing = AiProvider.CUSTOM
-                                },
-                                modifier = Modifier.padding(end = 4.dp)
-                            )
-                        },
-                        onCheckedChange = { on ->
-                            // 沒網址就打開只會得到空白面板，先擋下來並指路。
-                            if (on && normalizeCustomAiUrl(customUrl) == null) {
-                                android.widget.Toast.makeText(
-                                    context,
-                                    "請先按「設定」填一個網址",
-                                    android.widget.Toast.LENGTH_SHORT
-                                ).show()
-                            } else {
-                                applyAiEnabled(AiProvider.CUSTOM, on)
-                            }
-                        }
-                    )
-                }
-
-                // ===== AI 診斷 ============================================
-                // 探針（PROBE3）在每次開站時自動量，結果存 prefs；完整流水帳落檔
-                // （filesDir/ai_diag.log）。兩份理由不同：設定頁看「現在能不能用」，
-                // 檔案看「剛剛那一次到底卡在哪一步」。
-                SettingsSection("AI 診斷", isDarkSettings) {
-                    SettingsHint("每開一次 AI 會自動量一次網頁結構。開過某家之後回來這裡，就看得到它能不能送圖、能不能匯入。")
-                    aiProbeVersion // 清除後重畫
-                    val records = AiProvider.entries.mapNotNull { p ->
-                        decodeProbeRecord(prefs.getString(aiProbeKey(p), null))?.let { p to it }
-                    }
-                    if (records.isEmpty()) {
-                        SettingsCaption("還沒有資料：到編輯器切到某家 AI，等頁面開好，再回來這裡。")
-                    } else {
-                        records.forEach { (p, rec) -> SettingsProbeRow(p, rec) }
-                    }
-                    // 流水帳：這裡才是「整段流程」的證據（開站→送圖→匯入→錯誤）。
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 20.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "記錄檔 ${AiDiag.sizeInfo(context)}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.weight(1f)
-                        )
-                        SettingsPillButton(
-                            text = "看記錄",
-                            isDark = isDarkSettings,
-                            onClick = {
-                                aiDiagText = AiDiag.readTail(context, 400)
-                                    .ifBlank { "還沒有記錄。先到編輯器開一次 AI。" }
-                                aiDiagVisible = true
-                            }
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        SettingsPillButton(
-                            text = "清除",
-                            isDark = isDarkSettings,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            onClick = {
-                                AiDiag.clear(context)
-                                prefs.edit().apply {
-                                    AiProvider.entries.forEach { remove(aiProbeKey(it)) }
-                                }.apply()
-                                aiProbeVersion++
-                            }
-                        )
-                    }
-                }
-
-                // ===== 操作 ================================================
-                SettingsSection("操作", isDarkSettings) {
+                // ===== 書寫 ================================================
+                SettingsSection("書寫", isDarkSettings) {
                     SettingsChoiceBlock(
                         title = "觸控模式",
                         // 只剩 2 種活路：PALM_REJECTION 已併入觸控筆模式（cycleInputMode＋VM init 同調），
@@ -765,13 +636,139 @@ fun GlobalSettingsScreen(
                     }
                 }
 
+                // ===== AI 來源 ============================================
+                SettingsSection("AI 來源", isDarkSettings) {
+                    SettingsHint("勾選要出現在工具列切換的 AI；未勾選的不會被切到。至少保留一個。")
+                    // 自訂 AI 另外一節（它有名字欄位，列在這裡會擠壞版面）。
+                    AiProvider.entries.filter { it != AiProvider.CUSTOM }.forEach { provider ->
+                        val isOn = provider in enabledAiState
+                        val customUrl = aiCustomUrls[provider]
+                        val startUrl = provider.effectiveStartUrl(customUrl)
+                        SettingsSwitchRow(
+                            title = provider.label,
+                            // 副標＝能力＋（自訂網址時）實際會開的站，使用者一眼看出改到哪。
+                            subtitle = aiCapabilitySummary(provider) + if (customUrl.isNullOrBlank()) {
+                                ""
+                            } else {
+                                "・${urlHost(startUrl) ?: startUrl}"
+                            },
+                            checked = isOn,
+                            trailing = {
+                                SettingsPillButton(
+                                    text = "網址",
+                                    isDark = isDarkSettings,
+                                    onClick = {
+                                        // 預填目前實際用的網址，方便只改路徑／改回預設。
+                                        aiUrlInput = startUrl
+                                        aiUrlEditing = provider
+                                    },
+                                    modifier = Modifier.padding(end = 4.dp)
+                                )
+                            },
+                            onCheckedChange = { on -> applyAiEnabled(provider, on) }
+                        )
+                        // 已知的網站限制先講清楚，比讓使用者自己撞牆好。
+                        aiProviderNote(provider)?.let { SettingsCaption(it) }
+                    }
+                }
+
+                // ===== 自訂 AI（你的 AI）=====================================
+                // 排在六家後面：新 AI 一直出，這裡填名稱＋網址就能用，不必等 App 發版。
+                SettingsSection("自訂 AI", isDarkSettings) {
+                    SettingsHint("填名稱與完整網址（https://…），就會出現在工具列切換。送圖可用，匯入尚未實測。")
+                    val customUrl = aiCustomUrls[AiProvider.CUSTOM]
+                    val customHost = customUrl?.let { urlHost(it) ?: it }
+                    SettingsSwitchRow(
+                        title = aiCustomNameState,
+                        subtitle = if (customHost.isNullOrBlank()) "還沒設定網址" else customHost,
+                        checked = AiProvider.CUSTOM in enabledAiState,
+                        trailing = {
+                            SettingsPillButton(
+                                text = "設定",
+                                isDark = isDarkSettings,
+                                onClick = {
+                                    aiNameInput = aiCustomNameState
+                                    aiUrlInput = customUrl ?: "https://"
+                                    aiUrlEditing = AiProvider.CUSTOM
+                                },
+                                modifier = Modifier.padding(end = 4.dp)
+                            )
+                        },
+                        onCheckedChange = { on ->
+                            // 沒網址就打開只會得到空白面板，先擋下來並指路。
+                            if (on && normalizeCustomAiUrl(customUrl) == null) {
+                                android.widget.Toast.makeText(
+                                    context,
+                                    "請先按「設定」填一個網址",
+                                    android.widget.Toast.LENGTH_SHORT
+                                ).show()
+                            } else {
+                                applyAiEnabled(AiProvider.CUSTOM, on)
+                            }
+                        }
+                    )
+                }
+
+                // ===== AI 診斷 ============================================
+                // 探針（PROBE3）在每次開站時自動量，結果存 prefs；完整流水帳落檔
+                // （filesDir/ai_diag.log）。兩份理由不同：設定頁看「現在能不能用」，
+                // 檔案看「剛剛那一次到底卡在哪一步」。
+                SettingsSection("AI 診斷", isDarkSettings) {
+                    SettingsHint("每開一次 AI 會自動量一次網頁結構。開過某家之後回來這裡，就看得到它能不能送圖、能不能匯入。")
+                    aiProbeVersion // 清除後重畫
+                    val records = AiProvider.entries.mapNotNull { p ->
+                        decodeProbeRecord(prefs.getString(aiProbeKey(p), null))?.let { p to it }
+                    }
+                    if (records.isEmpty()) {
+                        SettingsCaption("還沒有資料：到編輯器切到某家 AI，等頁面開好，再回來這裡。")
+                    } else {
+                        records.forEach { (p, rec) -> SettingsProbeRow(p, rec) }
+                    }
+                    // 流水帳：這裡才是「整段流程」的證據（開站→送圖→匯入→錯誤）。
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "記錄檔 ${AiDiag.sizeInfo(context)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f)
+                        )
+                        SettingsPillButton(
+                            text = "看記錄",
+                            isDark = isDarkSettings,
+                            onClick = {
+                                aiDiagText = AiDiag.readTail(context, 400)
+                                    .ifBlank { "還沒有記錄。先到編輯器開一次 AI。" }
+                                aiDiagVisible = true
+                            }
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        SettingsPillButton(
+                            text = "清除",
+                            isDark = isDarkSettings,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            onClick = {
+                                AiDiag.clear(context)
+                                prefs.edit().apply {
+                                    AiProvider.entries.forEach { remove(aiProbeKey(it)) }
+                                }.apply()
+                                aiProbeVersion++
+                            }
+                        )
+                    }
+                }
+
                 // ===== 備份與還原 ==========================================
                 SettingsSection("備份與還原", isDarkSettings) {
-                    SettingsHint("自動備份每天守著資料，文件/InkFlow 每天留兩份，換機時直接一鍵還原。")
+                    SettingsHint("每天自動備份到「文件/InkFlow」，只保留你選的份數；換機時直接一鍵還原。")
 
                     SettingsSwitchRow(
                         title = "自動備份",
-                        subtitle = "私有每 6 小時留 1 份＋公開文件每天留 2 份，沒變更不寫檔，低電量或低儲存自動跳過",
+                        subtitle = "每天檢查一次；資料沒變不寫檔，低電量、低儲存或缺資料夾權限會跳過",
                         checked = autoEnabled,
                         onCheckedChange = {
                             autoEnabled = it
@@ -779,10 +776,26 @@ fun GlobalSettingsScreen(
                         }
                     )
 
-                    SettingsStatusRow("私有", privateLine)
+                    SettingsChoiceBlock(
+                        title = "保留份數",
+                        options = AutoBackupScheduler.PUBLIC_KEEP_CHOICES.map { "$it 份" },
+                        selectedIndex = AutoBackupScheduler.PUBLIC_KEEP_CHOICES
+                            .indexOf(publicKeep).coerceAtLeast(0),
+                        isDark = isDarkSettings,
+                        hint = "目前 $publicKeep 份；調少會立刻刪掉最舊的自動備份，手動匯出的檔案不受影響。"
+                    ) { idx ->
+                        val keep = AutoBackupScheduler.PUBLIC_KEEP_CHOICES[idx]
+                        if (keep != publicKeep) {
+                            publicKeep = keep
+                            AutoBackupScheduler.setPublicKeep(context, keep)
+                            coroutineScope.launch { reloadBackups() }
+                        }
+                    }
+
                     SettingsStatusRow("公開", publicLine)
 
                     if (allBackups.isNotEmpty()) {
+                        val legacyCount = allBackups.count { it.source == "舊私有" }
                         val visible = if (showAllBackups) allBackups else allBackups.take(4)
                         SettingsCaption("最近的備份（${allBackups.size}）")
                         visible.forEach { item ->
@@ -794,15 +807,24 @@ fun GlobalSettingsScreen(
                                 onRestore = { confirmRestoreFile = item.file }
                             )
                         }
-                        if (allBackups.size > 4) {
+                        if (allBackups.size > 4 || legacyCount > 0) {
                             Row(
                                 modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
-                                horizontalArrangement = Arrangement.Start
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                GlassTextButton(
-                                    text = if (showAllBackups) "收起" else "顯示全部 ${allBackups.size} 份",
-                                    onClick = { showAllBackups = !showAllBackups }
-                                )
+                                if (allBackups.size > 4) {
+                                    GlassTextButton(
+                                        text = if (showAllBackups) "收起" else "顯示全部 ${allBackups.size} 份",
+                                        onClick = { showAllBackups = !showAllBackups }
+                                    )
+                                }
+                                if (legacyCount > 0) {
+                                    GlassTextButton(
+                                        text = "清除舊私有（$legacyCount）",
+                                        onClick = { confirmClearLegacy = true },
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
                         }
                     }
@@ -810,7 +832,7 @@ fun GlobalSettingsScreen(
                     // 新安裝看不到公開備份時，先授權再重新整理（缺權限列表永遠是空的）
                     if (!hasAllFilesAccess) {
                         SettingsHint(
-                            "尚未授權「所有檔案存取」，讀不到 文件/InkFlow 裡的公開備份。",
+                            "尚未授權「所有檔案存取」，備份寫不進 文件/InkFlow，也讀不到既有備份。",
                             isError = true
                         )
                     }
@@ -838,9 +860,12 @@ fun GlobalSettingsScreen(
                         SettingsPillButton(
                             text = "立即備份",
                             isDark = isDarkSettings,
-                            enabled = !isBackupBusy && !isRefreshing,
+                            enabled = hasAllFilesAccess && !isBackupBusy && !isRefreshing,
                             modifier = Modifier.weight(1f),
-                            onClick = { AutoBackupScheduler.runOnce(context) }
+                            onClick = {
+                                backupStatus = "已排入立即備份，完成後會自動更新狀態。"
+                                AutoBackupScheduler.runOnce(context)
+                            }
                         )
                         SettingsPillButton(
                             text = if (isRefreshing) "整理中…" else "重新整理",
@@ -955,6 +980,26 @@ fun GlobalSettingsScreen(
                     isBackupBusy = false
                 }
             }
+        )
+    }
+
+    if (confirmClearLegacy) {
+        GlassDialog(
+            onDismissRequest = { confirmClearLegacy = false },
+            isDark = isDarkSettings,
+            title = { Text("清除舊私有備份？") },
+            text = { Text("舊私有備份已不再更新，刪除後無法復原；文件/InkFlow 裡的公開備份不受影響。") },
+            confirmText = "清除",
+            onConfirm = {
+                confirmClearLegacy = false
+                coroutineScope.launch {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        AutoBackupScheduler.clearLegacyPrivateBackups(context)
+                    }
+                    reloadBackups()
+                }
+            },
+            dismissText = "取消"
         )
     }
 

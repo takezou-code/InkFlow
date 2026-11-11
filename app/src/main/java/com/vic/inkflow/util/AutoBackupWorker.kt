@@ -2,6 +2,7 @@ package com.vic.inkflow.util
 
 import android.content.Context
 import android.net.Uri
+import android.os.Environment
 import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
@@ -11,9 +12,10 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * 自動備份（雙軌：private 每 6 小時留 1 份 / public 每天留 2 份）。防氾濫三道閘：
+ * 自動備份（公開軌：文件/InkFlow，每天一次，保留份數由設定頁決定）。
+ * 防氾濫三道閘：
  *  1. 指紋比對 — 資料沒變就不寫新檔（排除 auto_backups 目錄自身，避免自己觸發自己）
- *  2. 數量上限 — 超過上限刪最舊；公開區只砍 auto_*，手動匯出的不動
+ *  2. 數量上限 — 超過使用者設定份數就刪最舊；只砍 auto_*，手動匯出的不動
  *  3. 空間不足 — 可用空間 < 200MB 直接跳過，不寫半殘檔
  */
 class AutoBackupWorker(
@@ -29,11 +31,20 @@ class AutoBackupWorker(
         }
         val target = inputData.getString(
             AutoBackupScheduler.KEY_TARGET
-        ) ?: AutoBackupScheduler.TARGET_PRIVATE
+        ) ?: AutoBackupScheduler.TARGET_PUBLIC
         val runKey = AutoBackupScheduler.lastRunKey(target)
         val statusKey = AutoBackupScheduler.lastStatusKey(target)
         val fpKey = AutoBackupScheduler.lastFpKey(target)
         return try {
+            // 公開目錄在 文件/InkFlow，沒有「所有檔案存取」就寫不進去：
+            // 明確記下原因，不要留下半殘檔或誤導性的成功狀態。
+            if (target == AutoBackupScheduler.TARGET_PUBLIC &&
+                !Environment.isExternalStorageManager()
+            ) {
+                finish(prefs, runKey, statusKey, false,
+                    "未授權「所有檔案存取」，已跳過自動備份", null, fpKey)
+                return Result.success()
+            }
             val force = inputData.getBoolean(AutoBackupScheduler.KEY_FORCE, false)
             val fingerprint = computeFingerprint(ctx)
             if (!force && fingerprint == prefs.getString(fpKey, null)) {
