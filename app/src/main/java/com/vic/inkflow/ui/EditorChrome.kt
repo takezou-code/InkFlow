@@ -103,6 +103,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChatBubble
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Create
@@ -243,6 +244,24 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/** 工具列沒有文字標籤，所以標題下方要說出「現在拿的是哪一支」。 */
+private fun toolLabel(tool: Tool): String = when (tool) {
+    Tool.PEN -> "畫筆"
+    Tool.HIGHLIGHTER -> "熒光筆"
+    Tool.ERASER -> "橡皮擦"
+    Tool.LASSO -> "套索選取"
+    Tool.SHAPE -> "圖形"
+    Tool.TEXT -> "文字"
+    Tool.IMAGE -> "圖片"
+}
+
+/** 輸入模式的名字：圖示會變，但名字不會——使用者要知道現在是手指還是觸控筆。 */
+private fun inputModeLabel(mode: InputMode): String = when (mode) {
+    InputMode.FREE -> "手指模式（單指書寫）"
+    InputMode.PALM_REJECTION -> "手掌排除"
+    InputMode.STYLUS_ONLY -> "僅觸控筆（手指捲動）"
+}
+
 @Composable
 fun TabletEditorTopBar(
     documentTitle: String,
@@ -370,8 +389,12 @@ fun TabletEditorTopBar(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
+                        // 副標本來寫「InkFlow Studio」——那句話什麼都沒說。
+                        // 改成**目前武裝的工具**：畫筆／熒光筆／橡皮擦／套索／圖形／文字／圖片。
+                        // 這條工具列全是無文字的圖示（橡皮擦是 DeleteOutline、套索是
+                        // Gesture、輸入模式還會換圖示），分不出來時這裡就是答案。
                         Text(
-                            text = "InkFlow Studio",
+                            text = toolLabel(activeTool),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.primary
                         )
@@ -733,51 +756,62 @@ fun TabletEditorTopBar(
                     ) {
                         Icon(Icons.AutoMirrored.Outlined.Redo, contentDescription = "Redo", tint = glassContentColor(isDarkTheme).copy(alpha = if (canRedo) 1f else 0.35f))
                     }
-                    // 分組：歷史（undo/redo）｜文件（匯出/設定）｜工具（輸入模式/計算機）。
-                    // 以前六顆一字排開沒有分隔，使用者在平板上找不到「哪顆是文件層級」。
-                    VerticalDivider(Modifier.height(24.dp).padding(horizontal = 6.dp))
-                    Box(
-                        modifier = Modifier
-                            .padding(horizontal = 4.dp)
-                            .fauxGlassPanel(isDarkTheme, CircleShape)
-                    ) {
-                        IconButton(onClick = onExport, modifier = Modifier.size(utilityButtonSize)) {
+                    // 文件層級的三顆（匯出／設定／輸入模式）收進一個「更多」選單。
+                    // 以前是三顆無文字圖示排在列尾：匯出是 FileUpload、設定是 Article、
+                    // 輸入模式更是**會換圖示**的（手指／手掌／筆）——使用者根本分不出來，
+                    // 而且列尾三顆無標籤的圖示讓整條列看起來像同一堆東西。
+                    // 收進選單後每一項都有文字，列尾也少三顆。
+                    var moreOpen by remember { mutableStateOf(false) }
+                    Box(modifier = Modifier.padding(horizontal = 4.dp)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                .fauxGlassPanel(isDarkTheme, CircleShape)
+                                .clickable { moreOpen = true }
+                                .padding(horizontal = 12.dp, vertical = 8.dp)
+                        ) {
+                            Text(
+                                text = "更多",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = glassContentColor(isDarkTheme)
+                            )
+                            Spacer(Modifier.width(4.dp))
                             Icon(
-                                Icons.Outlined.FileUpload,
-                                contentDescription = "Export PDF",
-                                tint = MaterialTheme.colorScheme.primary
+                                imageVector = Icons.Filled.ArrowDropDown,
+                                contentDescription = null,
+                                tint = glassContentColor(isDarkTheme),
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                        GlassMenu(
+                            expanded = moreOpen,
+                            onDismissRequest = { moreOpen = false }
+                        ) {
+                            GlassMenuItem(
+                                text = "匯出 PDF",
+                                icon = Icons.Outlined.FileUpload,
+                                isDark = isDarkTheme,
+                                onClick = { moreOpen = false; onExport() }
+                            )
+                            GlassMenuItem(
+                                text = "文件設定",
+                                icon = Icons.AutoMirrored.Outlined.Article,
+                                isDark = isDarkTheme,
+                                onClick = { moreOpen = false; onDocumentSettings() }
+                            )
+                            GlassMenuItem(
+                                text = "輸入模式：${inputModeLabel(inputMode)}",
+                                icon = when (inputMode) {
+                                    InputMode.FREE -> Icons.Outlined.TouchApp
+                                    InputMode.PALM_REJECTION -> Icons.Outlined.BackHand
+                                    InputMode.STYLUS_ONLY -> Icons.Outlined.Create
+                                },
+                                isDark = isDarkTheme,
+                                onClick = { moreOpen = false; viewModel.cycleInputMode() }
                             )
                         }
                     }
-                    IconButton(onClick = onDocumentSettings, modifier = Modifier.size(utilityButtonSize)) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Outlined.Article,
-                            contentDescription = "Document Settings",
-                            tint = glassContentColor(isDarkTheme)
-                        )
-                    }
-                    VerticalDivider(Modifier.height(24.dp).padding(horizontal = 6.dp))
-                    IconButton(onClick = { viewModel.cycleInputMode() }, modifier = Modifier.size(utilityButtonSize)) {
-                        Icon(
-                            imageVector = when (inputMode) {
-                                InputMode.FREE -> Icons.Outlined.TouchApp
-                                InputMode.PALM_REJECTION -> Icons.Outlined.BackHand
-                                InputMode.STYLUS_ONLY -> Icons.Outlined.Create
-                            },
-                            contentDescription = when (inputMode) {
-                                InputMode.FREE -> "手指模式（單指書寫）"
-                                InputMode.PALM_REJECTION -> "觸控筆模式"
-                                InputMode.STYLUS_ONLY -> "觸控筆模式（手指卷動）"
-                            },
-                            tint = when (inputMode) {
-                                InputMode.FREE -> glassContentColor(isDarkTheme)
-                                InputMode.PALM_REJECTION -> MaterialTheme.colorScheme.tertiary
-                                InputMode.STYLUS_ONLY -> MaterialTheme.colorScheme.primary
-                            }
-                        )
-                    }
-                    // 計算機不再放這裡：右側三組是「歷史｜文件｜模式」，計算機是工具，
-                    // 已移到左邊工具叢集（色盤之前，見上方 onOpenCalculator）。
                 }
             }
         }
