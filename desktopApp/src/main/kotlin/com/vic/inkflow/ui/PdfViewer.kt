@@ -2831,7 +2831,7 @@ private fun InkToolbar(
                 horizontalArrangement = Arrangement.spacedBy(2.dp)
             ) {
                 leadingButton()
-                InkToolbarTitle(documentTitle, focusedPage, pageCount, onPrevPage, onNextPage, onGoToPage)
+                InkToolbarTitle(documentTitle, tool, focusedPage, pageCount, onPrevPage, onNextPage, onGoToPage)
                 InkToolbarTools(tool, selectionCount, onToolChange)
                 if (textSelectionActive) InkToolbarTextSelection(onCopyText)
                 androidx.compose.material3.VerticalDivider(

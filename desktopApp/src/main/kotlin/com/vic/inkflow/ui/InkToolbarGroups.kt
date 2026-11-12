@@ -63,6 +63,7 @@ import kotlin.math.roundToInt
 @Composable
 fun InkToolbarTitle(
     documentTitle: String,
+    tool: InkTool,
     focusedPage: Int,
     pageCount: Int,
     onPrevPage: () -> Unit,
@@ -70,14 +71,25 @@ fun InkToolbarTitle(
     onGoToPage: (Int) -> Unit
 ) {
     if (documentTitle.isNotBlank()) {
-        Text(
-            documentTitle,
-            style = MaterialTheme.typography.labelMedium.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold),
-            color = glassContentColor(InkThemeState.darkMode),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.widthIn(max = 180.dp).padding(end = 4.dp)
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                documentTitle,
+                style = MaterialTheme.typography.labelMedium.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold),
+                color = glassContentColor(InkThemeState.darkMode),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 180.dp).padding(end = 4.dp)
+            )
+            // 工具列是七顆無文字的圖示（畫筆／螢光筆／橡皮擦／套索／文字／圖形／手），
+            // 其中套索是 SelectAll、橡皮擦是 DeleteSweep——光看圖示猜不出來。
+            // 名稱放在標題旁邊，不用把工具列塞成文字條。
+            Text(
+                text = inkToolLabel(tool),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+                maxLines = 1
+            )
+        }
     }
     // Page navigation: prev button, page number input, next button
     InkToolIcon(Icons.Rounded.KeyboardArrowLeft, "上一頁", false, enabled = focusedPage > 0, onClick = onPrevPage)
@@ -245,4 +257,21 @@ fun InkToolbarExport(exporting: Boolean, onExport: () -> Unit, onClear: () -> Un
         onClick = onClear,
         color = MaterialTheme.colorScheme.error
     )
+}
+
+/**
+ * The name of the armed tool.
+ *
+ * The toolbar's tools are icons only, and two of them are actively misleading
+ * (the eraser is a DeleteOutline, the lasso is a SelectAll). So the current
+ * tool is named next to the document title instead of guessing from a glyph.
+ */
+internal fun inkToolLabel(tool: InkTool): String = when (tool) {
+    InkTool.Pen -> "畫筆"
+    InkTool.Highlighter -> "熒光筆"
+    InkTool.Eraser -> "橡皮擦"
+    InkTool.Select -> "套索"
+    InkTool.Text -> "文字"
+    InkTool.Shape -> "圖形"
+    InkTool.Hand -> "手形"
 }
