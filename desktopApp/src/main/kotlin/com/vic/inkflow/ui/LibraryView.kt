@@ -1,13 +1,14 @@
 package com.vic.inkflow.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -18,10 +19,15 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Inbox
+import androidx.compose.material.icons.outlined.UploadFile
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -35,19 +41,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.vic.inkflow.data.DatabaseManager
 import com.vic.inkflow.data.Document as SharedDocument
+import com.vic.inkflow.data.Folder as SharedFolder
 import com.vic.inkflow.ui.kit.DeskDims
+import com.vic.inkflow.ui.kit.DeskNavItem
+import com.vic.inkflow.ui.kit.DeskNavLabel
 import com.vic.inkflow.ui.kit.DeskPillButton
 import com.vic.inkflow.ui.kit.DeskScreen
 import com.vic.inkflow.ui.kit.DeskSearchField
 import com.vic.inkflow.ui.kit.DeskSpace
+import com.vic.inkflow.ui.theme.ShapeLg
 import com.vic.inkflow.ui.theme.ShapeMd
-import com.vic.inkflow.ui.theme.ShapeSm
-import com.vic.inkflow.ui.theme.ShapeXl
 import com.vic.inkflow.util.LocalImport
 import com.vic.inkflow.util.PdfManager
 import java.io.File
@@ -55,17 +61,20 @@ import java.text.SimpleDateFormat
 import java.util.Date
 
 /**
- * The library: the documents on this machine, with a cover, a name, and when it
- * was last opened.
+ * The library: the documents on this machine.
  *
- * ## What changed in the repository migration
+ * ## The layout
  *
- * The screen used to call [DatabaseManager] directly in composition and run the
- * import transaction inline. It now takes a [LibraryViewModel] that owns the
- * query, the folder filter, the document/folder lists and the import flow; the
- * composable only renders and hosts the file picker. That is the same shape the
- * Android side has had for years (`DocumentViewModel` + `DocumentRepository`),
- * and it is the pattern every other desktop screen will follow.
+ * A navigation pane on the left (all / favourites / uncategorised / the folder
+ * tree) and the documents on the right. That is the Windows 11 Explorer shape,
+ * and it is also the only shape that can hold a folder tree: the previous
+ * horizontal row of filter chips could not, and it pushed the content down
+ * the screen while still being unable to say "everything".
+ *
+ * The pane is **read-only navigation**. Renaming, favouriting and moving
+ * documents are tablet-side operations - the desktop mirrors the document list
+ * and the sync replaces it wholesale - so offering them here would be an
+ * action that silently undoes itself (see `LibraryViewModel.Destination`).
  */
 @Composable
 fun LibraryView(
@@ -97,6 +106,13 @@ fun LibraryView(
         subtitle = buildString {
             append("${state.documents.size} 份文件")
             if (state.query.isNotBlank()) append(" · 搜尋「${state.query}」")
+            when (val d = state.destination) {
+                LibraryViewModel.Destination.All -> Unit
+                LibraryViewModel.Destination.Favorites -> append(" · 我的最愛")
+                LibraryViewModel.Destination.Uncategorized -> append(" · 未分類")
+                is LibraryViewModel.Destination.Folder ->
+                    append(" · " + (state.folders.firstOrNull { it.id == d.id }?.name ?: "資料夾"))
+            }
         },
         actions = {
             SyncStatusPill(syncStatusText)
@@ -104,59 +120,67 @@ fun LibraryView(
                 value = state.query,
                 onValueChange = { viewModel.onEvent(LibraryViewModel.LibraryEvent.SetQuery(it)) },
                 placeholder = "搜尋標題或檔名",
-                // 固定 240dp 的話，視窗一窄就被推出畫面。這裡讓它可以收，
+                // 固定寬度的話，視窗一窄就被推出畫面；讓它可以收，
                 // 寬度不夠時動作列自己會捲動（見 DeskScreen）。
                 modifier = Modifier.widthIn(min = 150.dp, max = 260.dp)
             )
             DeskPillButton(
                 text = if (state.importing) "匯入中…" else "開啟 PDF",
-                icon = Icons.Default.UploadFile,
+                icon = Icons.Outlined.UploadFile,
                 onClick = { pickAndImport() },
                 enabled = !state.importing
             )
         },
         modifier = modifier
     ) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            FolderChips(
-                folders = state.folders.map { it.id to it.name },
-                selectedFolderId = state.selectedFolderId,
-                favoritesOnly = state.favoritesOnly,
-                onFolderSelected = { viewModel.onEvent(LibraryViewModel.LibraryEvent.SetFolder(it)) },
-                onFavoritesToggled = { viewModel.onEvent(LibraryViewModel.LibraryEvent.SetFavoritesOnly(it)) }
+        Row(Modifier.fillMaxSize()) {
+            LibraryNavPane(
+                state = state,
+                onDestination = { viewModel.onEvent(LibraryViewModel.LibraryEvent.SetDestination(it)) }
             )
+            // 一條細線把窗格和內容分開，不用再畫一整塊面板（Windows 11 就是這樣）。
+            Box(
+                Modifier
+                    .width(1.dp)
+                    .fillMaxHeight()
+                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+            )
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .padding(start = DeskSpace.md)
+            ) {
+                (state.importError)?.let { msg ->
+                    Text(
+                        msg,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Spacer(Modifier.height(DeskSpace.sm))
+                }
 
-            (state.importError)?.let { msg ->
-                Spacer(Modifier.height(DeskSpace.xs))
-                Text(
-                    msg,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-
-            Spacer(Modifier.height(DeskSpace.sm))
-
-            if (state.documents.isEmpty()) {
-                EmptyLibrary(query = state.query, onImport = { pickAndImport() })
-            } else {
-                LazyVerticalGrid(
-                    columns = GridCells.Adaptive(minSize = DeskDims.cardMinWidth),
-                    horizontalArrangement = Arrangement.spacedBy(DeskSpace.md),
-                    verticalArrangement = Arrangement.spacedBy(DeskSpace.md),
-                    contentPadding = PaddingValues(bottom = DeskSpace.lg),
-                    modifier = Modifier.fillMaxSize()
-                ) {
-                    items(state.documents.size, key = { state.documents[it].uri }) { i ->
-                        val doc = state.documents[i]
-                        DocumentCard(
-                            document = doc,
-                            strokeCount = viewModel.strokeCountForDocument(doc.uri),
-                            folderName = state.folders.firstOrNull { it.id == doc.folderId }?.name,
-                            onClick = { onDocumentSelected(doc.uri) }
-                        )
+                if (state.documents.isEmpty()) {
+                    EmptyLibrary(query = state.query, onImport = { pickAndImport() })
+                } else {
+                    LazyVerticalGrid(
+                        columns = GridCells.Adaptive(minSize = DeskDims.cardMinWidth),
+                        horizontalArrangement = Arrangement.spacedBy(DeskSpace.md),
+                        verticalArrangement = Arrangement.spacedBy(DeskSpace.md),
+                        contentPadding = PaddingValues(bottom = DeskSpace.lg),
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        items(state.documents.size, key = { state.documents[it].uri }) { i ->
+                            val doc = state.documents[i]
+                            DocumentCard(
+                                document = doc,
+                                strokeCount = viewModel.strokeCountForDocument(doc.uri),
+                                folderName = state.folders.firstOrNull { it.id == doc.folderId }?.name,
+                                onClick = { onDocumentSelected(doc.uri) }
+                            )
+                        }
                     }
                 }
             }
@@ -164,8 +188,96 @@ fun LibraryView(
     }
 }
 
+/**
+ * The navigation pane.
+ *
+ * Everything in it is a *view*, never an edit - see the file header.
+ */
+@Composable
+private fun LibraryNavPane(
+    state: LibraryViewModel.UiState,
+    onDestination: (LibraryViewModel.Destination) -> Unit
+) {
+    val destination = state.destination
+    Column(
+        modifier = Modifier
+            .width(232.dp)
+            .fillMaxHeight()
+            .verticalScroll(rememberScrollState())
+            .padding(end = DeskSpace.sm)
+    ) {
+        DeskNavLabel("文件庫")
+        DeskNavItem(
+            icon = Icons.Outlined.Home,
+            label = "全部文件",
+            selected = destination == LibraryViewModel.Destination.All,
+            onClick = { onDestination(LibraryViewModel.Destination.All) },
+            trailing = state.folders.size.let { null }
+        )
+        DeskNavItem(
+            icon = Icons.Default.Star,
+            label = "我的最愛",
+            selected = destination == LibraryViewModel.Destination.Favorites,
+            onClick = { onDestination(LibraryViewModel.Destination.Favorites) }
+        )
+        DeskNavItem(
+            icon = Icons.Outlined.Inbox,
+            label = "未分類",
+            selected = destination == LibraryViewModel.Destination.Uncategorized,
+            onClick = { onDestination(LibraryViewModel.Destination.Uncategorized) }
+        )
 
-// (helpers appended below)
+        if (state.folders.isNotEmpty()) {
+            DeskNavLabel(
+                text = "資料夾",
+                modifier = Modifier.padding(top = DeskSpace.sm)
+            )
+            FolderTree(
+                folders = state.folders,
+                destination = destination,
+                onDestination = onDestination,
+                depth = 0
+            )
+        }
+    }
+}
+
+/**
+ * The folder tree, indented by depth.
+ *
+ * The folders are the tablet's, mirrored - they have a parent id, so they are
+ * a tree, not a list. A tree rendered as a flat list looks like the data is
+ * flat when it is not.
+ */
+@Composable
+private fun FolderTree(
+    folders: List<SharedFolder>,
+    destination: LibraryViewModel.Destination,
+    onDestination: (LibraryViewModel.Destination) -> Unit,
+    depth: Int
+) {
+    // Top level = no parent, or a parent that is not in the list (a folder whose
+    // parent vanished must still be reachable, not disappear).
+    val roots = folders.filter { f -> f.parentFolderId == null || folders.none { it.id == f.parentFolderId } }
+    roots.forEach { folder ->
+        DeskNavItem(
+            icon = Icons.Outlined.Folder,
+            label = folder.name,
+            selected = destination == LibraryViewModel.Destination.Folder(folder.id),
+            onClick = { onDestination(LibraryViewModel.Destination.Folder(folder.id)) },
+            modifier = Modifier.padding(start = (depth * 14).dp)
+        )
+        val sub = folders.filter { it.parentFolderId == folder.id }
+        if (sub.isNotEmpty()) {
+            FolderTree(
+                folders = sub,
+                destination = destination,
+                onDestination = onDestination,
+                depth = depth + 1
+            )
+        }
+    }
+}
 
 /** Sync status pill. */
 @Composable
@@ -205,53 +317,6 @@ private fun SyncStatusPill(text: String) {
     }
 }
 
-/** Folder filter chips in a scrolling row. */
-@Composable
-private fun FolderChips(
-    folders: List<Pair<String, String>>,
-    selectedFolderId: String?,
-    favoritesOnly: Boolean,
-    onFolderSelected: (String?) -> Unit,
-    onFavoritesToggled: (Boolean) -> Unit
-) {
-    Row(
-        horizontalArrangement = Arrangement.spacedBy(DeskSpace.xs),
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
-    ) {
-        GlassOptionChip(
-            text = "全部",
-            selected = selectedFolderId == null && !favoritesOnly,
-            onClick = { onFavoritesToggled(false); onFolderSelected(null) },
-            isDark = InkThemeState.darkMode
-        )
-        // 最愛（唯讀檢視）：旗標由平板權威、桌面只篩選。
-        // 跟「全部」互斥——兩個篩選同時成立會讓畫面看起來像壞掉。
-        GlassOptionChip(
-            text = "我的最愛",
-            selected = favoritesOnly,
-            onClick = { onFavoritesToggled(!favoritesOnly) },
-            isDark = InkThemeState.darkMode
-        )
-        folders.forEach { (id, name) ->
-            GlassOptionChip(
-                text = name,
-                selected = selectedFolderId == id,
-                onClick = { onFolderSelected(id) },
-                isDark = InkThemeState.darkMode
-            )
-        }
-        GlassOptionChip(
-            text = "未分類",
-            selected = selectedFolderId == "__none__",
-            onClick = { onFolderSelected("__none__") },
-            isDark = InkThemeState.darkMode
-        )
-    }
-}
-
 /** Empty library state. */
 @Composable
 private fun EmptyLibrary(query: String, onImport: () -> Unit) {
@@ -260,7 +325,13 @@ private fun EmptyLibrary(query: String, onImport: () -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally,
             modifier = Modifier
                 .widthIn(max = 420.dp)
-                .background(MaterialTheme.colorScheme.surface, ShapeXl)
+                .clip(ShapeLg)
+                .background(MaterialTheme.colorScheme.surface, ShapeLg)
+                .border(
+                    1.dp,
+                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+                    ShapeLg
+                )
                 .padding(DeskSpace.lg)
         ) {
             Icon(
@@ -277,8 +348,8 @@ private fun EmptyLibrary(query: String, onImport: () -> Unit) {
             )
             Spacer(Modifier.height(DeskSpace.xs))
             Text(
-                if (query.isNotBlank()) "換個關鍵字，或清除搜尋看看全部文件。"
-                else "等待局域網同步從平板拉取筆記，或直接開啟本機 PDF。",
+                if (query.isNotBlank()) "換個關鍵字，或回到「全部文件」。"
+                else "等待區域網同步從平板拉取筆記，或直接開啟本機 PDF。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -290,21 +361,32 @@ private fun EmptyLibrary(query: String, onImport: () -> Unit) {
     }
 }
 
-/** One document card. */
+/**
+ * One document card.
+ *
+ * A flat surface with a hairline, not a floating card with a shadow: the
+ * window already sits on a Mica backdrop, and a shadow there reads as dirt.
+ * The thumbnail keeps the page's own aspect so a row of documents reads as a
+ * row of pages.
+ */
 @Composable
 private fun DocumentCard(
-    document: com.vic.inkflow.data.Document,
+    document: SharedDocument,
     strokeCount: Int,
     folderName: String?,
     onClick: () -> Unit
 ) {
-    val isDark = InkThemeState.darkMode
     Column(
         modifier = Modifier
             .height(DeskDims.cardHeight)
-            .background(MaterialTheme.colorScheme.surface, ShapeMd)
-            .glassClickable(onClick = onClick, shape = ShapeMd)
-            .clip(ShapeMd)
+            .clip(ShapeLg)
+            .background(MaterialTheme.colorScheme.surface, ShapeLg)
+            .border(
+                1.dp,
+                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+                ShapeLg
+            )
+            .glassClickable(onClick = onClick, shape = ShapeLg)
     ) {
         Box(
             modifier = Modifier
@@ -315,7 +397,7 @@ private fun DocumentCard(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .clip(ShapeSm)
+                    .clip(ShapeMd)
                     .background(MaterialTheme.colorScheme.surfaceVariant),
                 contentAlignment = Alignment.Center
             ) {
@@ -329,10 +411,11 @@ private fun DocumentCard(
                         contentScale = ContentScale.Fit
                     )
                 } else {
-                    Text(
-                        document.displayName.substringAfterLast('.', "PDF").uppercase(),
-                        style = MaterialTheme.typography.titleLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    Icon(
+                        Icons.Outlined.Description,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(28.dp)
                     )
                 }
             }
@@ -343,7 +426,7 @@ private fun DocumentCard(
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier
                         .align(Alignment.TopEnd)
-                        .padding(DeskSpace.xs)
+                        .padding(6.dp)
                         .size(16.dp)
                 )
             }
@@ -352,7 +435,7 @@ private fun DocumentCard(
             modifier = Modifier.padding(
                 start = DeskSpace.sm,
                 end = DeskSpace.sm,
-                top = DeskSpace.xs,
+                top = DeskSpace.xxs,
                 bottom = DeskSpace.sm
             )
         ) {
@@ -360,14 +443,14 @@ private fun DocumentCard(
                 document.displayName,
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 2,
+                maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
             Spacer(Modifier.height(2.dp))
             Text(
                 buildString {
-                    append(SimpleDateFormat("MM-dd HH:mm").format(Date(document.lastOpenedAt)))
-                    append(" · $strokeCount 筆跡")
+                    append(relativeTime(document.lastOpenedAt))
+                    if (strokeCount > 0) append(" · $strokeCount 筆跡")
                     if (folderName != null) append(" · $folderName")
                 },
                 style = MaterialTheme.typography.bodySmall,
@@ -376,5 +459,26 @@ private fun DocumentCard(
                 overflow = TextOverflow.Ellipsis
             )
         }
+    }
+}
+
+/**
+ * "3 分鐘前" instead of "10-09 10:46".
+ *
+ * A date string is only meaningful if you remember what day it was; a
+ * relative time answers the question the card is actually asking ("is this
+ * something I was working on?"). Older than a week it falls back to the date,
+ * because "23 天前" stops helping.
+ */
+private fun relativeTime(timestamp: Long): String {
+    val diff = System.currentTimeMillis() - timestamp
+    val minutes = diff / 60_000
+    return when {
+        minutes < 1 -> "剛剛"
+        minutes < 60 -> "$minutes 分鐘前"
+        minutes < 60 * 24 -> "${minutes / 60} 小時前"
+        minutes < 60 * 48 -> "昨天"
+        minutes < 60 * 24 * 7 -> "${minutes / (60 * 24)} 天前"
+        else -> SimpleDateFormat("yyyy-MM-dd").format(Date(timestamp))
     }
 }

@@ -610,6 +610,32 @@ fun PdfViewer(
                 }
             }
         }
+
+        // ── 底部狀態列 ──────────────────────────────────────────────
+        // Edge 與 Acrobat 都把「我在第幾頁 / 現在幾倍」放在底部。放工具列上
+        // 是要使用者的眼睛在兩個地方來回找；放底部它就是一個狀態列。
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 6.dp)
+        ) {
+            Text(
+                text = if (pageCount > 0) "第 ${focusedPage + 1} / $pageCount 頁" else "",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                text = "${((h?.zoom?.value ?: 1f) * 100).roundToInt()}%",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .clip(androidx.compose.foundation.shape.CircleShape)
+                    .glassClickable(onClick = { h?.onZoomReset() })
+                    .padding(horizontal = 8.dp, vertical = 2.dp)
+            )
+        }
     }
 }
 

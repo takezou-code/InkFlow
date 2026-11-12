@@ -31,11 +31,33 @@ class LibraryViewModel(
     private val scope: CoroutineScope
 ) {
 
+    /**
+     * 導覽窗格目前指向的地方。
+     *
+     * 以前是兩個欄位（selectedFolderId + favoritesOnly），那是**水平 chip 列**
+     * 的形狀：最多只能表達「某個資料夾」或「最愛」其中之一，而且要靠
+     * `null` / `"__none__"` 兩個魔法值區分「全部」跟「未分類」。
+     * 導覽窗格要同時顯示區段與資料夾樹，單一的 sealed 型別比較誠實。
+     */
+    sealed interface Destination {
+        /** 全部文件。 */
+        data object All : Destination
+
+        /** 我的最愛（唯讀檢視：旗標由平板權威，見 [UiState.favoritesOnly]）。 */
+        data object Favorites : Destination
+
+        /** 還沒被分類到任何資料夾的文件。 */
+        data object Uncategorized : Destination
+
+        /** 某個資料夾。 */
+        data class Folder(val id: String) : Destination
+    }
+
     data class UiState(
         val documents: List<SharedDocument> = emptyList(),
         val folders: List<SharedFolder> = emptyList(),
         val query: String = "",
-        val selectedFolderId: String? = null,
+        val destination: Destination = Destination.All,
         /**
          * 只看最愛。
          *
@@ -51,8 +73,7 @@ class LibraryViewModel(
 
     sealed interface LibraryEvent {
         data class SetQuery(val query: String) : LibraryEvent
-        data class SetFolder(val folderId: String?) : LibraryEvent
-        data class SetFavoritesOnly(val enabled: Boolean) : LibraryEvent
+        data class SetDestination(val destination: Destination) : LibraryEvent
         data class ImportDocument(val chosen: File, val mirrorRoot: String, val onLibraryChanged: () -> Unit) : LibraryEvent
         data object ClearImportError : LibraryEvent
         data object Refresh : LibraryEvent
@@ -71,12 +92,14 @@ class LibraryViewModel(
                 _state.value = _state.value.copy(query = event.query)
                 onEvent(LibraryEvent.Refresh)
             }
-            is LibraryEvent.SetFolder -> {
-                _state.value = _state.value.copy(selectedFolderId = event.folderId)
-                onEvent(LibraryEvent.Refresh)
-            }
-            is LibraryEvent.SetFavoritesOnly -> {
-                _state.value = _state.value.copy(favoritesOnly = event.enabled)
+            is LibraryEvent.SetDestination -> {
+                _state.value = _state.value.copy(
+                    destination = event.destination,
+                    // 「最愛」是一個目的地，不是一個附加條件；換目的地時
+                    // 附帶的 favoritesOnly 必須一起清掉，否則兩個條件疊在一起，
+                    // 畫面看起來像壞掉。
+                    favoritesOnly = event.destination == Destination.Favorites
+                )
                 onEvent(LibraryEvent.Refresh)
             }
             is LibraryEvent.ImportDocument -> importDocument(event.chosen, event.mirrorRoot, event.onLibraryChanged)
@@ -132,13 +155,14 @@ class LibraryViewModel(
             val all = documentRepository.getAllDocumentsSync()
             val folders = (folderRepository as? com.vic.inkflow.data.JdbcFolderRepository)?.getAllFoldersSync() ?: emptyList()
             val s = _state.value
-            val filtered = when (s.selectedFolderId) {
-                null -> all
-                "__none__" -> all.filter { it.folderId == null }
-                else -> all.filter { it.folderId == s.selectedFolderId }
+            val byFolder = when (val d = s.destination) {
+                Destination.All -> all
+                Destination.Favorites -> all.filter { it.isFavorite }
+                Destination.Uncategorized -> all.filter { it.folderId == null }
+                is Destination.Folder -> all.filter { it.folderId == d.id }
             }
-            val searched = if (s.query.isBlank()) filtered
-            else filtered.filter { doc ->
+            val searched = if (s.query.isBlank()) byFolder
+            else byFolder.filter { doc ->
                 doc.displayName.contains(s.query, ignoreCase = true) ||
                     folders.firstOrNull { it.id == doc.folderId }?.name?.contains(s.query, ignoreCase = true) == true
             }

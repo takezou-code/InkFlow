@@ -53,6 +53,7 @@ import com.vic.inkflow.ui.InkThemeState
 import com.vic.inkflow.ui.chromeGlass
 import com.vic.inkflow.ui.glassClickable
 import com.vic.inkflow.ui.glassContentColor
+import com.vic.inkflow.ui.glassSelectionPill
 import com.vic.inkflow.ui.glassSidePanel
 import com.vic.inkflow.ui.theme.ShapeMd
 
@@ -535,5 +536,78 @@ fun DeskSectionLabel(text: String, modifier: Modifier = Modifier) {
         style = MaterialTheme.typography.labelMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = modifier
+    )
+}
+
+/**
+ * One row of the navigation pane: an icon and a label, selected = glass pill.
+ *
+ * The pane is the modern replacement for a row of filter chips: a horizontal
+ * chip row cannot hold a folder tree, and it pushes the content down the
+ * screen. Windows 11 Explorer puts the destinations in a pane on the left
+ * for the same reason.
+ */
+@Composable
+fun DeskNavItem(
+    icon: ImageVector,
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    trailing: String? = null
+) {
+    val isDark = InkThemeState.darkMode
+    val tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = modifier
+            .fillMaxWidth()
+            // 選取態用主色的淡底，不是玻璃藥丸：藥丸在深色底上是**一塊白斑**，
+            // 選取哪一項反而最刺眼。Windows 11 的導覽窗格是低調的染色。
+            .then(
+                if (selected) Modifier.background(
+                    MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
+                    CircleShape
+                ) else Modifier
+            )
+            .clip(CircleShape)
+            .glassClickable(onClick = onClick, shape = CircleShape)
+            .padding(horizontal = DeskSpace.sm, vertical = 9.dp)
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = tint,
+            modifier = Modifier.size(18.dp)
+        )
+        Spacer(Modifier.width(DeskSpace.xs))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        if (trailing != null) {
+            Text(
+                text = trailing,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+/** A small heading inside the navigation pane (above a group of items). */
+@Composable
+fun DeskNavLabel(text: String, modifier: Modifier = Modifier) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = modifier.padding(start = DeskSpace.sm, bottom = DeskSpace.xxs)
     )
 }
