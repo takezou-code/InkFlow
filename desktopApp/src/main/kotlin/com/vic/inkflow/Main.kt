@@ -1,4 +1,4 @@
-package com.vic.inkflow
+﻿package com.vic.inkflow
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.tween
@@ -10,6 +10,10 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.border
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.DarkMode
@@ -78,6 +82,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.Image
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.graphics.painter.Painter
@@ -88,6 +97,7 @@ import java.util.Properties
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 private val logger = KotlinLogging.logger {}
 
@@ -408,7 +418,13 @@ fun InkFlowApp(uiPreview: String? = null, paletteOpen: Boolean = false, onPalett
         }
     }
 
+    val rootDensity = LocalDensity.current
     Column(modifier = Modifier.fillMaxSize()) {
+        // The rail is icons only, so the label has to arrive on hover. The
+        // tooltip is drawn at the very end of this column - i.e. above the
+        // content - because the rail sits in a Row and anything painted after
+        // it (the pages, the grid) would cover a tooltip that lives inside it.
+        var railHover by remember { mutableStateOf<Pair<String, Float>?>(null) }
         // No top app bar: it cost a full row of vertical space on every screen for
         // controls that all have better homes now — Library/Sync/Settings and the
         // theme toggle live in the dock, the peer count rides the Sync icon, the
@@ -421,32 +437,46 @@ fun InkFlowApp(uiPreview: String? = null, paletteOpen: Boolean = false, onPalett
         // self-drawn rail items, so the desktop does the same. Destinations stay
         // desktop ones (Library/Sync/Settings); only the material changes.
         Row(modifier = Modifier.fillMaxSize()) {
-            // Windows-style left navigation rail: a fixed-width surface instead of
-            // the tablet's floating glass capsule. Keeps the same destinations.
+            // ── The rail: a floating glass capsule ────────────────────────────
             //
-            // It used to be an M3 `Surface(tonalElevation = 1.dp)`, which is
-            // Material's own chrome standing on top of our background - exactly
-            // the "two visual languages on one screen" this app is trying to
-            // avoid. fauxGlassPanel gives the same tinted strip with the
-            // product's own edge treatment, and it follows the theme.
+            // It used to be a full-height flat strip with an icon *and* a small
+            // label under each one: four rows of stacked text in a 76dp column,
+            // which read as clutter rather than navigation - and the selection
+            // spoke two languages at once (a pale disc behind a coloured icon).
+            //
+            // Now it is what the tablet already uses: a floating capsule with
+            // icons only, the label arriving on hover. The capsule is drawn with
+            // background+border rather than clip+background, so the tooltip can
+            // overflow it (clip would cut it off).
             Box(
                 modifier = Modifier
                     .fillMaxHeight()
-                    .width(DeskDims.railWidth)
-                    .fauxGlassPanel(InkThemeState.darkMode, RectangleShape)
+                    .width(DeskDims.railWidth + 16.dp)
+                    .padding(start = 10.dp, top = 10.dp, bottom = 10.dp)
             ) {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.fillMaxSize().padding(vertical = 8.dp)
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
+                            RoundedCornerShape(34.dp)
+                        )
+                        .border(
+                            1.dp,
+                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+                            RoundedCornerShape(34.dp)
+                        )
+                        .padding(vertical = 12.dp)
                 ) {
-                    Spacer(Modifier.height(8.dp))
-                    BrandIcon(modifier = Modifier.size(40.dp))
-                    Spacer(Modifier.height(16.dp))
+                    BrandIcon(modifier = Modifier.size(34.dp))
+                    Spacer(Modifier.height(14.dp))
                     DesktopRailItem(
                         selected = selectedDocument == null && !showSettings,
                         onClick = { selectedDocument = null; showSettings = false },
                         icon = Icons.Outlined.Home,
-                        label = "文件庫"
+                        label = "文件庫",
+                        onHover = { l, y -> railHover = if (l != null) l to y else null }
                     )
                     DesktopRailItem(
                         selected = false,
@@ -454,40 +484,63 @@ fun InkFlowApp(uiPreview: String? = null, paletteOpen: Boolean = false, onPalett
                         badgeCount = peerCount,
                         onClick = { requestManualSync() },
                         icon = Icons.Outlined.Sync,
-                        label = "同步"
+                        label = if (peerCount > 0) "同步（$peerCount 在線）" else "同步",
+                        onHover = { l, y -> railHover = if (l != null) l to y else null }
                     )
                     DesktopRailItem(
                         selected = showSettings,
                         onClick = { showSettings = true; selectedDocument = null },
                         icon = Icons.Outlined.Settings,
-                        label = "設定"
+                        label = "設定",
+                        onHover = { l, y -> railHover = if (l != null) l to y else null }
                     )
                     if (selectedDocument != null) {
                         DesktopRailItem(
                             selected = showAgent,
                             onClick = { showAgent = !showAgent },
                             icon = Icons.Filled.AutoAwesome,
-                            label = "AI"
+                            label = "AI 面板",
+                            onHover = { l, y -> railHover = if (l != null) l to y else null }
                         )
                     }
                     Spacer(Modifier.weight(1f))
-                    IconButton(onClick = {
-                        val next = !InkThemeState.darkMode
-                        InkThemeState.darkMode = next
-                        DesktopSettings.darkMode = next
-                    }) {
+                    // The theme toggle used to be a raw M3 IconButton sitting in
+                    // the middle of our own chrome. Same language as the items
+                    // above it now.
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(CircleShape)
+                            .combinedClickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                onClick = {
+                                    val next = !InkThemeState.darkMode
+                                    InkThemeState.darkMode = next
+                                    DesktopSettings.darkMode = next
+                                },
+                                onLongClick = null
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
                         Icon(
                             imageVector = if (InkThemeState.darkMode) Icons.Outlined.LightMode else Icons.Outlined.DarkMode,
                             contentDescription = "切換主題",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp)
                         )
                     }
-                    Text(
-                        if (peerCount > 0) "$peerCount 在線" else "離線",
-                        color = if (peerCount > 0) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.outline,
-                        style = MaterialTheme.typography.labelSmall,
-                        modifier = Modifier.padding(bottom = 4.dp)
+                    Spacer(Modifier.height(12.dp))
+                    // Connection state as a dot, not a sentence. The old
+                    // "N 在線 / 離線" caption was a second label under another
+                    // icon - the same clutter this rail was rebuilt to remove.
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (peerCount > 0) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.outline
+                            )
                     )
                 }
             }
@@ -606,11 +659,42 @@ fun InkFlowApp(uiPreview: String? = null, paletteOpen: Boolean = false, onPalett
                 }
             }
         }
+
+        // ── Rail hover tooltip ───────────────────────────────────────────────
+        // Painted last so it sits above the pages and the grid.
+        railHover?.let { (label, y) ->
+            val density = LocalDensity.current
+            Box(Modifier.fillMaxSize()) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .offset {
+                            IntOffset(
+                                x = with(density) { 96.dp.roundToPx() },
+                                y = (y - 13.dp.toPx()).roundToInt()
+                            )
+                        }
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.97f))
+                        .border(
+                            1.dp,
+                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f),
+                            RoundedCornerShape(10.dp)
+                        )
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                ) {
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1
+                    )
+                }
+            }
+        }
     }
 
     // ── Command palette (Ctrl+K / Cmd+K) ───────────────────────────────────
-    // A Dialog is its own window layer, so it draws over everything without
-    // the screens having to know about it.
     CommandPalette(
         open = paletteOpen,
         documents = remember(libraryRefresh) { databaseManager.getAllDocuments() },
@@ -680,55 +764,73 @@ private fun DesktopRailItem(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
     busy: Boolean = false,
-    badgeCount: Int = 0
+    badgeCount: Int = 0,
+    onHover: (String?, Float) -> Unit = { _, _ -> }
 ) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(2.dp),
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    var centerY by remember { mutableFloatStateOf(0f) }
+
+    // The label is not painted under the icon any more; it arrives on hover,
+    // as a tooltip beside the rail. So the item reports its hover state (and
+    // where it is) to the rail, which paints the tooltip above everything.
+    LaunchedEffect(hovered) {
+        onHover(if (hovered) label else null, centerY)
+    }
+
+    Box(
         modifier = Modifier
-            .padding(vertical = 4.dp)
-            .fillMaxWidth()
-                    .background(
-                        if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
-                        else Color.Transparent,
-                        CircleShape
-                    )
+            .padding(vertical = 3.dp)
+            .size(40.dp)
+            .onGloballyPositioned { centerY = it.positionInRoot().y + it.size.height / 2f }
+            .clip(CircleShape)
+            .background(
+                when {
+                    selected -> MaterialTheme.colorScheme.primary
+                    hovered -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
+                    else -> Color.Transparent
+                },
+                CircleShape
+            )
+            .hoverable(interaction)
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = null,
-                interactionSource = remember { MutableInteractionSource() }
-            )
-            .padding(horizontal = 12.dp, vertical = 8.dp)
+                interactionSource = interaction
+            ),
+        contentAlignment = Alignment.Center
     ) {
         if (busy) {
-            androidx.compose.material3.CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+            androidx.compose.material3.CircularProgressIndicator(
+                Modifier.size(18.dp),
+                strokeWidth = 2.dp,
+                color = MaterialTheme.colorScheme.primary
+            )
         } else {
-            ModernIconButton(
-                selected = selected,
-                onClick = {},
-                icon = icon,
-                contentDescription = if (badgeCount > 0) "$label（$badgeCount 台在線）" else label,
-                size = 36.dp,
-                iconSize = 20.dp
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = if (selected) MaterialTheme.colorScheme.onPrimary
+                       else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp)
             )
         }
         if (badgeCount > 0) {
-            Text(
-                text = if (badgeCount > 99) "99+" else badgeCount.toString(),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary,
+            Box(
                 modifier = Modifier
-                    .background(MaterialTheme.colorScheme.surface, CircleShape)
-                    .padding(horizontal = 3.dp)
-            )
+                    .align(Alignment.TopEnd)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primary)
+                    .padding(horizontal = 4.dp, vertical = 1.dp)
+            ) {
+                Text(
+                    text = if (badgeCount > 99) "99+" else badgeCount.toString(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onPrimary
+                )
+            }
         }
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = if (selected) MaterialTheme.colorScheme.primary
-            else MaterialTheme.colorScheme.onSurfaceVariant
-        )
-}
+    }
 }
 
 @Composable
@@ -927,6 +1029,28 @@ fun main(args: Array<String>) {
         // from every screen, including the reader (where the paper has the
         // keyboard focus, not the window chrome).
         var paletteOpen by remember { mutableStateOf(false) }
+        // The window has to fit the screen, or everything on the right is
+        // simply gone.
+        //
+        // The app used to ask for a fixed 1280x800dp. On a 125%-scaled 1536x960
+        // display that is 1600x1000 physical pixels - wider than the screen -
+        // so Windows clamped the *window* to the screen while Compose kept
+        // laying out for the size it was asked for. The result: the reader's
+        // paper, the command bar's zoom cluster and the library's import
+        // button were all rendered past the right edge and clipped away, with
+        // no way to scroll to them.
+        //
+        // So: ask for the screen, minus a margin, converted to dp (AWT reports
+        // pixels, the window API takes dp).
+        val initialSize = remember {
+            val toolkit = java.awt.Toolkit.getDefaultToolkit()
+            val screen = toolkit.screenSize
+            val dpi = runCatching { toolkit.screenResolution }.getOrDefault(96).coerceAtLeast(72)
+            val pxToDp = 96f / dpi
+            val width = ((screen.width * pxToDp).toInt() - 24).coerceIn(900, 1600)
+            val height = ((screen.height * pxToDp).toInt() - 24).coerceIn(600, 1000)
+            Pair(width.dp, height.dp)
+        }
         Window(
             onCloseRequest = ::exitApplication,
             title = when (probe) {
@@ -934,7 +1058,7 @@ fun main(args: Array<String>) {
                 "llm" -> "InkFlow — LLM probe"
                 else -> "InkFlow"
             },
-            state = rememberWindowState(width = 1280.dp, height = 800.dp),
+            state = rememberWindowState(width = initialSize.first, height = initialSize.second),
             icon = icon,
             onPreviewKeyEvent = { event ->
                 if (event.type == KeyEventType.KeyDown &&
