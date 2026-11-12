@@ -13,13 +13,12 @@ import androidx.compose.material.icons.automirrored.rounded.Backspace
 import androidx.compose.material.icons.automirrored.rounded.Redo
 import androidx.compose.material.icons.automirrored.rounded.Undo
 import androidx.compose.material.icons.rounded.Brush
+import androidx.compose.material.icons.rounded.Draw
 import androidx.compose.material.icons.rounded.DeleteSweep
-import androidx.compose.material.icons.rounded.Gesture
-import androidx.compose.material.icons.rounded.Highlight
 import androidx.compose.material.icons.rounded.KeyboardArrowLeft
 import androidx.compose.material.icons.rounded.KeyboardArrowRight
-import androidx.compose.material.icons.rounded.ViewList
 import androidx.compose.material.icons.rounded.PanTool
+import androidx.compose.material.icons.rounded.SelectAll
 import androidx.compose.material.icons.rounded.ShapeLine
 import androidx.compose.material.icons.rounded.TextFields
 import androidx.compose.material.icons.rounded.ZoomIn
@@ -68,9 +67,7 @@ fun InkToolbarTitle(
     pageCount: Int,
     onPrevPage: () -> Unit,
     onNextPage: () -> Unit,
-    onGoToPage: (Int) -> Unit,
-    showThumbnails: Boolean = false,
-    onToggleThumbnails: () -> Unit = {}
+    onGoToPage: (Int) -> Unit
 ) {
     if (documentTitle.isNotBlank()) {
         Text(
@@ -111,8 +108,6 @@ fun InkToolbarTitle(
         )
     }
     InkToolIcon(Icons.Rounded.KeyboardArrowRight, "下一頁", false, enabled = focusedPage < pageCount - 1, onClick = onNextPage)
-    // Thumbnail sidebar toggle
-    InkToolIcon(Icons.Rounded.ViewList, "縮圖側欄", showThumbnails, onClick = onToggleThumbnails)
 }
 
 @Composable
@@ -122,12 +117,17 @@ fun InkToolbarTools(
     onToolChange: (InkTool) -> Unit
 ) {
     InkToolIcon(Icons.Rounded.PanTool, "抓手（拖曳捲動）", tool == InkTool.Hand, onClick = { onToolChange(InkTool.Hand) })
-    InkToolIcon(Icons.Rounded.Brush, "筆", tool == InkTool.Pen, onClick = { onToolChange(InkTool.Pen) })
-    InkToolIcon(Icons.Rounded.Highlight, "螢光筆", tool == InkTool.Highlighter, onClick = { onToolChange(InkTool.Highlighter) })
+    InkToolIcon(Icons.Rounded.Draw, "筆", tool == InkTool.Pen, onClick = { onToolChange(InkTool.Pen) })
+    InkToolIcon(Icons.Rounded.Brush, "螢光筆", tool == InkTool.Highlighter, onClick = { onToolChange(InkTool.Highlighter) })
     InkToolIcon(Icons.Rounded.DeleteSweep, "橡皮擦", tool == InkTool.Eraser, onClick = { onToolChange(InkTool.Eraser) })
-    InkToolIcon(Icons.Rounded.Gesture, if (selectionCount > 0) "選取（$selectionCount）" else "選取", tool == InkTool.Select, badgeCount = selectionCount, onClick = { onToolChange(InkTool.Select) })
+    InkToolIcon(Icons.Rounded.SelectAll, if (selectionCount > 0) "選取（$selectionCount）" else "選取", tool == InkTool.Select, badgeCount = selectionCount, onClick = { onToolChange(InkTool.Select) })
     InkToolIcon(Icons.Rounded.TextFields, "文字", tool == InkTool.Text, onClick = { onToolChange(InkTool.Text) })
     InkToolIcon(Icons.Rounded.ShapeLine, "形狀", tool == InkTool.Shape, onClick = { onToolChange(InkTool.Shape) })
+}
+
+@Composable
+fun InkToolbarTextSelection(onCopy: () -> Unit) {
+    GlassTextButton(text = "複製", onClick = onCopy)
 }
 
 @Composable
@@ -197,7 +197,6 @@ fun InkToolbarZoom(
     onZoomIn: () -> Unit
 ) {
     InkToolIcon(Icons.Rounded.ZoomOut, "縮小", false, onClick = onZoomOut)
-    // Fit page (reset to 100%)
     Box(
         modifier = Modifier
             .size(48.dp)
@@ -211,7 +210,6 @@ fun InkToolbarZoom(
             color = glassContentColor(InkThemeState.darkMode)
         )
     }
-    // Fit width (text button: no single icon reads as "fit to width" clearly)
     GlassTextButton(text = "適合寬度", onClick = onFitWidth)
     InkToolIcon(Icons.Rounded.ZoomIn, "放大", false, onClick = onZoomIn)
 }

@@ -11,6 +11,7 @@ import com.vic.inkflow.agent.DeleteTextTool
 import com.vic.inkflow.agent.EditOp
 import com.vic.inkflow.agent.EditPlan
 import com.vic.inkflow.agent.LocalOpenAiProvider
+import com.vic.inkflow.agent.ModelHealth
 import com.vic.inkflow.agent.NoteLanding
 import com.vic.inkflow.agent.NoteLandingHandle
 import com.vic.inkflow.agent.ReadDocumentTextTool
@@ -44,7 +45,8 @@ class AgentPanelViewModel(
         val failure: String? = null,
         val landed: String? = null,
         val busy: Boolean = false,
-        val models: List<String> = emptyList()
+        val models: List<String> = emptyList(),
+        val connection: ModelHealth? = null
     )
 
     sealed interface AgentEvent {
@@ -60,6 +62,12 @@ class AgentPanelViewModel(
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     private var tools = rebuildTools(documentUri)
+    private var provider: LocalOpenAiProvider? = null
+
+    /** Reuses a single provider instance so the HTTP client is not recreated per request. */
+    private fun currentProvider(): LocalOpenAiProvider {
+        return provider ?: LocalOpenAiProvider(DesktopSettings.localModelConfig()).also { provider = it }
+    }
 
     fun onEvent(event: AgentEvent) {
         when (event) {
@@ -83,11 +91,18 @@ class AgentPanelViewModel(
 
     private fun checkModels() {
         scope.launch {
-            val found = LocalOpenAiProvider(DesktopSettings.localModelConfig()).listModels()
-            val ids = found.map { it.id }
-            _state.value = _state.value.copy(models = ids)
-            if (DesktopSettings.modelName.isBlank() && found.isNotEmpty()) {
-                DesktopSettings.modelName = found.first().id
+            val prov = currentProvider()
+            val health = prov.healthCheck()
+            _state.value = _state.value.copy(connection = health)
+            if (health is ModelHealth.Reachable) {
+                val found = prov.listModels()
+                val ids = found.map { it.id }
+                _state.value = _state.value.copy(models = ids)
+                if (DesktopSettings.modelName.isBlank() && found.isNotEmpty()) {
+                    DesktopSettings.modelName = found.first().id
+                }
+            } else {
+                _state.value = _state.value.copy(models = emptyList())
             }
         }
     }
@@ -97,12 +112,13 @@ class AgentPanelViewModel(
         if (s.busy) return
         _state.value = s.copy(busy = true, failure = null, landed = null, note = null, editPlan = null, steps = emptyList())
         scope.launch {
-            val provider = LocalOpenAiProvider(DesktopSettings.localModelConfig())
+            val prov = currentProvider()
+            // Note mode: the agent composes a LessonNote (study note) from the
+            // material it gathered. EditPlan mode (document-level edits) is
+            // available on AgentLoop but this panel's job is to make notes.
             val loop = AgentLoop(
-                provider = provider,
-                tools = tools,
-                composeSchema = EditPlan.schema,
-                composeDecode = EditPlan::decode
+                provider = prov,
+                tools = tools
             )
             val instruction = _state.value.instruction.ifBlank { DEFAULT_INSTRUCTION }
             val outcome = loop.run(
@@ -132,19 +148,7 @@ class AgentPanelViewModel(
             // 1. Apply to local DB immediately so the user sees the change.
             when (op) {
                 is EditOp.UpsertText -> {
-                    val id = op.id ?: java.util.UUID.randomUUID().toString()
-                    val entity = com.vic.inkflow.data.TextAnnotationEntity(
-                        id = id,
-                        documentUri = documentUri,
-                        pageIndex = op.pageIndex,
-                        text = op.text,
-                        modelX = op.modelX,
-                        modelY = op.modelY,
-                        fontSize = op.fontSize,
-                        colorArgb = op.colorArgb,
-                        boxWidth = op.boxWidth,
-                        alignment = op.alignment
-                    )
+                    val entity = upsertEntity(op)
                     db.saveTextAnnotation(entity)
                 }
                 is EditOp.DeleteText -> {
@@ -158,19 +162,7 @@ class AgentPanelViewModel(
             // 2. Convert EditOp to ProposalOp for the sync queue.
             val proposalOp = when (op) {
                 is EditOp.UpsertText -> {
-                    val id = op.id ?: java.util.UUID.randomUUID().toString()
-                    val entity = com.vic.inkflow.data.TextAnnotationEntity(
-                        id = id,
-                        documentUri = documentUri,
-                        pageIndex = op.pageIndex,
-                        text = op.text,
-                        modelX = op.modelX,
-                        modelY = op.modelY,
-                        fontSize = op.fontSize,
-                        colorArgb = op.colorArgb,
-                        boxWidth = op.boxWidth,
-                        alignment = op.alignment
-                    )
+                    val entity = upsertEntity(op)
                     val textJson = JsonObject()
                     textJson.add("id", JsonPrimitive(entity.id))
                     textJson.add("documentUri", JsonPrimitive(entity.documentUri))
@@ -195,7 +187,7 @@ class AgentPanelViewModel(
                     com.vic.inkflow.sync.ProposalOp(
                         op = com.vic.inkflow.sync.ProposalOp.UPSERT_TEXT,
                         text = textJson,
-                        id = id,
+                        id = entity.id,
                         baseVersion = op.baseVersion,
                         baseNonce = op.baseNonce
                     )
@@ -253,6 +245,23 @@ class AgentPanelViewModel(
             base += RenderPageTool(documentUri, DesktopPdfEngine())
         }
         return base
+    }
+
+    /** Builds one TextAnnotationEntity from an upsert op, minting an id when needed. */
+    private fun upsertEntity(op: EditOp.UpsertText): com.vic.inkflow.data.TextAnnotationEntity {
+        val id = op.id ?: java.util.UUID.randomUUID().toString()
+        return com.vic.inkflow.data.TextAnnotationEntity(
+            id = id,
+            documentUri = documentUri,
+            pageIndex = op.pageIndex,
+            text = op.text,
+            modelX = op.modelX,
+            modelY = op.modelY,
+            fontSize = op.fontSize,
+            colorArgb = op.colorArgb,
+            boxWidth = op.boxWidth,
+            alignment = op.alignment
+        )
     }
 
     companion object {

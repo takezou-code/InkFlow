@@ -5,6 +5,7 @@ import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.google.gson.JsonSyntaxException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.net.ConnectException
@@ -45,6 +46,24 @@ data class LocalModelInfo(
 )
 
 /**
+ * How many times a transient failure is retried before giving up.
+ */
+data class RetryPolicy(
+    /** Max retries after the first attempt. */
+    val maxRetries: Int = 2,
+    /** Base delay in milliseconds; each retry doubles it (exponential backoff). */
+    val baseDelayMillis: Long = 1000
+)
+
+/**
+ * The result of a readiness probe against the model server.
+ */
+sealed class ModelHealth {
+    data class Reachable(val latencyMs: Long) : ModelHealth()
+    data class Unreachable(val reason: String) : ModelHealth()
+}
+
+/**
  * An [AgentProvider] backed by a local, OpenAI-compatible model server.
  *
  * Why a local server
@@ -66,59 +85,108 @@ data class LocalModelInfo(
  *
  * Both engines support `response_format` with a JSON Schema, which is what
  * makes a small local model usable here at all.
+ *
+ * Resilience
+ * ----------
+ * Transient failures (a dropped connection, a 5xx from the server, a request
+ * that times out) are retried with exponential backoff. A server that is not
+ * running at all is reported immediately as [LlmErrorKind.NotRunning] so the
+ * user gets actionable instructions instead of a silent hang.
  */
 class LocalOpenAiProvider(
     private val config: LocalModelConfig,
-    private val httpClient: HttpClient = defaultHttpClient()
+    private val httpClient: HttpClient = defaultHttpClient(),
+    private val retry: RetryPolicy = RetryPolicy()
 ) : AgentProvider {
 
     override suspend fun complete(request: LlmRequest): LlmResponse = withContext(Dispatchers.IO) {
         val body = buildBody(request)
         val httpRequest = buildRequest("/v1/chat/completions", body)
-        val response = try {
-            httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString())
-        } catch (e: ConnectException) {
-            return@withContext notRunning(e)
-        } catch (e: HttpTimeoutException) {
-            return@withContext LlmResponse(
-                text = "",
-                error = LlmError(
+
+        var lastError: LlmError? = null
+        var attempt = 0
+
+        while (true) {
+            attempt++
+            val response = try {
+                httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString())
+            } catch (e: ConnectException) {
+                // The server is not listening. Retrying once or twice is cheap
+                // and helps if the server is still starting up; after that it is
+                // definitely NotRunning and the user needs to start it.
+                lastError = LlmError(
+                    LlmErrorKind.NotRunning,
+                    "no model server at ${config.baseUrl}. Start llama-server (llama-server -m <model>) " +
+                        "or LM Studio's local server, then check the address in Settings."
+                )
+                if (attempt <= retry.maxRetries) {
+                    delay(retry.baseDelayMillis * 2 * attempt)
+                    continue
+                }
+                return@withContext LlmResponse(text = "", error = lastError)
+            } catch (e: HttpTimeoutException) {
+                lastError = LlmError(
                     LlmErrorKind.Network,
                     "the model did not answer within ${config.timeoutSeconds}s"
                 )
-            )
-        } catch (e: IOException) {
-            return@withContext LlmResponse(
-                text = "",
-                error = LlmError(LlmErrorKind.Network, "the model server could not be reached: ${e.message}")
-            )
-        }
-
-        when {
-            response.statusCode() == 429 -> LlmResponse(
-                text = "",
-                error = LlmError(LlmErrorKind.RateLimited, "the model server is busy; try again in a moment")
-            )
-
-            response.statusCode() in 500..599 -> LlmResponse(
-                text = "",
-                error = LlmError(
+                if (attempt <= retry.maxRetries) {
+                    delay(retry.baseDelayMillis * attempt)
+                    continue
+                }
+                return@withContext LlmResponse(text = "", error = lastError)
+            } catch (e: IOException) {
+                lastError = LlmError(
                     LlmErrorKind.Network,
-                    "the model server failed (HTTP ${response.statusCode()})"
+                    "the model server could not be reached: ${e.message}"
                 )
-            )
+                if (attempt <= retry.maxRetries) {
+                    delay(retry.baseDelayMillis * attempt)
+                    continue
+                }
+                return@withContext LlmResponse(text = "", error = lastError)
+            }
 
-            response.statusCode() !in 200..299 -> LlmResponse(
-                text = "",
-                error = LlmError(
-                    LlmErrorKind.Unknown,
-                    "the model server refused the request (HTTP ${response.statusCode()}): " +
-                        response.body().take(400)
-                )
-            )
+            when {
+                response.statusCode() == 429 -> {
+                    lastError = LlmError(
+                        LlmErrorKind.RateLimited,
+                        "the model server is busy; try again in a moment"
+                    )
+                    if (attempt <= retry.maxRetries) {
+                        delay(retry.baseDelayMillis * 3 * attempt)
+                        continue
+                    }
+                    return@withContext LlmResponse(text = "", error = lastError)
+                }
 
-            else -> parseAnswer(response.body())
+                response.statusCode() in 500..599 -> {
+                    lastError = LlmError(
+                        LlmErrorKind.Network,
+                        "the model server failed (HTTP ${response.statusCode()})"
+                    )
+                    if (attempt <= retry.maxRetries) {
+                        delay(retry.baseDelayMillis * attempt)
+                        continue
+                    }
+                    return@withContext LlmResponse(text = "", error = lastError)
+                }
+
+                response.statusCode() !in 200..299 -> {
+                    return@withContext LlmResponse(
+                        text = "",
+                        error = LlmError(
+                            LlmErrorKind.Unknown,
+                            "the model server refused the request (HTTP ${response.statusCode()}): " +
+                                response.body().take(400)
+                        )
+                    )
+                }
+
+                else -> return@withContext parseAnswer(response.body())
+            }
         }
+
+        return@withContext LlmResponse(text = "", error = lastError ?: LlmError(LlmErrorKind.Unknown, "unreachable"))
     }
 
     /**
@@ -152,6 +220,27 @@ class LocalOpenAiProvider(
             emptyList()
         } catch (e: IllegalStateException) {
             emptyList()
+        }
+    }
+
+    /**
+     * Probes the server with a lightweight `GET /v1/models`. Used before a
+     * generation so the user can be told the server is down instead of waiting
+     * through a full request/response cycle that will fail.
+     */
+    suspend fun healthCheck(): ModelHealth = withContext(Dispatchers.IO) {
+        val request = buildRequest("/v1/models", null)
+        return@withContext try {
+            val start = System.nanoTime()
+            val response = httpClient.send(request, HttpResponse.BodyHandlers.ofString())
+            val latencyMs = (System.nanoTime() - start) / 1_000_000
+            if (response.statusCode() in 200..299) {
+                ModelHealth.Reachable(latencyMs)
+            } else {
+                ModelHealth.Unreachable("HTTP ${response.statusCode()}")
+            }
+        } catch (e: Exception) {
+            ModelHealth.Unreachable(e.message ?: e.javaClass.simpleName)
         }
     }
 
@@ -263,15 +352,6 @@ class LocalOpenAiProvider(
             error = LlmError(LlmErrorKind.MalformedResponse, "the model server's answer was not JSON")
         )
     }
-
-    private fun notRunning(e: ConnectException): LlmResponse = LlmResponse(
-        text = "",
-        error = LlmError(
-            LlmErrorKind.NotRunning,
-            "no model server at ${config.baseUrl}. Start llama-server (llama-server -m <model>) " +
-                "or LM Studio's local server, then check the address in Settings."
-        )
-    )
 
     companion object {
         fun defaultHttpClient(): HttpClient = HttpClient.newBuilder()

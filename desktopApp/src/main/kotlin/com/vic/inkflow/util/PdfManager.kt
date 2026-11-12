@@ -9,6 +9,8 @@ import org.apache.pdfbox.pdmodel.common.PDRectangle
 import org.apache.pdfbox.pdmodel.encryption.InvalidPasswordException
 import org.apache.pdfbox.rendering.ImageType
 import org.apache.pdfbox.rendering.PDFRenderer
+import org.apache.pdfbox.text.PDFTextStripper
+import org.apache.pdfbox.text.TextPosition
 import org.jetbrains.skia.Image as SkiaImage
 import java.awt.image.BufferedImage
 import java.io.ByteArrayOutputStream
@@ -380,6 +382,65 @@ object PdfManager {
         }
 
     /**
+     * Extract selectable text spans from a page, with coordinates in PDF points
+     * aligned to the page's crop box. Coordinates are in model space (PDF points,
+     * y-up relative to the crop box origin).
+     */
+    fun extractTextSpans(documentUri: String, pageIndex: Int): PdfResult<List<PdfTextSpan>> =
+        withDocument(documentUri) { doc ->
+            val count = doc.numberOfPages
+            if (count <= 0) return@withDocument PdfResult.Err("PDF 沒有任何頁面")
+            val index = pageIndex.coerceIn(0, count - 1)
+            val page = doc.getPage(index)
+            val crop = page.cropBox
+            val originX = crop.lowerLeftX
+            val originY = crop.lowerLeftY
+            val heightPt = crop.height
+
+            val stripper = object : PDFTextStripper() {
+                val spans = mutableListOf<PdfTextSpan>()
+
+                override fun writeString(text: String, textPositions: List<TextPosition>) {
+                    if (textPositions.isEmpty()) return
+                    val chars = mutableListOf<PdfTextChar>()
+                    for (tp in textPositions) {
+                        val u = tp.unicode
+                        if (u.isEmpty()) continue
+                        val x = tp.xDirAdj - originX
+                        val y = heightPt - (tp.yDirAdj - originY)
+                        val w = tp.widthDirAdj
+                        val h = tp.heightDir
+                        chars.add(PdfTextChar(u, x, y, w, h))
+                    }
+                    if (chars.isEmpty()) return
+                    val minX = chars.minOf { it.x }
+                    val minY = chars.minOf { it.y }
+                    val maxX = chars.maxOf { it.x + it.width }
+                    val maxY = chars.maxOf { it.y + it.height }
+                    spans.add(
+                        PdfTextSpan(
+                            text = text,
+                            chars = chars,
+                            x = minX,
+                            y = minY,
+                            width = maxX - minX,
+                            height = maxY - minY
+                        )
+                    )
+                }
+            }
+            stripper.startPage = index + 1
+            stripper.endPage = index + 1
+            try {
+                stripper.getText(doc)
+                PdfResult.Ok(stripper.spans)
+            } catch (e: Throwable) {
+                logger.error(e) { "Failed to extract text from $documentUri page ${index + 1}" }
+                PdfResult.Err(describe(e), e)
+            }
+        }
+
+    /**
      * Cap [dpi] so the raster fits [MAX_RENDER_PIXELS], or `null` if even
      * [MIN_USABLE_RENDER_DPI] does not fit.
      *
@@ -640,4 +701,28 @@ data class RenderedPage(
     val box: PageBox,
     /** The DPI actually used, after clamping — lower than requested for oversized pages. */
     val dpi: Float
+)
+
+/**
+ * A piece of selectable text extracted from a PDF page, with coordinates in PDF
+ * points (model space) aligned to the crop box.
+ */
+data class PdfTextChar(
+    val char: String,
+    val x: Float,
+    val y: Float,
+    val width: Float,
+    val height: Float
+)
+
+/**
+ * A contiguous span of selectable text on a page.
+ */
+data class PdfTextSpan(
+    val text: String,
+    val chars: List<PdfTextChar>,
+    val x: Float,
+    val y: Float,
+    val width: Float,
+    val height: Float
 )

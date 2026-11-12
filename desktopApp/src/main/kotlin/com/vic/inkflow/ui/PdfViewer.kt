@@ -57,6 +57,7 @@ import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Brush
@@ -75,10 +76,14 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.ui.input.key.isMetaPressed
 import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.input.key.key
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.isCtrlPressed
 import androidx.compose.ui.input.pointer.isMetaPressed
@@ -109,12 +114,12 @@ import com.vic.inkflow.data.TextMetrics
 import com.vic.inkflow.agent.DesktopNoteLayout
 import com.vic.inkflow.agent.NoteLanding
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.unit.sp
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.focus.focusRequester
 
+import com.vic.inkflow.ui.glassSelectionPill
 import com.vic.inkflow.ui.theme.ShapeLg
 import com.vic.inkflow.ui.theme.ShapeSm
 import com.vic.inkflow.util.PageBox
@@ -216,6 +221,7 @@ private class PageHandle {
     var onRedo: () -> Unit = {}
     var onDeleteSelection: () -> Unit = {}
     var onSelectAll: () -> Unit = {}
+    var onCopyText: () -> Unit = {}
     var onClearSelection: () -> Unit = {}
     var onCancelText: () -> Unit = {}
     var onClearDocument: () -> Unit = {}
@@ -228,6 +234,7 @@ private class PageHandle {
     val typing = mutableStateOf(false)
     val zoom = mutableStateOf(1f)
     val pageBox = mutableStateOf<PageBox?>(null)
+    val textSelectionActive = mutableStateOf(false)
 }
 
 /**
@@ -426,6 +433,8 @@ fun PdfViewer(
                             if (typing) false else { hh?.onRedo(); true }
                         event.key == Key.A ->
                             if (typing) false else { hh?.onSelectAll(); true }
+                        event.key == Key.C ->
+                            if (typing) false else { hh?.onCopyText(); true }
                         else -> null
                     }?.let { return@onPreviewKeyEvent it }
                 }
@@ -478,6 +487,8 @@ fun PdfViewer(
                 onUndo = { h?.onUndo() },
                 onRedo = { h?.onRedo() },
                 onDeleteSelection = { h?.onDeleteSelection() },
+                textSelectionActive = h?.textSelectionActive?.value == true,
+                onCopyText = { h?.onCopyText() },
                 onClear = { h?.onClearDocument() },
                 exporting = exporting,
                 onExport = { exportNow() },
@@ -590,6 +601,58 @@ private fun PageView(
     // metrics on every pointer move.
     var texts by remember(documentUri, requestedPage, refreshToken, docRefresh) {
         mutableStateOf<List<TextAnnotationEntity>>(emptyList())
+    }
+
+    var textSpans by remember(documentUri, requestedPage) { mutableStateOf<List<com.vic.inkflow.util.PdfTextSpan>>(emptyList()) }
+    // Keyed on the page: indices from page 1 must never highlight page 2's chars.
+    var textSelection by remember(documentUri, requestedPage) { mutableStateOf<Pair<Int, Int>?>(null) }
+
+    val allChars: List<com.vic.inkflow.util.PdfTextChar> =
+        remember(textSpans) { textSpans.flatMap { it.chars } }
+
+    LaunchedEffect(documentUri, requestedPage, docRefresh) {
+        val r = com.vic.inkflow.util.PdfManager.extractTextSpans(documentUri, requestedPage)
+        textSpans = (r as? com.vic.inkflow.util.PdfResult.Ok<List<com.vic.inkflow.util.PdfTextSpan>>)?.value ?: emptyList()
+    }
+
+    fun charIndexAt(pos: Offset): Int? {
+        var bestIdx = -1
+        var bestDist = Float.MAX_VALUE
+        var global = 0
+        for (span in textSpans) {
+            // Whole-span reject first: the hit test runs on every pointer move,
+            // so skipping lines far from the pointer keeps it cheap on dense pages.
+            if (pos.y < span.y - span.height || pos.y > span.y + span.height * 2f ||
+                pos.x < span.x - span.width || pos.x > span.x + span.width * 2f
+            ) {
+                global += span.chars.size
+                continue
+            }
+            for (c in span.chars) {
+                val cx = c.x + c.width / 2f
+                val cy = c.y + c.height / 2f
+                val d = (pos.x - cx) * (pos.x - cx) + (pos.y - cy) * (pos.y - cy)
+                if (d < bestDist) {
+                    bestDist = d
+                    bestIdx = global
+                }
+                global++
+            }
+        }
+        return if (bestIdx >= 0) bestIdx else null
+    }
+
+    fun copySelectedText(): String? {
+        val sel = textSelection ?: return null
+        val chars = allChars
+        if (chars.isEmpty()) return null
+        val (a, b) = if (sel.first <= sel.second) sel else sel.second to sel.first
+        val start = a.coerceIn(0, chars.lastIndex)
+        val end = b.coerceIn(0, chars.lastIndex)
+        val text = buildString {
+            for (i in start..end) append(chars[i].char)
+        }
+        return text
     }
 
     /**
@@ -885,6 +948,15 @@ private fun PageView(
     // can never collide in one set â€” which is what makes a mixed selection
     // (drag across both, delete together, undo once) fall out for free.
     var selectedTextIds by remember(documentUri, pageIndex) { mutableStateOf<Set<String>>(emptySet()) }
+
+    /**
+     * Eraser live preview: ids of the strokes and notes currently under the
+     * eraser path. They are dimmed on screen while the drag is in progress and
+     * the delete only happens on release, so the user sees what will go before
+     * it goes. Empty whenever the eraser is not dragging.
+     */
+    var eraserPreviewIds by remember(documentUri, pageIndex) { mutableStateOf<Set<String>>(emptySet()) }
+    var eraserPreviewTextIds by remember(documentUri, pageIndex) { mutableStateOf<Set<String>>(emptySet()) }
 
     /** Rubber-band rectangle during a selection drag, in model units. */
     var selectionRect by remember { mutableStateOf<Rect?>(null) }
@@ -1449,8 +1521,13 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
      * than the true envelope â€” cheap, and generous enough for a mouse. Deletes are
      * per stroke id, so overlapping bounds on the same page are all caught.
      */
-    fun eraseAt(pts: List<Offset>) {
-        if (pts.isEmpty()) return
+    /**
+     * The strokes and notes an eraser path would delete: the same bounding-box
+     * hit test [eraseAt] commits with, so the live dimming preview and the
+     * release-time delete can never disagree about what is going away.
+     */
+    fun eraseHits(pts: List<Offset>): Pair<List<StrokeWithPoints>, List<TextAnnotationEntity>> {
+        if (pts.isEmpty()) return emptyList<StrokeWithPoints>() to emptyList<TextAnnotationEntity>()
         val hit = strokes.filter { swp ->
             val s = swp.stroke
             val x0 = minOf(s.boundsLeft, s.boundsRight)
@@ -1465,6 +1542,11 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
             val tb = TextMetrics.boundsFor(t) ?: return@filter false
             pts.any { p -> p.x >= tb[0] && p.x <= tb[2] && p.y >= tb[1] && p.y <= tb[3] }
         }
+        return hit to hitText
+    }
+
+    fun eraseAt(pts: List<Offset>) {
+        val (hit, hitText) = eraseHits(pts)
         if (hit.isEmpty() && hitText.isEmpty()) return
         runCatching {
             hit.forEach { databaseManager.deleteStroke(it.stroke.id) }
@@ -1716,6 +1798,12 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
     handle.onUndo = { undo() }
     handle.onRedo = { redo() }
     handle.onDeleteSelection = { deleteSelection() }
+    val clipboard = LocalClipboardManager.current
+    handle.onCopyText = {
+        val text = copySelectedText()
+        if (text != null) clipboard.setText(AnnotatedString(text))
+        textSelection = null
+    }
     handle.onSelectAll = {
         selectedIds = strokes.map { it.stroke.id }.toSet()
         selectedTextIds = texts.map { it.id }.toSet()
@@ -1734,21 +1822,20 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
     handle.onFitWidth = {
         val box = pageBox
         val viewportW = viewport.value.width
-        val viewportH = viewport.value.height
-        if (box != null && box.widthPt > 0f && viewportW > 0f && viewportH > 0f) {
-            val fitWidthScale = viewportW / box.widthPt
-            val fitScale = minOf(viewportW / box.widthPt, viewportH / box.heightPt)
-            zoom.floatValue = (fitWidthScale / fitScale).coerceIn(MIN_ZOOM, MAX_ZOOM)
+        if (box != null && box.widthPt > 0f && viewportW > 0f) {
+            // Fit width: scale at which the page's width equals the viewport's.
+            zoom.floatValue = (viewportW / box.widthPt).coerceIn(MIN_ZOOM, MAX_ZOOM)
             pan.value = Offset.Zero
         }
     }
-    LaunchedEffect(strokes, texts, selectedIds, selectedTextIds, textDraft, pageBox, zoom.floatValue) {
+    LaunchedEffect(strokes, texts, selectedIds, selectedTextIds, textDraft, pageBox, zoom.floatValue, textSelection) {
             handle.canUndo.value = undoStack.canUndo.value
             handle.canRedo.value = undoStack.canRedo.value
         handle.selectionCount.value = selectionCount
         handle.typing.value = textDraft != null
         handle.zoom.value = zoom.floatValue
         handle.pageBox.value = pageBox
+        handle.textSelectionActive.value = textSelection != null
     }
 
     // Text needs the same treatment, plus a separate one for "the user asked to
@@ -1798,6 +1885,8 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
         liveStrokeWidths = emptyList()
         liveShape = null
         selectionRect = null
+        eraserPreviewIds = emptySet()
+        eraserPreviewTextIds = emptySet()
     }
 
     // Each page sizes itself: full list width, aspect from its own box, times its
@@ -1882,18 +1971,41 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                     // coroutine captures values at start, so without them every
                     // gesture after a switch would keep drawing with the old tool.
                     if (!editable) return@pointerInput
-                    // The grab hand never touches the pointer stream: unconsumed
-                    // drags fall through to the page list, which scrolls.
-                    if (tool == InkTool.Hand) return@pointerInput
+                    // Hand tool: pan via the page list (unconsumed drags fall
+                    // through to it). Text selection only takes over the stream
+                    // when the press actually lands on a character.
+                    if (tool == InkTool.Hand && textSpans.isEmpty()) return@pointerInput
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
                         // Any press on this page makes it the focused one, so the
                         // toolbar always acts where the user just touched.
                         onFocused()
-                        // `toModel` is the current-frame converter, not the one
-                        // captured when this coroutine started â€” see above.
+                        // toModel is the current-frame converter, not the one
+                        // captured when this coroutine started. See the note above.
                         val start = toModel(down.position)
                             ?: return@awaitEachGesture // press landed in the margin
+                        // Text selection on the grab hand: only when the press
+                        // hits a character. Otherwise nothing is consumed and the
+                        // drag falls through to the page list, which pans.
+                        if (tool == InkTool.Hand) {
+                            val sIdx = charIndexAt(start)
+                            if (sIdx != null) {
+                                down.consume()
+                                while (true) {
+                                    val ev = awaitPointerEvent()
+                                    val ch = ev.changes.firstOrNull { it.pressed } ?: break
+                                    val mm = toModel(ch.position)
+                                    if (mm != null) {
+                                        val eIdx = charIndexAt(mm)
+                                        if (eIdx != null) {
+                                            textSelection = if (sIdx <= eIdx) Pair(sIdx, eIdx) else Pair(eIdx, sIdx)
+                                        }
+                                    }
+                                    ch.consume()
+                                }
+                            }
+                            return@awaitEachGesture
+                        }
                         down.consume()
                         // Picked width, expanded for the marker: the tablet draws a
                         // highlighter at 3x the pen width, so desktop ink matches it
@@ -2033,7 +2145,14 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                                     // recomposes: only a new list instance makes the
                                     // canvas repaint. Without this the stroke stays
                                     // invisible until release.
-                                    if (!erasing) {
+                                    if (erasing) {
+                                        // Live dimming: the same hit test the release
+                                        // commit uses, so what is dimmed is exactly
+                                        // what is about to disappear.
+                                        val (h, ht) = eraseHits(pts)
+                                        eraserPreviewIds = h.map { it.stroke.id }.toSet()
+                                        eraserPreviewTextIds = ht.map { it.id }.toSet()
+                                    } else {
                                         liveStroke = pts.toList()
                                         liveStrokeWidths = modelWidths.toList()
                                     }
@@ -2043,6 +2162,8 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                         }
                         liveStroke = null
                         liveStrokeWidths = emptyList()
+                        eraserPreviewIds = emptySet()
+                        eraserPreviewTextIds = emptySet()
                         if (pts.size >= 2) {
                             if (erasing) eraseNow(pts) else commitStrokeNow(pts, modelWidths)
                         }
@@ -2070,11 +2191,52 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                         size = androidx.compose.ui.geometry.Size(pageWidthPx, pageHeightPx),
                         style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1f)
                     )
+                    val sel = textSelection
+                    if (sel != null && textSpans.isNotEmpty()) {
+                        val chars = allChars
+                        if (chars.isNotEmpty()) {
+                            val (aIdx, bIdx) = if (sel.first <= sel.second) sel else sel.second to sel.first
+                            val start = aIdx.coerceIn(0, chars.lastIndex)
+                            val end = bIdx.coerceIn(0, chars.lastIndex)
+                            val hlColor = selectionAccent
+                            // Merge chars into one rectangle per text line: a full-page
+                            // selection would otherwise issue one draw call per character.
+                            var i = start
+                            while (i <= end) {
+                                val first = chars[i]
+                                val lineCenter = first.y + first.height / 2f
+                                var top = first.y
+                                var bottom = first.y + first.height
+                                var left = first.x
+                                var right = first.x + first.width
+                                var j = i + 1
+                                while (j <= end) {
+                                    val c = chars[j]
+                                    if (abs(c.y + c.height / 2f - lineCenter) > first.height * 0.6f) break
+                                    top = minOf(top, c.y)
+                                    bottom = maxOf(bottom, c.y + c.height)
+                                    left = minOf(left, c.x)
+                                    right = maxOf(right, c.x + c.width)
+                                    j++
+                                }
+                                drawRect(
+                                    color = hlColor.copy(alpha = 0.35f),
+                                    topLeft = Offset(left * scale - b.originX * scale, top * scale - b.originY * scale),
+                                    size = androidx.compose.ui.geometry.Size((right - left) * scale, (bottom - top) * scale)
+                                )
+                                i = j
+                            }
+                        }
+                    }
                     // Ink shares the image's transform exactly: same scale, same origin, and
                     // the same page box, so pinch and drag move the two together by
                     // construction rather than by two sets of arithmetic agreeing.
-for (swp in strokes) {
-                            drawStroke(swp, scale, b)
+                        for (swp in strokes) {
+                            if (swp.stroke.id in eraserPreviewIds) {
+                                drawStroke(swp, scale, b, alpha = ERASER_PREVIEW_ALPHA)
+                            } else {
+                                drawStroke(swp, scale, b)
+                            }
                         }
 
                         // Notes, drawn above the ink and in the same translate.
@@ -2253,7 +2415,7 @@ for (swp in strokes) {
                     }.then(
                         if (boxW != null) Modifier.width(with(density) { (boxW * scale).toDp() })
                         else Modifier
-                    ),
+                    ).alpha(if (t.id in eraserPreviewTextIds) ERASER_PREVIEW_ALPHA else 1f),
                     color = Color(t.colorArgb),
                     fontSize = with(density) { (t.fontSize * scale).toSp() },
                     // No width cap for legacy notes: the note's own width IS its model
@@ -2460,6 +2622,8 @@ private fun InkToolbar(
     onUndo: () -> Unit,
     onRedo: () -> Unit,
     onDeleteSelection: () -> Unit,
+    textSelectionActive: Boolean = false,
+    onCopyText: () -> Unit = {},
     onClear: () -> Unit,
     exporting: Boolean,
     onExport: () -> Unit,
@@ -2499,6 +2663,7 @@ private fun InkToolbar(
         ) {
             InkToolbarTitle(documentTitle, focusedPage, pageCount, onPrevPage, onNextPage, onGoToPage)
             InkToolbarTools(tool, selectionCount, onToolChange)
+            if (textSelectionActive) InkToolbarTextSelection(onCopyText)
             androidx.compose.material3.VerticalDivider(
                 modifier = Modifier.height(24.dp).padding(horizontal = 6.dp),
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
@@ -2566,8 +2731,8 @@ internal fun InkToolIcon(
             .clip(CircleShape)
             .then(
                 if (selected) Modifier
-                    .background(primary.copy(alpha = 0.22f), CircleShape)
-                    .border(1.5.dp, primary.copy(alpha = 0.65f), CircleShape)
+                    .clip(CircleShape)
+                    .glassSelectionPill(CircleShape)
                 else Modifier
             )
             .glassClickable(onClick = onClick, shape = CircleShape, enabled = enabled),
@@ -2656,15 +2821,20 @@ internal fun screenToModel(
  * more here than the micro-optimisation would.
  */
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawStroke(
-      swp: StrokeWithPoints,
-      scale: Float,
-      box: PageBox
-  ) {
-      // ç¹ªè£½æœ¬èº«åœ¨ `:shared`ï¼ˆ`drawModelStroke`ï¼‰â€”â€”å¹³æ¿ã€æ¡Œé¢èˆ‡ä¹‹å¾Œçš„ iOS ç”¨åŒä¸€ä»½ï¼š
-      // åŒ…çµ¡è·¯å¾‘ã€å½¢ç‹€åˆ†æµã€é«˜äº®çš„ Multiply æ··åˆèˆ‡é€æ˜Žåº¦éƒ½åœ¨é‚£è£¡ã€‚
-      // é€™è£¡åªåšåž‹åˆ¥è½‰æ›ï¼ˆæ¡Œé¢çš„åˆ— â†’ å…±ç”¨æ¨¡åž‹ï¼‰ã€‚
-      drawModelStroke(swp.toModel(), scale, box.originX, box.originY)
-  }
+    swp: StrokeWithPoints,
+    scale: Float,
+    box: PageBox,
+    alpha: Float = 1f
+) {
+    // The stroke rendering itself lives in `:shared` (`drawModelStroke`) — the
+    // tablet, the desktop and the iOS share one renderer: envelope path, shape
+    // branching, the highlighter's Multiply blend and translucency.
+    // This wrapper only does the transform (desktop's column → shared model).
+    drawModelStroke(swp.toModel(), scale, box.originX, box.originY, alpha)
+}
+
+/** Eraser live preview: how much a soon-to-be-deleted stroke/note is dimmed. */
+private const val ERASER_PREVIEW_ALPHA = 0.25f
 
 /** Never let ink vanish entirely when zoomed far out. */
 private const val MIN_INK_PX = 0.6f

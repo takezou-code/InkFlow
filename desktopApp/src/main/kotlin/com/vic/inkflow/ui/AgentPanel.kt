@@ -40,6 +40,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.vic.inkflow.DesktopSettings
 import com.vic.inkflow.agent.EditPlan
+import com.vic.inkflow.agent.ModelHealth
 import com.vic.inkflow.agent.NoteLanding
 import com.vic.inkflow.agent.NoteLandingHandle
 import com.vic.inkflow.data.DatabaseManager
@@ -114,14 +115,28 @@ fun AgentPanel(
                         .clip(RoundedCornerShape(4.dp))
                         .background(if (modelSet) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline)
                 )
-                Text(
-                    text = if (modelSet) DesktopSettings.modelBaseUrl else "請到設定填入本機模型",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = if (modelSet) DesktopSettings.modelBaseUrl else "請到設定填入本機模型",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    )
+                    state.connection?.let { health ->
+                        val (label, tint) = when (health) {
+                            is ModelHealth.Reachable -> "已連線（${health.latencyMs}ms）" to MaterialTheme.colorScheme.primary
+                            is ModelHealth.Unreachable -> "未連線：${health.reason}" to MaterialTheme.colorScheme.error
+                        }
+                        Text(
+                            text = label,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = tint,
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        )
+                    }
+                }
                 DeskPillButton(
                     text = if (state.models.isEmpty()) "檢查模型" else "${state.models.size} 個",
                     icon = Icons.Default.Search,
@@ -153,7 +168,7 @@ fun AgentPanel(
             Spacer(Modifier.height(DeskSpace.xs))
 
             DeskPrimaryButton(
-                text = if (state.busy) "進行中…" else "產生編輯計畫",
+                text = if (state.busy) "進行中…" else "產生教材筆記",
                 icon = Icons.Default.AutoAwesome,
                 onClick = { vm.onEvent(AgentPanelViewModel.AgentEvent.Generate) },
                 enabled = !state.busy,
