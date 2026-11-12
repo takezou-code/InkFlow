@@ -570,6 +570,102 @@ class DatabaseManager(private val dbPath: String) {
         return true
     }
 
+    // ─── Document field updates (the shared repository contract) ─────────────
+    //
+    // These are single-column updates on purpose. The shared DocumentRepository
+    // exposes them one by one (rename / favorite / folder / last page / last
+    // opened), and a full-row save would race with the sync path: `saveDocument`
+    // writes every column, so a rename would resurrect a stale lastPageIndex
+    // that the tablet updated in the meantime. One statement, one column, no
+    // read-modify-write window.
+    //
+    // Every method returns true when a row was actually changed, so callers can
+    // tell "renamed" from "that document is gone".
+
+    fun updateDocumentDisplayName(uri: String, newName: String): Boolean =
+        updateDocumentColumn(uri, "displayName", newName)
+
+    fun updateDocumentFavorite(uri: String, isFavorite: Boolean): Boolean =
+        updateDocumentColumn(uri, "isFavorite", if (isFavorite) 1 else 0)
+
+    fun updateDocumentFolder(uri: String, folderId: String?): Boolean =
+        updateDocumentColumn(uri, "folderId", folderId)
+
+    fun updateDocumentLastPage(uri: String, pageIndex: Int): Boolean =
+        updateDocumentColumn(uri, "lastPageIndex", pageIndex)
+
+    fun updateDocumentLastOpenedAt(uri: String, timestamp: Long): Boolean =
+        updateDocumentColumn(uri, "lastOpenedAt", timestamp)
+
+    /**
+     * Set one column of one document.
+     *
+     * The column name is a literal from the callers above, never user input;
+     * the value is bound as a parameter.
+     */
+    private fun updateDocumentColumn(uri: String, column: String, value: Any?): Boolean {
+        var changed = false
+        connection?.prepareStatement("UPDATE documents SET $column = ? WHERE uri = ?")?.use { stmt ->
+            when (value) {
+                null -> stmt.setNull(1, java.sql.Types.NULL)
+                is Int -> stmt.setInt(1, value)
+                is Long -> stmt.setLong(1, value)
+                is String -> stmt.setString(1, value)
+                else -> stmt.setString(1, value.toString())
+            }
+            stmt.setString(2, uri)
+            changed = stmt.executeUpdate() > 0
+        }
+        return changed
+    }
+
+    /** Move several documents into one folder (null = uncategorized) in one transaction. */
+    fun moveDocumentsToFolder(uris: List<String>, folderId: String?): Int = synchronized(dbLock) {
+        if (uris.isEmpty()) return@synchronized 0
+        var moved = 0
+        connection?.autoCommit = false
+        try {
+            connection?.prepareStatement("UPDATE documents SET folderId = ? WHERE uri = ?")?.use { stmt ->
+                uris.forEach { uri ->
+                    if (folderId == null) stmt.setNull(1, java.sql.Types.NULL) else stmt.setString(1, folderId)
+                    stmt.setString(2, uri)
+                    moved += stmt.executeUpdate()
+                }
+            }
+            connection?.commit()
+        } catch (e: Exception) {
+            logger.error(e) { "Failed to move documents to folder $folderId" }
+            runCatching { connection?.rollback() }
+        } finally {
+            runCatching { connection?.autoCommit = true }
+        }
+        moved
+    }
+
+    /** Point documents at nothing (the folders they lived in are going away). */
+    fun clearFolderAssignments(folderIds: List<String>): Int = synchronized(dbLock) {
+        if (folderIds.isEmpty()) return@synchronized 0
+        var cleared = 0
+        val marks = folderIds.joinToString(",") { "?" }
+        connection?.prepareStatement(
+            "UPDATE documents SET folderId = NULL WHERE folderId IN ($marks)"
+        )?.use { stmt ->
+            folderIds.forEachIndexed { i, id -> stmt.setString(i + 1, id) }
+            cleared = stmt.executeUpdate()
+        }
+        cleared
+    }
+
+    /** The page the user was last on, or null if the document is unknown. */
+    fun getDocumentLastPageIndex(uri: String): Int? {
+        return connection?.prepareStatement("SELECT lastPageIndex FROM documents WHERE uri = ?")?.use { stmt ->
+            stmt.setString(1, uri)
+            stmt.executeQuery().use { rs ->
+                if (rs.next()) rs.getInt("lastPageIndex") else null
+            }
+        }
+    }
+
     fun deleteDocument(uri: String) {
         connection?.prepareStatement("DELETE FROM documents WHERE uri = ?")?.use { stmt ->
             stmt.setString(1, uri)
@@ -802,6 +898,104 @@ class DatabaseManager(private val dbPath: String) {
             stmt.setLong(6, folder.updatedAt)
             stmt.executeUpdate()
         }
+    }
+
+    // ─── Folder mutations (the shared repository contract) ───────────────────
+
+    fun renameFolder(folderId: String, newName: String, updatedAt: Long): Boolean {
+        var changed = false
+        connection?.prepareStatement("UPDATE folders SET name = ?, updatedAt = ? WHERE id = ?")?.use { stmt ->
+            stmt.setString(1, newName)
+            stmt.setLong(2, updatedAt)
+            stmt.setString(3, folderId)
+            changed = stmt.executeUpdate() > 0
+        }
+        return changed
+    }
+
+    fun updateFolderSortOrder(folderId: String, sortOrder: Int, updatedAt: Long): Boolean {
+        var changed = false
+        connection?.prepareStatement(
+            "UPDATE folders SET sortOrder = ?, updatedAt = ? WHERE id = ?"
+        )?.use { stmt ->
+            stmt.setInt(1, sortOrder)
+            stmt.setLong(2, updatedAt)
+            stmt.setString(3, folderId)
+            changed = stmt.executeUpdate() > 0
+        }
+        return changed
+    }
+
+    /** Re-parent a folder (null = move to the top level). */
+    fun moveFolderToParent(
+        folderId: String,
+        parentFolderId: String?,
+        sortOrder: Int,
+        updatedAt: Long
+    ): Boolean {
+        var changed = false
+        connection?.prepareStatement(
+            "UPDATE folders SET parentFolderId = ?, sortOrder = ?, updatedAt = ? WHERE id = ?"
+        )?.use { stmt ->
+            if (parentFolderId == null) stmt.setNull(1, java.sql.Types.NULL)
+            else stmt.setString(1, parentFolderId)
+            stmt.setInt(2, sortOrder)
+            stmt.setLong(3, updatedAt)
+            stmt.setString(4, folderId)
+            changed = stmt.executeUpdate() > 0
+        }
+        return changed
+    }
+
+    /** The sort order a NEW child of [parentFolderId] should get: max + 1. */
+    fun nextFolderSortOrder(parentFolderId: String?): Int {
+        // `IS` compares NULL as a value, which is exactly the "top level" test
+        // we need; `=` would never match a NULL parentFolderId.
+        return connection?.prepareStatement(
+            "SELECT COALESCE(MAX(sortOrder), 0) + 1 FROM folders WHERE parentFolderId IS ?"
+        )?.use { stmt ->
+            if (parentFolderId == null) stmt.setNull(1, java.sql.Types.NULL) else stmt.setString(1, parentFolderId)
+            stmt.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 1 }
+        } ?: 1
+    }
+
+    /**
+     * A folder plus every folder below it (recursive).
+     *
+     * Deleting a folder without its descendants leaves orphan sub-folders: they
+     * stay in the tree with a parent id that no longer exists, and the user sees
+     * a category they cannot delete or move.
+     */
+    fun folderAndDescendantIds(folderId: String): List<String> {
+        val ids = mutableListOf<String>()
+        connection?.prepareStatement(
+            """
+            WITH RECURSIVE tree(id) AS (
+                SELECT id FROM folders WHERE id = ?
+                UNION ALL
+                SELECT f.id FROM folders f JOIN tree t ON f.parentFolderId = t.id
+            )
+            SELECT id FROM tree
+            """.trimIndent()
+        )?.use { stmt ->
+            stmt.setString(1, folderId)
+            stmt.executeQuery().use { rs ->
+                while (rs.next()) ids.add(rs.getString(1))
+            }
+        }
+        return ids
+    }
+
+    /** Delete folders by id. Documents inside them are left alone on purpose. */
+    fun deleteFolders(folderIds: List<String>): Int = synchronized(dbLock) {
+        if (folderIds.isEmpty()) return@synchronized 0
+        var deleted = 0
+        val marks = folderIds.joinToString(",") { "?" }
+        connection?.prepareStatement("DELETE FROM folders WHERE id IN ($marks)")?.use { stmt ->
+            folderIds.forEachIndexed { i, id -> stmt.setString(i + 1, id) }
+            deleted = stmt.executeUpdate()
+        }
+        deleted
     }
 
     /**

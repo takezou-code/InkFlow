@@ -21,10 +21,12 @@ import kotlinx.coroutines.flow.flow
  *
  * ## Status
  *
- * Only the methods the library screen needs are wired to real SQL. The rest throw
- * [NotImplementedError] with a `TODO(desktop)` tag so a missing implementation
- * fails loudly instead of silently returning empty data. They get filled in as
- * the other screens (reader, sync, settings) are migrated onto the repository.
+ * The whole shared [DocumentRepository] contract is implemented against the
+ * desktop's SQLite schema. Every method below is a single-column UPDATE (or
+ * one small transaction for the batch ones) - never a read-modify-write of the
+ * whole row, because the sync path updates the same rows concurrently and a
+ * full-row save would resurrect stale columns (see `DatabaseManager`'s
+ * "Document field updates" section for the reasoning).
  */
 class JdbcDocumentRepository(private val db: DatabaseManager) : DocumentRepository {
 
@@ -39,50 +41,54 @@ class JdbcDocumentRepository(private val db: DatabaseManager) : DocumentReposito
     override suspend fun getAllDocumentsSync(): List<SharedDocument> =
         db.getAllDocuments().map { it.toShared() }
 
+    /**
+     * Delete a document and everything that belongs to it.
+     *
+     * The desktop is stricter than the tablet's Room DAO (which only drops the
+     * documents row): strokes, text annotations and the queued proposal go
+     * with it. On the desktop there is no second copy - the file on disk is
+     * the user's, the database is ours - so leaving orphaned strokes behind
+     * would mean the ink of a "deleted" document still shows up in every export
+     * and in the sync payload.
+     *
+     * @return 1 if a document was removed, 0 if the uri was unknown.
+     */
     override suspend fun delete(uri: String): Int {
-        // TODO(desktop): implement DELETE FROM documents WHERE uri = ?
-        throw NotImplementedError("TODO(desktop): JdbcDocumentRepository.delete")
+        val existed = db.getDocument(uri) != null
+        if (existed) db.deleteDocument(uri)
+        return if (existed) 1 else 0
     }
 
     override suspend fun updateLastPage(uri: String, pageIndex: Int) {
-        // TODO(desktop): UPDATE documents SET lastPageIndex = ? WHERE uri = ?
-        throw NotImplementedError("TODO(desktop): JdbcDocumentRepository.updateLastPage")
+        db.updateDocumentLastPage(uri, pageIndex)
     }
 
     override suspend fun renameDocument(uri: String, newName: String) {
-        // TODO(desktop): UPDATE documents SET displayName = ? WHERE uri = ?
-        throw NotImplementedError("TODO(desktop): JdbcDocumentRepository.renameDocument")
+        db.updateDocumentDisplayName(uri, newName)
     }
 
     override suspend fun updateFavoriteStatus(uri: String, isFavorite: Boolean) {
-        // TODO(desktop): UPDATE documents SET isFavorite = ? WHERE uri = ?
-        throw NotImplementedError("TODO(desktop): JdbcDocumentRepository.updateFavoriteStatus")
+        db.updateDocumentFavorite(uri, isFavorite)
     }
 
     override suspend fun updateFolder(uri: String, folderId: String?) {
-        // TODO(desktop): UPDATE documents SET folderId = ? WHERE uri = ?
-        throw NotImplementedError("TODO(desktop): JdbcDocumentRepository.updateFolder")
+        db.updateDocumentFolder(uri, folderId)
     }
 
     override suspend fun moveDocumentsToFolder(uris: List<String>, folderId: String?) {
-        // TODO(desktop): batch UPDATE
-        throw NotImplementedError("TODO(desktop): JdbcDocumentRepository.moveDocumentsToFolder")
+        db.moveDocumentsToFolder(uris, folderId)
     }
 
     override suspend fun clearFolderAssignmentsInFolders(folderIds: List<String>) {
-        // TODO(desktop): UPDATE documents SET folderId = NULL WHERE folderId IN (...)
-        throw NotImplementedError("TODO(desktop): JdbcDocumentRepository.clearFolderAssignmentsInFolders")
+        db.clearFolderAssignments(folderIds)
     }
 
     override suspend fun updateLastOpenedAt(uri: String, timestamp: Long) {
-        // TODO(desktop): UPDATE documents SET lastOpenedAt = ? WHERE uri = ?
-        throw NotImplementedError("TODO(desktop): JdbcDocumentRepository.updateLastOpenedAt")
+        db.updateDocumentLastOpenedAt(uri, timestamp)
     }
 
-    override suspend fun getLastPageIndex(uri: String): Int? {
-        // TODO(desktop): SELECT lastPageIndex FROM documents WHERE uri = ?
-        throw NotImplementedError("TODO(desktop): JdbcDocumentRepository.getLastPageIndex")
-    }
+    override suspend fun getLastPageIndex(uri: String): Int? =
+        db.getDocumentLastPageIndex(uri)
 
     // ── Desktop-only helpers (not part of the shared contract) ────────────────
 
@@ -126,8 +132,7 @@ class JdbcDocumentRepository(private val db: DatabaseManager) : DocumentReposito
 class JdbcFolderRepository(private val db: DatabaseManager) : FolderRepository {
 
     override suspend fun insert(folder: SharedFolder) {
-        // TODO(desktop): implement INSERT INTO folders
-        throw NotImplementedError("TODO(desktop): JdbcFolderRepository.insert")
+        db.saveFolder(folder.toEntity())
     }
 
     override fun getAllFolders(): Flow<List<SharedFolder>> = flow {
@@ -135,33 +140,50 @@ class JdbcFolderRepository(private val db: DatabaseManager) : FolderRepository {
     }
 
     override suspend fun rename(folderId: String, newName: String, updatedAt: Long) {
-        // TODO(desktop): UPDATE folders SET name = ?, updatedAt = ? WHERE id = ?
-        throw NotImplementedError("TODO(desktop): JdbcFolderRepository.rename")
+        db.renameFolder(folderId, newName, updatedAt)
     }
 
     override suspend fun updateSortOrder(folderId: String, sortOrder: Int, updatedAt: Long) {
-        // TODO(desktop): UPDATE folders SET sortOrder = ?, updatedAt = ? WHERE id = ?
-        throw NotImplementedError("TODO(desktop): JdbcFolderRepository.updateSortOrder")
+        db.updateFolderSortOrder(folderId, sortOrder, updatedAt)
     }
 
-    override suspend fun moveToParent(folderId: String, parentFolderId: String?, sortOrder: Int, updatedAt: Long) {
-        // TODO(desktop): UPDATE folders SET parentFolderId = ?, sortOrder = ?, updatedAt = ? WHERE id = ?
-        throw NotImplementedError("TODO(desktop): JdbcFolderRepository.moveToParent")
+    /**
+     * Move a folder under a new parent (null = top level).
+     *
+     * A folder may not be moved inside itself or inside one of its own
+     * descendants: that would build a cycle, and the recursive "delete this
+     * folder and everything below it" walk would then loop forever (SQLite
+     * stops the recursion, but the tree is broken in the UI either way).
+     */
+    override suspend fun moveToParent(
+        folderId: String,
+        parentFolderId: String?,
+        sortOrder: Int,
+        updatedAt: Long
+    ) {
+        if (parentFolderId != null) {
+            val descendants = db.folderAndDescendantIds(folderId)
+            if (parentFolderId == folderId || parentFolderId in descendants) return
+        }
+        db.moveFolderToParent(folderId, parentFolderId, sortOrder, updatedAt)
     }
 
-    override suspend fun getNextSortOrder(parentFolderId: String?): Int {
-        // TODO(desktop): SELECT COALESCE(MAX(sortOrder),0)+1 FROM folders WHERE parentFolderId IS ?
-        throw NotImplementedError("TODO(desktop): JdbcFolderRepository.getNextSortOrder")
-    }
+    override suspend fun getNextSortOrder(parentFolderId: String?): Int =
+        db.nextFolderSortOrder(parentFolderId)
 
-    override suspend fun getFolderAndDescendantIds(folderId: String): List<String> {
-        // TODO(desktop): recursive CTE
-        throw NotImplementedError("TODO(desktop): JdbcFolderRepository.getFolderAndDescendantIds")
-    }
+    override suspend fun getFolderAndDescendantIds(folderId: String): List<String> =
+        db.folderAndDescendantIds(folderId)
 
+    /**
+     * Delete folders and detach the documents that lived in them.
+     *
+     * The documents are NOT deleted - they move to "uncategorized". A folder is
+     * a label, not a container: the file still sits on the user's disk.
+     */
     override suspend fun deleteByIds(folderIds: List<String>) {
-        // TODO(desktop): DELETE FROM folders WHERE id IN (...)
-        throw NotImplementedError("TODO(desktop): JdbcFolderRepository.deleteByIds")
+        if (folderIds.isEmpty()) return
+        db.clearFolderAssignments(folderIds)
+        db.deleteFolders(folderIds)
     }
 
     // ── Desktop-only helper ──────────────────────────────────────────────────
