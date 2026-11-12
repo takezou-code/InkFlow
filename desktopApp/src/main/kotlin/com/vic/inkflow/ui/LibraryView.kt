@@ -104,7 +104,9 @@ fun LibraryView(
                 value = state.query,
                 onValueChange = { viewModel.onEvent(LibraryViewModel.LibraryEvent.SetQuery(it)) },
                 placeholder = "搜尋標題或檔名",
-                modifier = Modifier.width(240.dp)
+                // 固定 240dp 的話，視窗一窄就被推出畫面。這裡讓它可以收，
+                // 寬度不夠時動作列自己會捲動（見 DeskScreen）。
+                modifier = Modifier.widthIn(min = 150.dp, max = 260.dp)
             )
             DeskPillButton(
                 text = if (state.importing) "匯入中…" else "開啟 PDF",
@@ -119,7 +121,9 @@ fun LibraryView(
             FolderChips(
                 folders = state.folders.map { it.id to it.name },
                 selectedFolderId = state.selectedFolderId,
-                onFolderSelected = { viewModel.onEvent(LibraryViewModel.LibraryEvent.SetFolder(it)) }
+                favoritesOnly = state.favoritesOnly,
+                onFolderSelected = { viewModel.onEvent(LibraryViewModel.LibraryEvent.SetFolder(it)) },
+                onFavoritesToggled = { viewModel.onEvent(LibraryViewModel.LibraryEvent.SetFavoritesOnly(it)) }
             )
 
             (state.importError)?.let { msg ->
@@ -206,7 +210,9 @@ private fun SyncStatusPill(text: String) {
 private fun FolderChips(
     folders: List<Pair<String, String>>,
     selectedFolderId: String?,
-    onFolderSelected: (String?) -> Unit
+    favoritesOnly: Boolean,
+    onFolderSelected: (String?) -> Unit,
+    onFavoritesToggled: (Boolean) -> Unit
 ) {
     Row(
         horizontalArrangement = Arrangement.spacedBy(DeskSpace.xs),
@@ -217,8 +223,16 @@ private fun FolderChips(
     ) {
         GlassOptionChip(
             text = "全部",
-            selected = selectedFolderId == null,
-            onClick = { onFolderSelected(null) },
+            selected = selectedFolderId == null && !favoritesOnly,
+            onClick = { onFavoritesToggled(false); onFolderSelected(null) },
+            isDark = InkThemeState.darkMode
+        )
+        // 最愛（唯讀檢視）：旗標由平板權威、桌面只篩選。
+        // 跟「全部」互斥——兩個篩選同時成立會讓畫面看起來像壞掉。
+        GlassOptionChip(
+            text = "我的最愛",
+            selected = favoritesOnly,
+            onClick = { onFavoritesToggled(!favoritesOnly) },
             isDark = InkThemeState.darkMode
         )
         folders.forEach { (id, name) ->

@@ -36,6 +36,15 @@ class LibraryViewModel(
         val folders: List<SharedFolder> = emptyList(),
         val query: String = "",
         val selectedFolderId: String? = null,
+        /**
+         * 只看最愛。
+         *
+         * 這是**唯讀**的檢視：最愛這個旗標是平板的權威，桌面端沒有權威來源，
+         * 自己在桌面標最愛會在下一次同步被平板的資料整份蓋掉（sync.md 的
+         * tablet-wins）。所以桌面只提供「篩選已同步下來的最愛」，不提供「改」——
+         * 提供一個會被吃掉的操作，比不提供更糟。
+         */
+        val favoritesOnly: Boolean = false,
         val importError: String? = null,
         val importing: Boolean = false
     )
@@ -43,6 +52,7 @@ class LibraryViewModel(
     sealed interface LibraryEvent {
         data class SetQuery(val query: String) : LibraryEvent
         data class SetFolder(val folderId: String?) : LibraryEvent
+        data class SetFavoritesOnly(val enabled: Boolean) : LibraryEvent
         data class ImportDocument(val chosen: File, val mirrorRoot: String, val onLibraryChanged: () -> Unit) : LibraryEvent
         data object ClearImportError : LibraryEvent
         data object Refresh : LibraryEvent
@@ -63,6 +73,10 @@ class LibraryViewModel(
             }
             is LibraryEvent.SetFolder -> {
                 _state.value = _state.value.copy(selectedFolderId = event.folderId)
+                onEvent(LibraryEvent.Refresh)
+            }
+            is LibraryEvent.SetFavoritesOnly -> {
+                _state.value = _state.value.copy(favoritesOnly = event.enabled)
                 onEvent(LibraryEvent.Refresh)
             }
             is LibraryEvent.ImportDocument -> importDocument(event.chosen, event.mirrorRoot, event.onLibraryChanged)
@@ -128,7 +142,8 @@ class LibraryViewModel(
                 doc.displayName.contains(s.query, ignoreCase = true) ||
                     folders.firstOrNull { it.id == doc.folderId }?.name?.contains(s.query, ignoreCase = true) == true
             }
-            _state.value = s.copy(documents = searched, folders = folders)
+            val favorites = if (s.favoritesOnly) searched.filter { it.isFavorite } else searched
+            _state.value = s.copy(documents = favorites, folders = folders)
         }
     }
 }
