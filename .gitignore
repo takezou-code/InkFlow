@@ -25,6 +25,12 @@ kotlin-js-store/
 local.properties
 /captures
 
+# 驗證用截圖：agent 與使用者截完都丟在 repo 根目錄，一張 6MB 很浪費版控空間，
+# 而且 `git add -A` 會把它們掃進去。
+# 只擋根目錄的 shot*.png —— 專案裡有真正的 png 資產（launcher icon、桌面 icon），
+# 用 *.png 會讓新資產被安靜地忽略掉.
+/shot*.png
+
 # ─── 簽章／憑證（絕不提交，另行寄放）───
 *.pfx
 *.p12
