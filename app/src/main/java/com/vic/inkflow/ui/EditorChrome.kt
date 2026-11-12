@@ -247,7 +247,7 @@ import kotlinx.coroutines.withContext
 /** 工具列沒有文字標籤，所以標題下方要說出「現在拿的是哪一支」。 */
 private fun toolLabel(tool: Tool): String = when (tool) {
     Tool.PEN -> "畫筆"
-    Tool.HIGHLIGHTER -> "熒光筆"
+    Tool.HIGHLIGHTER -> "蟳光筆"
     Tool.ERASER -> "橡皮擦"
     Tool.LASSO -> "套索選取"
     Tool.SHAPE -> "圖形"
@@ -390,7 +390,7 @@ fun TabletEditorTopBar(
                             overflow = TextOverflow.Ellipsis
                         )
                         // 副標本來寫「InkFlow Studio」——那句話什麼都沒說。
-                        // 改成**目前武裝的工具**：畫筆／熒光筆／橡皮擦／套索／圖形／文字／圖片。
+                        // 改成**目前武裝的工具**：畫筆／蟳光筆／橡皮擦／套索／圖形／文字／圖片。
                         // 這條工具列全是無文字的圖示（橡皮擦是 DeleteOutline、套索是
                         // Gesture、輸入模式還會換圖示），分不出來時這裡就是答案。
                         Text(
@@ -767,8 +767,10 @@ fun TabletEditorTopBar(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
                                 .clip(CircleShape)
-                                .fauxGlassPanel(isDarkTheme, CircleShape)
-                                .clickable { moreOpen = true }
+                                // glassPanel（有 haze）＝真的液態玻璃；fauxGlassPanel 只是
+                                // 一塊半透明底色，桌面上看起來像塑膠片。
+                                .glassPanel(hazeState, isDarkTheme, CircleShape)
+                                .glassClickable(onClick = { moreOpen = true }, shape = CircleShape)
                                 .padding(horizontal = 12.dp, vertical = 8.dp)
                         ) {
                             Text(
@@ -786,7 +788,11 @@ fun TabletEditorTopBar(
                         }
                         GlassMenu(
                             expanded = moreOpen,
-                            onDismissRequest = { moreOpen = false }
+                            onDismissRequest = { moreOpen = false },
+                            isDark = isDarkTheme,
+                            // hazeState 一定要傳：GlassMenu 沒有 haze 時會退成
+                            // fauxGlassPanel（純半透明底），選單看起來像一片塑膠。
+                            hazeState = hazeState
                         ) {
                             GlassMenuItem(
                                 text = "匯出 PDF",

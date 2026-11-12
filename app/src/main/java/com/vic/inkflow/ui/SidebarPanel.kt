@@ -136,7 +136,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationRailItem
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
@@ -236,7 +235,6 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.launch
-import com.vic.inkflow.ui.glassFieldColors
 import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -267,11 +265,6 @@ internal fun Sidebar(
     isFollowingSidebar: Boolean = false
 ) {
     var deleteConfirmIndices by remember { mutableStateOf<List<Int>>(emptyList()) }
-    // 跳頁：直接輸入頁碼。收合狀態只要有「現在第幾頁」和一個能跳的入口，
-    // 就不必為了找第 300 頁先把側欄整個展開再翻清單。
-    var jumpOpen by remember { mutableStateOf(false) }
-    var jumpText by remember { mutableStateOf("") }
-    val jumpScope = rememberCoroutineScope()
     val bookmarkedPages by pdfViewModel.getBookmarkedPages(documentUri).collectAsState(initial = emptyList())
     val thumbnailVersion by pdfViewModel.thumbnailVersion.collectAsState()
     val isPageOperationInProgress by pdfViewModel.isPageOperationInProgress.collectAsState()
@@ -289,37 +282,6 @@ internal fun Sidebar(
             },
             confirmEnabled = !isPageOperationInProgress,
             confirmColor = MaterialTheme.colorScheme.error
-        )
-    }
-
-    if (jumpOpen) {
-        GlassDialog(
-            onDismissRequest = { jumpOpen = false },
-            isDark = isDarkTheme,
-            title = { Text("跳到第幾頁") },
-            text = {
-                OutlinedTextField(
-                    value = jumpText,
-                    onValueChange = { v -> jumpText = v.filter { it.isDigit() }.take(6) },
-                    singleLine = true,
-                    label = { Text("頁碼（1 – $pageCount）") },
-                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
-                        keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
-                    ),
-                    colors = glassFieldColors(isDarkTheme)
-                )
-            },
-            confirmText = "跳頁",
-            onConfirm = {
-                jumpOpen = false
-                val target = jumpText.toIntOrNull()
-                if (target != null && pageCount > 0) {
-                    val idx = (target - 1).coerceIn(0, pageCount - 1)
-                    onPageSelected(idx)
-                    jumpScope.launch { listState.animateScrollToCenter(idx) }
-                }
-            },
-            confirmEnabled = jumpText.isNotBlank()
         )
     }
 
@@ -659,29 +621,6 @@ internal fun Sidebar(
                 // 空白處也能點＝不用精準命中小小的展開 chevron 就能展開。
                 if (sidebarStage == SidebarStage.RAIL) {
                     Column(modifier = Modifier.fillMaxWidth()) {
-                        // 現在第幾頁：收合時也要一直看得到，而且點它就能直接跳頁。
-                        // 以前這條脊只有展開鈕與新增頁鈕——想知道自己在第幾頁，
-                        // 得先點開側欄翻頁清單。那不叫導航，那叫找東西。
-                        Box(
-                            modifier = Modifier
-                                .padding(bottom = 6.dp)
-                                .size(48.dp)
-                                .glassPanel(hazeState, isDarkTheme, CircleShape)
-                                .glassClickable(
-                                    onClick = {
-                                        jumpText = (currentPageIndex + 1).toString()
-                                        jumpOpen = true
-                                    },
-                                    shape = CircleShape
-                                ),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = "${currentPageIndex + 1}",
-                                style = MaterialTheme.typography.titleSmall,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
                         railSpineButton(
                             hazeState = hazeState,
                             isDarkTheme = isDarkTheme,
@@ -710,23 +649,20 @@ internal fun Sidebar(
                             modifier = Modifier.fillMaxWidth().height(2.dp)
                         )
                     }
-                    // 底部工作列：以前是兩顆互不相連的玻璃藥丸（新增頁面／全展開），
-                    // 浮在紙的左下角，看起來像兩個各自為政的按鈕而不是一條列。
-                    // 現在合成一條：共同外框＋分隔線，右邊那顆圓鈕是唯一的
-                    // 「全展開」入口（拔掉拉桿後它就是唯一入口，所以要留得住）。
+                    // 新增頁面泡泡一分二：左邊加頁，右邊小圓直達全展開（第 3 階）。
+                    // 拉桿拔掉後 PANEL→GRID 沒了入口，這顆是唯一的門。
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 6.dp, vertical = 5.dp)
-                            .glassPanel(hazeState, isDarkTheme, ShapeMd)
-                            .padding(3.dp),
-                        horizontalArrangement = Arrangement.spacedBy(3.dp),
+                            .padding(horizontal = 6.dp, vertical = 5.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Row(
                             modifier = Modifier
                                 .weight(1f)
                                 .height(40.dp)
+                                .glassPanel(hazeState, isDarkTheme, ShapeMd)
                                 .glassClickable(
                                     onClick = { onAddPage(currentPageIndex) },
                                     shape = ShapeMd,
@@ -747,6 +683,7 @@ internal fun Sidebar(
                         Box(
                             modifier = Modifier
                                 .size(40.dp)
+                                .glassPanel(hazeState, isDarkTheme, CircleShape)
                                 .glassClickable(
                                     onClick = { onModeChange(SidebarStage.GRID) },
                                     shape = CircleShape,

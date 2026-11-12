@@ -268,7 +268,7 @@ fun InkToolbarExport(exporting: Boolean, onExport: () -> Unit, onClear: () -> Un
  */
 internal fun inkToolLabel(tool: InkTool): String = when (tool) {
     InkTool.Pen -> "畫筆"
-    InkTool.Highlighter -> "熒光筆"
+    InkTool.Highlighter -> "蟳光筆"
     InkTool.Eraser -> "橡皮擦"
     InkTool.Select -> "套索"
     InkTool.Text -> "文字"
