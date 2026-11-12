@@ -972,65 +972,9 @@ val allowSinglePan = startedBlank || fingerPanOnPaperAllowed(
                     )
                 }
             }
-            // Background pattern layer (ruled / grid lines)
-            val paperStyle by viewModel.paperStyle.collectAsState()
-            if (paperStyle.background != PageBackground.BLANK) {
-                val lineColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
-                androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
-                    val modelW = viewModel.modelWidth
-                    val modelH = viewModel.modelHeight
-                    val sx = DocTransform.scaleX(size.width, modelW)
-                    val sy = DocTransform.scaleY(size.height, modelH)
-                    val step = when (paperStyle.background) {
-                        PageBackground.NARROW_RULED -> 18f  // ~6.35mm
-                        PageBackground.WIDE_RULED   -> 42f  // ~15mm
-                        else                        -> 28f  // ~1cm
-                    }
-                    val drawHLines = paperStyle.background == PageBackground.RULED ||
-                        paperStyle.background == PageBackground.NARROW_RULED ||
-                        paperStyle.background == PageBackground.WIDE_RULED ||
-                        paperStyle.background == PageBackground.GRID
-                    if (drawHLines) {
-                        var y = step
-                        while (y < modelH) {
-                            drawLine(
-                                color = lineColor,
-                                start = androidx.compose.ui.geometry.Offset(0f, y * sy),
-                                end = androidx.compose.ui.geometry.Offset(size.width, y * sy),
-                                strokeWidth = 1f
-                            )
-                            y += step
-                        }
-                    }
-                    if (paperStyle.background == PageBackground.GRID) {
-                        var x = step
-                        while (x < modelW) {
-                            drawLine(
-                                color = lineColor,
-                                start = androidx.compose.ui.geometry.Offset(x * sx, 0f),
-                                end = androidx.compose.ui.geometry.Offset(x * sx, size.height),
-                                strokeWidth = 1f
-                            )
-                            x += step
-                        }
-                    }
-                    if (paperStyle.background == PageBackground.DOT_GRID) {
-                        var y = step
-                        while (y < modelH) {
-                            var x = step
-                            while (x < modelW) {
-                                drawCircle(
-                                    color = lineColor,
-                                    radius = 1.5f,
-                                    center = androidx.compose.ui.geometry.Offset(x * sx, y * sy)
-                                )
-                                x += step
-                            }
-                            y += step
-                        }
-                    }
-                }
-            }
+            // 背景紙紋（ruled / grid / dot）統一由 InkCanvas 的 onDrawBehind 繪製——
+            // 這裡原本有一份一模一樣的 Canvas，雙重繪製（點格紙一幀 ×2 ≈ 3.4 萬次 drawCircle）。
+            // 已刪除，紙紋只剩一處。
             // M1 全活頁：InkCanvas 只吃本頁熱流，不讀作用頁流；
             // 新鮮度門隨單活頁一起退役（每頁數據自洽，無跨頁鬼影可言）。
             InkCanvas(
@@ -1130,22 +1074,11 @@ private fun DragPreviewOverlay(
     val overlayHandleHaloPx = with(overlayDensity) {
         com.vic.inkflow.ui.theme.Handles.HaloRadius.toPx()
     }
-    // 圖片解碼快取（1024 封頂，拖曳預覽夠用；與 InkCanvas 各管各的，不共享）。
-    val loadedImages = remember { mutableStateMapOf<String, ImageBitmap?>() }
-    androidx.compose.runtime.LaunchedEffect(selImages, dragImg?.image?.uri) {
+    // 圖片走共享預算制快取（1024 封頂夠拖曳預覽用；與 InkCanvas/側欄同一份快取，不重複解碼）。
+    val imageCacheVersion = com.vic.inkflow.util.ImageAnnotationCache.version
+    androidx.compose.runtime.LaunchedEffect(selImages, dragImg?.image?.uri, imageCacheVersion) {
         (selImages.map { it.uri } + listOfNotNull(dragImg?.image?.uri)).distinct().forEach { uri ->
-            if (uri !in loadedImages) {
-                loadedImages[uri] = null
-                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                    val bmp = try {
-                        decodeBoundedBitmap(context, Uri.parse(uri), maxSidePx = 1024)
-                            ?.asImageBitmap()
-                    } catch (_: Exception) { null }
-                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                        loadedImages[uri] = bmp
-                    }
-                }
-            }
+            com.vic.inkflow.util.ImageAnnotationCache.getOrDecode(context, uri, 1024)
         }
     }
     val moveOffset by viewModel.lassoMoveOffset.collectAsState()
@@ -1177,7 +1110,7 @@ private fun DragPreviewOverlay(
         // 選中圖先畫（墊底）；只畫歸屬本紙的（跨紙選取各紙 overlay 畫各的，跟墨同規矩）。
         selImages.forEach { ann ->
             if (ann.pageIndex != pageIndex) return@forEach
-            val bmp = loadedImages[ann.uri] ?: return@forEach
+            val bmp = com.vic.inkflow.util.ImageAnnotationCache.getFor(ann.uri, 1024) ?: return@forEach
             val r = modelTransformedImageRectToCanvasRect(
                 image = ann,
                 translation = moveOffset,
@@ -1210,7 +1143,7 @@ private fun DragPreviewOverlay(
         }
         if (dragLocal != null) {
             val (d, lt, lb) = dragLocal
-            val bmp = loadedImages[d.image.uri]
+            val bmp = com.vic.inkflow.util.ImageAnnotationCache.getFor(d.image.uri, 1024)
             if (bmp != null) {
                 val rx = (d.image.modelX + d.dxModel) * sx
                 val fullCx = (d.image.modelX + d.dxModel + d.image.modelWidth / 2f) * sx

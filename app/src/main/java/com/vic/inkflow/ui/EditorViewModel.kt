@@ -505,8 +505,14 @@ class EditorViewModel(
             val merged = mergePageStrokes(s, pending, page, hiddenIds)
             // DB 一出現同 id 就從樂觀層退場，否則同一筆會被畫兩次
             //（高亮筆＝alpha 疊兩層，提筆瞬間明顯偏暗）。
+            // 不能在合併 lambda 裡同步寫 _pendingStrokes（combine 自己也是它的觀察者）——
+            // 那會重入式打穿 combine，產生一幀「這筆墨不存在」的排空，
+            // 畫面上就是你每筆提筆閃一次的根因。改成 emission 完成後下一拍再清。
             if (merged.resolvedIds.isNotEmpty()) {
-                _pendingStrokes.value = _pendingStrokes.value - merged.resolvedIds
+                val resolved = merged.resolvedIds
+                viewModelScope.launch {
+                    _pendingStrokes.value = _pendingStrokes.value - resolved
+                }
             }
             NeighborPageData(
                 strokes = merged.strokes,

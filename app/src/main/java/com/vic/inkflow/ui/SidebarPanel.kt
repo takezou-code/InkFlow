@@ -10,7 +10,6 @@ import com.vic.inkflow.ui.theme.ShapeXl
 
 import android.content.Intent
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -778,21 +777,11 @@ internal fun PageThumbnail(
     // Paper base must be pure white to match rendered PDF bitmaps (eraseColor(WHITE)),
     // regardless of dark/light theme — prevents non-white patches while bitmaps load.
     val paperColor = Color.White
-    // Cache decoded bitmaps keyed by URI string
-    val loadedImages = remember { mutableStateMapOf<String, android.graphics.Bitmap?>() }
-    LaunchedEffect(imageAnnotations) {
+    // 圖片走共享預算制快取（512 已夠 88dp 縮圖格用）；原本整張原圖直解 → 每張 ~48MB，大圖文件打開就卡。
+    val imageCacheVersion = com.vic.inkflow.util.ImageAnnotationCache.version
+    LaunchedEffect(imageAnnotations, imageCacheVersion) {
         imageAnnotations.forEach { ann ->
-            if (ann.uri !in loadedImages) {
-                loadedImages[ann.uri] = null
-                withContext(Dispatchers.IO) {
-                    try {
-                        val bmp = context.contentResolver.openInputStream(Uri.parse(ann.uri))?.use { stream ->
-                            BitmapFactory.decodeStream(stream)
-                        }
-                        loadedImages[ann.uri] = bmp
-                    } catch (_: Exception) { }
-                }
-            }
+            com.vic.inkflow.util.ImageAnnotationCache.getOrDecode(context, ann.uri, 512)
         }
     }
 
@@ -907,10 +896,10 @@ internal fun PageThumbnail(
                 }
                 // --- Image annotations ---
                 imageAnnotations.forEach { ann ->
-                    val bmp = loadedImages[ann.uri]
+                    val bmp = com.vic.inkflow.util.ImageAnnotationCache.getFor(ann.uri, 512)
                     if (bmp != null) {
                         drawImage(
-                            image = bmp.asImageBitmap(),
+                            image = bmp,
                             dstOffset = IntOffset((ann.modelX * sx).toInt(), (ann.modelY * sy).toInt()),
                             dstSize = IntSize(
                                 (ann.modelWidth * sx).toInt().coerceAtLeast(1),

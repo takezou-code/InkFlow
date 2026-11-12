@@ -191,7 +191,25 @@ internal fun <T> shouldApplyPreview(
 }
 
 /**
- * 浮動比較。DB 走 Float 落盤（REAL），model 座標算完再存會有微小誤差，
+ * 提筆時的「交接快照」：這一筆墨的向量直接烙在提筆當下。
+ *
+ * 為什麼需要：提筆後頁流（Room → 合併為 `pageDataFlow`）需要一幀才能把這筆吐給畫布，
+ * 而活路徑已經讓位／已清、快取位圖還沒烙——那一幀這筆墨**沒有任何層在畫**。
+ * 實機 log 證明每次提筆都會精確產生一行 `overlay=0`（見 docs/specs/pitfalls.md）。
+ * 頁流排空幾幀都無所謂——有快照就一定有東西畫。
+ */
+private data class LiftedStrokeSnapshot(
+    /** 屬於「本紙」的提交段 id；snapshot 只畫這些。 */
+    val ids: Set<String>,
+    /** 向量（canvas 像素座標），與活路徑同一份點列生成。 */
+    val path: Path,
+    val color: Color,
+    val isHighlighter: Boolean,
+    /** 烙下來的時刻（uptimeMillis）；超過 TTL 自動丟棄。 */
+    val atMs: Long,
+)
+
+/** 浮動比較。DB 走 Float 落盤（REAL），model 座標算完再存會有微小誤差，
  * 用整數容差比對避免「差 0.0001 永遠不落定」→ 預覽卡住不歸零。
  */
 private fun near(a: Float, b: Float): Boolean = abs(a - b) < 0.01f
@@ -299,6 +317,9 @@ fun InkCanvas(
     //（筆頭那段消失再從後面接上＝機率性閃爍，見 docs/specs/pitfalls.md）。
     var strokeGestureSeq by remember { mutableIntStateOf(0) }
     var bridgingSeq by remember { mutableIntStateOf(-1) }
+    // 交接快照：提筆當幀現場烙一張向量。頁流（Room→合併流）需要一幀才能把墨
+    // 吐給畫布——那一幀向量層是空的、活路徑已清＝「提筆閃一下」的實際成因。
+    var liftedSnapshot by remember { mutableStateOf<LiftedStrokeSnapshot?>(null) }
     // 提筆快照：最後一次提交的筆跡 id。它**不烙進封頂位圖快取**，直接以向量畫在快取圖之上。
     // 為什麼需要：已落庫的墨是點陣化的（cacheCap=3072，比 2880px 寬的平板還小 → 縮小再放大），
     // 提筆那一刻從「活的向量」換成「糊的位圖」＝肉眼看到的閃一下／微微位移。
@@ -532,10 +553,9 @@ fun InkCanvas(
     // 普通 Map，同上只在建構區讀寫。
     val lastShapeBounds = remember { mutableMapOf<String, Rect>() }
 
-    // Image bitmap cache: uri-string → decoded Bitmap (null = load failed / placeholder)
-    val loadedImages = remember { mutableStateMapOf<String, android.graphics.Bitmap?>() }
-    // 顯示用 ImageBitmap：載入時轉一次，繪製每幀不再 asImageBitmap() 包裝
-    val loadedImageBitmaps = remember { mutableStateMapOf<String, ImageBitmap?>() }
+    // 圖片註解走共享預算制快取（ImageAnnotationCache）：跨頁／跨面板共用、heap/8 LRU、
+    // 超預算自動砍、刪除不會洩漏。這裡只在 Composition 訂閱它的 version，draw 直接讀快取。
+    val imageCacheVersion = com.vic.inkflow.util.ImageAnnotationCache.version
     // 文字共用 Paint + 分行快取：繪製時只改字號顏色，不再 new
     val textPaint = remember {
         android.graphics.Paint().apply {
@@ -558,6 +578,14 @@ fun InkCanvas(
     }
     // 靜態虛線只建一次（形狀預覽用；選取框已統一走液態玻璃共用繪製）
     val dashPreview = remember { PathEffect.dashPathEffect(floatArrayOf(10f, 10f)) }
+    // 點格紙背景瓦片：tile + shader 只隨「步距 px」重建，不進 Compose 狀態（否則每幀 1.7 萬次 drawCircle）。
+    val dotTileCache = remember {
+        object {
+            var bmp: android.graphics.Bitmap? = null
+            var paint: android.graphics.Paint? = null
+            var key: String = ""
+        }
+    }
 
     // 插圖選取：EditorScreen 插完圖後丟 id 過來，由「持有該 id 的那一頁」接走並選中。
     // 取走即請 ViewModel 清空請求 → 不會因為頁面被 dispose／重組而重播。
@@ -595,22 +623,11 @@ fun InkCanvas(
         }
     }
 
-    // Async bitmap loader — runs whenever annotation list changes
-    LaunchedEffect(imageAnnotations) {
+    // 缺圖就排解碼；版本 bump 後自癒重查。解碼統一走共享快取（2048 封頂），這裡不重複存。
+    LaunchedEffect(imageAnnotations, imageCacheVersion) {
         imageAnnotations.forEach { ann ->
-            if (ann.uri !in loadedImages) {
-                loadedImages[ann.uri] = null
-                scope.launch(Dispatchers.IO) {
-                    val bmp = try {
-                        decodeBoundedBitmap(context, Uri.parse(ann.uri), maxSidePx = 2048)
-                    } catch (_: Exception) { null }
-                    val frame = bmp?.asImageBitmap()
-                    withContext(Dispatchers.Main) {
-                        loadedImages[ann.uri] = bmp
-                        loadedImageBitmaps[ann.uri] = frame
-                    }
-                }
-            }
+            // 自己切 IO；這裡只排隊
+            com.vic.inkflow.util.ImageAnnotationCache.getOrDecode(context, ann.uri, 2048)
         }
     }
 
@@ -2041,7 +2058,18 @@ fun InkCanvas(
                                     " n=${pts.size} page=$srcPage"
                             )
                             // 最後一筆停在向量層（不烙位圖）：落庫後的第一幀就是清晰版。
-                            bridged.lastOrNull()?.let { hotStrokeId = it }
+                            // 順手烙一張交接快照：頁流在接下來幾幀裡可能排空一幀（剛落庫的
+                            // 合併流還沒吐出這筆），那一幀靠這張補——墨不會消失。
+                            bridged.lastOrNull()?.let { newHot ->
+                                hotStrokeId = newHot
+                                liftedSnapshot = LiftedStrokeSnapshot(
+                                    ids = bridged.toSet(),
+                                    path = EnvelopeUtils.generateEnvelopePath(currentPathPoints),
+                                    color = selectedColor,
+                                    isHighlighter = activeTool == Tool.HIGHLIGHTER,
+                                    atMs = android.os.SystemClock.uptimeMillis()
+                                )
+                            } ?: run { liftedSnapshot = null }
                             viewModel.setPageLock(false)
                             // M1 全活頁：目標紙本來就活著，無需激活（提筆零跳轉）
                         }
@@ -2121,6 +2149,12 @@ fun InkCanvas(
             }
         }
         .drawWithCache {
+            // 過期快照兜底丟棄（2s 後一定不需要了；過期後至多多畫一個無害的 expired 檢查）。
+            liftedSnapshot?.let { snap ->
+                if (android.os.SystemClock.uptimeMillis() - snap.atMs > 2000L) {
+                    liftedSnapshot = null
+                }
+            }
             // 紙尺寸改從 collectAsState 的 paperStyle 讀（Compose State）：讀了才建立訂閱，
             // 紙尺寸變更才會讓這張墨跡快取失效。原本讀 viewModel.modelWidth 是普通 getter
             // （_paperStyle.value），不訂閱 → 改紙尺寸時背景重畫、墨跡留在舊比例。
@@ -2162,11 +2196,14 @@ fun InkCanvas(
             // 真正「空窗」的判定：交接還在等、向量層沒有它、活路徑也已經空了 →
             // 這一幀這筆墨三層都沒畫（畫面真的會缺一筆）。正常交接不會落在這裡：
             // 資料流到之前活路徑還在，資料流到了 overlay 就有它。
-            if (bridgingIds != null && !bridgedDrawn && overlayStrokes.isEmpty() && activePath.isEmpty) {
+            if (bridgingIds != null && !bridgedDrawn && overlayStrokes.isEmpty() && activePath.isEmpty
+                && liftedSnapshot == null
+            ) {
                 android.util.Log.w(
                     "InkFlowDiag",
                     "GAP p=$pageIndex seq=$strokeGestureSeq bseq=$bridgingSeq" +
-                        " bridge=${bridgingIds?.joinToString(",") { it.take(8) }}"
+                        " bridge=${bridgingIds?.joinToString(",") { it.take(8) }}" +
+                        " snap=null"
                 )
             }
 
@@ -2308,6 +2345,7 @@ fun InkCanvas(
                     "CACHE p=$pageIndex canvas=${bmpWidth}x${bmpHeight} " +
                         "scale=${"%.3f".format(cacheScale)} cache=${cacheW}x${cacheH} " +
                         "overlay=${overlayStrokes.size} hot=${hotStrokeId?.take(8) ?: "-"} " +
+                        "snap=${liftedSnapshot?.ids?.contains(hotStrokeId) == true} " +
                         "bridge=${bridgingIds?.size ?: 0} drawn=$bridgedDrawn " +
                         "dirty=${dirty != null} full=$fullRebuild order=$orderChanged " +
                         "seq=$strokeGestureSeq bseq=$bridgingSeq"
@@ -2432,25 +2470,53 @@ fun InkCanvas(
                     }
                 }
                 if (currentPaperStyle.background == PageBackground.DOT_GRID) {
-                    var lineY = step
-                    while (lineY < viewModel.modelHeight) {
-                        var lineX = step
-                        while (lineX < viewModel.modelWidth) {
-                            drawCircle(
-                                color  = lineColor,
-                                radius = 1.5f,
-                                center = Offset(lineX * sx, lineY * sy)
-                            )
-                            lineX += step
+                    // 點格紙：1.7 萬個 drawCircle/幀 換成一個 BitmapShader tile + 一次 fillRect。
+                    // tile 依「步距 px」快取，紙張/縮放比例變了才重建。
+                    val stepPxX = step * sx
+                    val stepPxY = step * sy
+                    val key = "${stepPxX}x${stepPxY}"
+                    if (dotTileCache.key != key) {
+                        val tw = stepPxX.toInt().coerceAtLeast(2)
+                        val th = stepPxY.toInt().coerceAtLeast(2)
+                        val tile = android.graphics.Bitmap.createBitmap(
+                            tw, th, android.graphics.Bitmap.Config.ARGB_8888
+                        )
+                        val tc = android.graphics.Canvas(tile)
+                        val tp = android.graphics.Paint().apply {
+                            color = 0x33000000
+                            isAntiAlias = true
                         }
-                        lineY += step
+                        tc.drawCircle(0f, 0f, 1.5f, tp)
+                        dotTileCache.bmp = tile
+                        dotTileCache.paint = android.graphics.Paint().apply {
+                            shader = android.graphics.BitmapShader(
+                                tile, android.graphics.Shader.TileMode.REPEAT,
+                                android.graphics.Shader.TileMode.REPEAT
+                            )
+                        }
+                        dotTileCache.key = key
+                    }
+                    val fill = dotTileCache.paint
+                    if (fill != null) {
+                        // 從 (step, step) 開始鋪，點的位置與舊迴圈一致。
+                        drawIntoCanvas { cvs ->
+                            cvs.save()
+                            cvs.translate(stepPxX, stepPxY)
+                            cvs.nativeCanvas.drawRect(
+                                0f, 0f,
+                                (size.width - stepPxX).coerceAtLeast(0f),
+                                (size.height - stepPxY).coerceAtLeast(0f),
+                                fill
+                            )
+                            cvs.restore()
+                        }
                     }
                 }
             }
 
             // Image annotations — drawn BELOW strokes (above PDF layer which is a separate Composable)
             currentImageAnns.forEach { ann ->
-                val bmp = loadedImageBitmaps[ann.uri]
+                val bmp = com.vic.inkflow.util.ImageAnnotationCache.getFor(ann.uri, 2048)
                 if (bmp != null) {
                     val isSelectedInImageTool = ann.id == selectedImageAnnotationId && activeTool == Tool.IMAGE
                     val isSelectedInSelectionTool = ann.id in selectedImageAnnotationIds && activeTool == Tool.LASSO
@@ -2556,6 +2622,24 @@ fun InkCanvas(
                 }
             } else if (overlayPathCache.isNotEmpty()) {
                 overlayPathCache.clear()
+            }
+
+            // 交接快照：頁流排空一幀時向量層沒有這筆墨——補畫本地快照。
+            // 向量層畫得到（merged 頁流已到）就讓路；絕不疊兩層（高亮筆 Alpha×2 會偏暗）。
+            liftedSnapshot?.let { snap ->
+                if (snap.ids.contains(hotStrokeId)) {
+                    val covered = overlayStrokes.any { it.stroke.id in snap.ids }
+                    if (!covered) {
+                        if (snap.isHighlighter) {
+                            drawIntoCanvas { cvs ->
+                                hlPreviewPaint.color = snap.color.copy(alpha = HIGHLIGHTER_ALPHA)
+                                cvs.drawPath(snap.path, hlPreviewPaint)
+                            }
+                        } else {
+                            drawPath(snap.path, snap.color)
+                        }
+                    }
+                }
             }
 
             val preview = commitPreview

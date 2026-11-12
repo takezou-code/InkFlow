@@ -154,7 +154,6 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.asImageBitmap
@@ -446,7 +445,7 @@ internal fun StrokeWidthSlider(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .glassPanel(hazeState, isDarkTheme, shape = RectangleShape, specular = false),
+            .glassPanel(hazeState, isDarkTheme, shape = RoundedCornerShape(percent = 50), specular = false),
         tonalElevation = 0.dp,
         color = Color.Transparent,
         contentColor = MaterialTheme.colorScheme.onSurface
