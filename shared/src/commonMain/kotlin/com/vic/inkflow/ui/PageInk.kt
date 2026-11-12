@@ -39,12 +39,15 @@ import com.vic.inkflow.util.StrokePoint
  * @param scale model → screen pixels.
  * @param originX the page origin on screen (the page is drawn with its own origin
  *   inside the viewport, so the origin has to be subtracted per point).
+ * @param alpha multiplier on the stroke's own colour alpha; 1f draws normally,
+ *   <1f is used for the eraser's live "about to be erased" dimming.
  */
 fun DrawScope.drawModelStroke(
     swp: StrokeWithSamples,
     scale: Float,
     originX: Float,
-    originY: Float
+    originY: Float,
+    alpha: Float = 1f
 ) {
     val pts = swp.points
     if (pts.isEmpty()) return
@@ -52,7 +55,7 @@ fun DrawScope.drawModelStroke(
     // Shapes branch out here, before the envelope renderer.
     val shapeType = ShapeGeometry.parseType(swp.stroke.shapeType)
     if (shapeType != null) {
-        drawModelShape(swp, shapeType, scale, originX, originY)
+        drawModelShape(swp, shapeType, scale, originX, originY, alpha)
         return
     }
 
@@ -67,9 +70,10 @@ fun DrawScope.drawModelStroke(
         )
     }
     val ink = Color(swp.stroke.color)
+    val base = strokeColor(ink, swp.stroke.isHighlighter)
     drawPath(
         path = EnvelopeUtils.generateEnvelopePath(strokePoints),
-        color = strokeColor(ink, swp.stroke.isHighlighter),
+        color = base.copy(alpha = base.alpha * alpha),
         blendMode = strokeBlendMode(swp.stroke.isHighlighter)
     )
 }
@@ -87,9 +91,10 @@ fun DrawScope.drawModelShape(
     type: ShapeType,
     scale: Float,
     originX: Float,
-    originY: Float
+    originY: Float,
+    alpha: Float = 1f
 ) {
-    val ink = Color(swp.stroke.color)
+    val ink = Color(swp.stroke.color).copy(alpha = alpha)
     val width = ShapeGeometry.strokeWidthFor(type, swp.stroke.strokeWidth)
         .times(scale).coerceAtLeast(MIN_INK_PX)
     val style = Stroke(

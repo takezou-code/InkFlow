@@ -1,5 +1,6 @@
 package com.vic.inkflow.data
 
+import com.vic.inkflow.ui.sliceParagraphAtLines
 import com.vic.inkflow.ui.wrapTextLines
 
 /**
@@ -149,22 +150,6 @@ private fun splitProse(seg: String, maxChars: Int): List<ProsePiece> {
         if (buf.isNotEmpty()) out.add(ProsePiece(buf.toString(), continuesPrevious = !firstOfPara))
     }
     return out
-}
-
-/**
- * M3/M5 文字折行：**與畫面同一支 [wrapTextLines]**（不再用 StaticLayout）。
- *
- * 為什麼要換掉 StaticLayout：折行只允許有一個權威。以前 AI 用 StaticLayout 折（真實字寬），
- * 畫面用 [wrapTextLines] 折（全形感知估算）——同一段文字兩邊折在不同地方；而且估算偏保守
- * （半形按 0.65em，比真實寬約三成），StaticLayout 折好的行一旦帶上 `boxWidth`，畫面就會把
- * 它**再折一次**。改用同一支之後三件事同時成立：折行結果冪等、AI 文字能跟手打的共用同一條
- * 路、分頁引擎變成可單測（StaticLayout 在 JVM 單測跑不動）。
- */
-private fun layoutLines(body: String, fontSize: Float, contentWpt: Float): List<String> {
-    if (body.isEmpty()) return emptyList()
-    // 不濾空行：空行是段落間距。舊版 `filter { it.isNotEmpty() }` 會把 AI 的
-    // 段落結構整段吃掉（分頁時看起來就是「沒有換行」）。
-    return wrapTextLines(body, fontSize, contentWpt)
 }
 
 private val DISPLAY_MATH = Regex(
@@ -401,6 +386,9 @@ fun resolveAiBlocks(blocks: List<AiBlock>, rendered: Map<String, RenderedMath>, 
  * 數學圖按寬等比，由上往下放，放不下就開新頁。全部放新頁 → 與原文/墨水零重疊（永不疊字）。
  * 每個文字段落的 annotation 都帶 `boxWidth`，所以它是一般的文字框（可改寬、可對齊）。
  *
+ * **存的是原文**：折行只用來算行數與分頁位置（見 `emitBody`）。若把折好的行存進去，
+ * 拉寬框時那些硬換行不會消失，文字就不會重新填滿。
+ *
  * @param fontMetrics 字型量測注入點：回傳 `[ascent, descent, leading]`（model pt）。
  *   平板用 `Paint`（DEFAULT_BOLD），桌面用自己的係數模型。抽出來是為了讓本函數能在
  *   JVM 單測跑（`android.graphics.Paint` 在單測是 stub，`fontMetrics` 回 null），
@@ -437,38 +425,84 @@ fun paginateAiBlocks(
         cur = mutableListOf()
         cursorTop = marginTop
     }
-    // lines：已折好的行；必要時跨頁切段（一段一 annotation）。
+    // 一段＝一個 annotation；必要時跨頁切段。
     // 量測逐塊做：每塊可能有自己的字級（平板全 16，桌面標題 22）。
     // gapAfter：這塊排完要留多少間距。同一段落被切開的續塊傳 0，
     // 否則一段長正文會在紙上看起來變成好幾段。
-    fun emitLines(lines: List<String>, size: Float, gapAfter: Float) {
+    //
+    // ⚠️ 存的是**原文**（自然段落），不是折好的行。舊版把 `wrapTextLines` 的結果
+    // 用 `\n` 串起來存，等於把每個折行點都變成硬換行：之後把框拉寬，那些換行不會
+    // 消失，文字不會重新填滿（實機看起來就是「拉寬了卻沒重排」），編輯時也會發現
+    // 每個折行都變成真的 Enter。分頁仍按折行後的行數算，但切點落在折行邊界
+    // （`sliceParagraphAtLines`），兩半都還是原文。
+    fun emitBody(body: String, size: Float, gapAfter: Float) {
         val m = fontMetrics(size)
         val lineH = -m[0] + m[1] + m[2]
         val ascent = m[0]
-        if (lineH <= 0f) return
-        var idx = 0
-        while (idx < lines.size) {
+        if (lineH <= 0f || body.isEmpty()) return
+        // 空段落＝空行，必須留著（段落間距）；純空白段落也正規化成空行。
+        val paras = body.split("\n").mapTo(ArrayList()) { if (it.isBlank()) "" else it }
+        var pi = 0
+        while (pi < paras.size) {
             val room = modelH - marginBottom - cursorTop
             val fit = (room / lineH).toInt()
             if (fit <= 0) {
+                // 已經在頁頂還放不下一行 → 這本頁比一行還矮，避免無限迴圈。
+                if (cursorTop <= marginTop + 0.01f) return
                 newPage()
                 continue
             }
-            val take = minOf(fit, lines.size - idx)
-            val seg = lines.subList(idx, idx + take)
-            cur.add(
-                Placed.T(
-                    PlacedText(
-                        text = seg.joinToString("\n") { it.trimEnd() },
-                        modelX = marginH,
-                        modelY = cursorTop - ascent,
-                        fontSize = size,
-                        boxWidth = contentWpt
+            // 貪心塞入整段（保住原文）；連一段都塞不下就走「切行」分支。
+            val text = StringBuilder()
+            var used = 0
+            var appended = false
+            while (pi < paras.size) {
+                val p = paras[pi]
+                val n = wrapTextLines(p, size, contentWpt).size.coerceAtLeast(1)
+                if (used + n > fit) break
+                if (appended) text.append('\n')
+                text.append(p)
+                appended = true
+                used += n
+                pi++
+            }
+            if (appended) {
+                cur.add(
+                    Placed.T(
+                        PlacedText(
+                            text = text.toString(),
+                            modelX = marginH,
+                            modelY = cursorTop - ascent,
+                            fontSize = size,
+                            boxWidth = contentWpt
+                        )
                     )
                 )
-            )
-            cursorTop += take * lineH + gapAfter
-            idx += take
+                // 段落間距只在這一塊真的排完時補；還有下文＝接著排，不補。
+                val done = pi >= paras.size
+                cursorTop += used * lineH + if (done) gapAfter else 0f
+            } else {
+                // 單一段落比本頁剩下的空間還高：切在折行邊界，前半留本頁、後半下一頁。
+                val (head, tail) = sliceParagraphAtLines(paras[pi], size, contentWpt, fit)
+                if (head.isEmpty()) {
+                    newPage()
+                    continue
+                }
+                cur.add(
+                    Placed.T(
+                        PlacedText(
+                            text = head,
+                            modelX = marginH,
+                            modelY = cursorTop - ascent,
+                            fontSize = size,
+                            boxWidth = contentWpt
+                        )
+                    )
+                )
+                cursorTop += fit * lineH
+                paras[pi] = tail
+                newPage()
+            }
         }
     }
     fun emitImage(blockId: String, rm: RenderedMath) {
@@ -482,12 +516,10 @@ fun paginateAiBlocks(
     for ((bi, b) in blocks.withIndex()) {
         when (b) {
             is AiTextBlock -> {
-                val size = b.chunk.fontSize
-                val lines = layoutLines(b.chunk.body.trim(), size, contentWpt)
                 // 下一塊若是同段落的續塊 → 之間只留行距，不補段落間距。
                 val next = blocks.getOrNull(bi + 1)
                 val gapAfter = if (next is AiTextBlock && next.chunk.continuesPrevious) 0f else blockGap
-                if (lines.isNotEmpty()) emitLines(lines, size, gapAfter)
+                emitBody(b.chunk.body.trim(), b.chunk.fontSize, gapAfter)
             }
             is AiMathBlock -> {
                 val rm = rendered[b.id] ?: continue

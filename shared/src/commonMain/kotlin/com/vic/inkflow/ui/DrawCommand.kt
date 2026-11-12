@@ -20,6 +20,23 @@ sealed class DrawCommand {
     data class MoveTextAnnotation(val original: TextAnnotation, val updated: TextAnnotation) : DrawCommand()
     data class ResizeTextAnnotation(val original: TextAnnotation, val updated: TextAnnotation) : DrawCommand()
     data class EditTextAnnotation(val original: TextAnnotation, val updated: TextAnnotation) : DrawCommand()
+    /**
+     * 一整條文字流一起變更（自動重排／整條拖動／刪除後收合）：**一格 undo 全撤**。
+     *
+     * 為什麼要合成一個命令：重排是「改一格、順手移動下面五格」，拆成六格的話
+     * 使用者要按六次復原，而且中間狀態是疊字。第一格是使用者實際操作的那一格，
+     * 其餘是連帶位移。
+     */
+    data class TextFlowEdit(
+        val originals: List<TextAnnotation>,
+        val updated: List<TextAnnotation>
+    ) : DrawCommand()
+    /** 刪掉文字流的一格並收合下面的格子：復原時「插回那格＋位置還原」是同一格。 */
+    data class TextFlowDelete(
+        val removed: TextAnnotation,
+        val originals: List<TextAnnotation>,
+        val updated: List<TextAnnotation>
+    ) : DrawCommand()
     data class AddImageAnnotation(val annotation: ImageAnnotation) : DrawCommand()
     data class RemoveImageAnnotation(val annotation: ImageAnnotation) : DrawCommand()
     data class MoveImageAnnotation(val original: ImageAnnotation, val updated: ImageAnnotation) : DrawCommand()

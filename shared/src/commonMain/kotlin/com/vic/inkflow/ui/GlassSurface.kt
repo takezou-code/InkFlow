@@ -272,6 +272,10 @@ fun glassFieldColors(isDark: Boolean) = OutlinedTextFieldDefaults.colors(
 /**
  * 啫喱按壓：縮放 + 提亮 + 掃光（按下去一道光從左上掃到右下，靜止時零成本）
  * ＋輕觸感（流光限定，靜模式不震；滑動拖曳不震，只認按下那一下）。
+ *
+ * 縮放圖層**前置在整條 Modifier 鏈的最外層**（見下方 return 處的說明），
+ * 所以呼叫端先疊好的玻璃底（`fauxGlassPanel`／`glassPanel`）也會一起縮，
+ * 不會只剩內容在動、底下留一個原尺寸的容器。
  */
 @Composable
 fun Modifier.pressableGlass(
@@ -314,11 +318,19 @@ fun Modifier.pressableGlass(
         animationSpec = tween(if (pressed) 90 else 260),
         label = "PressRim"
     )
-    return this
+    // ── 縮放圖層為什麼要「前置」而不是像一般寫法接在 this 後面 ──────────────
+    // Modifier 鏈是由外而內：`this` 是呼叫端當下已累積的鏈，玻璃底（clip／
+    // background／border／haze）全在裡面。若照慣例寫 `this.graphicsLayer{}`，
+    // 圖層只包得住它「之後」的內容 → 玻璃底留在原尺寸，按下去就成了
+    // 「內容縮小、底下還有一個完整容器」（實機回報的就是這個）。
+    // 放到鏈首（Modifier.graphicsLayer{}.then(this)）後，整個節點含先前疊好的
+    // 玻璃底一起縮，底下不會再露出一層原尺寸的底。
+    return Modifier
         .graphicsLayer {
             scaleX = scale
             scaleY = scale
         }
+        .then(this)
         .background(Color.White.copy(alpha = glow), shape)
         .border(BorderStroke(1.dp, Color.White.copy(alpha = rimFlash)), shape)
         .sweepLayer(sweep, shape)
@@ -799,7 +811,7 @@ fun GlassOptionChip(
             .glassClickable(onClick = onClick, shape = CircleShape)
             .background(
                 color = if (selected) MaterialTheme.colorScheme.primary
-                else Color.White.copy(alpha = if (isDark) 0.10f else 0.55f),
+                else (if (isDark) GlassVeilDark else GlassVeilLight),
                 shape = CircleShape
             )
             .padding(horizontal = 14.dp, vertical = 8.dp),
@@ -809,7 +821,7 @@ fun GlassOptionChip(
             text = text,
             style = MaterialTheme.typography.labelLarge,
             color = if (selected) Color.White
-            else MaterialTheme.colorScheme.primary
+            else glassContentColor(isDark)
         )
     }
 }

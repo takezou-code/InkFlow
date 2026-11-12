@@ -196,6 +196,14 @@ data class TextAnnotation(
     val boxWidth: Float? = null,
     /** 0 = left, 1 = centre, 2 = right. */
     val alignment: Int = 0,
+    /**
+     * 文字流（Word 式自動排版）的群組 id；null = 獨立的文字框。
+     *
+     * 同一個 [flowId] 的文字由 [com.vic.inkflow.data.reflowTextFlowY] 串成一條流：
+     * 改動其中一格的文字／字級／框寬，下面的格子會自動重排（推開或拉回）。
+     * 只存 id、不存順序——順序就是 `modelY` 由小到大，重排後仍成立。
+     */
+    val flowId: String? = null,
     val version: Int = 1,
     val versionNonce: Int = 0,
     val deletedAt: Long? = null

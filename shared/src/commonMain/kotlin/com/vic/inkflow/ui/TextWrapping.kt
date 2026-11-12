@@ -48,15 +48,35 @@ private fun wrapParagraph(
     fontSize: Float,
     boxWidth: Float,
     measurer: ((String, Float) -> Float)?
-): List<String> {
-    if (paragraph.isEmpty()) return listOf("")
-    val lines = ArrayList<String>()
+): List<String> = wrapParagraphWithEnds(paragraph, fontSize, boxWidth, measurer).map { it.first }
+
+/**
+ * 單一段落（不含 `\n`）折行，並回報**每一行在原字串的結束索引**。
+ *
+ * 為什麼要索引：AI 分頁若把段落切到兩頁，切點必須落在**折行邊界**（不能把字切一半），
+ * 但存進 DB 的必須是**原文**而不是折好的行。存折好的行會有兩個後遺症：
+ *  1. 拉寬框時那些硬換行不會消失 → 文字不會重新填滿，看起來像「沒重排」；
+ *  2. 編輯時每個折行點都變成真正的 Enter，跟 Word 的手感相反。
+ * 有了索引就能「切在折行邊界、存回原文」。
+ *
+ * [wrapTextLines] 是這支的投影（丟掉索引），兩者永遠同一套斷行規則。
+ */
+fun wrapParagraphWithEnds(
+    paragraph: String,
+    fontSize: Float,
+    boxWidth: Float,
+    measurer: ((String, Float) -> Float)? = null
+): List<Pair<String, Int>> {
+    if (paragraph.isEmpty()) return listOf("" to 0)
+    val out = ArrayList<Pair<String, Int>>()
     val line = StringBuilder()
     var lineW = 0f
+    // 已處理完的字元數（含行尾與行首空白）。切段時用它取原文前綴，空白留給 trim 處理。
+    var consumed = 0
     val measure: (String, Float) -> Float = measurer ?: { t, s -> measureTextWidth(t, s) }
 
     fun flushLine() {
-        lines.add(line.toString().trimEnd())
+        out.add(line.toString().trimEnd() to consumed)
         line.setLength(0)
         lineW = 0f
     }
@@ -68,9 +88,11 @@ private fun wrapParagraph(
                 line.append(tok)
                 lineW += measure(tok, fontSize)
             }
+            consumed += tok.length
             continue
         }
         val w = measure(tok, fontSize)
+        // 先結算上一行、再計入這個 token：否則行尾索引會多吃一個字。
         if (lineW > 0f && lineW + w > boxWidth) flushLine()
         if (w > boxWidth) {
             // 單一 word 比框還寬 → 逐字硬切
@@ -79,14 +101,37 @@ private fun wrapParagraph(
                 if (lineW > 0f && lineW + cw > boxWidth) flushLine()
                 line.append(ch)
                 lineW += cw
+                consumed++
             }
         } else {
             line.append(tok)
             lineW += w
+            consumed += tok.length
         }
     }
-    lines.add(line.toString().trimEnd())
-    return lines
+    out.add(line.toString().trimEnd() to consumed)
+    return out
+}
+
+/**
+ * 把一段原文切成「前 [lines] 行」與「其餘」——切點落在折行邊界，兩塊都還是原文。
+ *
+ * 用於「這一段比本頁剩餘空間高」：前半留在本頁、後半下一頁接著排，而存進 DB 的
+ * 是自然段落（不是折好的行），所以之後拉寬／縮窄框都會重新排版。
+ * [lines] <= 0 或整段都放得下時，另一塊是空字串。
+ */
+fun sliceParagraphAtLines(
+    paragraph: String,
+    fontSize: Float,
+    boxWidth: Float,
+    lines: Int,
+    measurer: ((String, Float) -> Float)? = null
+): Pair<String, String> {
+    if (lines <= 0) return "" to paragraph.trimStart()
+    val ends = wrapParagraphWithEnds(paragraph, fontSize, boxWidth, measurer)
+    if (lines >= ends.size) return paragraph.trimEnd() to ""
+    val cut = ends[lines - 1].second
+    return paragraph.substring(0, cut).trimEnd() to paragraph.substring(cut).trimStart()
 }
 
 /**

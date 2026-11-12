@@ -1,43 +1,15 @@
 package com.vic.inkflow.util
 
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Path
-import kotlin.math.atan2
-import kotlin.math.cos
-import kotlin.math.hypot
 import kotlin.math.PI
-import kotlin.math.sin
+import kotlin.math.acos
+import kotlin.math.ceil
+import kotlin.math.hypot
+import kotlin.math.min
 
 /** One sample of a stroke: position plus the width *at that sample*. */
 data class StrokePoint(val x: Float, val y: Float, val width: Float)
-
-/**
- * 預覽用中心線平滑：3 點滑動平均 x/y（寬度保留），只餵給即時預覽包絡，
- * 入庫點列不動 → 匯出零影響。消除電容筆高頻抖動的毛邊。
- *
- * Preview only. Nothing on the persisted or synced path may call this — see the
- * note on [EnvelopeUtils] about why.
- */
-fun smoothCenterline(points: List<StrokePoint>): List<StrokePoint> {
-    if (points.size < 3) return points
-    val last = points.size - 1
-    return points.mapIndexed { i, p ->
-        val a = points[(i - 1).coerceAtLeast(0)]
-        val b = points[(i + 1).coerceAtMost(last)]
-        StrokePoint((a.x + p.x + b.x) / 3f, (a.y + p.y + b.y) / 3f, p.width)
-    }
-}
-
-/** Half-circle resolution at a stroke's end. Higher is rounder, and costs path size. */
-private const val CAP_STEPS = 12
-
-/**
- * How far apart two samples must be before one is trusted as a tangent
- * neighbour. Below this the normal is dominated by sensor jitter and the outline
- * inverts locally.
- */
-private const val NEIGHBOUR_MIN_PX = 1f
 
 /**
  * Builds the filled outline ("envelope") of a variable-width stroke.
@@ -46,175 +18,265 @@ private const val NEIGHBOUR_MIN_PX = 1f
  *
  * This file used to exist twice — once in `:app` and once in `:desktopApp` — with
  * the desktop's copy annotated "ported **verbatim** from the tablet". It was not
- * verbatim: the two had drifted apart structurally (named constants vs inline
- * literals, different comments), and keeping them in sync needed a third copy of
- * the algorithm in the desktop's *test* source set purely to diff against. That
- * arrangement is one careless edit away from a silent ink-format divergence, since
- * the same rows in the database are rendered by both apps.
- *
- * The tablet is the source of truth for the ink format, so its implementation is
- * the one that moved here, with the desktop's documentation folded in. The
- * arithmetic is unchanged.
+ * verbatim: the two had drifted apart structurally, and keeping them in sync needed
+ * a third copy of the algorithm in the desktop's *test* source set purely to diff
+ * against. Now both apps, the PDF export and the iOS build call this one function,
+ * so a stroke cannot render differently per platform.
  *
  * ## Why an envelope at all
  *
- * The tablet records `points.width` **per sample** — velocity-derived, not a
- * single value per stroke. In the synced data that comes out as ~2,100 distinct
- * widths across ~16,000 points, and a single 1,174-point stroke carries 457 of
- * them. That is the pressure response of a real pen.
+ * The tablet records `points.width` **per sample** — velocity-derived, not a single
+ * value per stroke. `drawPath(style = Stroke(width = ...))` has one width for the
+ * whole path, so it cannot express that; using the stroke's nominal `strokeWidth`
+ * renders a tapering brush stroke as a flat hairline. Hence a filled polygon.
  *
- * `DrawScope.drawPath(style = Stroke(width = ...))` has one width for the whole
- * path, so it cannot express this at all; using the stroke's nominal
- * `strokeWidth` (which the tablet deliberately stores as the *base* width, "not
- * the velocity-derived per-point width") renders a tapering brush stroke as a flat
- * hairline. Hence a filled polygon.
+ * ## The shape is the nib sweep, built as a union of independent primitives
  *
- * ## The three non-obvious parts
+ * The outline is `⋃ per-sample disc` ∪ `⋃ per-segment quad`. Each primitive is
+ * emitted on its own (no shared contour), so:
  *
- * 1. **A circle is added at every sample.** Two reasons, both load-bearing: it
- *    fills the holes that the non-zero winding rule leaves where the envelope
- *    self-intersects on a tight curve, and it rounds every corner no matter how
- *    ragged the Bezier contour got. Removing it does not degrade gracefully — it
- *    punches transparent holes through the middle of fast strokes.
- * 2. **Tangent from far-apart neighbours**, skipping samples closer than
- *    [NEIGHBOUR_MIN_PX], so one jittery sample cannot swing the normal and
- *    locally invert the outline.
- * 3. **The caps subtract the angle**, which sweeps the arc *outward*. Adding it
- *    carves a concave dish into the end of every stroke, and because the ink is
- *    filled, that dish shows as background.
+ *  - **No corner can be cut.** The old version chained one contour through offset
+ *    points with `quadraticTo(control = p1, end = mid(p1, p2))`, which only ever
+ *    *passes through the midpoints*: exact on a straight run, and on a turn it
+ *    shaved 25–37 % of the pen radius off the corner at 12–60 px sample spacing.
+ *    A chamfer band across the throat of the V was the same bug seen from outside.
+ *    Quads per segment cannot express that error: each segment is filled with its
+ *    own normal, and the discs round the joins.
+ *  - **Bounds stay exact.** Every point this emits lies inside the *capsule* of the
+ *    raw segment it came from (see [clampToCapsule]), so the outline can never
+ *    exceed the union of the recorded nib discs. Ink only ever appears where the
+ *    nib demonstrably passed.
+ *  - **Faster.** The old code allocated two [androidx.compose.ui.geometry.Offset]
+ *    per sample plus a Bezier contour plus 2 × [CAP_STEPS] cap points. This one
+ *    allocates nothing per sample beyond the primitives themselves.
  *
- * ## What must not change
+ * ## The centreline between samples
  *
- * [smoothCenterline] lives in this file because the tablet has it, but it is
- * preview-only. If either app ever runs *stored* points through it, that app
- * starts drawing different geometry from the other for the same stroke — which is
- * the exact class of bug this file was moved to eliminate.
+ * Two samples 60 px apart (fast writing) leave the nib's true path unknown, and
+ * joining them with a straight quad looks faceted. [presmooth] therefore subdivides
+ * long segments with an **interpolating** Catmull-Rom (it passes *through* every
+ * sample, so it cannot shrink an arc the way a corner-cutting scheme does — Chaikin
+ * pulled a 120 px arc 2.5 px inward at 24 px spacing) and **anchors every real
+ * corner**, so a genuine V stays sharp instead of being rounded away into a smear.
+ *
+ * A corner that falls entirely *between* two samples cannot be recovered: the
+ * samples say the pen went straight, and any renderer that guessed otherwise would
+ * be inventing ink. That is why sample rate, not pen width, decides whether a hard
+ * turn is faithful.
  */
 object EnvelopeUtils {
 
     /**
-     * Generates a filled polygon (Envelope) path from a list of stroke points with
-     * individual widths. This mimics perfect-freehand style to render
-     * variable-width strokes efficiently in a single draw call.
+     * Samples closer together than this are treated as one point when deriving a
+     * tangent: below it the direction is dominated by sensor jitter and the local
+     * normal inverts.
+     */
+    private const val NEIGHBOUR_MIN_PX = 1f
+
+    /**
+     * A turn sharper than this is real ink, not a sampling artefact, and is kept
+     * sharp. 60° is well above the curvature of handwriting (a 10 px-spaced arc of
+     * radius 20 px turns ~29°) and well below a deliberate corner or tick.
+     */
+    private const val CORNER_DEGREES = 60.0
+
+    /**
+     * Longest piece the centreline may be split into. Only matters when samples are
+     * far apart (fast strokes); dense sampling is left untouched.
+     */
+    private const val MAX_SEGMENT_PX = 10f
+
+    /** Hard ceiling on subdivisions per segment, so one absurd jump cannot explode. */
+    private const val MAX_SUBDIVISIONS = 64
+
+    private const val EPS = 1e-4f
+
+    /**
+     * Generates a filled path for a variable-width stroke: round nib discs at every
+     * recorded sample, joined by the swept quad of each segment.
      */
     fun generateEnvelopePath(points: List<StrokePoint>): Path {
         val path = Path()
         if (points.isEmpty()) return path
 
         if (points.size == 1) {
-            val p = points.first()
-            val r = p.width / 2f
-            path.addOval(Rect(p.x - r, p.y - r, p.x + r, p.y + r))
+            addNibDisc(path, points[0].x, points[0].y, points[0].width / 2f)
             return path
         }
 
-        val leftPoints = mutableListOf<Offset>()
-        val rightPoints = mutableListOf<Offset>()
+        // 1. Every recorded sample is ink. This is also what guarantees the outline
+        //    cannot exceed the disc union: see presmooth().
+        for (p in points) addNibDisc(path, p.x, p.y, p.width / 2f)
 
-        // 1. Calculate left and right offset points based on normals
-        for (i in points.indices) {
-            val curr = points[i]
-
-            // To find the tangent, we look at the previous and next points that are
-            // sufficiently far apart.
-            var prevIndex = i - 1
-            while (prevIndex >= 0 &&
-                hypot(curr.x - points[prevIndex].x, curr.y - points[prevIndex].y) < NEIGHBOUR_MIN_PX
-            ) {
-                prevIndex--
-            }
-            val prev = if (prevIndex >= 0) points[prevIndex] else curr
-
-            var nextIndex = i + 1
-            while (nextIndex < points.size &&
-                hypot(points[nextIndex].x - curr.x, points[nextIndex].y - curr.y) < NEIGHBOUR_MIN_PX
-            ) {
-                nextIndex++
-            }
-            val next = if (nextIndex < points.size) points[nextIndex] else curr
-
-            var dx = next.x - prev.x
-            var dy = next.y - prev.y
-
-            // For endpoints, fallback to current to prev/next
-            if (prev === curr && next !== curr) {
-                dx = next.x - curr.x
-                dy = next.y - curr.y
-            } else if (next === curr && prev !== curr) {
-                dx = curr.x - prev.x
-                dy = curr.y - prev.y
-            }
-
-            val len = hypot(dx, dy)
-            if (len > 0.01f) {
-                dx /= len
-                dy /= len
-            } else {
-                dx = 1f
-                dy = 0f
-            }
-
-            // Normal vector (rotated 90 degrees)
-            val nx = -dy
-            val ny = dx
-
-            val r = curr.width / 2f
-            leftPoints.add(Offset(curr.x + nx * r, curr.y + ny * r))
-            rightPoints.add(Offset(curr.x - nx * r, curr.y - ny * r))
-
-            // 核心修復：在每一個繪圖點都加上一個圓形 (Oval)。
-            // 1. 消除留白：這能完美彌補自交錯 (Self-intersection) 時因為 NonZero
-            //    演算法產生的中空透明問題。
-            // 2. 消除稜角：不管 Envelope 的外緣因為貝茲曲線拉伸得多凌亂，圓形會
-            //    確實將每一個轉角都補成豐滿的「純圓角」。
-            path.addOval(Rect(curr.x - r, curr.y - r, curr.x + r, curr.y + r))
-        }
-
-        // 2. Begin Path at the first left point
-        path.moveTo(leftPoints.first().x, leftPoints.first().y)
-
-        // 3. Draw left edge using Beziers for smooth contours
-        for (i in 1 until leftPoints.size) {
-            val p1 = leftPoints[i - 1]
-            val p2 = leftPoints[i]
-            path.quadraticTo(p1.x, p1.y, (p1.x + p2.x) / 2f, (p1.y + p2.y) / 2f)
-        }
-        path.lineTo(leftPoints.last().x, leftPoints.last().y)
-
-        // 4. Cap the end with a semi-circle
-        val endPt = points.last()
-        val endR = endPt.width / 2f
-        val endDx = leftPoints.last().x - endPt.x
-        val endDy = leftPoints.last().y - endPt.y
-        val endAngle = atan2(endDy, endDx)
-        for (i in 0..CAP_STEPS) { // Start at 0 to connect seamlessly
-            // 使用「減去」角度 (-)，確保弧線是往筆畫「外部（前方）」畫，而不是往筆畫內部凹陷
-            val a = endAngle - (PI.toFloat() * i / CAP_STEPS)
-            path.lineTo(endPt.x + cos(a) * endR, endPt.y + sin(a) * endR)
-        }
-
-        // 5. Draw right edge backwards
-        path.lineTo(rightPoints.last().x, rightPoints.last().y)
-        for (i in rightPoints.indices.reversed().drop(1)) {
-            val p1 = rightPoints[i + 1]
-            val p2 = rightPoints[i]
-            path.quadraticTo(p1.x, p1.y, (p1.x + p2.x) / 2f, (p1.y + p2.y) / 2f)
-        }
-        path.lineTo(rightPoints.first().x, rightPoints.first().y)
-
-        // 6. Cap the start with a semi-circle
-        val startPt = points.first()
-        val startR = startPt.width / 2f
-        val startDx = rightPoints.first().x - startPt.x
-        val startDy = rightPoints.first().y - startPt.y
-        val startAngle = atan2(startDy, startDx)
-        for (i in 0..CAP_STEPS) { // Start at 0 to connect seamlessly
-            // 使用「減去」角度 (-)，確保弧線是往筆畫「外部（後方）」畫，而不是往筆畫內部凹陷
-            val a = startAngle - (PI.toFloat() * i / CAP_STEPS)
-            path.lineTo(startPt.x + cos(a) * startR, startPt.y + sin(a) * startR)
-        }
-
-        path.close()
+        // 2. Join consecutive samples with the area the nib swept between them.
+        val centre = presmooth(points)
+        for (i in 1 until centre.size) addSweepQuad(path, centre[i - 1], centre[i])
         return path
+    }
+
+    /** A nib disc, wound the same way as [addSweepQuad] so overlaps cannot cancel. */
+    private fun addNibDisc(path: Path, x: Float, y: Float, r: Float) {
+        path.addOval(Rect(x - r, y - r, x + r, y + r), Path.Direction.Clockwise)
+    }
+
+    /**
+     * The area swept by a round nib of radius `r` moving from `a` to `b` with the
+     * radius changing linearly — a trapezoid. Vertices are emitted clockwise in
+     * screen coordinates (y grows downward), matching [addNibDisc]'s
+     * `Direction.Clockwise`: with the non-zero winding rule a region covered twice
+     * must not come out with winding 0, or the fill punches a transparent hole
+     * exactly where two pieces of ink overlap. `EnvelopeRenderTest` fills the real
+     * path and would go red if these two ever disagreed.
+     */
+    private fun addSweepQuad(path: Path, a: StrokePoint, b: StrokePoint) {
+        val dx = b.x - a.x
+        val dy = b.y - a.y
+        val len = hypot(dx, dy)
+        if (len < EPS) return
+        val nx = -dy / len
+        val ny = dx / len
+        val ra = a.width / 2f
+        val rb = b.width / 2f
+        path.moveTo(a.x - nx * ra, a.y - ny * ra)
+        path.lineTo(b.x - nx * rb, b.y - ny * rb)
+        path.lineTo(b.x + nx * rb, b.y + ny * rb)
+        path.lineTo(a.x + nx * ra, a.y + ny * ra)
+        path.close()
+    }
+
+    /**
+     * Subdivides long segments with a corner-preserving interpolating spline.
+     *
+     * Returns the raw list untouched when samples are dense (`size < 3` or every
+     * segment short), which is the common case: a normal-speed stroke hands us new
+     * samples every few pixels, and smoothing those would only blur what was
+     * actually recorded.
+     *
+     * Two guarantees, both asserted in `EnvelopeMathTest`:
+     *  - it passes exactly through every input point, so no recorded ink is dropped
+     *    and an arc is never pulled inward;
+     *  - every point it invents lies inside the capsule of the raw segment it belongs
+     *    to, so no ink appears outside the nib sweep of the recorded samples.
+     */
+    internal fun presmooth(points: List<StrokePoint>): List<StrokePoint> {
+        val n = points.size
+        if (n < 3) return points
+
+        // A vertex whose turn exceeds CORNER_DEGREES is an anchor: the spline is cut
+        // there and the two sides use one-sided tangents, so a real corner stays a
+        // corner. Endpoints are always anchors (a stroke must not shorten).
+        val anchor = BooleanArray(n)
+        anchor[0] = true
+        anchor[n - 1] = true
+        for (i in 1 until n - 1) {
+            val a = points[i - 1]
+            val b = points[i]
+            val c = points[i + 1]
+            val d1x = b.x - a.x
+            val d1y = b.y - a.y
+            val d2x = c.x - b.x
+            val d2y = c.y - b.y
+            val l1 = hypot(d1x, d1y)
+            val l2 = hypot(d2x, d2y)
+            if (l1 < NEIGHBOUR_MIN_PX || l2 < NEIGHBOUR_MIN_PX) continue
+            val cosine = ((d1x * d2x + d1y * d2y) / (l1 * l2)).coerceIn(-1f, 1f)
+            if (acos(cosine) * 180.0 / PI > CORNER_DEGREES) anchor[i] = true
+        }
+
+        val out = ArrayList<StrokePoint>(n + 8)
+        out.add(points[0])
+        for (i in 0 until n - 1) {
+            val p0 = points[i]
+            val p1 = points[i + 1]
+            val dx = p1.x - p0.x
+            val dy = p1.y - p0.y
+            val len = hypot(dx, dy)
+            if (len < EPS) {
+                // Coincident samples carry no direction; keep the second disc's
+                // position in the sequence so widths still advance.
+                out.add(p1)
+                continue
+            }
+            if (len <= MAX_SEGMENT_PX) {
+                out.add(p1)
+                continue
+            }
+
+            // Catmull-Rom tangents -> cubic Bezier handles, one-sided at an anchor so
+            // the corner is approached along its own segment instead of being rounded.
+            var t1x = dx
+            var t1y = dy
+            if (!anchor[i] && i > 0) {
+                t1x = (p1.x - points[i - 1].x) * 0.5f
+                t1y = (p1.y - points[i - 1].y) * 0.5f
+            }
+            var t2x = dx
+            var t2y = dy
+            if (!anchor[i + 1] && i + 2 < n) {
+                t2x = (points[i + 2].x - p0.x) * 0.5f
+                t2y = (points[i + 2].y - p0.y) * 0.5f
+            }
+            // Uneven sample spacing can make a handle longer than the segment, which
+            // overshoots and loops. Clamping to a third of the segment is the standard
+            // fix and cannot move an interpolating spline off the samples.
+            val maxHandle = len / 3f
+            val m1 = hypot(t1x, t1y)
+            if (m1 > maxHandle && m1 > EPS) {
+                t1x = t1x * maxHandle / m1
+                t1y = t1y * maxHandle / m1
+            }
+            val m2 = hypot(t2x, t2y)
+            if (m2 > maxHandle && m2 > EPS) {
+                t2x = t2x * maxHandle / m2
+                t2y = t2y * maxHandle / m2
+            }
+            val c1x = p0.x + t1x / 3f
+            val c1y = p0.y + t1y / 3f
+            val c2x = p1.x - t2x / 3f
+            val c2y = p1.y - t2y / 3f
+
+            val steps = min(MAX_SUBDIVISIONS, ceil(len / MAX_SEGMENT_PX).toInt())
+            for (k in 1..steps) {
+                val u = k.toFloat() / steps
+                val v = 1f - u
+                val px = v * v * v * p0.x + 3f * v * v * u * c1x + 3f * v * u * u * c2x + u * u * u * p1.x
+                val py = v * v * v * p0.y + 3f * v * v * u * c1y + 3f * v * u * u * c2y + u * u * u * p1.y
+                val width = p0.width + (p1.width - p0.width) * u
+                out.add(clampToCapsule(px, py, p0, p1, dx / len, dy / len, len, width / 2f))
+            }
+        }
+        return out
+    }
+
+    /**
+     * Projects a point into the capsule (slab ∩ radius) of segment `p0`→`p1`.
+     *
+     * This is what keeps the smoothing honest: a Catmull-Rom handle points along the
+     * neighbour chord, which near a turn can leave the segment laterally. Unclamped,
+     * that would paint ink beside the stroke and grow the outline's bounds past the
+     * recorded nib. Clamped, the spline may only bend *inside* what the nib swept.
+     */
+    private fun clampToCapsule(
+        px: Float,
+        py: Float,
+        p0: StrokePoint,
+        p1: StrokePoint,
+        dirX: Float,
+        dirY: Float,
+        len: Float,
+        r: Float
+    ): StrokePoint {
+        val ax = px - p0.x
+        val ay = py - p0.y
+        val along = (ax * dirX + ay * dirY).coerceIn(0f, len)
+        var perpX = ax - dirX * along
+        var perpY = ay - dirY * along
+        val perpLen = hypot(perpX, perpY)
+        if (perpLen > r && perpLen > EPS) {
+            val s = r / perpLen
+            perpX *= s
+            perpY *= s
+        }
+        return StrokePoint(p0.x + dirX * along + perpX, p0.y + dirY * along + perpY, r * 2f)
     }
 }

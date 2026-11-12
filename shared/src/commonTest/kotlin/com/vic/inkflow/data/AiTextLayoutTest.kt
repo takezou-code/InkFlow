@@ -49,7 +49,10 @@ class AiTextLayoutTest {
     }
 
     @Test
-    fun storedLinesSurviveARewrap() {
+    fun storedTextRewrapsToTheSameLines() {
+        // 存的是**原文**（自然段落），不是折好的行：畫面會再折一次，要求的是冪等
+        //（折第二次 == 折第一次），而不是「存進去的字串等於折好的行」。
+        // 這一條同時守住「拉寬框會真的重排」——硬換行一旦寫進 DB，折行就不跟框寬走了。
         val body = "中文字元測試 ".repeat(40) + "mixed English words here"
         val pages = paginateAiBlocks(
             blocks = listOf(AiTextBlock(AiTextChunk("c1", "t", body))),
@@ -59,8 +62,30 @@ class AiTextLayoutTest {
             fontMetrics = fontMetrics
         )
         for (text in pages.flatten().filterIsInstance<Placed.T>().map { it.t }) {
-            assertEquals(text.text.split("\n"), wrapTextLines(text.text, text.fontSize, text.boxWidth))
+            val once = wrapTextLines(text.text, text.fontSize, text.boxWidth)
+            val twice = wrapTextLines(once.joinToString("\n"), text.fontSize, text.boxWidth)
+            assertEquals(once, twice)
         }
+    }
+
+    @Test
+    fun theStoredTextIsTheOriginalParagraphNotPreWrappedLines() {
+        // 一整段放得下 → 存的就是原文，一個字都不少、也沒有被塞進硬換行。
+        val body = "這是一段很長的中文內容，用來確認匯入後存的是原文。".repeat(6)
+        val pages = paginateAiBlocks(
+            blocks = listOf(AiTextBlock(AiTextChunk("c1", "t", body))),
+            rendered = emptyMap(),
+            modelW = modelW,
+            modelH = modelH,
+            fontMetrics = fontMetrics
+        )
+        val placed = pages.flatten().filterIsInstance<Placed.T>().map { it.t }
+        assertEquals(1, placed.size)
+        assertEquals(body, placed[0].text)
+        assertTrue(
+            wrapTextLines(placed[0].text, placed[0].fontSize, placed[0].boxWidth).size > 1,
+            "這一段應該會折行（否則這條測試證明不了什麼）"
+        )
     }
 
     @Test
