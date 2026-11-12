@@ -1373,14 +1373,16 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
         val doomed = strokes.filter { it.stroke.id in selectedIds }
         val doomedText = texts.filter { it.id in selectedTextIds }
         if (doomed.isEmpty() && doomedText.isEmpty()) return
+        // 刪除也是先讓畫面反應：橡皮擦過去的東西要立刻消失，
+        // 不能等資料庫。寫入失敗才把它放回去。
+        strokes = strokes - doomed.toSet()
+        texts = texts - doomedText.toSet()
+        selectedIds = emptySet()
+        selectedTextIds = emptySet()
         persist("刪除內容") {
             doomed.forEach { databaseManager.deleteStroke(it.stroke.id) }
             doomedText.forEach { databaseManager.deleteTextAnnotation(it.id) }
         }.onSuccess {
-            strokes = strokes - doomed.toSet()
-            texts = texts - doomedText.toSet()
-            selectedIds = emptySet()
-            selectedTextIds = emptySet()
             undoStack.push(InkEdit.Erase(doomed, doomedText))
             recordOps(
                 doomed.map {
@@ -1391,7 +1393,8 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
             )
             onInkChanged()
         }.onFailure {
-            logger.error(it) { "Failed to delete selection" }
+            strokes = strokes + doomed
+            texts = texts + doomedText
         }
     }
 
@@ -1456,9 +1459,10 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
             fontSize = TEXT_SIZE_PT,
             colorArgb = inkColour
         )
+        // 同樣先上畫面：文字註解放下來就要立刻看得見。
+        texts = texts + note
         persist("新增文字註解") { databaseManager.saveTextAnnotation(note) }
             .onSuccess {
-                texts = texts + note
                 undoStack.push(InkEdit.AddText(note))
                 recordOps(
                     listOf(
@@ -1466,8 +1470,9 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                     )
                 )
                 onInkChanged()
-            }.onFailure {
-                logger.error(it) { "Failed to save note on page ${requestedPage + 1}" }
+            }
+            .onFailure {
+                texts = texts - note
             }
     }
 
@@ -1595,10 +1600,11 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
             PointEntity(id = 1L, strokeId = stroke.id, x = start.x, y = start.y, width = inkWidthPt),
             PointEntity(id = 2L, strokeId = stroke.id, x = end.x, y = end.y, width = inkWidthPt)
         )
+        val saved = StrokeWithPoints(stroke, points)
+        // 同 commitStroke：先上畫面，寫入在後面。
+        strokes = strokes + saved
         persist("新增筆跡") { databaseManager.saveStroke(stroke, points) }
             .onSuccess {
-                val saved = StrokeWithPoints(stroke, points)
-                strokes = strokes + saved
                 undoStack.push(InkEdit.Add(saved))
                 recordOps(
                     listOf(
@@ -1608,7 +1614,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                 onInkChanged()
             }
             .onFailure {
-                logger.error(it) { "Failed to save shape on page ${requestedPage + 1}" }
+                strokes = strokes - saved
             }
     }
 
@@ -1641,12 +1647,18 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                 width = modelWidths.getOrNull(i) ?: baseWidth
             )
         }
+        val saved = StrokeWithPoints(stroke, points)
+        // 先上畫面，後面寫資料庫。
+        //
+        // 舊流程是「等資料庫寫完才把這一筆放進畫面」：抬筆的那一瞬间，
+        // 手上那筆已經從預覽消失，而正式筆跡還沒進來 → 螢幕上閃一個空洞；
+        // 而且這一筆整整落後一個寫入的時間，看起來像「預覽跟實際對不上」。
+        // 現在抬起筆它立刻在；寫不進去才收回來（persist 會同時說明失敗）。
+        strokes = strokes + saved
         persist("新增筆跡") { databaseManager.saveStroke(stroke, points) }
             .onSuccess {
-                val saved = StrokeWithPoints(stroke, points)
-                strokes = strokes + saved
-                // Recorded only after the write succeeded, so undo never tries to
-                // reverse something that is not in the database.
+                // Undo is recorded only after the write succeeded, so undo never
+                // tries to reverse something that is not in the database.
                 undoStack.push(InkEdit.Add(saved))
                 recordOps(
                     listOf(
@@ -1656,7 +1668,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                 onInkChanged()
             }
             .onFailure {
-                logger.error(it) { "Failed to save stroke on page ${requestedPage + 1}" }
+                strokes = strokes - saved
             }
     }
 
@@ -1694,13 +1706,14 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
     fun eraseAt(pts: List<Offset>) {
         val (hit, hitText) = eraseHits(pts)
         if (hit.isEmpty() && hitText.isEmpty()) return
+        // 橡皮擦：被擦掉的東西立刻消失，寫入在後面。
+        strokes = strokes - hit.toSet()
+        texts = texts - hitText.toSet()
         persist("擦除內容") {
             hit.forEach { databaseManager.deleteStroke(it.stroke.id) }
             hitText.forEach { databaseManager.deleteTextAnnotation(it.id) }
         }
             .onSuccess {
-                strokes = strokes - hit.toSet()
-                texts = texts - hitText.toSet()
                 undoStack.push(InkEdit.Erase(hit, hitText))
                 recordOps(
                     hit.map {
@@ -1712,7 +1725,8 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                 onInkChanged()
             }
             .onFailure {
-                logger.error(it) { "Failed to erase on page ${requestedPage + 1}" }
+                strokes = strokes + hit
+                texts = texts + hitText
             }
     }
 
