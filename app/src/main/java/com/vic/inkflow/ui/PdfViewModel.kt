@@ -37,6 +37,8 @@ import kotlinx.coroutines.SupervisorJob
 
 import kotlinx.coroutines.cancel
 
+import kotlinx.coroutines.delay
+
 import kotlinx.coroutines.Job
 
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -77,11 +79,160 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         internal const val MAX_ZOOM_RENDER_SCALE = 6f
 
         /**
-         * 單頁位元組預算。取 [Runtime] 堆的 1/12：LruCache 是 maxMemory/8，
-         * 單頁預算必須小於它，否則「渲一頁就把別頁全部擠出快取」，捲動會變成
-         * 每頁都在重渲——那比糊更糟。
+         * 單頁位元組預算。取 [Runtime] 堆的 1/32（512MB → 16MB），上限 16MB。
+         *
+         * 為什麼從 1/12 收到 1/32：頁面圖的像素住在 **native heap**，不在 Java heap，
+         * 而 GC 只看 Java heap。單頁 42MB 的時候，可見頁三四張就 130MB——
+         * 加上捲動產生的垃圾，native heap 會直接撐爆（實測：原生堆用到 94% 就閃退）。
+         * 16MB 已經足夠在任何螢幕上畫得清楚（A4 滿版約 1520×2150 = 13MB）。
          */
-        internal fun pageBudgetBytes(maxMemoryBytes: Long): Long = (maxMemoryBytes / 12).coerceAtLeast(8L * 1024 * 1024)
+        internal fun pageBudgetBytes(maxMemoryBytes: Long): Long =
+            (maxMemoryBytes / 32).coerceIn(4L * 1024 * 1024, 16L * 1024 * 1024)
+
+        /**
+         * 「便宜檔」的單頁位元組預算：捲動中與窗外頁用。
+         *
+         * 這是整個修法的關鍵數字。捲動時每一頁被掠過都會產生一張全解析度的頁面圖，
+         * 掠過之後那張圖變成垃圾——但 Java heap 有 512MB，GC 不會為了幾十 MB 的
+         * native 記憶體專門跑一趟，於是 native heap 只漲不跌，最後 OOM 閃退。
+         *
+         * 所以捲動中只畫「看得懂但便宜」的檔案（單頁 4MB 以內），落定後才升級。
+         */
+        internal const val CHEAP_PAGE_BYTES = 4L * 1024 * 1024
+
+        /** 便宜檔的倍率下限：再低連版面都認不出來了。 */
+        internal const val CHEAP_MIN_SCALE = 1f
+
+        /**
+         * 便宜檔的倍率：讓單頁位元組不超過 [CHEAP_PAGE_BYTES]。
+         *
+         * 純函式（可單測）：頁面尺寸 × 倍率 → 位元組，套 [CHEAP_PAGE_BYTES]。
+         */
+        internal fun cheapRenderScale(pageWidthPt: Float, pageHeightPt: Float): Float {
+            if (pageWidthPt <= 0f || pageHeightPt <= 0f) return MIN_RENDER_SCALE
+            val pixels = CHEAP_PAGE_BYTES / 4.0
+            val scale = kotlin.math.sqrt(pixels / (pageWidthPt.toDouble() * pageHeightPt.toDouble()))
+            return scale.toFloat().coerceIn(CHEAP_MIN_SCALE, MIN_RENDER_SCALE)
+        }
+
+        /**
+         * 自上次 GC 以來產生多少位元組的頁面圖，超過這條線就收一次垃圾。
+         *
+         * 為什麼需要手動 GC：Android 8 之後 Bitmap 的像素在 native heap，
+         * 而 ART 的 GC 只按 **Java heap** 的使用量決定要不要跑。這個 App 的
+         * Java heap 有 512MB 且用量很低 → GC 幾乎不跑 → native heap 只漲不跌。
+         * 實測：捲動 20 頁後 native 堆裡躺著 380MB 的點陣圖，之後 GC 一跑就掉回 154MB。
+         *
+         * 門檻給得寬（64MB）：它是安全網，不是常態路徑——正常捲動時
+         * 便宜檔本來就只產 3MB 一頁，門檻不該被常常摸到。
+         */
+        internal const val GC_TRIGGER_BYTES = 64L * 1024 * 1024
+
+        /**
+         * 硬性門檻：累積到這裡就算還在捲也照收（那時不收就是等 OOM）。
+         * 正常使用摸不到——便宜檔一頁 4MB，要捲 64 頁才到。
+         */
+        internal const val GC_FORCE_BYTES = 4 * GC_TRIGGER_BYTES
+
+        /**
+         * 捲動落定的判定窗：可見範圍停止變動多久算「落定」。
+         *
+         * Workspace 每個捲動幀都會呼叫 [setVisiblePageRange]；停止捲動後就不再呼叫。
+         * 用它當「現在還在捲嗎」的開關：捲動中用便宜檔，落定後可見頁升級成全解析度。
+         *
+         * 為什麼從 350ms 放寬到 700ms：連續翻頁（一頁接一頁 swipe）的間隔大約
+         * 0.4–0.6s，350ms 會讓**每一頁之間**都插一次全解析度重渲（單頁 17MB），
+         * 使用者的感受就是「滑一下卡一下」。700ms 讓連續翻頁完全不觸發升級，
+         * 真的停下來才變清楚。
+         */
+        internal const val SCROLL_SETTLE_MS = 700L
+
+        /** 落定檢查的間隔：一個捲動階段只養一個 job，每 tick 醒一次看停了沒。 */
+        private const val SCROLL_SETTLE_TICK_MS = 100L
+
+        /**
+         * 扣住的點陣圖（pending）在可見範圍外還留幾頁。
+         *
+         * 留一點是因為捲動方向會抖：剛捲出去又捲回來時圖還在，不必重渲。
+         * 留太多就等於把「捲過的頁」整套釘在記憶體裡（那正是閃退的來源）。
+         */
+        private const val PENDING_KEEP_MARGIN = 3
+
+
+        /**
+         * **活著的**頁面點陣圖位元組預算（高清層）。
+         *
+         * 為什麼要有這條線：Android 8 之後 Bitmap 的像素住在 **native heap**，
+         * 不在 Java heap 裡，所以 `Runtime.maxMemory()` 看不到它、GC 也不會幫你收。
+         * 但頁面圖是整個 App 最大的記憶體來源（單頁 13MB 起跳，一份 190 頁的
+         * 教科書 PDF 捲一圈就是幾百 MB）。
+         *
+         * 這條線真正擋住的是「無上限」：舊設計只有 `bitmapCache`（LruCache）有上限，
+         * 但同一張圖還被 flow 的值拿著（UI 直接顯示它）——**LruCache 逐出 ≠ 圖被釋放**。
+         * 於是捲過的每一頁都留在 native heap 裡，捲得越多漲得越多，
+         * 最後 native heap 撐爆、App 直接閃退（實測：捲到一半 native heap 裡躺著
+         * 13 張 13MB 的頁面圖，Bitmap (malloced) 合計 173MB）。
+         *
+         * 取堆的 1/8：可見頁（約 4 頁 × 13MB）放得下，又有上限，不會再往上長。
+         */
+        internal fun liveBitmapBudgetBytes(maxMemoryBytes: Long): Long =
+            (maxMemoryBytes / 8).coerceAtLeast(48L * 1024 * 1024)
+
+        /**
+         * 縮圖層的活著位元組預算。縮圖單張只有 0.3MB，但頁數一多一樣會漲
+         * （190 頁 × 0.3MB ≈ 60MB），所以一樣要天花板。
+         */
+        internal fun liveThumbnailBudgetBytes(maxMemoryBytes: Long): Long =
+            (maxMemoryBytes / 20).coerceAtLeast(16L * 1024 * 1024)
+
+        /**
+         * 這一頁現在還值得渲嗎？
+         *
+         * - [hasSubscriber]：螢幕上有人在看（LazyColumn item 還活著）→ 一定要渲。
+         * - [msSinceRequest]：沒人看時，只有「剛被要求過」才值得渲。
+         *
+         * 為什麼需要：捲動時 LazyColumn 會把**經過的頁**一頁組成，每一頁都會發起
+         * 一次高清渲染。那些頁在排到隊時早就捲走了——渲它等於白燒 CPU、白吃一份
+         * 13MB 的記憶體，還排在「你正在看的那頁」前面，於是捲動時每一頁都要等
+         * 好幾個無關渲染排完才會變清晰 → 明顯卡頓。
+         *
+         * [msSinceRequest] 的存在是為了蓋住一個空窗：Compose 的 `collectAsState`
+         * 是**下一幀**才訂閱，所以頁面剛組成的那一瞬間還沒人訂閱。
+         * 給它一個短時間窗，剛組成的頁就不會被誤判成「沒人要」。
+         */
+        internal fun shouldRenderPage(hasSubscriber: Boolean, msSinceRequest: Long): Boolean =
+            hasSubscriber || msSinceRequest <= REQUEST_FRESH_MS
+
+        /** 剛被要求過的頁面，多久之內還算「有人要」（蓋住 collectAsState 的下一幀空窗）。 */
+        internal const val REQUEST_FRESH_MS = 500L
+
+        /**
+         * 挑出要回收的頁（純函式，所以能單測）。
+         *
+         * 規則只有兩條，但兩條都是生死線：
+         *
+         *  1. **從最舊的开始砍。** 新的頁比較可能馬上被看見。
+         *  2. **有人顯示的不砍。** 砍了螢幕上就是閃白，比記憶體吃緊更難受。
+         *
+         * 砍到活著位元組回到預算內就停。回不去也沒關係——那代表現在
+         * 螢幕上的頁就已經超過預算了，這時寧可超一點也不能讓畫面跳掉。
+         */
+        internal fun selectColdEvictions(
+            candidates: List<BitmapCandidate>,
+            liveBytes: Long,
+            budget: Long
+        ): List<Int> {
+            if (liveBytes <= budget) return emptyList()
+            var total = liveBytes
+            val out = mutableListOf<Int>()
+            for (c in candidates.sortedBy { it.age }) {
+                if (total <= budget) break
+                if (c.hasSubscriber) continue
+                out.add(c.index)
+                total -= c.bytes
+            }
+            return out
+        }
 
         /**
          * 這一頁允許的最大倍率：同時受三件事夾住。
@@ -165,6 +316,20 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
             return insertionIndex - 1
         }
     }
+
+    /**
+     * 一張活著的頁面圖，給回收政策用的描述。
+     *
+     * @param bytes 這張圖佔多少位元組
+     * @param hasSubscriber 螢幕上有人在看（LazyColumn item 還活著）→ 不能砍
+     * @param age 越舊越先被砍
+     */
+    internal data class BitmapCandidate(
+        val index: Int,
+        val bytes: Long,
+        val hasSubscriber: Boolean,
+        val age: Long
+    )
 
     private val repos by lazy { InkFlowRepositories(AppDatabase.getDatabase(getApplication())) }
 
@@ -295,6 +460,38 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
     private var pageSizeScanJob: Job? = null
 
     /**
+     * 頁面需求時間戳（epoch ms）：這一頁是「什麼時候被要求渲染的」。
+     *
+     * 用途：判斷排到隊時這一頁還要不要渲（見 [shouldRenderPage]）。
+     * 捲動時經過的頁也會被要求，但等它排到時早就沒人看了。
+     */
+    private val bitmapRequestedAt = java.util.concurrent.ConcurrentHashMap<Int, Long>()
+    private val thumbnailRequestedAt = java.util.concurrent.ConcurrentHashMap<Int, Long>()
+
+    /**
+     * 頁面圖的年齡序號：數字越小越舊，回收時從最舊的砍。
+     *
+     * 為什麼要自己記而不用 LruCache 的順序：LruCache 只知道自己那份，
+     * 而 flow 的值才是真正把圖釘在記憶體裡的那個（LruCache 逐出 ≠ 圖被釋放）。
+     */
+    private val bitmapAge = java.util.concurrent.ConcurrentHashMap<Int, Long>()
+    private val thumbnailAge = java.util.concurrent.ConcurrentHashMap<Int, Long>()
+
+    /**
+     * 每頁「實際用哪個倍率渲出來的」（只記高清層）。
+     *
+     * 為什麼要記：決定「這頁夠清楚了沒」必須看**事實**，不能看「計畫已經套用過」。
+     * 捲動中新增的頁是便宜檔，若只看計畫的 bookkeeping 就會漏掉它們，
+     * 使用者停在那一頁上永遠是模糊的。見 [applyRenderPlan]。
+     */
+    private val bitmapScale = java.util.concurrent.ConcurrentHashMap<Int, Float>()
+    private val ageSeq = java.util.concurrent.atomic.AtomicLong(0)
+
+    private fun stampAge(ages: MutableMap<Int, Long>, index: Int) {
+        ages[index] = ageSeq.incrementAndGet()
+    }
+
+    /**
      * 渲染代際門控（超大檔頁操作防擁塞）：
      * 每次關 renderer（頁操作/重開）就世代+1，並取消整個 renderScope。
      * 等鎖中的舊渲染醒來發現世代變了直接丟棄，不佔鎖不畫圖；
@@ -365,6 +562,30 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                 thumbnailFlowCache[index]?.let { flow -> if (flow.value == null) flow.value = bmp }
             }
         }
+        // 窗外還扣著的圖直接丟：那些頁已經被捲過去了，貼上只是白佔記憶體。
+        // 舊碼只清可見頁 → 扣著的圖永遠留在 map 裡，捲一圈就積一整套文件。
+        dropPendingOutside(visible, pendingBitmaps, bitmapAge, bitmapScale)
+        dropPendingOutside(visible, pendingThumbs, thumbnailAge, null)
+    }
+
+    /** 丟掉 [visible]±[PENDING_KEEP_MARGIN] 之外扣著的點陣圖（含它的年齡／倍率紀錄）。 */
+    private fun dropPendingOutside(
+        visible: IntRange,
+        pending: MutableMap<Int, Bitmap>,
+        ages: MutableMap<Int, Long>?,
+        scales: MutableMap<Int, Float>?
+    ) {
+        if (pending.isEmpty()) return
+        val lo = visible.first - PENDING_KEEP_MARGIN
+        val hi = visible.last + PENDING_KEEP_MARGIN
+        val it = pending.keys.iterator()
+        while (it.hasNext()) {
+            val index = it.next()
+            if (index in lo..hi) continue
+            it.remove()
+            ages?.remove(index)
+            scales?.remove(index)
+        }
     }
 
     private val _pageSizeVersion = MutableStateFlow(0)
@@ -398,10 +619,30 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
     /** 吃滿倍率的頁範圍；其餘用 [loRenderScale]。空 = 全部低清。 */
     @Volatile private var hiTierRange: IntRange = IntRange.EMPTY
 
-    // 已套用的計畫，用來算出「哪幾頁的**有效倍率**真的變了」——只有那些頁需要重渲。
+    /** 已套用的計畫，用來算出「哪幾頁的**有效倍率**真的變了」——只有那些頁需要重渲。 */
     private var appliedHiScale = -1f
     private var appliedLoScale = -1f
     private var appliedRange: IntRange = IntRange.EMPTY
+    private var appliedScrolling = false
+
+    /** 換文件／重開 renderer 後把計畫的 bookkeeping 歸零，下一次落定一定會重檢。 */
+    private fun resetRenderPlanBookkeeping() {
+        appliedHiScale = -1f
+        appliedLoScale = -1f
+        appliedRange = IntRange.EMPTY
+        appliedScrolling = false
+    }
+
+    /**
+     * 最後一次「可見頁範圍變動」的時刻（uptime ms）。
+     *
+     * Workspace 在每個捲動幀都會呼叫 [setVisiblePageRange]，停止捲動後就不再呼叫。
+     * 它就是「現在還在捲嗎」的答案——整個分級渲染的開關。
+     */
+    @Volatile private var lastVisibleChangeMs = 0L
+
+    /** 落定後把可見頁升級成全解析度的排程。 */
+    private var settleUpgradeJob: Job? = null
 
     /**
      * 供 UI 納入 remember key 的重取信號（PageWorkspace 的 `remember(index, renderEpoch)`）。
@@ -438,7 +679,10 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
             pageHeightPt = pageWidthPt * 1.4142f, // A4 直式近似即可：只當預算守門，不是版面依據
             maxMemoryBytes = Runtime.getRuntime().maxMemory()
         )
-        loRenderScale = (paperWidthPx / pageWidthPt).coerceIn(MIN_RENDER_SCALE, 3f)
+        // 便宜檔（捲動中／窗外頁）：單頁 [CHEAP_PAGE_BYTES] 以內。
+        // 舊值是「視窗寬／頁寬夾 2..3」——那其實跟高清差不多貴（單頁 11MB 起），
+        // 捲一圈就製造幾百 MB 的垃圾，是 PDF 捲動閃退的根源。
+        loRenderScale = cheapRenderScale(pageWidthPt, pageWidthPt * 1.4142f)
         hiRenderScale = resolveRenderScale(paperWidthPx, pageWidthPt, maxScale)
         android.util.Log.d(
             "InkFlowDbg",
@@ -451,19 +695,67 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
      * 可見頁範圍變更。捲動時呼叫（不重渲任何東西本身）。
      *
      * 範圍變了只是「哪些頁吃滿倍率」變了；真正要重渲的頁由 [applyRenderPlan] 判定。
+     *
+     * 這裡同時是「現在還在捲嗎」的訊號源：每個捲動幀都會呼叫一次，
+     * 停止捲動後就不再呼叫 → [scrollingNow] 會在 [SCROLL_SETTLE_MS] 後翻成 false
+     * → 那時才把可見頁升級成全解析度（捲動中一律用便宜檔）。
      */
     fun setVisiblePageRange(range: IntRange) {
+        lastVisibleChangeMs = SystemClock.uptimeMillis()
+        scheduleSettledUpgrade()
         if (range == hiTierRange) return
         hiTierRange = range
         applyRenderPlan()
     }
 
-    /** 這一頁該用哪個倍率：可見窗內吃滿，窗外低清。 */
-    private fun scaleForPage(pageIndex: Int): Float =
-        if (pageIndex in hiTierRange) hiRenderScale else loRenderScale
+    /**
+     * 排「落定後升級」：停止變動 [SCROLL_SETTLE_MS] 之後，把可見頁從便宜檔
+     * 換成全解析度。使用者停在某一頁時那一頁才會變清楚。
+     *
+     * 一個捲動階段只養一個 job（不是每個捲動幀 cancel/launch 一個）：
+     * 捲動中它只是每 [SCROLL_SETTLE_TICK_MS] 醒一次看停了沒，成本近乎零。
+     */
+    private fun scheduleSettledUpgrade() {
+        if (settleUpgradeJob?.isActive == true) return
+        settleUpgradeJob = viewModelScope.launch {
+            while (scrollingNow()) {
+                // 捲不停的時候也看一眼：只有累積過頭（GC_FORCE_BYTES）才會真的收。
+                collectIdleGarbage()
+                delay(SCROLL_SETTLE_TICK_MS)
+            }
+            // 落定：這裡要**無條件**重檢一次實際倍率（force），不能只看
+            // 「計畫變了沒」。因為捲動中新增的頁是便宜檔，而計畫的 bookkeeping
+            // 可能早就記成「已套用」，只看它就會永遠停在模糊。
+            applyRenderPlan(force = true)
+            // 收垃圾挑在這一刻：使用者已經停了，STW 沒人看得到。
+            collectIdleGarbage()
+        }
+    }
+
+    /** 現在還在捲嗎？（可見範圍最近有變動 → 還在捲） */
+    private fun scrollingNow(): Boolean =
+        (SystemClock.uptimeMillis() - lastVisibleChangeMs) < SCROLL_SETTLE_MS
 
     /**
-     * 套用計畫：只重渲「有效倍率真的變了」的頁。
+     * 這一頁該用哪個倍率。**只影響「還沒渲的頁」**——已經渲好的頁不會因為
+     * 開始捲動就被降級（見 [applyRenderPlan]）。
+     *
+     * **捲動中一律用便宜檔**：使用者還在移動，這一頁下一秒就被換掉了，
+     * 這時渲全解析度只是製造記憶體垃圾（見 [CHEAP_PAGE_BYTES] 的說明）。
+     * 落定後可見頁才吃滿倍率，窗外頁維持便宜檔。
+     */
+    private fun scaleForPage(pageIndex: Int): Float =
+        if (scrollingNow()) loRenderScale
+        else if (pageIndex in hiTierRange) hiRenderScale
+        else loRenderScale
+
+    /**
+     * 套用計畫：把**該清楚的頁**弄成高清。
+     *
+     * 判斷依據是每頁**實際渲過的倍率**（[bitmapScale]），不是「計畫變了沒」。
+     * 差別在自我修復：升級的渲染若被新一代 `scrollGen` 作廢、或中途失敗，
+     * 「計畫」會以為已經做完，那頁就永遠停在模糊；而看實際倍率的話，
+     * 下一次落定檢查就會再修一次。
      *
      * 兩個關鍵決定：
      *
@@ -471,27 +763,35 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
      *     就會直接返回、永遠不重渲——所以必須 `bitmapCache.remove`。但 flow 仍持有
      *     那張圖的參考，它繼續顯示，新圖在底下渲好再換上。這就是「不閃白」的來源：
      *     舊的 `evictAll()` 加上置 null，會讓整份文件在每次縮放時白一下。
-     *  2. **只對有效倍率變了的頁動作。** 倍率沒變就重渲等於白燒 IO，
-     *     而拖曳／旋轉時倍率常是來回抖動的，這種抖動必須是零成本。
+     *  2. **捲動中什麼都不動。** 已經清楚的頁繼續清楚（中途換成便宜檔只會閃一下
+     *     模糊，更難看），新出現的頁由 [scaleForPage] 自動走便宜檔。停止捲動後
+     *     才由 [scheduleSettledUpgrade] 升級。
      */
-    private fun applyRenderPlan() {
+    private fun applyRenderPlan(force: Boolean = false) {
         val hi = hiRenderScale
         val lo = loRenderScale
         val range = hiTierRange
-        if (hi == appliedHiScale && lo == appliedLoScale && range == appliedRange) return
-        val prevHi = appliedHiScale
-        val prevLo = appliedLoScale
-        val prevRange = appliedRange
+        val scrolling = scrollingNow()
+        if (!force && hi == appliedHiScale && lo == appliedLoScale &&
+            range == appliedRange && scrolling == appliedScrolling
+        ) return
         appliedHiScale = hi
         appliedLoScale = lo
         appliedRange = range
+        appliedScrolling = scrolling
+
+        if (scrolling) return
 
         bitmapFlowCache.forEach { (index, flow) ->
-            val want = if (index in range) hi else lo
-            val had = if (index in prevRange) prevHi else prevLo
-            if (want == had) return@forEach
+            if (index !in range) return@forEach
+            // 沒人顯示的頁不渲：等它被組成時 getPageBitmap 會自己補。
+            if (flow.subscriptionCount.value == 0) return@forEach
+            // 已經是這個倍率渲好的 → 不動（拖曳／旋轉時倍率來回抖動必須零成本）。
+            if (bitmapScale[index] == hi) return@forEach
+            // 有圖但不知道倍率（不該發生）：不確定就別動，寧可糊一張也不要亂重渲。
+            if (bitmapScale[index] == null && flow.value != null) return@forEach
             bitmapCache.remove(index)
-            if (flow.subscriptionCount.value > 0) launchBitmapRender(flow, index)
+            launchBitmapRender(flow, index)
         }
     }
 
@@ -508,6 +808,7 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             bitmapCache.remove(index)
+            bitmapScale.remove(index)
             val bitmapFlow = bitmapFlowCache[index]
             if (bitmapFlow != null) {
                 bitmapFlow.value = null
@@ -529,6 +830,7 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         overflowBitmapKeys.forEach { key ->
             bitmapFlowCache.remove(key)
             bitmapCache.remove(key)
+            bitmapScale.remove(key)
         }
     }
 
@@ -666,6 +968,8 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         parcelFileDescriptor = null
         bitmapCache.evictAll()
         thumbnailCache.evictAll()
+        bitmapScale.clear()
+        resetRenderPlanBookkeeping()
         if (clearFlows) {
             thumbnailFlowCache.clear()
             bitmapFlowCache.clear()
@@ -1248,6 +1552,10 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
     private fun closePdf() {
         pageSizeScanJob?.cancel()
         pageSizeScanJob = null
+        settleUpgradeJob?.cancel()
+        settleUpgradeJob = null
+        resetRenderPlanBookkeeping()
+        hiTierRange = IntRange.EMPTY
         _currentPdfUri.value = null
         pdfRenderer?.close()
         parcelFileDescriptor?.close()
@@ -1256,8 +1564,13 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         _pageCount.value = 0
         bitmapCache.evictAll()
         thumbnailCache.evictAll()
+        bitmapScale.clear()
         thumbnailFlowCache.clear()
         bitmapFlowCache.clear()
+        bitmapRequestedAt.clear()
+        thumbnailRequestedAt.clear()
+        bitmapAge.clear()
+        thumbnailAge.clear()
     }
 
     private suspend fun reopenCurrentPdf(fileUri: Uri, fallbackPageCount: Int) {
@@ -1329,6 +1642,9 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun getPageBitmap(pageIndex: Int): StateFlow<Bitmap?> {
+        // 需求時間戳：這頁是「現在」被要求的。等它排到渲染隊伍時若已無人問津
+        // （捲過去了），就整個跳過——見 renderPage 的需求檢查。
+        bitmapRequestedAt[pageIndex] = System.currentTimeMillis()
         val existing = bitmapFlowCache[pageIndex]
         if (existing != null) {
             // F2：失效後被置空的非訂閱 flow，被重新取用時補發渲染（否則永久黑頁）。
@@ -1351,7 +1667,10 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
             // M2 慢滑跟手清：只在快旗時等待落定；慢滑直接渲（手指推到哪清到哪）。
             // 票被超車（快旗升/落）直接丟棄，不欠渲染債。
             var waits = 0
-            while (_isScrollingFast.value && ticket == scrollGen && waits < 100) {
+            while (
+                (_isScrollingFast.value || renderHold.get()) &&
+                ticket == scrollGen && waits < 100
+            ) {
                 kotlinx.coroutines.delay(100)
                 waits++
             }
@@ -1362,14 +1681,24 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
             if (waits > 0 && flow.subscriptionCount.value == 0 && bitmapCache[pageIndex] == null) {
                 return@launch
             }
+            // 先把縮圖補上再渲高清：兩者共用同一把 PDF 鎖，先排隊的先跑。
+            // 縮圖便宜（240px），先上桌使用者才不會盯著白紙等高清。
+            ensureThumbnailReady(pageIndex)
             // F2 黑頁修復：剛插頁重開空窗期 pdfRenderer 為 null，這次必回 null；
             // 以前只試一次就永久黑，現在退避重試（flow 留空等重試，不毒化快取）。
             repeat(4) { attempt ->
                 if (ticket != scrollGen) return@launch
+                // 這頁已經沒人要看（捲過去了）→ 不重試。重試只是白等 600ms×4，
+                // 而且會在 log 裡留下假的「retry」噪音。
+                if (!isPageStillWanted(pageIndex, highQuality = true)) return@launch
                 val bmp = renderPage(pageIndex, highQuality = true, ticket = ticket)
                 if (bmp != null) {
+                    stampAge(bitmapAge, pageIndex)
                     if (rendersPaused.get()) pendingBitmaps[pageIndex] = bmp
                     else flow.value = bmp
+                    // 渲完就把「多餘的舊圖」收回來：捲過的頁留在 native heap 裡
+                    // 是閃退的主因（見 evictColdBitmaps）。
+                    evictColdBitmaps()
                     return@launch
                 }
                 android.util.Log.d("PdfViewModel", "getPageBitmap retry $attempt page=$pageIndex")
@@ -1378,7 +1707,35 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * 這頁的縮圖好了沒有？沒有就地補一張（縮圖便宜，佔不到一幀）。
+     *
+     * 為什麼要在高清之前做：兩種渲染共用同一把 PDF 鎖，誰先排隊誰先跑。
+     * 組成的順序是「先高清後縮圖」，高清一次要幾百毫秒，縮圖會被壓在後面，
+     * 於是捲動時看到的是**一片白**而不是模糊的縮圖——使用者感受就是「卡住」。
+     * 這裡把縮圖插到高清前面，順序就反過來了。
+     */
+    private suspend fun ensureThumbnailReady(pageIndex: Int) {
+        val cached = thumbnailCache[pageIndex]
+        if (cached != null) {
+            // 快取有就順手投給 flow（可能上一輪被回收過值）。
+            thumbnailFlowCache[pageIndex]?.let { flow ->
+                if (flow.value == null) flow.value = cached
+            }
+            return
+        }
+        val thumb = renderPage(pageIndex, highQuality = false, requireInterest = false) ?: return
+        stampAge(thumbnailAge, pageIndex)
+        thumbnailFlowCache[pageIndex]?.let { flow ->
+            if (flow.value == null) {
+                if (rendersPaused.get() && !_isScrollingFast.value) pendingThumbs[pageIndex] = thumb
+                else flow.value = thumb
+            }
+        }
+    }
+
     fun getPageThumbnail(pageIndex: Int): StateFlow<Bitmap?> {
+        thumbnailRequestedAt[pageIndex] = System.currentTimeMillis()
         val existing = thumbnailFlowCache[pageIndex]
         if (existing != null) {
             if (existing.value == null && thumbnailCache[pageIndex] == null) {
@@ -1397,9 +1754,11 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
     private fun launchThumbnailRender(flow: MutableStateFlow<Bitmap?>, pageIndex: Int) {
         renderScope.launch {
             renderPage(pageIndex, highQuality = false)?.let {
+                stampAge(thumbnailAge, pageIndex)
                 // P0 快滑掠過就靠縮圖：高速期間縮圖照投（不扣留），高清才等落定。
                 if (rendersPaused.get() && !_isScrollingFast.value) pendingThumbs[pageIndex] = it
                 else flow.value = it
+                evictColdBitmaps()
             }
         }
     }
@@ -1410,7 +1769,8 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
 
         val ticket = scrollGen
         renderScope.launch {
-            renderPage(pageIndex, highQuality = true, ticket = ticket)
+            renderPage(pageIndex, highQuality = true, ticket = ticket, requireInterest = false)
+                ?.let { stampAge(bitmapAge, pageIndex) }
         }
     }
 
@@ -1420,7 +1780,10 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         if (thumbnailCache[pageIndex] != null) return
 
         renderScope.launch {
-            renderPage(pageIndex, highQuality = false)
+            // 預取本來就是「這一頁還沒被組成」，沒有訂閱、需求時間戳也舊，
+            // 所以不受需求檢查管（否則預取會全部被跳過，等於沒有預取）。
+            renderPage(pageIndex, highQuality = false, requireInterest = false)
+                ?.let { stampAge(thumbnailAge, pageIndex) }
         }
     }
 
@@ -1442,6 +1805,9 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
             if (index < 0 || index >= pageCount.value) return@forEach
             if (bitmapCache[index] != null) return@forEach
             val flow = bitmapFlowCache[index] ?: return@forEach
+            // 沒人顯示的頁不補：補了也是白渲一份 13MB，等它真的被組成再說
+            //（compose 的 getPageBitmap 會自己補）。
+            if (flow.subscriptionCount.value == 0) return@forEach
             if (flow.value == null) launchBitmapRender(flow, index)
         }
     }
@@ -1450,7 +1816,10 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
      * P1 有界：只留可見±margin 內的高清 flow；窗外且無訂閱的（已拆掉的 item）
      * 置空＋移出快取＋摘 map（重組時 remember 重跑 getPageBitmap 自動補渲）。
      * 有訂閱的不動（LazyColumn 場外緩衝頁正在顯示，不能閃白）。
-     * 縮圖便宜（240px 封頂）不清，留著當掠過骨幹。
+     *
+     * 縮圖也一起清：舊碼只清高清 flow，縮圖 flow 留著不動——190 頁的 PDF
+     * 捲一圈就是 190 張縮圖釘在記憶體裡（單張 0.3MB，加起來 60MB），
+     * 一樣會把手機的記憶體吃光。縮圖有人訂閱（側欄縮圖網格）就不動。
      */
     fun trimBitmapFlowsToWindow(visible: IntRange, margin: Int = 5) {
         val lo = (visible.first - margin).coerceAtLeast(0)
@@ -1462,9 +1831,23 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
             if (flow.subscriptionCount.value == 0) {
                 flow.value = null
                 bitmapCache.remove(index)
+                bitmapAge.remove(index)
+                bitmapScale.remove(index)
                 it.remove()
             }
         }
+        val tit = thumbnailFlowCache.entries.iterator()
+        while (tit.hasNext()) {
+            val (index, flow) = tit.next()
+            if (index in lo..hi) continue
+            if (flow.subscriptionCount.value == 0) {
+                flow.value = null
+                thumbnailCache.remove(index)
+                thumbnailAge.remove(index)
+                tit.remove()
+            }
+        }
+        evictColdBitmaps()
     }
     
     fun setScrollingFast(isFast: Boolean) {
@@ -1474,7 +1857,12 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         scrollGen++
     }
 
-    private suspend fun renderPage(pageIndex: Int, highQuality: Boolean, ticket: Long? = null): Bitmap? {
+    private suspend fun renderPage(
+        pageIndex: Int,
+        highQuality: Boolean,
+        ticket: Long? = null,
+        requireInterest: Boolean = true
+    ): Bitmap? {
         if (pageIndex < 0 || pageIndex >= _pageCount.value) return null
 
         val cache = if (highQuality) bitmapCache else thumbnailCache
@@ -1487,6 +1875,11 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                 if (gen != renderGen) return@withLock null
                 // P0 快滑：等鎖期間票被超車（快旗升/落），高清直接丟棄；縮圖便宜照渲。
                 if (highQuality && ticket != null && ticket != scrollGen) return@withLock null
+                // 排到隊了，但這一頁可能已經被捲走、沒人再看。
+                // 這時渲它 = 白燒 CPU + 白吃一份 13MB 的記憶體，還擋住「正在看的那頁」。
+                if (requireInterest && !isPageStillWanted(pageIndex, highQuality)) {
+                    return@withLock null
+                }
                 pdfRenderer?.let { renderer ->
                     try {
                         val page = renderer.openPage(pageIndex)
@@ -1539,6 +1932,9 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                         }
 
                         cache.put(pageIndex, bitmap)
+                        // 記下事實倍率：applyRenderPlan 靠它判斷「夠清楚了沒」。
+                        if (highQuality) bitmapScale[pageIndex] = scale
+                        noteRenderedBytes(bitmap.byteCount.toLong())
                         bitmap
                     } catch (e: Exception) {
                         null
@@ -1548,6 +1944,183 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * 這一頁現在還有人要嗎？
+     *
+     * 兩個來源：螢幕上有人在看（flow 有訂閱），或是剛被要求過（時間窗內）。
+     * 詳見 [shouldRenderPage] 的理由——這是「捲動時不要白渲被捲過的頁」那道閘門。
+     */
+    private fun isPageStillWanted(pageIndex: Int, highQuality: Boolean): Boolean {
+        val flow = if (highQuality) bitmapFlowCache[pageIndex] else thumbnailFlowCache[pageIndex]
+        val hasSubscriber = flow != null && flow.subscriptionCount.value > 0
+        val requestedAt = (
+            if (highQuality) bitmapRequestedAt[pageIndex] else thumbnailRequestedAt[pageIndex]
+            ) ?: 0L
+        val age = (System.currentTimeMillis() - requestedAt).coerceAtLeast(0L)
+        return shouldRenderPage(hasSubscriber, age)
+    }
+
+    /**
+     * 自上次 GC 以來產生的頁面圖位元組。超過門檻就收一次垃圾。
+     *
+     * 為什麼需要（重大：PDF 捲動會閃退）：Android 8 之後 Bitmap 的像素在
+     * **native heap**，而 ART 的 GC 只按 **Java heap** 的用量決定要不要跑。
+     * 這個 App 的 Java heap 有 512MB 且用量很低 → GC 幾乎不跑 → 被丟掉的頁面圖
+     * 一直占著 native heap 不放。實測：捲 20 頁後 native 堆裡躺著 380MB 的
+     * 點陣圖，GC 一跑就掉回 154MB —— 這些全是「垃圾但沒人收」。
+     *
+     * 所以在產生垃圾的路上自己收：門檻 [GC_TRIGGER_BYTES] 給得寬，正常捲動摸不到；
+     * 真摸到了就是 native heap 真的在漲，那時收一次比等 OOM 划算。
+     */
+    private val renderedBytesSinceGc = java.util.concurrent.atomic.AtomicLong(0)
+    private val gcArmed = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** 只記帳、不立刻收：收的時機見 [collectIdleGarbage]。 */
+    private fun noteRenderedBytes(bytes: Long) {
+        if (renderedBytesSinceGc.addAndGet(bytes) >= GC_TRIGGER_BYTES) gcArmed.set(true)
+    }
+
+    /**
+     * **閒置才收垃圾。**
+     *
+     * 為什麼不在累積到門檻的當下就收：`System.gc()` 是 stop-the-world，
+     * 捲動中收一次就是使用者眼裡的一頓（實測 fling 途中被 GC 打斷最明顯）。
+     * 而頁面圖垃圾在 native heap，早 0.2 秒收或晚 0.2 秒收沒有人看得出差別——
+     * 只要在 native heap 撐爆之前收掉就好。
+     *
+     * 所以門檻到了只「上膛」，真的收的時機是落定／閒置（[scheduleSettledUpgrade]
+     * 的尾巴）；萬一使用者一路捲不停、累積到 [GC_FORCE_BYTES]，那就照收，
+     * 因為那時不收就是等著 OOM。
+     */
+    private fun collectIdleGarbage() {
+        if (!gcArmed.get()) return
+        val forced = renderedBytesSinceGc.get() >= GC_FORCE_BYTES
+        if (!forced && (scrollingNow() || renderHold.get() || _isScrollingFast.value)) return
+        if (!gcArmed.compareAndSet(true, false)) return
+        renderedBytesSinceGc.set(0)
+        viewModelScope.launch(Dispatchers.Default) {
+            android.util.Log.d(
+                "PdfViewModel",
+                "GC: 頁面圖垃圾已累積 >=${GC_TRIGGER_BYTES / 1024 / 1024}MB，閒置收一次"
+            )
+            System.gc()
+        }
+    }
+
+    /**
+     * 把活著的頁面圖壓回預算內：**從最舊的開始，砍掉沒人看的**。
+     *
+     * ## 為什麼需要這一段（重大：PDF 捲動會閃退）
+     *
+     * `bitmapCache` 是 LruCache，有上限；但同一張圖還被 `bitmapFlowCache` 的
+     * flow 值拿著——UI 就是直接顯示那個值的。**LruCache 逐出 ≠ 圖片被釋放**，
+     * 所以舊設計的「上限」形同虛設：捲過的每一頁都留在 native heap 裡
+     * （Android 8+ 的 Bitmap 像素不在 Java heap，GC 也管不到）。
+     * 一份 190 頁的 PDF 捲一圈 → 幾百 MB 的點陣圖 → native heap 撐爆 → 閃退。
+     *
+     * ## 為什麼可以砍
+     *
+     * 「沒人訂閱」= 沒有 LazyColumn item 在顯示它 = 已經被捲過去的頁。
+     * 有人訂閱的頁不砍：那是螢幕上正在看的，砍了就是閃白。
+     * 砍掉後 flow 的值被清空、entry 也從快取移除，所以滑回來時
+     * `getPageBitmap` 會重新發起渲染（記得 flow 實例不變，不會閃白成黑頁）。
+     */
+    private fun evictColdBitmaps() {
+        val maxMemory = Runtime.getRuntime().maxMemory()
+        evictColdLayer(
+            flows = bitmapFlowCache,
+            cache = bitmapCache,
+            ages = bitmapAge,
+            budget = liveBitmapBudgetBytes(maxMemory),
+            label = "hi",
+            maxMemory = maxMemory,
+            pending = pendingBitmaps,
+            scales = bitmapScale
+        )
+        evictColdLayer(
+            flows = thumbnailFlowCache,
+            cache = thumbnailCache,
+            ages = thumbnailAge,
+            budget = liveThumbnailBudgetBytes(maxMemory),
+            label = "thumb",
+            maxMemory = maxMemory,
+            pending = pendingThumbs,
+            // 縮圖與高清共用頁索引，不能把 bitmapScale 一起清掉。
+            scales = null
+        )
+    }
+
+    /**
+     * 一層（高清／縮圖）的回收：活著位元組超過預算就從最舊的砍起。
+     *
+     * 活著 = flow 的值 ＋ 快取裡的 ＋ 尚未投遞的 pending（同一張圖只算一次，
+     * 用參照比對）。快取裡有、flow 沒有的也算進去——它一樣佔記憶體。
+     *
+     * **砍掉時三者都要清。** 以前只清 flow／快取，pending 留著 → 那張圖
+     * 仍被 map 釘住、記憶體沒回來，而且候選清單裡已經沒有它了，
+     * 下一次回收也看不到它（等於永遠收不掉）。
+     */
+    private fun evictColdLayer(
+        flows: MutableMap<Int, MutableStateFlow<Bitmap?>>,
+        cache: LruCache<Int, Bitmap>,
+        ages: MutableMap<Int, Long>,
+        budget: Long,
+        label: String,
+        maxMemory: Long,
+        pending: MutableMap<Int, Bitmap>,
+        scales: MutableMap<Int, Float>?
+    ) {
+        val live = HashMap<Int, Bitmap>()
+        val seen = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Bitmap, Boolean>())
+        flows.forEach { (index, flow) ->
+            flow.value?.let {
+                live[index] = it
+                seen.add(it)
+            }
+        }
+        cache.snapshot().forEach { (index, bmp) ->
+            if (!seen.contains(bmp)) {
+                live[index] = bmp
+                seen.add(bmp)
+            }
+        }
+        pending.forEach { (index, bmp) ->
+            if (!seen.contains(bmp)) {
+                live[index] = bmp
+                seen.add(bmp)
+            }
+        }
+        val candidates = live.map { (index, bmp) ->
+            BitmapCandidate(
+                index = index,
+                bytes = bmp.byteCount.toLong(),
+                // 螢幕上正在顯示的頁不砍：砍了就是閃白。
+                hasSubscriber = flows[index]?.subscriptionCount?.value?.let { it > 0 } ?: false,
+                age = ages[index] ?: Long.MAX_VALUE
+            )
+        }
+        val liveBytes = candidates.sumOf { it.bytes }
+        val evicted = selectColdEvictions(candidates, liveBytes, budget)
+        evicted.forEach { index ->
+            flows[index]?.let { flow -> flow.value = null }
+            cache.remove(index)
+            ages.remove(index)
+            pending.remove(index)
+            scales?.remove(index)
+        }
+        // 只在真的砍了東西、或已經超預算時才落 log：這函式每個捲動幀都可能被呼叫，
+        // 無條件印會把 logcat 灌滿（查別的問題時很難看）。
+        if (evicted.isNotEmpty() || liveBytes > budget) {
+            android.util.Log.d(
+                "PdfViewModel",
+                "evict[$label] live=${liveBytes / 1024}KB budget=${budget / 1024}KB " +
+                    "maxMem=${maxMemory / 1024 / 1024}MB pages=${candidates.size} " +
+                    "subscribed=${candidates.count { it.hasSubscriber }} evicted=${evicted.size} " +
+                    "pending=${pending.size} paused=${rendersPaused.get()}"
+            )
         }
     }
 
@@ -1565,7 +2138,12 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         parcelFileDescriptor = null
         bitmapCache.evictAll()
         thumbnailCache.evictAll()
+        bitmapScale.clear()
         thumbnailFlowCache.clear()
         bitmapFlowCache.clear()
+        bitmapRequestedAt.clear()
+        thumbnailRequestedAt.clear()
+        bitmapAge.clear()
+        thumbnailAge.clear()
     }
 }

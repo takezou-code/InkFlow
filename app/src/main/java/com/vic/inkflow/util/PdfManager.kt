@@ -8,6 +8,7 @@ import android.os.Environment
 import android.os.ParcelFileDescriptor
 import android.provider.OpenableColumns
 import android.util.Log
+import com.tom_roush.pdfbox.io.MemoryUsageSetting
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.PDPage
 import com.tom_roush.pdfbox.pdmodel.common.PDRectangle
@@ -19,6 +20,23 @@ import java.util.UUID
 
 object PdfManager {
     private const val TAG = "PdfManager"
+
+    /**
+     * PDFBox 解析時留在**主記憶體**的上限，其餘溢寫暫存檔（[MemoryUsageSetting.setupMixed]）。
+     *
+     * 為什麼一定要設：`PDDocument.load(File)` 的預設是 `setupMainMemoryOnly()`——
+     * 整份文件的 COS 物件（頁樹、字型、內容流索引）全部住進 Java heap。
+     * 一般講義只有幾 MB 看不出來，但一份 324MB / 1166 頁的教科書，
+     * 光是「新增一頁」就要 load→save 整份文件，在主記憶體裡直接撐爆
+     * （平板 largeHeap 512MB，而 App 同時還拿著上百 MB 的頁面點陣圖）。
+     *
+     * 48MB 夠放一份正常文件的物件，超過的部分自動用暫存檔，代價是慢一點的 IO，
+     * 換來的是「大文件做頁操作不會閃退」。
+     */
+    internal fun pdfMemoryUsage(): MemoryUsageSetting =
+        MemoryUsageSetting.setupMixed(PDFBOX_MAIN_MEMORY_BYTES)
+
+    private const val PDFBOX_MAIN_MEMORY_BYTES = 48L * 1024 * 1024
 
     /** App 私有外部儲存目錄（不需任何權限，空間比 filesDir 大）。 */
     /** The app's private documents directory — where the synced and imported PDFs live. */
@@ -101,7 +119,7 @@ object PdfManager {
 
             var output: File? = null
             try {
-                PDDocument.load(File(sourcePath)).use { source ->
+                PDDocument.load(File(sourcePath), pdfMemoryUsage()).use { source ->
                     if (indices.any { it < 0 || it >= source.numberOfPages }) return@withContext null
                     output = File(pdfDir(context), "${UUID.randomUUID()}.pdf")
                     PDDocument().use { selected ->
@@ -200,7 +218,7 @@ object PdfManager {
             try {
                 val file = File(fileUri.path!!)
                 val tLoad0 = System.currentTimeMillis()
-                PDDocument.load(file).use { doc ->
+                PDDocument.load(file, pdfMemoryUsage()).use { doc ->
                     Log.d(TAG, "fileSplit: load=${System.currentTimeMillis() - tLoad0}ms")
                     val newPage = PDPage(PDRectangle(pageWidthPt, pageHeightPt))
                     val insertBefore = resolveInsertionIndex(afterIndex, doc.numberOfPages)
@@ -229,7 +247,7 @@ object PdfManager {
             }
             try {
                 val file = File(fileUri.path!!)
-                PDDocument.load(file).use { doc -> doc.numberOfPages }
+                PDDocument.load(file, pdfMemoryUsage()).use { doc -> doc.numberOfPages }
             } catch (e: Exception) {
                 Log.e(TAG, "getPdfPageCount failed", e)
                 0
@@ -254,9 +272,9 @@ object PdfManager {
                 val targetFile = File(targetFileUri.path!!)
                 val sourceFile = File(sourceFileUri.path!!)
                 val tLoad0 = System.currentTimeMillis()
-                PDDocument.load(targetFile).use { targetDoc ->
+                PDDocument.load(targetFile, pdfMemoryUsage()).use { targetDoc ->
                     Log.d(TAG, "fileSplit: targetLoad=${System.currentTimeMillis() - tLoad0}ms")
-                    PDDocument.load(sourceFile).use { sourceDoc ->
+                    PDDocument.load(sourceFile, pdfMemoryUsage()).use { sourceDoc ->
                         val sourceCount = sourceDoc.numberOfPages
                         if (sourceCount <= 0) {
                             Log.w(TAG, "insertPdfPages: source PDF has no pages")
@@ -368,7 +386,7 @@ object PdfManager {
             try {
                 val file = File(fileUri.path!!)
                 val tLoad0 = System.currentTimeMillis()
-                PDDocument.load(file).use { doc ->
+                PDDocument.load(file, pdfMemoryUsage()).use { doc ->
                     Log.d(TAG, "fileSplit: load=${System.currentTimeMillis() - tLoad0}ms")
                     if (doc.numberOfPages <= 1) {
                         Log.w(TAG, "deletePage: cannot delete the only page")
@@ -398,7 +416,7 @@ object PdfManager {
             try {
                 val file = File(fileUri.path!!)
                 val tLoad0 = System.currentTimeMillis()
-                PDDocument.load(file).use { doc ->
+                PDDocument.load(file, pdfMemoryUsage()).use { doc ->
                     Log.d(TAG, "fileSplit: load=${System.currentTimeMillis() - tLoad0}ms")
                     if (fromIndex < 0 || fromIndex >= doc.numberOfPages || 
                         toIndex < 0 || toIndex >= doc.numberOfPages) return@withContext false
@@ -430,7 +448,7 @@ object PdfManager {
             try {
                 val file = File(fileUri.path!!)
                 val tLoad0 = System.currentTimeMillis()
-                PDDocument.load(file).use { doc ->
+                PDDocument.load(file, pdfMemoryUsage()).use { doc ->
                     Log.d(TAG, "fileSplit: load=${System.currentTimeMillis() - tLoad0}ms")
                     if (doc.numberOfPages <= pageIndices.size) {
                         Log.w(TAG, "deletePages: cannot delete all pages")
