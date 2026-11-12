@@ -23,6 +23,12 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.RectangleShape
@@ -42,8 +48,10 @@ import com.vic.inkflow.ui.BackdropTheme
 import com.vic.inkflow.ui.PdfViewer
 import com.vic.inkflow.ui.InkFlowTheme
 import com.vic.inkflow.ui.InkThemeState
+import com.vic.inkflow.ui.CommandPalette
+import com.vic.inkflow.ui.importPdfIntoLibrary
+import com.vic.inkflow.ui.pickPdfFile
 import com.vic.inkflow.ui.LibraryView
-import com.vic.inkflow.ui.MicaBackground
 import com.vic.inkflow.ui.ModernIconButton
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -235,7 +243,7 @@ object DesktopSettings {
 }
 
 @Composable
-fun App(uiPreview: String? = null) {
+fun App(uiPreview: String? = null, paletteOpen: Boolean = false, onPaletteDismiss: () -> Unit = {}) {
     InkFlowTheme {
         // The backdrop has to sit *behind* everything, including the reading
         // surface, so it is applied at the root rather than per-panel. A
@@ -248,19 +256,28 @@ fun App(uiPreview: String? = null) {
         // the real window size — so the glow anchoring drifted as the window
         // resized, contradicting the comment right above it. The real one derives
         // every position from the actual constraints.
+        //
+        // The desktop used to draw a flat `MicaBackground` instead, which left
+        // the backdrop theme picker (柔光／熾霞／墨夜／素／暖沙／森綠) wired to
+        // nothing: the setting changed, the screen did not. Now the picker is
+        // the thing it says it is.
         Box(modifier = Modifier.fillMaxSize()) {
-            MicaBackground(
-                isDark = InkThemeState.darkMode,
+            AuroraBackground(
+                isDarkTheme = InkThemeState.darkMode,
+                theme = InkThemeState.backdropTheme,
                 modifier = Modifier.fillMaxSize()
-            ) {
-                InkFlowApp(uiPreview)
-            }
+            )
+            InkFlowApp(
+                uiPreview,
+                paletteOpen = paletteOpen || uiPreview == "palette",
+                onPaletteDismiss = onPaletteDismiss
+            )
         }
     }
 }
 
 @Composable
-fun InkFlowApp(uiPreview: String? = null) {
+fun InkFlowApp(uiPreview: String? = null, paletteOpen: Boolean = false, onPaletteDismiss: () -> Unit = {}) {
     val databaseManager = remember { DatabaseManager(AppPaths.dbPath).also { it.connect() } }
     // v5: one outbox shared by the editor (records) and the sync loop (sends).
     // Shared rather than owned by either side so the queue survives both: the editor
@@ -590,6 +607,34 @@ fun InkFlowApp(uiPreview: String? = null) {
             }
         }
     }
+
+    // ── Command palette (Ctrl+K / Cmd+K) ───────────────────────────────────
+    // A Dialog is its own window layer, so it draws over everything without
+    // the screens having to know about it.
+    CommandPalette(
+        open = paletteOpen,
+        documents = remember(libraryRefresh) { databaseManager.getAllDocuments() },
+        onOpenDocument = { uri ->
+            selectedDocument = uri
+            currentPageIndex = 0
+            showSettings = false
+        },
+        onOpenLocalPdf = {
+            val chosen = pickPdfFile()
+            if (chosen != null) {
+                scope.launch {
+                    val repo = com.vic.inkflow.data.JdbcDocumentRepository(databaseManager)
+                    if (importPdfIntoLibrary(chosen, repo)) libraryRefresh++
+                }
+            }
+        },
+        onToggleTheme = {
+            val next = !InkThemeState.darkMode
+            InkThemeState.darkMode = next
+            DesktopSettings.darkMode = next
+        },
+        onDismiss = onPaletteDismiss
+    )
 }
 
 @Composable
@@ -878,6 +923,10 @@ fun main(args: Array<String>) {
     }
 
     application {
+        // The command palette lives at the window level: Ctrl+K has to work
+        // from every screen, including the reader (where the paper has the
+        // keyboard focus, not the window chrome).
+        var paletteOpen by remember { mutableStateOf(false) }
         Window(
             onCloseRequest = ::exitApplication,
             title = when (probe) {
@@ -886,12 +935,27 @@ fun main(args: Array<String>) {
                 else -> "InkFlow"
             },
             state = rememberWindowState(width = 1280.dp, height = 800.dp),
-            icon = icon
+            icon = icon,
+            onPreviewKeyEvent = { event ->
+                if (event.type == KeyEventType.KeyDown &&
+                    event.key == Key.K &&
+                    (event.isCtrlPressed || event.isMetaPressed)
+                ) {
+                    paletteOpen = !paletteOpen
+                    true
+                } else {
+                    false
+                }
+            }
         ) {
             when (probe) {
                 "pen" -> PenProbeScreen()
                 "llm" -> com.vic.inkflow.probe.LlmProbeScreen(llmOptions)
-                else -> App(uiPreview = probeArg("ui"))
+                else -> App(
+                    uiPreview = probeArg("ui"),
+                    paletteOpen = paletteOpen,
+                    onPaletteDismiss = { paletteOpen = false }
+                )
             }
         }
     }

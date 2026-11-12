@@ -1,7 +1,12 @@
 package com.vic.inkflow.ui
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -40,6 +45,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -368,6 +374,10 @@ private fun EmptyLibrary(query: String, onImport: () -> Unit) {
  * window already sits on a Mica backdrop, and a shadow there reads as dirt.
  * The thumbnail keeps the page's own aspect so a row of documents reads as a
  * row of pages.
+ *
+ * Hovering lifts the card a hair and tints its rim with the accent. Modern
+ * desktop apps do this everywhere, and without it a grid of cards reads as a
+ * list of pictures: the user has no cue that the card is the thing you click.
  */
 @Composable
 private fun DocumentCard(
@@ -376,16 +386,29 @@ private fun DocumentCard(
     folderName: String?,
     onClick: () -> Unit
 ) {
+    val hovered = remember { MutableInteractionSource() }
+    val isHovered by hovered.collectIsHoveredAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (isHovered) 1.015f else 1f,
+        animationSpec = tween(140),
+        label = "cardHover"
+    )
     Column(
         modifier = Modifier
             .height(DeskDims.cardHeight)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
             .clip(ShapeLg)
             .background(MaterialTheme.colorScheme.surface, ShapeLg)
             .border(
                 1.dp,
-                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+                if (isHovered) MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
+                else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
                 ShapeLg
             )
+            .hoverable(hovered)
             .glassClickable(onClick = onClick, shape = ShapeLg)
     ) {
         Box(
