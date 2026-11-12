@@ -148,11 +148,32 @@ import androidx.compose.foundation.layout.size
 private val logger = KotlinLogging.logger {}
 
 /**
+ * 寫一筆到資料庫；失敗時記 log 並把訊息交給呼叫端顯示。
+ *
+ * 為什麼需要它：讀取失敗可以只寫 log（讀不到就當沒有東西），但**寫入失敗
+ * 會讓使用者的畫作消失**——畫面跟資料庫都沒有那一筆，卻什麼提示都沒有。
+ * 使用者以為存好了，關掉程式就沒了。所以寫入路徑一律走這裡：
+ * 失敗＝log ＋ 畫面上的一行紅字。
+ *
+ * [onError] 由呼叫端接到自己的錯誤狀態（讀者層級或頁面層級），
+ * 這樣錯誤訊息會出現在使用者正在看的那個地方。
+ */
+private fun persistWith(
+    label: String,
+    onError: (String) -> Unit,
+    block: () -> Unit
+): Result<Unit> = runCatching(block)
+    .onFailure { e ->
+        logger.error(e) { "persist failed: $label" }
+        onError("$label 失敗：${e.message ?: e::class.simpleName}")
+    }
+
+/**
  * Read-only PDF viewer: rendered page + the tablet's strokes on top.
  *
  * ## The coordinate problem this solves
  *
- * Strokes arrive in the tablet's **model space** â€” PDF points, i.e. roughly
+ * Strokes arrive in the tablet's **model space** — PDF points, i.e. roughly
  * 0..595 x 0..842 for A4 portrait. The page is drawn at whatever size fills the
  * viewport, so drawing `point.x, point.y` straight onto the canvas puts every stroke at
  * the wrong scale, jammed into one corner.
@@ -170,7 +191,7 @@ private val logger = KotlinLogging.logger {}
  * ```
  *
  * The image and the ink share one `translate` and one `scale`, so they cannot drift
- * apart â€” there is no second set of arithmetic to get wrong. The page box used for both
+ * apart — there is no second set of arithmetic to get wrong. The page box used for both
  * is the one carried by the raster itself, so "the page was re-read between rendering and
  * drawing" is not a failure mode. (The old code computed absolute screen positions and
  * then subtracted the origin again inside the translate block; same result, one more
@@ -191,15 +212,15 @@ private val logger = KotlinLogging.logger {}
  *
  * ## Gestures
  *
- * - drag / pinch â€” pan and zoom, about the pinch centroid. Rotation is locked out so a
+ * - drag / pinch — pan and zoom, about the pinch centroid. Rotation is locked out so a
  *   rotated page can never disagree with its ink.
- * - Ctrl (or Cmd) + wheel â€” zoom about the pointer, one step per notch: the PDF reader
+ * - Ctrl (or Cmd) + wheel — zoom about the pointer, one step per notch: the PDF reader
  *   convention, and the only wheel binding that touches zoom.
- * - wheel â€” pan vertically, Shift + wheel â€” pan horizontally, about 72 px per notch. Plain
+ * - wheel — pan vertically, Shift + wheel — pan horizontally, about 72 px per notch. Plain
  *   wheel is deliberately pan rather than page turn: scrolling is how you move around
  * * inside a page, and jumping whole pages on every notch makes a long document
  *   unusable. Page turn therefore lives on the keys and the nav bar, where it is explicit.
- * - PageUp / PageDown, arrow keys, Home / End â€” page turn (the canvas takes focus on open)
+ * - PageUp / PageDown, arrow keys, Home / End — page turn (the canvas takes focus on open)
  *
  * ## Rendering resolution
  *
@@ -241,7 +262,7 @@ private class PageHandle {
  * Continuous document reader: every page stacked in one scroll, the way
  * mainstream notebook apps work. The wheel scrolls the document, drags draw
  * (or scroll with the grab hand), and the toolbar always acts on the focused
- * page â€” the one under the last press, or the top visible one at rest.
+ * page — the one under the last press, or the top visible one at rest.
  *
  * One [PageView] per page owns its raster, ink, gestures and history; this
  * parent owns navigation, shared tool state, export, and the chrome. Pages
@@ -268,7 +289,7 @@ fun PdfViewer(
      * Where an AI-produced note is landed.
      *
      * The agent panel lives outside this composable, but the note has to land
-     * in the page that has the ink, the undo stack and the proposal queue â€”
+     * in the page that has the ink, the undo stack and the proposal queue —
      * so the reader binds its landing function into the handle while it is on
      * screen.
      */
@@ -296,6 +317,17 @@ fun PdfViewer(
     val exportScope = rememberCoroutineScope()
     var exporting by remember(documentUri) { mutableStateOf(false) }
     var exportMessage by remember(documentUri) { mutableStateOf<String?>(null) }
+
+    // 寫入失敗必須讓使用者看見。
+    //
+    // 以前每個寫入點都是 `runCatching { db.save... }.onSuccess { 更新畫面 }`：
+    // 失敗時 `.onSuccess` 不跑 → 畫面沒有那筆、資料庫也沒有那筆，
+    // 而且**沒有任何提示**。使用者以為畫掉了（事實上根本沒存），
+    // 關掉程式就沒了。現在失敗會記 log 並在畫面上留一行紅字。
+    var saveError by remember(documentUri) { mutableStateOf<String?>(null) }
+
+    fun persist(label: String, block: () -> Unit): Result<Unit> =
+        persistWith(label, { saveError = it }, block)
 
     val handles = remember(documentUri) { mutableMapOf<Int, PageHandle>() }
     val sharedZoom = remember(documentUri) { mutableFloatStateOf(1f) }
@@ -507,6 +539,33 @@ fun PdfViewer(
                 modifier = Modifier.fillMaxWidth()
             )
         }
+        // 寫入失敗的紅字。放在工具列下方、內容上方：使用者畫完一筆之後
+        // 眼睛還在紙上，這裡是最不會錯過的位置。
+        saveError?.let { msg ->
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 6.dp)
+            ) {
+                Text(
+                    text = msg,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    text = "關閉",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .padding(start = 12.dp)
+                        .glassClickable(onClick = { saveError = null })
+                )
+            }
+        }
         Row(Modifier.weight(1f).fillMaxWidth()) {
             if (pageCount == 0) {
                 Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.Center) {
@@ -578,23 +637,29 @@ private fun PageView(
     modifier: Modifier = Modifier
 ) {
     // Fixed page: the parent owns navigation, so the page-turn state is gone.
-    // Everything below still says `requestedPage` â€” one alias, zero rewrites.
+    // Everything below still says `requestedPage` — one alias, zero rewrites.
     val requestedPage = pageIndex
 
-    // â”€â”€ Page raster â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Page raster ─────────────────────────────────────────────────────────
     // Keyed on the page, so a page turn clears them: page 2's ink drawn over page 1's
     // bitmap for a frame would be worse than a brief spinner.
     var pageBox by remember(documentUri, requestedPage) { mutableStateOf<PageBox?>(null) }
     var rendered by remember(documentUri, requestedPage) { mutableStateOf<RenderedPage?>(null) }
     var renderedDpi by remember(documentUri, requestedPage) { mutableFloatStateOf(0f) }
     var loadError by remember(documentUri, requestedPage) { mutableStateOf<String?>(null) }
+    // 這一頁的寫入失敗（拖曳、擦除、復原…）。頁面層級的錯誤要在這一頁上顯示，
+    // 使用者才看得到「我剛剛那一筆沒存上」。
+    var saveError by remember(documentUri, requestedPage) { mutableStateOf<String?>(null) }
 
-    // â”€â”€ Ink â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    fun persist(label: String, block: () -> Unit): Result<Unit> =
+        persistWith(label, { saveError = it }, block)
+
+    // ── Ink ─────────────────────────────────────────────────────────────────
     var strokes by remember(documentUri, requestedPage, refreshToken, docRefresh) {
         mutableStateOf<List<StrokeWithPoints>>(emptyList())
     }
 
-    // â”€â”€ Text annotations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Text annotations ────────────────────────────────────────────────────
     // Separate list rather than folded into `strokes`: a note has no points and
     // no width, and forcing it into the envelope renderer would invent geometry
     // for it. Its own list also keeps the ink fast path from re-measuring text
@@ -678,7 +743,7 @@ private fun PageView(
     // pressure-varying ink.
     var liveStrokeWidths by remember { mutableStateOf<List<Float>>(emptyList()) }
 
-    // â”€â”€ Shapes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Shapes ──────────────────────────────────────────────────────────────
     // The subtype is picked in the toolbar before the drag, the way the tablet does
     // it, so one gesture handler covers all four shapes instead of four handlers
     // competing over the same pointer stream. It arrives as a parameter now, shared
@@ -696,7 +761,7 @@ private fun PageView(
     // A pointerInput coroutine captures the values in scope when it *starts*, and
     // it only restarts when its keys change. `box` and `scale` are null/zero on
     // the first composition and only become valid once the page finishes
-    // rendering â€” with keys of (document, page, editable) the handler therefore
+    // rendering — with keys of (document, page, editable) the handler therefore
     // kept calling a converter closed over a null box, so every press was
     // rejected as "outside the page" and the tool looked completely dead.
     //
@@ -704,7 +769,7 @@ private fun PageView(
     // and read `box`/`scale` at call time; rememberUpdatedState re-points them at
     // the current composition so a gesture always uses the transform of the
     // frame it is actually in.
-    // â”€â”€ View transform â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── View transform ──────────────────────────────────────────────────────
     // Explicit states, not `by` delegates: the render pipeline reads these from a
     // coroutine, where only a stable reference to the state can be observed.
     val zoom = sharedZoom
@@ -720,7 +785,7 @@ private fun PageView(
      * Reading `zoom`/`viewport` here, from inside a `snapshotFlow`, is what makes the
      * render pipeline react to pinch and to window resizes. It uses the metadata box
      * rather than the rendered one, because it has to decide the DPI *before* the raster
-     * exists â€” that is the whole reason page geometry is read separately.
+     * exists — that is the whole reason page geometry is read separately.
      */
     fun desiredDpi(): Float = PdfManager.renderDpiFor(
         pageWidthPt = pageBox?.widthPt ?: 0f,
@@ -730,7 +795,7 @@ private fun PageView(
         zoom = zoom.floatValue
     )
 
-    // â”€â”€ Metadata: this page's geometry only, without rasterising â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Metadata: this page's geometry only, without rasterising ────────────
     // The parent loads the page count once for the whole document; each page only
     // needs its own box, for the item aspect and the ink transform.
     LaunchedEffect(documentUri, pageIndex) {
@@ -748,9 +813,9 @@ private fun PageView(
         }
     }
 
-    // â”€â”€ Raster â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Raster ──────────────────────────────────────────────────────────────
     // PDFBox is blocking and CPU-heavy, so every render runs on Dispatchers.IO, and the
-    // effect is keyed on the page only â€” a pinch must not restart it.
+    // effect is keyed on the page only — a pinch must not restart it.
     //
     // The mutex is what makes the debounce a real throttle. `collectLatest` cancels the
     // *suspended* previous iteration, but PDFBox is a blocking call, so a cancelled render
@@ -797,7 +862,7 @@ private fun PageView(
             }
     }
 
-    // â”€â”€ Ink â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Ink ─────────────────────────────────────────────────────────────────
     // Keyed on refreshToken as well as the page: a background sync writes rows
     // straight into the database without touching this composable's state, so
     // without the token the canvas would keep showing whatever it loaded at open.
@@ -811,7 +876,7 @@ private fun PageView(
             .getOrDefault(emptyList())
     }
 
-    // â”€â”€ Text â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Text ────────────────────────────────────────────────────────────────
     LaunchedEffect(documentUri, requestedPage, refreshToken, docRefresh) {
         texts = runCatching {
             withContext(Dispatchers.IO) {
@@ -822,7 +887,7 @@ private fun PageView(
             .getOrDefault(emptyList())
     }
 
-    // â”€â”€ model -> screen transform â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── model -> screen transform ───────────────────────────────────────────
     // Derived from the raster itself, never from a separately-read page box: the ink is
     // positioned against the exact geometry of the bitmap underneath it, so "the crop box
     // was re-read between the render and the draw" cannot drift the two apart.
@@ -846,13 +911,13 @@ private fun PageView(
      *
      * Because the page is always centred, the pan range that still keeps it touching all
      * four viewport edges is exactly `|page - viewport| / 2`. When the page fits, that
-     * collapses to zero â€” a fit-to-window view should not pan at all, and letting it
+     * collapses to zero — a fit-to-window view should not pan at all, and letting it
      * drift is how a reader ends up showing an empty grey rectangle with no way back.
 */
     // A pointerInput coroutine captures the values in scope when it *starts*, and
     // it only restarts when its keys change. ox and scale are null/zero on
     // the first composition and only become valid once the page finishes
-    // rendering â€” with keys of (document, page, editable) the handler therefore
+    // rendering — with keys of (document, page, editable) the handler therefore
     // kept calling a converter closed over a null box, so every press was
     // rejected as "outside the page" and the tool looked completely dead.
     //
@@ -878,7 +943,7 @@ private fun PageView(
      *
      * `screen = (viewport - page) / 2 + pan + model * scale`, so a point at screen
      * position [focal] has model position `(focal - origin) / scale`. Measuring against
-     * the *current* origin â€” pan included â€” is what makes a zoom on an already-panned page
+     * the *current* origin — pan included — is what makes a zoom on an already-panned page
      * stay on the spot under the pointer; solving for the pan that puts that same model
      * point back under [focal] is the whole of the anchor maths.
      */
@@ -913,7 +978,7 @@ private fun PageView(
      * coordinate (`pageIndex * stride + boundsTop`), and the tablet backfills it
      * lazily using the live model height when the document is opened. Computing a
      * guess here would need a stride this side does not have, and a wrong stride
-     * puts the stroke somewhere else entirely on the tablet â€” a wrong answer that
+     * puts the stroke somewhere else entirely on the tablet — a wrong answer that
      * is worse than no answer.
      *
      * The database write is the commit point: on success the stroke goes into
@@ -929,7 +994,7 @@ private fun PageView(
      * Snapshot of a drag in progress, folded into one history entry on release.
      *
      * A dedicated class rather than a nested Tuple because the shape is now
-     * (strokes, notes, totalDx, totalDy) â€” no Quadruple exists, and unpacking four
+     * (strokes, notes, totalDx, totalDy) — no Quadruple exists, and unpacking four
      * positional fields of a Tuple leaves the reader guessing which float is which axis.
      */
     data class DragState(
@@ -939,13 +1004,13 @@ private fun PageView(
         val dy: Float
     )
 
-    // â”€â”€ Selection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Selection ────────────────────────────────────────────────────────────
     // Ids rather than the objects: the selection has to survive the list being
     // rebuilt after every edit, and identity is what the ink is keyed on anyway.
     var selectedIds by remember(documentUri, pageIndex) { mutableStateOf<Set<String>>(emptySet()) }
 
     // Note ids are a disjoint namespace from stroke ids, so a note and a stroke
-    // can never collide in one set â€” which is what makes a mixed selection
+    // can never collide in one set — which is what makes a mixed selection
     // (drag across both, delete together, undo once) fall out for free.
     var selectedTextIds by remember(documentUri, pageIndex) { mutableStateOf<Set<String>>(emptySet()) }
 
@@ -967,7 +1032,7 @@ private fun PageView(
      * A drag writes the database on every frame it moves, so without this the history
      * would gain one entry per frame and a single drag would take dozens of undos to
      * reverse. [DragState] is a dedicated class rather than a nested Tuple because the
-     * shape is now (strokes, notes, totalDx, totalDy) â€” no Quadruple exists, and
+     * shape is now (strokes, notes, totalDx, totalDy) — no Quadruple exists, and
      * unpacking four positional fields of a Tuple leaves the reader guessing which
      * float is which axis.
      */
@@ -1013,7 +1078,7 @@ private fun PageView(
      * Bounding box of everything selected, strokes and notes together.
      *
      * Note bounds are unioned with the stroke bounds rather than kept separate so
-     * the selection outline wraps a mixed selection in one rectangle â€” two nested
+     * the selection outline wraps a mixed selection in one rectangle — two nested
      * boxes would read as two unrelated selections.
      */
     fun selectionBounds(): Rect? {
@@ -1047,7 +1112,7 @@ private fun PageView(
      *
      * Every guard reads this instead of `selectedIds.isEmpty()`: a selection can
      * legitimately consist of notes alone, and checking the stroke set would report
-     * "nothing selected" while a note is plainly outlined â€” which reads as the
+     * "nothing selected" while a note is plainly outlined — which reads as the
      * delete key being broken.
      */
     val selectionCount: Int = selectedIds.size + selectedTextIds.size
@@ -1077,7 +1142,7 @@ private fun PageView(
     }
 
     /**
-     * Moves the whole selection â€” strokes and notes together â€” by an incremental
+     * Moves the whole selection — strokes and notes together — by an incremental
      * ([dx], [dy]).
      *
      * The delta is incremental on purpose. The drag gesture records where the
@@ -1105,7 +1170,7 @@ private fun PageView(
 
         val after = translateStrokes(moving, dx, dy)
         val afterText = movingText.map { it.copy(modelX = it.modelX + dx, modelY = it.modelY + dy) }
-        runCatching {
+        persist("儲存編輯") {
             after.forEach { databaseManager.saveStroke(it.stroke, it.points) }
             afterText.forEach { databaseManager.saveTextAnnotation(it) }
         }.onSuccess {
@@ -1124,12 +1189,12 @@ private fun PageView(
     }
 
     /**
-     * v6 Â§15.2: the four op builders, each stamping the object's CURRENT version as
+     * v6 §15.2: the four op builders, each stamping the object's CURRENT version as
      * the base the tablet will compare against.
      *
      * The base is the version the desktop had when it made the edit. For an upsert
      * that lives in the payload anyway; for a delete there is no payload, so the op
-     * field is the only place it can go â€” which is why these exist instead of a
+     * field is the only place it can go — which is why these exist instead of a
      * caller remembering to add it (23 call sites used to build ops by hand, and one
      * forgotten `baseVersion` is one unarbitrable op, i.e. one silent overwrite).
      */
@@ -1168,7 +1233,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
     /**
      * Files local edits into the v5 proposal queue.
      *
-     * Called next to every undo push, on success only â€” the queue mirrors what is
+     * Called next to every undo push, on success only — the queue mirrors what is
      * actually in the database, never what was attempted. A null queue means
      * local-only mode and skips silently.
      */
@@ -1180,7 +1245,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                 com.vic.inkflow.sync.ProposalQueue.RecordResult.STALE_DROPPED -> {
                     logger.info { "Older desktop edits for ${documentUri.substringAfterLast('/')} were overwritten by a pull" }
                     // The current edit was still filed under the new base, so it
-                    // still needs a ride â€” a stale drop is not "nothing to send".
+                    // still needs a ride — a stale drop is not "nothing to send".
                     filed = true
                 }
                 com.vic.inkflow.sync.ProposalQueue.RecordResult.RECORDED -> filed = true
@@ -1196,7 +1261,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
      * Collapses the drag's incremental writes into one undoable move.
      *
      * A drag that ends where it started moves nothing, so it must not leave an
-     * entry behind â€” otherwise an undo would appear to do nothing and the user
+     * entry behind — otherwise an undo would appear to do nothing and the user
      * would have to press it twice.
      */
     fun commitMove() {
@@ -1217,7 +1282,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
     }
 
     /**
-     * Deletes the selection â€” strokes and notes together â€” as one undoable step.
+     * Deletes the selection — strokes and notes together — as one undoable step.
      *
      * Ink and text are separate tables, so this is two deletes in one command. Doing
      * them as one history entry is what stops "select everything, delete, undo" from
@@ -1227,7 +1292,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
         val doomed = strokes.filter { it.stroke.id in selectedIds }
         val doomedText = texts.filter { it.id in selectedTextIds }
         if (doomed.isEmpty() && doomedText.isEmpty()) return
-        runCatching {
+        persist("刪除內容") {
             doomed.forEach { databaseManager.deleteStroke(it.stroke.id) }
             doomedText.forEach { databaseManager.deleteTextAnnotation(it.id) }
         }.onSuccess {
@@ -1259,7 +1324,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
     fun clearDocument() {
         val doomedAll = strokes
         val doomedAllText = texts
-        runCatching {
+        persist("清除本頁內容") {
             databaseManager.deleteStrokesForDocument(documentUri)
             databaseManager.deleteTextAnnotationsForDocument(documentUri)
         }
@@ -1288,7 +1353,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
      * Writes the note being typed, then clears the draft.
      *
      * A blank note is discarded rather than stored: an empty annotation has no
-     * bounding box, so it cannot be selected and draws nothing â€” a row that exists
+     * bounding box, so it cannot be selected and draws nothing — a row that exists
      * but is unreachable is worse than no row.
      */
     fun commitText() {
@@ -1310,7 +1375,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
             fontSize = TEXT_SIZE_PT,
             colorArgb = inkColour
         )
-        runCatching { databaseManager.saveTextAnnotation(note) }
+        persist("新增文字註解") { databaseManager.saveTextAnnotation(note) }
             .onSuccess {
                 texts = texts + note
                 undoStack.push(InkEdit.AddText(note))
@@ -1336,15 +1401,15 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
      *
      * The note becomes ordinary text annotations, which is what makes it
      * ordinary: it can be moved, edited, exported with the PDF, thumbnailed,
-     * undone in one press, and â€” because text annotations have a proposal
-     * type already â€” synced to the tablet without a protocol change.
+     * undone in one press, and — because text annotations have a proposal
+     * type already — synced to the tablet without a protocol change.
      *
      * ## Where it lands
      *
      * The tablet gives an AI import its own pages. The desktop cannot: its
      * documents are PDFs and it has no way to add a page to somebody's
      * textbook file. So the note goes on the page in front of the user, **below
-     * whatever is already there** â€” ink, typed text, and any earlier note â€”
+     * whatever is already there** — ink, typed text, and any earlier note —
      * measured with the shared `measureContentBottom`. If fewer than two lines
      * fit, nothing is written and the caller says so; a note that overlaps the
      * page's content is worse than a note that was refused, because the overlap
@@ -1378,13 +1443,13 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                 modelY = placed.modelY,
                 fontSize = placed.fontSize,
                 // The text is pre-wrapped to this width, so the box is the wrap
-                // width â€” the same contract the tablet's AI text uses.
+                // width — the same contract the tablet's AI text uses.
                 boxWidth = placed.boxWidth,
                 colorArgb = inkColour
             )
         }
         var saved = true
-        runCatching { notes.forEach { databaseManager.saveTextAnnotation(it) } }
+        persist("新增文字註解") { notes.forEach { databaseManager.saveTextAnnotation(it) } }
             .onSuccess {
                 texts = texts + notes
                 undoStack.push(InkEdit.AddTexts(notes))
@@ -1420,7 +1485,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
 /**
      * Persists a shape as a two-point stroke, exactly as the tablet does.
      *
-     * Two points and a `shapeType` tag is the whole representation â€” no separate
+     * Two points and a `shapeType` tag is the whole representation — no separate
      * table. That is what lets shapes sync without any protocol change, and it is
      * why the bounds are computed with min/max here rather than read off the
      * points: RECT and CIRCLE are drawn from the bounds, so a shape dragged
@@ -1449,7 +1514,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
             PointEntity(id = 1L, strokeId = stroke.id, x = start.x, y = start.y, width = inkWidthPt),
             PointEntity(id = 2L, strokeId = stroke.id, x = end.x, y = end.y, width = inkWidthPt)
         )
-        runCatching { databaseManager.saveStroke(stroke, points) }
+        persist("新增筆跡") { databaseManager.saveStroke(stroke, points) }
             .onSuccess {
                 val saved = StrokeWithPoints(stroke, points)
                 strokes = strokes + saved
@@ -1495,7 +1560,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                 width = modelWidths.getOrNull(i) ?: baseWidth
             )
         }
-        runCatching { databaseManager.saveStroke(stroke, points) }
+        persist("新增筆跡") { databaseManager.saveStroke(stroke, points) }
             .onSuccess {
                 val saved = StrokeWithPoints(stroke, points)
                 strokes = strokes + saved
@@ -1518,7 +1583,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
      * Removes the strokes a single eraser drag touched.
      *
      * Hit testing is against each stroke's stored bounds, which is a rectangle rather
-     * than the true envelope â€” cheap, and generous enough for a mouse. Deletes are
+     * than the true envelope — cheap, and generous enough for a mouse. Deletes are
      * per stroke id, so overlapping bounds on the same page are all caught.
      */
     /**
@@ -1548,7 +1613,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
     fun eraseAt(pts: List<Offset>) {
         val (hit, hitText) = eraseHits(pts)
         if (hit.isEmpty() && hitText.isEmpty()) return
-        runCatching {
+        persist("擦除內容") {
             hit.forEach { databaseManager.deleteStroke(it.stroke.id) }
             hitText.forEach { databaseManager.deleteTextAnnotation(it.id) }
         }
@@ -1573,7 +1638,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
     fun undo() {
         when (val e = undoStack.popUndo()) {
             null -> return
-            is InkEdit.Add -> runCatching {
+            is InkEdit.Add -> persist("復原／重做") {
                 databaseManager.deleteStroke(e.stroke.stroke.id)
             }.onSuccess {
                 strokes = strokes - e.stroke
@@ -1592,7 +1657,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                 undoStack.push(e)
             }
 
-            is InkEdit.Erase -> runCatching {
+            is InkEdit.Erase -> persist("復原／重做") {
                 e.strokes.forEach { databaseManager.saveStroke(it.stroke, it.points) }
                 e.texts.forEach { databaseManager.saveTextAnnotation(it) }
             }.onSuccess {
@@ -1611,7 +1676,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                 undoStack.push(e)
             }
 
-            is InkEdit.AddText -> runCatching {
+            is InkEdit.AddText -> persist("復原／重做") {
                 databaseManager.deleteTextAnnotation(e.note.id)
             }.onSuccess {
                 texts = texts.filterNot { it.id == e.note.id }
@@ -1628,7 +1693,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
 
             // The whole note goes in one press: it was one action, so it is
             // one history entry, and it is undone as a unit.
-            is InkEdit.AddTexts -> runCatching {
+            is InkEdit.AddTexts -> persist("復原／重做") {
                 e.notes.forEach { databaseManager.deleteTextAnnotation(it.id) }
             }.onSuccess {
                 val ids = e.notes.map { it.id }.toSet()
@@ -1640,7 +1705,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                 undoStack.push(e)
             }
 
-            // Undo restores the pre-drag snapshot VERBATIM â€” with no delta applied.
+            // Undo restores the pre-drag snapshot VERBATIM — with no delta applied.
             //
             // The snapshot is the position before the drag, so undo is a restore, not
             // a reverse translation. Subtracting the drag total from the snapshot
@@ -1648,7 +1713,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
             // silent misplacement rather than an obvious failure.
             //
             // [dx]/[dy] are carried so redo can replay the drag from the same base.
-            is InkEdit.Move -> runCatching {
+            is InkEdit.Move -> persist("復原／重做") {
                 e.originals.forEach { databaseManager.saveStroke(it.stroke, it.points) }
                 e.texts.forEach { databaseManager.saveTextAnnotation(it) }
             }.onSuccess {
@@ -1672,7 +1737,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
     fun redo() {
         when (val e = undoStack.popRedo()) {
             null -> return
-            is InkEdit.Add -> runCatching {
+            is InkEdit.Add -> persist("復原／重做") {
                 databaseManager.saveStroke(e.stroke.stroke, e.stroke.points)
             }.onSuccess {
                 strokes = strokes + e.stroke
@@ -1687,7 +1752,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                 undoStack.push(e)
             }
 
-            is InkEdit.Erase -> runCatching {
+            is InkEdit.Erase -> persist("復原／重做") {
                 e.strokes.forEach { databaseManager.deleteStroke(it.stroke.id) }
                 e.texts.forEach { databaseManager.deleteTextAnnotation(it.id) }
             }.onSuccess {
@@ -1706,7 +1771,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                 undoStack.push(e)
             }
 
-            is InkEdit.AddText -> runCatching {
+            is InkEdit.AddText -> persist("復原／重做") {
                 databaseManager.saveTextAnnotation(e.note)
             }.onSuccess {
                 texts = texts + e.note
@@ -1721,7 +1786,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                 undoStack.push(e)
             }
 
-            is InkEdit.AddTexts -> runCatching {
+            is InkEdit.AddTexts -> persist("復原／重做") {
                 e.notes.forEach { databaseManager.saveTextAnnotation(it) }
             }.onSuccess {
                 texts = texts + e.notes
@@ -1734,7 +1799,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
 
             // Redo replays the drag from the same pre-drag snapshot the undo restored, so
             // repeated undo/redo cycles converge instead of accumulating error.
-            is InkEdit.Move -> runCatching {
+            is InkEdit.Move -> persist("復原／重做") {
                 translateStrokes(e.originals, e.dx, e.dy)
                     .forEach { databaseManager.saveStroke(it.stroke, it.points) }
                 e.texts.forEach {
@@ -1791,7 +1856,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
     }
     val deleteSelectionNow by rememberUpdatedState<() -> Unit> { deleteSelection() }
 
-    // â”€â”€ Parent bridge â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Parent bridge ──────────────────────────────────────────────────────
     // The toolbar and bottom bar live in the parent reader and act on the
     // focused page through this handle. Plain fields are (re)assigned every
     // composition so they never go stale; snapshot states mirror in an effect.
@@ -1839,7 +1904,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
     }
 
     // Text needs the same treatment, plus a separate one for "the user asked to
-    // start writing here" â€” the pointer coroutine only knows about geometry.
+    // start writing here" — the pointer coroutine only knows about geometry.
     val commitTextNow by rememberUpdatedState<() -> Unit> { commitText() }
     val cancelTextNow by rememberUpdatedState<() -> Unit> { cancelText() }
     val commitShapeNow by rememberUpdatedState<(Offset, Offset) -> Unit> { a, b -> commitShape(a, b) }
@@ -1903,14 +1968,14 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                 .height(maxWidth * aspect * max(zoom.floatValue, 1f))
         ) {
 
-        // â”€â”€ Page + ink, one transformable surface â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Page + ink, one transformable surface ───────────────────────────
         // Captured here (composable scope) because the draw scope below cannot
         // read MaterialTheme.
         val pageEdgeColor = if (InkThemeState.darkMode)
             MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
         else
             MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
-        // é¸å–æ¡†ï¼é‡é»žè‰²ï¼šè·Ÿä¸»é¡ŒåŒä¸€è®Šæ•¸ï¼ˆprimaryï¼‰ï¼Œä¸å¯«æ­»å“ç‰Œé›
+        // 選取框＝重點色：跟主題同一變數（primary），不寫死品牌靛
         val selectionAccent = MaterialTheme.colorScheme.primary
         Canvas(
             modifier = Modifier
@@ -1950,7 +2015,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                         // Shift + wheel pans horizontally and is consumed. A plain
                         // wheel is deliberately NOT consumed: in the continuous
                         // reader it belongs to the page list, which scrolls the
-                        // document â€” the mainstream behaviour.
+                        // document — the mainstream behaviour.
                         val step = Offset(deltaX, deltaY) / WHEEL_NOTCH_UNITS * WHEEL_PAN_PX
                         pan.value = clampPan(pan.value + Offset(step.y, step.x))
                         true
@@ -2063,7 +2128,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                             // Track the previous model position so each frame moves the
                             // selection by one step. Passing the displacement from the
                             // press instead would re-apply the whole travelled distance
-                            // on every frame â€” the selection runs away and the stored
+                            // on every frame — the selection runs away and the stored
                             // undo baseline ends up being a mid-drag frame.
                             var prevX = start.x
                             var prevY = start.y
@@ -2183,7 +2248,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                     )
                     // Hairline paper edge: with the aurora showing behind the page,
                     // the white sheet needs one pixel of definition against a pale
-                    // sky in light mode. Constant 1px, not scaled â€” UI chrome,
+                    // sky in light mode. Constant 1px, not scaled — UI chrome,
                     // not document content.
                     drawRect(
                         color = pageEdgeColor,
@@ -2283,7 +2348,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                     // viewport origin: this block already runs inside
                     // translate(originX, originY), exactly like drawStroke. Adding the
                     // origin again is what used to throw the preview a full viewport
-                    // away from the cursor â€” visible as "no preview at all" whenever
+                    // away from the cursor — visible as "no preview at all" whenever
                     // the page was centred with a margin.
                     liveStroke?.takeIf { it.isNotEmpty() }?.let { pts ->
                         val previewBase = if (tool == InkTool.Highlighter) inkWidthPt * HIGHLIGHTER_WIDTH_MULT else inkWidthPt
@@ -2302,8 +2367,8 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                                     )
                                 }
                             ),
-                            // é è¦½èˆ‡å®šç¨¿ç”¨åŒä¸€å€‹ç•«æ³•ï¼ˆ`:shared` çš„ strokeColor/strokeBlendModeï¼‰ï¼š
-                            // é«˜äº®æ˜¯ Multiply æ··åˆï¼Œä¸æ˜¯åŠé€æ˜Žè“‹è‰²ã€‚
+                            // 預覽與定稿用同一個畫法（`:shared` 的 strokeColor/strokeBlendMode）：
+                            // 高亮是 Multiply 混合，不是半透明蓋色。
                             color = strokeColor(Color(inkColour), tool == InkTool.Highlighter),
                             blendMode = strokeBlendMode(tool == InkTool.Highlighter)
                         )
@@ -2312,7 +2377,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                       // Shape preview, drawn through the same translate as
                       // everything else. Rendered as a primitive outline rather than
                       // through the envelope path, which is what it will be
-                      // committed as â€” so the preview cannot differ from the result.
+                      // committed as — so the preview cannot differ from the result.
                       //
                       // Same mapping as the pen preview above: page pixels, no added
                       // viewport origin (the translate already provides it).
@@ -2381,12 +2446,12 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
             }
         }
 
-        // â”€â”€ Notes layer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Notes layer ───────────────────────────────────────────────────────
         // Real Text composables rather than draw calls on the canvas.
         //
         // Two reasons, both practical. DrawScope has no drawText in this Compose
         // version, and reaching for Skia directly would mean reimplementing font
-        // fallback â€” which is exactly what breaks when CJK and Latin share a note.
+        // fallback — which is exactly what breaks when CJK and Latin share a note.
         // As composables the notes also get proper text shaping and stay crisp at
         // any DPI for free.
         //
@@ -2431,7 +2496,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                     // left to the font: the hit box, the PDF export, the shared
                     // content measurement and the tablet all assume 1.2, so a
                     // font whose natural leading is taller would draw outside its
-                    // own box â€” and the *next* note would then be measured onto
+                    // own box — and the *next* note would then be measured onto
                     // the last line's descenders.
                     lineHeight = with(density) { (t.fontSize * TextMetrics.LINE_SPACING * scale).toSp() }
                 )
@@ -2450,19 +2515,36 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
         if (loadError != null) {
             Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
                 Text(
-                    "ç„¡æ³•é–‹å•Ÿ PDFï¼š$loadError",
+                    "無法開啟 PDF：$loadError",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.error
                 )
             }
         }
 
+        // 寫入失敗：紅字直接壓在那一頁上。使用者剛剛動手的地方就是這裡。
+        saveError?.let { msg ->
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                contentAlignment = Alignment.TopCenter
+            ) {
+                Text(
+                    msg,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.glassClickable(onClick = { saveError = null })
+                )
+            }
+        }
+
         // (page navigation and toolbar live in the parent reader)
 
-        // â”€â”€ Ink toolbar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Ink toolbar ────────────────────────────────────────────────────
         // Only shown when [editable]. Top-start so it does not collide with the
         // page navigator at the bottom.
-        // â”€â”€ Note editor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Note editor ───────────────────────────────────────────────────────
         // A plain borderless field rather than a Material outlined one: it has to
         // sit directly on the page and read as part of the annotation, not as a
         // dialog that happened to land on the paper.
@@ -2478,7 +2560,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                     .offset { IntOffset(textEditorPos.x.roundToInt(), textEditorPos.y.roundToInt()) }
                     .width(280.dp)
                     .focusRequester(textFieldFocus),
-                placeholder = { Text("è¼¸å…¥æ–‡å­—ï¼ŒEnter å®Œæˆ", style = MaterialTheme.typography.bodySmall) },
+                placeholder = { Text("輸入文字，Enter 完成", style = MaterialTheme.typography.bodySmall) },
                 textStyle = MaterialTheme.typography.bodyMedium.copy(color = Color(inkColour)),
                 singleLine = false,
                 maxLines = 4,
@@ -2513,8 +2595,8 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
  * What an undoable edit did, in terms the desktop can actually reverse.
  *
  * Ink and notes both appear here because both tables exist on the desktop now. The
- * tablet's `DrawCommand` is still not reusable wholesale â€” it carries shape and image
- * branches with no desktop counterpart â€” but the history *discipline* is shared through
+ * tablet's `DrawCommand` is still not reusable wholesale — it carries shape and image
+ * branches with no desktop counterpart — but the history *discipline* is shared through
  * `UndoStack`: one gesture is one entry, and every branch has a matching inverse.
  */
 private sealed interface InkEdit {
@@ -2530,7 +2612,7 @@ private sealed interface InkEdit {
      * Grouped, like [Erase]: the note is one thing the user asked for, so it
      * has to come back in one press. Undoing it block by block would leave the
      * user pressing undo five times to remove five lines of somebody else's
-     * prose â€” and the tablet's `DrawCommand` history has the same rule, that
+     * prose — and the tablet's `DrawCommand` history has the same rule, that
      * one gesture is one entry.
      */
     data class AddTexts(val notes: List<com.vic.inkflow.data.TextAnnotationEntity>) : InkEdit
@@ -2540,7 +2622,7 @@ private sealed interface InkEdit {
      *
      * Grouped per gesture rather than per object: a single drag across a paragraph
      * should come back in one press, which is what the tablet's `EraseGesture` does.
-     * Strokes and notes travel together because the user asked for one action â€”
+     * Strokes and notes travel together because the user asked for one action —
      * splitting them would need two undos to reverse one gesture.
      */
     data class Erase(
@@ -2557,11 +2639,11 @@ private sealed interface InkEdit {
      *
      * [dx]/[dy] are the TOTAL for the whole drag, not one frame. A drag writes to the
      * database on every frame it moves, and folding that into a single entry requires
-     * the total â€” otherwise a selection that travelled 300pt over 30 frames would have
+     * the total — otherwise a selection that travelled 300pt over 30 frames would have
      * its 30th frame's 10pt step recorded, and undo would only move it back 10pt.
      *
      * Stored as a delta rather than an "after" snapshot because a move is exactly
-     * invertible â€” replaying the same translation forward or back cannot drift the way
+     * invertible — replaying the same translation forward or back cannot drift the way
      * storing two independently-computed states could.
      */
     data class Move(
@@ -2582,11 +2664,11 @@ private const val TEXT_SIZE_PT = 16f
 
 /**
  * Stroke width in **model units** (PDF points), not pixels, so it scales with the
- * page exactly the way the tablet's does â€” a 2pt pen is 2pt at any zoom.
+ * page exactly the way the tablet's does — a 2pt pen is 2pt at any zoom.
  *
  * This is the default picked width; the live value lives in the reader state and
  * arrives as `inkWidthPt`. The highlighter multiplies it (see below), so the
- * stored per-sample widths â€” not this constant â€” are what the renderer reads.
+ * stored per-sample widths — not this constant — are what the renderer reads.
  */
 internal const val INK_WIDTH_PT = 1.6f
 
@@ -2647,42 +2729,60 @@ private fun InkToolbar(
     // because the primary tools sit at the head of the row.
     //
     // Near-opaque on purpose: a translucent pill over body text fails both
-    // ways â€” the page shows through and neither layer stays legible. The rim
+    // ways — the page shows through and neither layer stays legible. The rim
     // and sheen from glassDressing keep the glass read without the washout.
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         val pillShape = ShapeLg
-        Row(
-            modifier = modifier
-                .padding(12.dp)
-                .background(MaterialTheme.colorScheme.surface, pillShape)
-                .clip(pillShape)
-                .horizontalScroll(rememberScrollState())
-                .padding(horizontal = 10.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(2.dp)
-        ) {
-            InkToolbarTitle(documentTitle, focusedPage, pageCount, onPrevPage, onNextPage, onGoToPage)
-            InkToolbarTools(tool, selectionCount, onToolChange)
-            if (textSelectionActive) InkToolbarTextSelection(onCopyText)
-            androidx.compose.material3.VerticalDivider(
-                modifier = Modifier.height(24.dp).padding(horizontal = 6.dp),
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
-            )
-            InkToolbarHistory(canUndo, canRedo, selectionCount, onUndo, onRedo, onDeleteSelection)
-            InkToolbarShapeSubtypes(tool, shapeSubType, onShapeSubTypeChange)
-            InkToolbarWidthPresets(tool, widthPt, onWidthChange)
-            androidx.compose.material3.VerticalDivider(
-                modifier = Modifier.height(24.dp).padding(horizontal = 6.dp),
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
-            )
-            InkToolbarZoom(zoom, onZoomOut, onZoomReset, onFitWidth, onZoomIn)
-            androidx.compose.material3.VerticalDivider(
-                modifier = Modifier.height(24.dp).padding(horizontal = 6.dp),
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
-            )
-            InkToolbarColors(colour, onColourChange)
-            Spacer(Modifier.width(6.dp))
-            InkToolbarExport(exporting, onExport, onClear)
+        val toolbarScroll = rememberScrollState()
+        Box {
+            Row(
+                modifier = modifier
+                    .padding(12.dp)
+                    .background(MaterialTheme.colorScheme.surface, pillShape)
+                    .clip(pillShape)
+                    .horizontalScroll(toolbarScroll)
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                InkToolbarTitle(documentTitle, focusedPage, pageCount, onPrevPage, onNextPage, onGoToPage)
+                InkToolbarTools(tool, selectionCount, onToolChange)
+                if (textSelectionActive) InkToolbarTextSelection(onCopyText)
+                androidx.compose.material3.VerticalDivider(
+                    modifier = Modifier.height(24.dp).padding(horizontal = 6.dp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
+                )
+                InkToolbarHistory(canUndo, canRedo, selectionCount, onUndo, onRedo, onDeleteSelection)
+                InkToolbarShapeSubtypes(tool, shapeSubType, onShapeSubTypeChange)
+                InkToolbarWidthPresets(tool, widthPt, onWidthChange)
+                androidx.compose.material3.VerticalDivider(
+                    modifier = Modifier.height(24.dp).padding(horizontal = 6.dp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
+                )
+                InkToolbarZoom(zoom, onZoomOut, onZoomReset, onFitWidth, onZoomIn)
+                androidx.compose.material3.VerticalDivider(
+                    modifier = Modifier.height(24.dp).padding(horizontal = 6.dp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
+                )
+                InkToolbarColors(colour, onColourChange)
+                Spacer(Modifier.width(6.dp))
+                InkToolbarExport(exporting, onExport, onClear)
+            }
+            // 右緣淡出：這條工具列是**會捲動**的，但沒有任何提示時，
+            // 被切掉一半的最後一顆按鈕看起來像畫壞了，而不是「往右還有」。
+            if (toolbarScroll.maxValue > toolbarScroll.value) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .width(28.dp)
+                        .height(40.dp)
+                        .background(
+                            Brush.horizontalGradient(
+                                listOf(Color.Transparent, MaterialTheme.colorScheme.surface)
+                            )
+                        )
+                )
+            }
         }
         // Export feedback lives under the toolbar rather than in a dialog: a modal
         // would interrupt reading, while a missing success message leaves the user
@@ -2707,7 +2807,7 @@ private fun InkToolbar(
  * One icon tool button, in the tablet's language: the icon carries the meaning,
  * the selection pill carries the state, and the tint follows the theme.
  *
- * Icon-only on purpose â€” six text labels plus undo/redo is what overflowed the old
+ * Icon-only on purpose — six text labels plus undo/redo is what overflowed the old
  * row on a normal window. The description survives for screen readers and tooltips.
  */
 @Composable
@@ -2817,7 +2917,7 @@ internal fun screenToModel(
  * what get rendered.
  *
  * A stroke whose samples all carry the same width still goes through the
- * envelope â€” it costs one path fill and keeps a single code path, which matters
+ * envelope — it costs one path fill and keeps a single code path, which matters
  * more here than the micro-optimisation would.
  */
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawStroke(
@@ -2862,8 +2962,8 @@ private fun PointEntity.toPagePixel(scale: Float, box: PageBox): Offset =
 
 /**
  * Zoom bounds, relative to fit-to-window. `1.0` is "the whole page on screen", which is the
- * state a reopened document starts in. `0.25` is an overview â€” the page with its
- * neighbours visible â€” and is the floor because a reader who has zoomed out this far is
+ * state a reopened document starts in. `0.25` is an overview — the page with its
+ * neighbours visible — and is the floor because a reader who has zoomed out this far is
  * orienting themselves, not reading. `8.0` is where 6 pt body text is comfortably legible;
  * past that the render DPI cap of 300 means the extra zoom would only enlarge an already
  * soft bitmap, so stopping here costs nothing and bounds the worst-case raster.
