@@ -38,6 +38,13 @@ data class TextAnnotationEntity(
     val boxWidth: Float? = null,
     /** 對齊 0=左 1=中 2=右（DB v30 起；框內水平對齊）。 */
     val alignment: Int = 0,
+    /**
+     * 文字流群組 id（DB v32 起）。null = 獨立文字框。
+     *
+     * 同一條流的格子會自動重排：改一格，下面的跟著推開／拉回。順序不另存欄位，
+     * 就是 modelY 由小到大。
+     */
+    val flowId: String? = null,
 
     // ── v6 併發合併（SYNC_PROTOCOL.md §15.1，與 StrokeEntity 同一套）─────
     // 欄位語意逐字對齊筆跡：version 計數器、versionNonce 打平時的決定性 tiebreak、

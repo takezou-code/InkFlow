@@ -34,8 +34,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 // v29: PENCIL 改名 CRAYON 存量回填（見 MIGRATION_28_29 註解；未發布前的改名）。
 // v30: text_annotations 加 boxWidth ＋ alignment（文字框化，見 MIGRATION_29_30 註解）。
 // v31: 舊文字的 boxWidth 回填成「貼合內容」寬（折行收斂成一個權威，見 MIGRATION_30_31）。
+// v32: text_annotations 加 flowId（文字流＝Word 式自動重排的群組，見 MIGRATION_31_32）。
 //
-// ⚠️ v28～v31 這幾條 migration **不可以拿掉**。beta 曾在 2026-10-16 reset 回 1.6.1
+// ⚠️ v28～v32 這幾條 migration **不可以拿掉**。beta 曾在 2026-10-16 reset 回 1.6.1
 // （拿掉蠟筆；文字框後來又加回來，但 boxWidth 欄位從 v30 就在），而平板上既有的
 // 資料庫已經是 v31。少任何一條：
 //   • 舊 APK 升上來（v27 起）→ schema identity check 失敗，App 開不起來；
@@ -46,7 +47,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
                 TextAnnotationEntity::class, ImageAnnotationEntity::class,
                 DocumentPreferenceEntity::class, BookmarkEntity::class,
                 MathSourceEntity::class],
-    version = 31
+    version = 32
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun strokeDao(): StrokeDao
@@ -729,6 +730,28 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v32：文字流（Word 式自動排版）的群組 id。
+         *
+         * 只加欄、不回填：舊資料全是獨立文字框（`flowId IS NULL`），行為與 v31 完全相同；
+         * 新的 AI 匯入才把同一批文字的格子串成一條流。冪等：先讀 PRAGMA table_info。
+         *
+         * 沒有索引：流是以「同一頁、同一個 groupId」在記憶體裡過濾（一頁的註解數量是
+         * 個位數），加索引只是多一份要維護的 schema。
+         */
+        private val MIGRATION_31_32 = object : Migration(31, 32) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                val existing = mutableSetOf<String>()
+                db.query("PRAGMA table_info(text_annotations)").use { c ->
+                    val nameIdx = c.getColumnIndexOrThrow("name")
+                    while (c.moveToNext()) existing.add(c.getString(nameIdx))
+                }
+                if ("flowId" !in existing) {
+                    db.execSQL("ALTER TABLE text_annotations ADD COLUMN flowId TEXT DEFAULT NULL")
+                }
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val appContext = context.applicationContext
@@ -769,7 +792,8 @@ abstract class AppDatabase : RoomDatabase() {
                     MIGRATION_27_28,
                     MIGRATION_28_29,
                     MIGRATION_29_30,
-                    MIGRATION_30_31
+                    MIGRATION_30_31,
+                    MIGRATION_31_32
                 )
                 // Only allow destructive migration on downgrade (e.g. user reverts to an
                 // older APK). Unknown *upgrade* paths surface as a hard crash rather than

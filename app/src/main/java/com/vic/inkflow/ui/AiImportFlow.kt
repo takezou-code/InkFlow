@@ -331,8 +331,11 @@ suspend fun importPickedJsonInner(
         if (katexFail > 0) "${katexFail} 式渲染失敗" else ""
     ).filter { it.isNotEmpty() }
     val failNote = if (failBits.isNotEmpty()) "（" + failBits.joinToString("，") + "已退文字）" else ""
+    // 這一整批回答＝一條文字流：之後改任何一段，下面的自動重排（見 EditorViewModel 的
+    // planFlowReflow）。id 每批不同，所以兩次匯入是兩條獨立的流，不會互相推擠。
+    val flowId = "ai-" + java.util.UUID.randomUUID()
     placePages(context, viewModel, pdfViewModel, repos, documentUri, anchorPage, onRequestPage, pages, mathById, failNote,
-        headTarget = if (contTop != null) anchorPage else null)
+        headTarget = if (contTop != null) anchorPage else null, flowId = flowId)
 }
 
 /**
@@ -351,7 +354,9 @@ suspend fun placePages(
     mathById: Map<String, AiMathBlock>,
     failNote: String,
     // 接續錨定頁：pages[0] 直接寫回此頁（不開新頁），其餘緊貼其後開新頁；null=全部開新頁
-    headTarget: Int? = null
+    headTarget: Int? = null,
+    /** 這批文字的文字流 id（見 EditorViewModel 的 reflow）；null = 全部當獨立文字框。 */
+    flowId: String? = null
 ) {
     val count = pdfViewModel.pageCount.value
     if (count <= 0) {
@@ -381,7 +386,10 @@ suspend fun placePages(
         }
         page.forEach { pl ->
             when (pl) {
-                is Placed.T -> viewModel.insertImportedText(documentUri, pageIdx, pl.t.text, pl.t.modelX, pl.t.modelY, pl.t.fontSize)
+                is Placed.T -> viewModel.insertImportedText(
+                    documentUri, pageIdx, pl.t.text, pl.t.modelX, pl.t.modelY, pl.t.fontSize,
+                    flowId = flowId
+                )
                 is Placed.I -> {
                     val imageUri = Uri.fromFile(java.io.File(pl.path)).toString()
                     viewModel.insertImportedImage(

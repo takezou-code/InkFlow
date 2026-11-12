@@ -38,6 +38,25 @@ fun textMetricsOf(fontSize: Float): Pair<Float, Float> {
     return (-fm.ascent + fm.descent + fm.leading) to fm.descent
 }
 
+/**
+ * 文字流重排用的垂直度量（行高、首行 ascent）——**與畫布同一顆字體**（DEFAULT_BOLD）。
+ *
+ * 為什麼要在 app 這一側量、再注入 `:shared`：`Paint` 只有 Android 有，而重排必須用
+ * **畫出來的那組數字**算，否則推開的距離會跟實際行高差幾 px，一格一格累積成疊字。
+ * 字體一定要與 `InkCanvas.textPaint` 相同：換成 DEFAULT 會讓行高不同。
+ */
+fun androidFlowLineMetrics(fontSize: Float): com.vic.inkflow.data.TextFlowLineMetrics {
+    val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        typeface = Typeface.DEFAULT_BOLD
+        textSize = fontSize
+    }
+    val fm = p.fontMetrics
+    return com.vic.inkflow.data.TextFlowLineMetrics(
+        lineHeight = -fm.ascent + fm.descent + fm.leading,
+        ascent = -fm.ascent
+    )
+}
+
 /** M6：點陣紙白比例（取樣步長 stridePx；大點陣圖 IO 執行緒呼叫）。 */
 fun whiteRatioOfBitmap(
     bmp: Bitmap,

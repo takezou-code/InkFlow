@@ -368,7 +368,10 @@ internal class SelectionController(
                     pageIndex = targetPage,
                     modelX = ann.modelX.coerceIn(0f, modelWidth()),
                     modelY = newY,
-                    docY = targetPage * docStride() + newY
+                    docY = targetPage * docStride() + newY,
+                    // 換頁＝離開原本那條文字流的排序鏈（重排只在同一頁內量）。
+                    // 留著 flowId 會讓它在目標頁跟別頁的同伴「同名不同頁」，兩邊都算不準。
+                    flowId = if (targetPage == ann.pageIndex) ann.flowId else null
                 )
             }
         }
@@ -672,7 +675,9 @@ internal class SelectionController(
             }
 
             val copiedTexts = sourceTexts.map { original ->
-                val copied = original.copy(id = UUID.randomUUID().toString())
+                // 複製品是**新的獨立文字框**：不能共用 flowId（否則流裡多一個同位置的成員，
+                // 之後重排會把它當成排序的一部分，兩份字互相推擠）。
+                val copied = original.copy(id = UUID.randomUUID().toString(), flowId = null)
                 repos.texts.insert(copied)
                 copied
             }

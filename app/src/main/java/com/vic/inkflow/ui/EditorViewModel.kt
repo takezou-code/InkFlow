@@ -20,6 +20,8 @@ import com.vic.inkflow.data.repository.InkFlowRepositories
 import com.vic.inkflow.data.Stroke
 import com.vic.inkflow.data.StrokeWithSamples
 import com.vic.inkflow.data.TextAnnotation
+import com.vic.inkflow.data.TextFlowBox
+import com.vic.inkflow.data.reflowTextFlowY
 import com.vic.inkflow.util.IntersectionUtils
 import com.vic.inkflow.util.DocTransform
 import com.vic.inkflow.util.EnvelopeUtils
@@ -471,7 +473,13 @@ class EditorViewModel(
     data class NeighborPageData(
         val strokes: List<StrokeWithSamples> = emptyList(),
         val texts: List<TextAnnotation> = emptyList(),
-        val images: List<ImageAnnotation> = emptyList()
+        val images: List<ImageAnnotation> = emptyList(),
+        /**
+         * 本頁還在樂觀層（[_pendingStrokes]）、DB 尚未回報的筆跡 id。
+         * 畫布用它在「提筆到落庫」之間把墨當向量畫，不烙進封頂位圖快取——
+         * 否則那幾幀是「糊的成品」，落庫後才跳回清晰＝看起來閃一下。
+         */
+        val pendingIds: Set<String> = emptySet()
     )
     private val _neighborCache = MutableStateFlow<Map<Int, NeighborPageData>>(emptyMap())
     fun cachedNeighbor(page: Int): NeighborPageData? = _neighborCache.value[page]
@@ -489,12 +497,22 @@ class EditorViewModel(
             repos.images.getForPage(documentUri, page),
             // 第四路：樂觀隱藏集的版本號。隱藏集本身是 concurrent set，
             // 這裡不複製、只讀；版本號變一次就重組一次（同一批多個 id 只發一幀）。
-            hiddenVersion
-        ) { s, t, i, _ ->
+            hiddenVersion,
+            // 第五路：樂觀筆跡層。少了這一路，提筆到落庫之間這一頁是空的
+            //（UI 只有這條流；currentStrokes 那條早就沒人訂閱了）。
+            _pendingStrokes
+        ) { s, t, i, _, pending ->
+            val merged = mergePageStrokes(s, pending, page, hiddenIds)
+            // DB 一出現同 id 就從樂觀層退場，否則同一筆會被畫兩次
+            //（高亮筆＝alpha 疊兩層，提筆瞬間明顯偏暗）。
+            if (merged.resolvedIds.isNotEmpty()) {
+                _pendingStrokes.value = _pendingStrokes.value - merged.resolvedIds
+            }
             NeighborPageData(
-                strokes = if (hiddenIds.isEmpty()) s else s.filter { it.stroke.id !in hiddenIds },
+                strokes = merged.strokes,
                 texts = if (hiddenIds.isEmpty()) t else t.filter { it.id !in hiddenIds },
-                images = if (hiddenIds.isEmpty()) i else i.filter { it.id !in hiddenIds }
+                images = if (hiddenIds.isEmpty()) i else i.filter { it.id !in hiddenIds },
+                pendingIds = merged.pendingIds
             )
         }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), cachedNeighbor(page) ?: NeighborPageData())
@@ -579,23 +597,26 @@ class EditorViewModel(
         tool: Tool = Tool.PEN,
         baseWidth: Float = 5f,
         /** 跨頁筆分段歸屬。null = 作用頁（舊行為）。 */
-        targetPage: Int? = null
+        targetPage: Int? = null,
+        /**
+         * 這批點「被收下來時」的畫布像素框架。null = 用全域 canvas（舊行為）。
+         * 提筆當下的 canvas 可能已經 relayout 過；拿新框架去正規化舊點，
+         * 整筆會按比例偏移（提筆偏移的其中一個成因）。
+         */
+        frameW: Float? = null,
+        frameH: Float? = null
     ): String? {
         if (points.size < 2) return null
-        val cW = canvasW
-        val cH = canvasH
+        val cW = frameW?.takeIf { it > 0f } ?: canvasW
+        val cH = frameH?.takeIf { it > 0f } ?: canvasH
         val strokeId = UUID.randomUUID().toString()
 
         // Normalize immediately on the caller thread so the just-finished stroke can move
         // from the active layer to the pending layer without a visible gap on stylus lift.
-        val scaleX = DocTransform.invScaleXUnchecked(cW, modelWidth)
-        val scaleY = DocTransform.invScaleYUnchecked(cH, modelHeight)
-        // 寬度用 zoom=1 基準歸一（× docZoom 還原）：座標仍用實際 canvas 尺寸映射，
-        // 新墨在任何縮放下存入同樣的 model 寬，放大等比變粗。
-        val widthScaleX = scaleX * _docZoom.value.coerceAtLeast(0.1f)
-        val normalizedPoints = points.map {
-            StrokePoint(it.x * scaleX, it.y * scaleY, it.width * widthScaleX)
-        }
+        val zoom = _docZoom.value
+        val normalizedStroke = normalizeStrokePoints(points, cW, cH, modelWidth, modelHeight, zoom)
+        val normalizedPoints = normalizedStroke.points
+        val widthScaleX = normalizedStroke.widthScale
         val path = EnvelopeUtils.generateEnvelopePath(normalizedPoints)
         val bounds = path.getBounds()
         // S1 雙寫：頁空間照舊，docY 錨點同步存（S2 才讀）。
@@ -630,8 +651,10 @@ class EditorViewModel(
         android.util.Log.w(
             "InkFlowDiag",
             "SAVE id=${strokeId.take(8)} n=${normalizedPoints.size} " +
-                "canvas=${cW.toInt()}x${cH.toInt()} model=${modelWidth.toInt()}x${modelHeight.toInt()} " +
-                "zoom=${_docZoom.value} page=$strokePage " +
+                "canvas=${cW.toInt()}x${cH.toInt()} " +
+                "frame=${if (frameW != null && frameH != null) "gesture" else "live"} " +
+                "model=${modelWidth.toInt()}x${modelHeight.toInt()} " +
+                "zoom=$zoom page=$strokePage " +
                 "px=[${points.first().x.toInt()},${points.first().y.toInt()}" +
                 "..${points.last().x.toInt()},${points.last().y.toInt()}] " +
                 "model=[${firstPt.x.toInt()},${firstPt.y.toInt()}" +
@@ -1105,10 +1128,24 @@ class EditorViewModel(
     }
 
     /** M3：引入文字寫入 — 直接給 model 座標與目標頁（排版引擎已算好，不經 canvas 換算）。 */
-    fun insertImportedText(docUri: String, targetPage: Int, text: String, modelX: Float, modelY: Float, fontSize: Float) {
+    fun insertImportedText(
+        docUri: String,
+        targetPage: Int,
+        text: String,
+        modelX: Float,
+        modelY: Float,
+        fontSize: Float,
+        /**
+         * 同一批 AI 匯入的文字流 id（null = 獨立文字框）。
+         *
+         * 有值時這些格子會自動重排：改一段、下面的跟著推開／拉回。null 就完全是舊行為。
+         */
+        flowId: String? = null
+    ) {
         if (text.isBlank()) return
         // 框寬＝AI 排版的內容寬（同一支 aiTextContentWidth）。有了它，AI 文字就是一般文字框：
-        // 折行交給渲染器、可以改寬、可以對齊；存的行再折一次是冪等，所以外觀與匯入時一致。
+        // 折行交給渲染器、可以改寬、可以對齊。存的是**原文**（不是折好的行），
+        // 所以拉寬／縮窄時會真的重新排版。
         val boxWidth = aiTextContentWidth(modelWidth)
         val ann = TextAnnotation(
             id = UUID.randomUUID().toString(),
@@ -1120,7 +1157,8 @@ class EditorViewModel(
             modelX = modelX,
             modelY = modelY,
             fontSize = fontSize,
-            boxWidth = boxWidth
+            boxWidth = boxWidth,
+            flowId = flowId
         )
         viewModelScope.launch(Dispatchers.IO) {
             repos.texts.insert(ann)
@@ -1149,13 +1187,125 @@ class EditorViewModel(
         }
     }
 
+    // ── 文字流（Word 式自動排版）────────────────────────────────────────────
+    //
+    // 同一個 flowId 的格子是一份「會自己排版的文字」：改一格（文字／字級／框寬），
+    // 下面幾格照原本的間距重新落位；改短時往上拉，不留洞。實作在
+    // `:shared` 的 reflowTextFlowY（純函數、有單測），行高由 androidFlowLineMetrics
+    // 注入——那顆字體必須與畫布同一顆（DEFAULT_BOLD），否則誤差會一格一格累積。
+
+    /** 一條流這次要動的格子：改動前 → 改動後（同一格 undo 全撤）。 */
+    private data class TextFlowReflow(
+        val originals: List<TextAnnotation>,
+        val updated: List<TextAnnotation>
+    )
+
+    /** 把一格的基線搬到 [y]，順手把 S1 的 docY 一起算（只寫不讀，但漏寫會失同步）。 */
+    private fun shiftTextTo(ann: TextAnnotation, y: Float): TextAnnotation =
+        ann.copy(modelY = y, docY = ann.pageIndex * docStride + y)
+
+    /** 同一頁上屬於 [flowId] 的可排版格子，由上而下。 */
+    private fun flowMembersOf(pageTexts: List<TextAnnotation>, flowId: String): List<TextAnnotation> =
+        pageTexts
+            .filter { it.flowId == flowId && !it.isStamp && (it.boxWidth ?: 0f) > 0f }
+            .sortedWith(compareBy({ it.modelY }, { it.id }))
+
+    private fun flowBoxOf(ann: TextAnnotation): TextFlowBox =
+        TextFlowBox(
+            id = ann.id,
+            text = ann.text,
+            fontSize = ann.fontSize,
+            boxWidth = ann.boxWidth ?: 0f,
+            modelY = ann.modelY
+        )
+
+    /**
+     * 算出「[edited] 改了之後，同一條流每一格應該落在哪裡」。
+     *
+     * 回傳 null = 這不是一條流（沒有 flowId、或同一頁只有一格）→ 呼叫端照舊只寫自己。
+     * 讀頁面在 IO 執行緒；失敗就當作沒有流（寧可維持舊行為，也不要讓一次編輯整個失敗）。
+     */
+    private suspend fun planFlowReflow(edited: TextAnnotation): TextFlowReflow? {
+        val flowId = edited.flowId ?: return null
+        val pageTexts = try {
+            repos.texts.getForPageSync(documentUri, edited.pageIndex)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e("EditorViewModel", "flow reflow: cannot read page texts", e)
+            return null
+        }
+        val members = flowMembersOf(pageTexts, flowId)
+        if (members.size < 2 || members.none { it.id == edited.id }) return null
+        val currentBoxes = members.map(::flowBoxOf)
+        val updatedBoxes = members.map { if (it.id == edited.id) flowBoxOf(edited) else flowBoxOf(it) }
+        val newY = reflowTextFlowY(currentBoxes, updatedBoxes, ::androidFlowLineMetrics)
+        val originals = ArrayList<TextAnnotation>()
+        val updated = ArrayList<TextAnnotation>()
+        members.forEachIndexed { i, ann ->
+            val isEdited = ann.id == edited.id
+            if (isEdited || kotlin.math.abs(ann.modelY - newY[i]) > 0.01f) {
+                originals.add(ann)
+                updated.add(shiftTextTo(if (isEdited) edited else ann, newY[i]))
+            }
+        }
+        return TextFlowReflow(originals, updated)
+    }
+
+    /**
+     * 刪掉流的一格之後，把下面的格子收回來（含「被刪那格與下一格之間的間距」）。
+     *
+     * 必須在寫墓碑**之前**呼叫：墓碑後 `getForPageSync` 就看不到那一列，量不到它原本佔的高度。
+     */
+    private suspend fun planFlowCollapse(removed: TextAnnotation): TextFlowReflow? {
+        val flowId = removed.flowId ?: return null
+        val pageTexts = try {
+            repos.texts.getForPageSync(documentUri, removed.pageIndex)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e("EditorViewModel", "flow collapse: cannot read page texts", e)
+            return null
+        }
+        val members = flowMembersOf(pageTexts, flowId)
+        if (members.size < 2 || members.none { it.id == removed.id }) return null
+        val kept = members.filter { it.id != removed.id }
+        val newY = reflowTextFlowY(
+            current = members.map(::flowBoxOf),
+            updated = kept.map(::flowBoxOf),
+            metricsOf = ::androidFlowLineMetrics,
+            // kept 是 members 去掉一格 → 索引會跳號，間距要對回原本的鄰居。
+            sourceIndex = { i -> members.indexOfFirst { it.id == kept[i].id } }
+        )
+        val originals = ArrayList<TextAnnotation>()
+        val updated = ArrayList<TextAnnotation>()
+        kept.forEachIndexed { i, ann ->
+            if (kotlin.math.abs(ann.modelY - newY[i]) > 0.01f) {
+                originals.add(ann)
+                updated.add(shiftTextTo(ann, newY[i]))
+            }
+        }
+        if (updated.isEmpty()) return null
+        return TextFlowReflow(originals, updated)
+    }
+
     fun commitTextAnnotationContent(id: String, newText: String) {
         val old = findTextAnnotation(id) ?: return
         if (old.text == newText || newText.isBlank()) return
         val updated = old.copy(text = newText)
         viewModelScope.launch(Dispatchers.IO) {
-            repos.texts.updateAndBump(updated)
-            withContext(Dispatchers.Main) { pushUndo(DrawCommand.EditTextAnnotation(old, updated)) }
+            val flow = planFlowReflow(updated)
+            if (flow == null) {
+                repos.texts.updateAndBump(updated)
+            } else {
+                repos.transaction { flow.updated.forEach { repos.texts.updateAndBump(it) } }
+            }
+            withContext(Dispatchers.Main) {
+                pushUndo(
+                    if (flow == null) DrawCommand.EditTextAnnotation(old, updated)
+                    else DrawCommand.TextFlowEdit(flow.originals, flow.updated)
+                )
+            }
         }
     }
     fun deleteTextAnnotation(id: String) {
@@ -1163,9 +1313,19 @@ class EditorViewModel(
         hideIds(listOf(id))
         viewModelScope.launch(Dispatchers.IO) {
             try {
+                // 先量收合（要在墓碑之前，見 planFlowCollapse），再寫墓碑。
+                val collapse = planFlowCollapse(ann)
                 // 走墓碑而非硬刪除：同筆跡刪除的理由（§15.4）。
                 repos.texts.tombstoneByIds(listOf(id))
-                withContext(Dispatchers.Main) { pushUndo(DrawCommand.RemoveTextAnnotation(ann)) }
+                if (collapse != null) {
+                    repos.transaction { collapse.updated.forEach { repos.texts.updateAndBump(it) } }
+                }
+                withContext(Dispatchers.Main) {
+                    pushUndo(
+                        if (collapse == null) DrawCommand.RemoveTextAnnotation(ann)
+                        else DrawCommand.TextFlowDelete(ann, collapse.originals, collapse.updated)
+                    )
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -1176,23 +1336,62 @@ class EditorViewModel(
         }
     }
 
+    /**
+     * 拖曳移動。文字流的成員是**整條一起搬**（Word 裡拖一個段落不會只有那一行跑掉），
+     * 位移夾在紙面內；獨立文字框走原本的單顆行為。
+     */
     fun commitTextAnnotationMove(id: String, canvasDeltaX: Float, canvasDeltaY: Float) {
         if (canvasDeltaX == 0f && canvasDeltaY == 0f) return
         val old = findTextAnnotation(id) ?: return
         val scaleX = DocTransform.invScaleXUnchecked(canvasW, modelWidth)
         val scaleY = DocTransform.invScaleYUnchecked(canvasH, modelHeight)
-        val newModelY = old.modelY + canvasDeltaY * scaleY
-        val updated = old.copy(
-            modelX = old.modelX + canvasDeltaX * scaleX,
-            modelY = newModelY,
-            // S1 雙寫：docY 與座標同步算。
-            docY = old.pageIndex * docStride + newModelY
-        )
+        val modelDx = canvasDeltaX * scaleX
+        val modelDy = canvasDeltaY * scaleY
         viewModelScope.launch(Dispatchers.IO) {
-            repos.texts.update(updated)
-            withContext(Dispatchers.Main) { pushUndo(DrawCommand.MoveTextAnnotation(old, updated)) }
+            val flowId = old.flowId
+            val members = if (flowId == null) emptyList()
+            else flowMembersOf(repos.texts.getForPageSync(documentUri, old.pageIndex), flowId)
+            if (flowId == null || members.size < 2 || members.none { it.id == old.id }) {
+                val newModelY = old.modelY + modelDy
+                val updated = old.copy(
+                    modelX = old.modelX + modelDx,
+                    modelY = newModelY,
+                    // S1 雙寫：docY 與座標同步算。
+                    docY = old.pageIndex * docStride + newModelY
+                )
+                repos.texts.update(updated)
+                withContext(Dispatchers.Main) { pushUndo(DrawCommand.MoveTextAnnotation(old, updated)) }
+                return@launch
+            }
+            // 整條流共用同一個位移：格與格之間的間距不變，就不會被重排拉走。
+            val ddx = clampShift(
+                modelDx,
+                -members.minOf { it.modelX },
+                modelWidth - members.maxOf { it.modelX + (it.boxWidth ?: 0f) }
+            )
+            val ddy = clampShift(
+                modelDy,
+                -members.minOf { it.modelY },
+                modelHeight - members.maxOf { it.modelY }
+            )
+            val moved = members.map { m ->
+                val y = m.modelY + ddy
+                m.copy(
+                    modelX = m.modelX + ddx,
+                    modelY = y,
+                    docY = m.pageIndex * docStride + y
+                )
+            }
+            repos.transaction { moved.forEach { repos.texts.updateAndBump(it) } }
+            withContext(Dispatchers.Main) {
+                pushUndo(DrawCommand.TextFlowEdit(members, moved))
+            }
         }
     }
+
+    /** 夾住位移量；上下界反了就當作不能動（避免 `coerceIn` 直接丟例外）。 */
+    private fun clampShift(delta: Float, lo: Float, hi: Float): Float =
+        if (lo <= hi) delta.coerceIn(lo, hi) else 0f
 
     /**
      * 跨頁拖曳落點提交：文字整顆搬到 targetPage 的 (modelX, modelY)。
@@ -1208,7 +1407,10 @@ class EditorViewModel(
             pageIndex = newPage,
             modelX = newModelX,
             modelY = newModelY,
-            docY = newPage * docStride + newModelY
+            docY = newPage * docStride + newModelY,
+            // 換頁＝離開那條流的排序鏈（重排只能在同一頁內算）。留在原頁的格子不會被拉扯，
+            // 也不會出現「跨頁的半條流」——那種狀態沒有錨點可量。
+            flowId = if (newPage == old.pageIndex) old.flowId else null
         )
         if (updated == old) return
         viewModelScope.launch(Dispatchers.IO) {
@@ -1228,20 +1430,44 @@ class EditorViewModel(
             docY = old.pageIndex * docStride + newY
         )
         viewModelScope.launch(Dispatchers.IO) {
-            repos.texts.updateAndBump(updated)
-            withContext(Dispatchers.Main) { pushUndo(DrawCommand.ResizeTextAnnotation(old, updated)) }
+            // 字級變了 → 行高變了 → 流裡下面的格子要跟著讓位。
+            val flow = planFlowReflow(updated)
+            if (flow == null) {
+                repos.texts.updateAndBump(updated)
+            } else {
+                repos.transaction { flow.updated.forEach { repos.texts.updateAndBump(it) } }
+            }
+            withContext(Dispatchers.Main) {
+                pushUndo(
+                    if (flow == null) DrawCommand.ResizeTextAnnotation(old, updated)
+                    else DrawCommand.TextFlowEdit(flow.originals, flow.updated)
+                )
+            }
         }
     }
 
-    /** 文字框寬調整（拖曳右緣把手）：重排框內文字。undo 走 ResizeTextAnnotation（同為幾何變更）。 */
+    /**
+     * 文字框寬調整（拖曳右緣把手）：框內重新折行，**流裡下面的格子跟著上下移動**。
+     * undo 走 ResizeTextAnnotation（單格）／TextFlowEdit（整條流）。
+     */
     fun commitTextAnnotationWidth(id: String, newBoxWidthModel: Float) {
         val old = findTextAnnotation(id) ?: return
         val clamped = newBoxWidthModel.coerceAtLeast(TEXT_BOX_MIN_WIDTH)
         if (kotlin.math.abs((old.boxWidth ?: 0f) - clamped) < 0.01f) return
         val updated = old.copy(boxWidth = clamped)
         viewModelScope.launch(Dispatchers.IO) {
-            repos.texts.updateAndBump(updated)
-            withContext(Dispatchers.Main) { pushUndo(DrawCommand.ResizeTextAnnotation(old, updated)) }
+            val flow = planFlowReflow(updated)
+            if (flow == null) {
+                repos.texts.updateAndBump(updated)
+            } else {
+                repos.transaction { flow.updated.forEach { repos.texts.updateAndBump(it) } }
+            }
+            withContext(Dispatchers.Main) {
+                pushUndo(
+                    if (flow == null) DrawCommand.ResizeTextAnnotation(old, updated)
+                    else DrawCommand.TextFlowEdit(flow.originals, flow.updated)
+                )
+            }
         }
     }
 
@@ -1544,6 +1770,20 @@ class EditorViewModel(
                 is DrawCommand.EditTextAnnotation -> {
                     repos.texts.updateAndBump(command.original)
                 }
+                is DrawCommand.TextFlowEdit -> {
+                    // 一次編輯連帶移動的格子一起還原（否則文字回去了、位置還疊著）。
+                    repos.transaction {
+                        command.originals.forEach { repos.texts.updateAndBump(it) }
+                    }
+                }
+                is DrawCommand.TextFlowDelete -> {
+                    showIds(listOf(command.removed.id))
+                    repos.transaction {
+                        repos.texts.insert(command.removed)
+                        repos.texts.bumpTextVersion(command.removed.id)
+                        command.originals.forEach { repos.texts.updateAndBump(it) }
+                    }
+                }
                 is DrawCommand.AddImageAnnotation -> {
                     hideIds(listOf(command.annotation.id))
                     repos.images.deleteById(command.annotation.id)
@@ -1712,6 +1952,18 @@ class EditorViewModel(
                 }
                 is DrawCommand.EditTextAnnotation -> {
                     repos.texts.updateAndBump(command.updated)
+                }
+                is DrawCommand.TextFlowEdit -> {
+                    repos.transaction {
+                        command.updated.forEach { repos.texts.updateAndBump(it) }
+                    }
+                }
+                is DrawCommand.TextFlowDelete -> {
+                    hideIds(listOf(command.removed.id))
+                    repos.transaction {
+                        repos.texts.deleteById(command.removed.id)
+                        command.updated.forEach { repos.texts.updateAndBump(it) }
+                    }
                 }
                 is DrawCommand.AddImageAnnotation -> {
                     showIds(listOf(command.annotation.id))

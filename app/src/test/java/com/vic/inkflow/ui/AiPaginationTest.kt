@@ -61,10 +61,15 @@ class AiPaginationTest {
     }
 
     @Test
-    fun storedLinesSurviveARewrap() {
+    fun storedTextStaysStableWhenWrappedAgain() {
+        // 存的是**原文**（自然段落），不是折好的行：畫面會再折一次，所以要求的是
+        // 「折第二次＝折第一次」（冪等），而不是「存進去的字串等於折好的行」。
+        // 這一條同時守住「拉寬框會真的重排」——硬換行一旦寫進 DB，折行就不再跟框寬走。
         val body = "中文字元測試 ".repeat(40) + "mixed English words here"
         for (t in textsOf(paginate(body))) {
-            assertEquals(t.text.split("\n"), wrapTextLines(t.text, t.fontSize, t.boxWidth))
+            val once = wrapTextLines(t.text, t.fontSize, t.boxWidth)
+            val twice = wrapTextLines(once.joinToString("\n"), t.fontSize, t.boxWidth)
+            assertEquals(once, twice)
         }
     }
 
@@ -73,7 +78,8 @@ class AiPaginationTest {
         val body = LONG_BODY
         val pages = paginate(body, pageH = 260f)
         assertTrue("應分成多頁（實際 ${pages.size}）", pages.size >= 2)
-        val stored = textsOf(pages).flatMap { it.text.split("\n") }
+        // 跨頁切段後每一塊都是原文 → 各自折行、接起來必須等於整段折出來的行。
+        val stored = textsOf(pages).flatMap { wrapTextLines(it.text, it.fontSize, it.boxWidth) }
         assertEquals(wrapTextLines(body, fontSize, contentW), stored)
     }
 
@@ -82,9 +88,19 @@ class AiPaginationTest {
         val pageH = 260f
         val bottomMargin = 64f
         for (t in textsOf(paginate(LONG_BODY, pageH = pageH))) {
-            val rows = t.text.split("\n").size
+            val rows = wrapTextLines(t.text, t.fontSize, t.boxWidth).size
             val bottom = t.modelY + (rows - 1) * lineH + descent
             assertTrue("文字越過下緣：bottom=$bottom > ${pageH - bottomMargin}", bottom <= pageH - bottomMargin + 0.001f)
         }
     }
+
+    @Test
+    fun paragraphsAreStoredAsOriginalTextNotPreWrappedLines() {
+        // 拉寬框必須能重新填滿：存進去的每一個「段落」都要比框窄才可能有折行
+        //（若存的是折好的行，最寬的那一行會剛好貼齊框寬，且字串裡會多出一堆硬換行）。
+        val body = "這是一段很長的中文內容，用來確認匯入後存的是原文。" .repeat(6)
+        val texts = textsOf(paginate(body))
+        assertEquals(1, texts.size)
+        assertEquals(body, texts[0].text)
+        assertTrue("這段應該會折行", wrapTextLines(texts[0].text, texts[0].fontSize, texts[0].boxWidth).size > 1)    }
 }
