@@ -86,4 +86,62 @@ class InkDamageTest {
         assertTrue(zone.overlaps(stroke))
         assertTrue(zone.left <= stroke.left && zone.top <= stroke.top)
     }
+
+    // ── 位圖有序簽名（純換序要全量，加筆/刪筆不要） ─────────────────────────
+
+    @Test
+    fun reorderOfSameSetForcesFullRebuild() {
+        // 同步換 rowid／桌機端覆寫可能讓同一批筆換序；bounds 沒變 → 髒區算不出來。
+        assertTrue(bitmapOrderChanged(listOf("a", "b", "c"), listOf("c", "a", "b")))
+    }
+
+    @Test
+    fun appendOrDeleteKeepsIncrementalPath() {
+        // 加筆／刪筆是大小不同：那是髒區的日常工作，不該全頁重畫。
+        assertTrue(!bitmapOrderChanged(listOf("a", "b"), listOf("a", "b", "c")))
+        assertTrue(!bitmapOrderChanged(listOf("a", "b", "c"), listOf("a", "b")))
+    }
+
+    @Test
+    fun identicalOrderIsNotAChange() {
+        assertTrue(!bitmapOrderChanged(listOf("a", "b"), listOf("a", "b")))
+        // 第一次建圖（沒有上次簽名）不算換序：新圖本來就走全量。
+        assertTrue(!bitmapOrderChanged(null, listOf("a", "b")))
+    }
+
+    // ── 墨跡快取解析度（提筆「糊一下」的元凶） ───────────────────────────────
+
+    @Test
+    fun normalPageRendersAtOneToOne() {
+        // 一般紙面（遠小於兩個預算）必須逐像素一致：這裡掉到 0.9 以下，
+        // 提筆那一筆就會從向量換成「縮小再放大」的糊版。
+        assertEquals(1f, inkCacheScale(2000, 2800), 0.0001f)
+        // 3200×4500 的平板整頁：長邊預算讓它落在 0.91，放大 1.09 倍以內＝看不出來。
+        val scale = inkCacheScale(3200, 4500)
+        assertTrue("整頁比例 $scale 應 >= 0.9", scale >= 0.9f)
+        assertTrue("整頁比例 $scale 不可 > 1", scale <= 1f)
+    }
+
+    @Test
+    fun zoomedCanvasIsDownsampledToTheBudget() {
+        // 縮放到上萬 px：一定要降，否則 1:1 建圖會直接爆記憶體／超過材質上限。
+        val scale = inkCacheScale(9000, 12000)
+        assertTrue("縮放後比例 $scale 應 <= 0.4", scale <= 0.4f)
+        assertTrue("縮放後比例 $scale 應 > 0", scale > 0f)
+    }
+
+    @Test
+    fun scaleNeverExceedsOneAndStaysWithinAreaBudget() {
+        val sizes = listOf(1 to 1, 512 to 512, 3200 to 4500, 5000 to 5000, 12000 to 16000)
+        sizes.forEach { (w, h) ->
+            val s = inkCacheScale(w, h)
+            assertTrue("scale($w,$h)=$s 不可 > 1", s <= 1f)
+            assertTrue("scale($w,$h)=$s 不可 <= 0", s > 0f)
+            val area = (w * s) * (h * s)
+            assertTrue(
+                "scale($w,$h)=$s 面積 $area 超出預算 $INK_CACHE_MAX_PX",
+                area <= INK_CACHE_MAX_PX * 1.001f
+            )
+        }
+    }
 }

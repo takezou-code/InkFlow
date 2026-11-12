@@ -16,6 +16,7 @@ import com.vic.inkflow.util.StrokeTransformUtils
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
+import kotlin.math.sqrt
 
 // ── InkCanvas 命中測試與幾何 ──────────────────────────────────────────────
 // 文字/圖片/套索框的 canvas-space 命中矩形、旋轉、選取框幾何。純函數。
@@ -188,6 +189,18 @@ internal fun StrokeWithSamples.matches(cached: CachedStrokePath?): Boolean {
         cached.boundsBottom == stroke.boundsBottom
 }
 
+/**
+ * 「同一個集合、換了順序」偵測（位圖快取用）。
+ *
+ * 純換序不會產生任何髒區：髒區是 bounds 的聯集，換序不改 bounds。舊寫法靠
+ * 「dirty == null → 全頁重畫」偶然救到這件事；跳過空重建之後就得明著判。
+ * 加筆／刪筆（大小不同）不算——那條照舊走髒區增量，不然每一筆都會全頁重建。
+ */
+internal fun bitmapOrderChanged(prev: List<String>?, now: List<String>): Boolean {
+    if (prev == null || prev.size != now.size || prev == now) return false
+    return prev.toHashSet() == now.toHashSet()
+}
+
 // ── 髒矩形（damage region）增量重建 ─────────────────────────────────────────
 // 全量重建（清空整張墨圖＋重畫全筆）是擦除卡頓的最大頭（實測 draw 17.6ms/幀）。
 // 標準解法跟 Android View.invalidate(rect)／Skia clip 同一思想：重繪成本跟著
@@ -201,6 +214,32 @@ internal const val INK_FULL_REBUILD_COVERAGE = 0.5f
  * 跨區筆觸的重繪以此為界，邊界外舊像素原樣保留、保證無縫。
  */
 internal const val INK_DIRTY_INFLATE_PX = 3f
+
+// ── 墨跡快取解析度：1:1 優先 ─────────────────────────────────────────────────
+// 舊寫法是固定長邊 3072。平板整頁約 3100×4400 px，於是快取被縮到 0.70 再放大
+// 1.43 倍。代價不只是「歷史墨有點軟」，而是**提筆那一刻**：最後一筆離開向量層、
+// 第一次被烙進位圖，同一筆從逐像素銳利變成放大 1.43 倍的糊版——肉眼就是
+// 「提筆閃／糊一下」。所以上限改成預算制：先求 1:1，真的爆掉才降採樣。
+//
+// 長邊 4096 已覆蓋 3200×4500 的整頁（最多放大 1.07 倍，看不出來）；面積上限
+// 12M px 約 48MB（ARGB8888）。LazyColumn 只讓 2~3 頁同時活著，largeHeap 可承受。
+internal const val INK_CACHE_MAX_LONG = 4096f
+internal const val INK_CACHE_MAX_PX = 12_000_000f
+
+/**
+ * 墨跡快取的建圖比例：1:1 優先，只有超過 [INK_CACHE_MAX_LONG]／[INK_CACHE_MAX_PX]
+ * 兩個預算之一時才等比降採樣。
+ *
+ * 純函數（單測釘住「一般頁面必須是 1.0」與「縮放到爆掉才降」），因為這裡錯了
+ * 不會有任何錯誤訊息，只會讓每一筆在提筆時靜靜變糊。
+ */
+internal fun inkCacheScale(width: Int, height: Int): Float {
+    val w = width.coerceAtLeast(1)
+    val h = height.coerceAtLeast(1)
+    val byLong = INK_CACHE_MAX_LONG / maxOf(w, h).toFloat()
+    val byArea = sqrt(INK_CACHE_MAX_PX / (w.toFloat() * h.toFloat()))
+    return minOf(1f, byLong, byArea)
+}
 
 /** null 容忍的包圍盒聯集（任一為 null 回另一；都被呼叫端保證非空才進來）。 */
 internal fun unionRect(a: Rect?, b: Rect): Rect {

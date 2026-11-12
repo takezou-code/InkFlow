@@ -101,7 +101,6 @@ import com.vic.inkflow.util.InkWidthModel
 import com.vic.inkflow.util.PalmRejectionFilter
 import com.vic.inkflow.util.TouchEventLogger
 import com.vic.inkflow.util.EnvelopeUtils
-import com.vic.inkflow.util.smoothCenterline
 import com.vic.inkflow.util.StrokePoint
 import com.vic.inkflow.util.DocLayout
 import com.vic.inkflow.util.DocTransform
@@ -159,10 +158,18 @@ internal data class PendingTextSettle(
     val fontSize: Float,
     /** 框寬（model pt）；null = 舊資料（無框）。 */
     val boxWidth: Float? = null,
+    /**
+     * 只看 id、不比座標。
+     *
+     * 整條文字流一起搬時，實際落點會被夾在紙面內（`commitTextAnnotationMove`），
+     * 跟這裡預測的 `modelX/modelY` 不一定相同；用座標比對會「永遠落不定」，
+     * 預覽位移就永遠掛在畫面上。大小/框寬仍然要比，才不會提前清掉重排中的預覽。
+     */
+    val anyPosition: Boolean = false,
 ) {
     fun matches(ann: TextAnnotation): Boolean =
         ann.id == id &&
-            near(ann.modelX, modelX) && near(ann.modelY, modelY) &&
+            (anyPosition || (near(ann.modelX, modelX) && near(ann.modelY, modelY))) &&
             near(ann.fontSize, fontSize) &&
             near(ann.boxWidth ?: 0f, boxWidth ?: 0f)
 }
@@ -200,6 +207,8 @@ fun InkCanvas(
     pageIndex: Int = 0,
     /** 本頁筆跡（Workspace 熱流傳入）：畫布只認自己的紙，不讀作用頁流。 */
     strokes: List<StrokeWithSamples> = emptyList(),
+    /** 本頁還在樂觀層（DB 未回報）的筆跡 id：這幾筆走向量層，不進位圖快取。 */
+    pendingIds: Set<String> = emptySet(),
     /** 本頁文字註解（同上）。 */
     texts: List<TextAnnotation> = emptyList(),
     /** 本頁圖片註解（同上）。 */
@@ -285,17 +294,39 @@ fun InkCanvas(
     var activeShapeEnd   by remember { mutableStateOf<Offset?>(null) }
     // F3：提筆交接——本紙提交段 id 等資料流出現才清活路徑（2s 兜底），消滅提筆閃一下。
     var bridgingIds by remember { mutableStateOf<Set<String>?>(null) }
+    // 手勢世代號：交接的收尾只准作用在「產生這次交接的那個手勢」上。
+    // 少了這個守衛，下一筆已經落筆、交接 effect 才跑完，會把**新筆**的活路徑 reset 掉
+    //（筆頭那段消失再從後面接上＝機率性閃爍，見 docs/specs/pitfalls.md）。
+    var strokeGestureSeq by remember { mutableIntStateOf(0) }
+    var bridgingSeq by remember { mutableIntStateOf(-1) }
+    // 提筆快照：最後一次提交的筆跡 id。它**不烙進封頂位圖快取**，直接以向量畫在快取圖之上。
+    // 為什麼需要：已落庫的墨是點陣化的（cacheCap=3072，比 2880px 寬的平板還小 → 縮小再放大），
+    // 提筆那一刻從「活的向量」換成「糊的位圖」＝肉眼看到的閃一下／微微位移。
+    // 只保最後一筆：下一筆提交時它自然被增量髒區烙進位圖，成本＝一筆的 bounds。
+    var hotStrokeId by remember { mutableStateOf<String?>(null) }
     val committedIds = remember(committedStrokes) { committedStrokes.map { it.stroke.id }.toSet() }
     LaunchedEffect(bridgingIds, committedStrokes) {
         val ids = bridgingIds ?: return@LaunchedEffect
+        val seq = bridgingSeq
         // 一個都還沒到：等 DB 落定（或 2s 兜底防寫失敗殘影），再清不遲
         if (ids.none { it in committedIds }) delay(2000)
+        // 交接期間使用者已經又落筆（或這已經不是同一批交接）：這條活路徑屬於新手勢，不准碰。
+        // 這裡不能用「bridgingIds == null 就代表交接結束」判斷——新手勢在 DOWN 就先把它設 null，
+        // 而 effect 可能已經跑過 suspension，接著才執行到 reset。
+        if (seq != strokeGestureSeq || bridgingIds !== ids) {
+            android.util.Log.w(
+                "InkFlowDiag",
+                "HANDOFF skip seq=$seq now=$strokeGestureSeq ids=${ids.size}"
+            )
+            return@LaunchedEffect
+        }
         activePath.reset()
         activeEnvelopePath.reset()
         currentPathPoints.clear()
         activePathVersion++
         viewModel.publishInFlight(null)
         bridgingIds = null
+        bridgingSeq = -1
     }
 
     // Inline text editor (replaces the 新增文字 dialog): NEW at a canvas pos, or EDIT an existing id
@@ -493,6 +524,10 @@ fun InkCanvas(
     // 筆跡幾何快取：普通 Map，只在 drawWithCache 建構區讀寫。
     // 不用 State 容器 → 提交只觸發一次重建（之前 StateMap 寫入造成第二次失效）。
     val committedPathCache = remember { mutableMapOf<String, CachedStrokePath>() }
+    // 向量層（樂觀筆／熱筆）的包絡路徑快取：刻意與 committedPathCache 分開——
+    // 這一層靠 overlayIds 進出淘汰，不參與髒區判定；混用會讓「退場的那一筆」
+    // 因為路徑快取命中而不再補畫進位圖，整筆憑空消失。
+    val overlayPathCache = remember { mutableMapOf<String, CachedStrokePath>() }
     // 形狀上一幀 bounds：形狀走快照覆蓋（同 id 新 bounds），髒區需要舊 bounds。
     // 普通 Map，同上只在建構區讀寫。
     val lastShapeBounds = remember { mutableMapOf<String, Rect>() }
@@ -601,7 +636,10 @@ fun InkCanvas(
     val pinchReuse = remember { object { var bmp: ImageBitmap? = null } }
     // 上次建墨跡快取用的比例（同上，普通物件不觸發重組）。比例一變就必須全量重建：
     // 增量只補髒區，髒區外的像素會留著舊比例＝紙面與墨跡對不上（縮放才自愈的那個病）。
-    val lastInkScale = remember { object { var sx = Float.NaN; var sy = Float.NaN } }
+    // order＝位圖內筆跡的有序簽名，只用來抓「同一個集合、換了順序」（見重建區說明）。
+    val lastInkScale = remember {
+        object { var sx = Float.NaN; var sy = Float.NaN; var order: List<String>? = null }
+    }
     val drawModifier = Modifier.fillMaxSize()
         .onSizeChanged { size ->
             canvasPixelSize = Size(size.width.toFloat(), size.height.toFloat())
@@ -610,6 +648,15 @@ fun InkCanvas(
         // Capture raw contact metrics before Compose converts MotionEvent to PointerInputChange.
         // Returning false forwards the event unchanged to the pointerInput block below.
         .pointerInteropFilter { motionEvent ->
+            // 筆跡跟手：系統預設把觸控事件批次成「一幀一包」才派發，高刷新率平板上
+            // 筆跡會落後筆尖，提筆那一幀再一次補齊（肉眼是抖一下／閃一下）。
+            // 官方做法：ACTION_DOWN 時對這個 View 要求無批次派發（只影響本 View 的輸入）。
+            val maskedAction = motionEvent.actionMasked
+            if (maskedAction == MotionEvent.ACTION_DOWN ||
+                maskedAction == MotionEvent.ACTION_POINTER_DOWN
+            ) {
+                view.requestUnbufferedDispatch(motionEvent)
+            }
             val hasStylusPointer = (0 until motionEvent.pointerCount).any { i ->
                 motionEvent.getToolType(i) == MotionEvent.TOOL_TYPE_STYLUS
             }
@@ -1061,13 +1108,16 @@ fun InkCanvas(
                                 inlineTextColor  = Color(selAnn.colorArgb)
                                 viewModel.setPageLock(false)
                             } else {
-                                // 跨頁：總位移把文字推出本頁 → 整顆換頁；否則舊提交
+                                // 跨頁：總位移把文字推出本頁 → 整顆換頁；否則舊提交。
+                                // **文字流成員不換頁**：換頁等於離開那條流的排序鏈（重排只能在
+                                // 同一頁內量），所以流的成員一律留在本頁、由 VM 夾在紙面內。
+                                val isFlowMember = selAnn.flowId != null
                                 val cs = canvasPixelSizeState.value
                                 val scaleX = DocTransform.invScaleX(cs.width, viewModel.modelWidth)
                                 val scaleY = DocTransform.invScaleY(cs.height, viewModel.modelHeight)
                                 val newModelX = selAnn.modelX + totalDelta.x * scaleX
                                 val newModelY = selAnn.modelY + totalDelta.y * scaleY
-                                val wrapped = wrapCrossPageY(
+                                val wrapped = if (isFlowMember) null else wrapCrossPageY(
                                     newModelY, viewModel.modelHeight,
                                     pageIndexRef.value, pageCountRef.value
                                 )
@@ -1091,7 +1141,9 @@ fun InkCanvas(
                                     modelX = selAnn.modelX + totalDelta.x * scaleX,
                                     modelY = selAnn.modelY + totalDelta.y * scaleY,
                                     fontSize = selAnn.fontSize,
-                                    boxWidth = selAnn.boxWidth
+                                    boxWidth = selAnn.boxWidth,
+                                    // 整條流搬動會被夾在紙面內 → 預測座標不一定成立，只認 id。
+                                    anyPosition = isFlowMember
                                 )
                                 activePathVersion++
                                 return@awaitEachGesture
@@ -1596,7 +1648,10 @@ fun InkCanvas(
                 if (activeTool == Tool.ERASER) viewModel.beginEraseGesture()
                 // F3：上一筆交接中途又落筆——沿用舊行為清活路徑（提交段已在資料流，不閃），交接作廢。
                 // 注意 reset 後必須補 moveTo，否則後續 quadraticTo 以原點起筆＝左上角怪線。
+                // 世代號先跳：交接 effect 若已經跑過 suspension，醒來只會看到「不是我的世代」而放手。
+                strokeGestureSeq++
                 bridgingIds = null
+                bridgingSeq = -1
                 activePath.reset()
                 activePath.moveTo(startOffset.x, startOffset.y)
                 activeEnvelopePath.reset()
@@ -1782,12 +1837,13 @@ fun InkCanvas(
                         }
                         
                         if (!quickSwipeTriggered && (activeTool == Tool.PEN || activeTool == Tool.HIGHLIGHTER)) {
-                            // 預覽包絡先過中心線平滑（入庫點列不動，匯出零影響）。
+                            // 預覽與入庫吃「同一份原始點列」：平滑只在共用層
+                            // EnvelopeUtils.presmooth 裡做一次。以前預覽先過 3 點平均，
+                            // 那會把筆尖往回拉 1/3 段距（快筆 ~20px），而且提筆換成
+                            // 未平滑的點列時整條線會跳一下。
                             // F2：寬先 ×docZoom——提交入庫即此語義，預覽與成品同管線（zoom=1 時與舊行為一致）。
                             val zoomPrev = viewModel.docZoom.value.coerceAtLeast(0.1f)
-                            val previewPts = smoothCenterline(
-                                currentPathPoints.map { it.copy(width = it.width * zoomPrev) }
-                            )
+                            val previewPts = currentPathPoints.map { it.copy(width = it.width * zoomPrev) }
                             val newPath = EnvelopeUtils.generateEnvelopePath(previewPts)
                             activeEnvelopePath.reset()
                             activeEnvelopePath.addPath(newPath)
@@ -1874,6 +1930,7 @@ fun InkCanvas(
                     currentPathPoints.clear()
                     activePathVersion++
                     bridgingIds = null
+                    bridgingSeq = -1
                     viewModel.publishInFlight(null)
                     if (activeTool == Tool.ERASER) viewModel.clearEraseHitPending()
                     // R1：手勢作廢＝結算累積器（已提交的墓碑仍要能 undo，見 discardEraseGesture），
@@ -1890,6 +1947,7 @@ fun InkCanvas(
                     currentPathPoints.clear()
                     activePathVersion++
                     bridgingIds = null
+                    bridgingSeq = -1
                     viewModel.publishInFlight(null)
                     if (activeTool == Tool.ERASER) viewModel.clearEraseHitPending()
                     // R1：手勢作廢＝結算累積器（已提交的墓碑仍要能 undo，見 discardEraseGesture），
@@ -1933,9 +1991,10 @@ fun InkCanvas(
                                 listOf(currentPathPoints[0], currentPathPoints[0])
                             else
                                 currentPathPoints.toList()
-                            // 提筆零形變：提交與最後一幀預覽完全相同的平滑點列
-                            //（預覽包絡吃 smoothCenterline，入庫若用原始點列，鬆筆瞬間形狀跳變）。
-                            val pts = smoothCenterline(rawPts)
+                            // 提筆零形變：這一份就是最後一幀預覽用的點列，中間不再做任何
+                            // 預覽專屬平滑（平滑在 EnvelopeUtils 內、兩邊共用），所以鬆筆
+                            // 不會換形狀，筆尖也不會回彈。
+                            val pts = rawPts
                             TouchEventLogger.logOutcome(
                                 sessionId       = sessionId,
                                 outcome         = "ACCEPTED",
@@ -1957,16 +2016,32 @@ fun InkCanvas(
                             // F3：記下本紙段 id 交接（提筆不清活路徑，等資料流出現）；
                             // 鄰頁段由各紙提交流接著畫。
                             val bridged = mutableSetOf<String>()
+                            // 提筆正規化吃「收點當時」的框架，不是現在的 canvas：
+                            // 手勢途中若 relayout，兩者不同 → 整筆按比例偏移。
+                            val frameW = frameOfPoints.width
+                            val frameH = frameOfPoints.height
                             segs.forEach { (pg, segPts) ->
                                 if (segPts.size >= 2) {
                                     viewModel.saveStroke(
                                         segPts, selectedColor, activeTool, strokeWidth,
-                                        targetPage = pg
+                                        targetPage = pg,
+                                        frameW = frameW,
+                                        frameH = frameH
                                     )?.let { id -> if (pg == pageIndexRef.value) bridged += id }
                                     lastPage = pg
                                 }
                             }
                             bridgingIds = bridged.takeIf { it.isNotEmpty() }
+                            bridgingSeq = if (bridgingIds != null) strokeGestureSeq else -1
+                            // 交接法醫線：這一筆的存活完全靠「live→overlay→bitmap」三段接力，
+                            // 出現閃爍時先看這行與後續 HANDOFF/CACHE 的 seq 對不對得上。
+                            android.util.Log.w(
+                                "InkFlowDiag",
+                                "LIFT seq=$strokeGestureSeq ids=${bridgingIds?.joinToString(",") { it.take(8) } ?: "-"}" +
+                                    " n=${pts.size} page=$srcPage"
+                            )
+                            // 最後一筆停在向量層（不烙位圖）：落庫後的第一幀就是清晰版。
+                            bridged.lastOrNull()?.let { hotStrokeId = it }
                             viewModel.setPageLock(false)
                             // M1 全活頁：目標紙本來就活著，無需激活（提筆零跳轉）
                         }
@@ -2060,15 +2135,48 @@ fun InkCanvas(
             val strokes = committedStrokes
             val preview = commitPreview
             val previewIds = preview?.map { it.stroke.id }?.toHashSet() ?: emptySet()
+            // ── 向量層：樂觀筆（DB 未回報）＋ 最後一筆熱筆 ──
+            // 這一層不烙進位圖快取，直接以向量畫在快取圖之上。理由：位圖快取封頂
+            // 3072px，比平板畫布還小 → 縮小再放大，提筆瞬間從「活的向量」換成
+            // 「糊的位圖」就是使用者回報的閃一下／微微位移。
+            val hotId = hotStrokeId?.takeIf { it !in previewIds }
+            val overlayIds: Set<String> = if (pendingIds.isEmpty() && hotId == null) {
+                emptySet()
+            } else {
+                HashSet<String>(pendingIds.size + 1).apply {
+                    addAll(pendingIds)
+                    if (hotId != null) add(hotId)
+                }
+            }
+            // 向量層要畫的清單在快取階段就算好：onDrawBehind 每幀都跑，不要在裡面掃全頁。
+            val overlayStrokes = if (overlayIds.isEmpty()) {
+                emptyList()
+            } else {
+                strokes.filter { it.stroke.id in overlayIds && it.stroke.shapeType == null }
+            }
+            // 交接中的活路徑若「向量層真的已經畫到它」就不再疊一層（高亮筆 alpha×2 會偏暗）。
+            // 注意不能只看 id 在 overlayIds：提筆當下 id 已記住、頁流那一幀還沒到，
+            // 這時兩邊都沒有筆 → 會空一幀（正是要修的閃）。所以要確認 strokes 裡真的有它。
+            val bridgedDrawn = bridgingIds?.let { ids -> overlayStrokes.any { it.stroke.id in ids } } == true
+
+            // 真正「空窗」的判定：交接還在等、向量層沒有它、活路徑也已經空了 →
+            // 這一幀這筆墨三層都沒畫（畫面真的會缺一筆）。正常交接不會落在這裡：
+            // 資料流到之前活路徑還在，資料流到了 overlay 就有它。
+            if (bridgingIds != null && !bridgedDrawn && overlayStrokes.isEmpty() && activePath.isEmpty) {
+                android.util.Log.w(
+                    "InkFlowDiag",
+                    "GAP p=$pageIndex seq=$strokeGestureSeq bseq=$bridgingSeq" +
+                        " bridge=${bridgingIds?.joinToString(",") { it.take(8) }}"
+                )
+            }
 
             val bmpWidth = size.width.toInt().coerceAtLeast(1)
             val bmpHeight = size.height.toInt().coerceAtLeast(1)
-            // 筆跡快取封頂：縮放時畫布可達上萬 px，原尺寸建圖會超過
-            // RecordingCanvas 上限直接閃退（321MB 事件），且每幀重建巨圖就是卡頓主因；
-            // 改固定上限，繪製時再放大回全尺寸（GPU 做，免費）
-            // 筆跡快取上限 3072（transient 約 27MB 內，largeHeap 平板可承受）。
-            val cacheCap = 3072f
-            val cacheScale = (cacheCap / maxOf(bmpWidth, bmpHeight)).coerceAtMost(1f)
+            // 筆跡快取上限：見 [inkCacheScale]。這裡原本是固定 3072——
+            // 平板整頁 3100×4400 會被縮到 0.70 再放大 1.43 倍，提筆那一刻
+            // （最後一筆從向量層烙進位圖）就是使用者看到的「糊一下」。
+            // 現在 1:1 優先，只有縮放到爆掉（畫布超過預算）才降採樣。
+            val cacheScale = inkCacheScale(bmpWidth, bmpHeight)
             val cacheW = (bmpWidth * cacheScale).toInt().coerceAtLeast(1)
             val cacheH = (bmpHeight * cacheScale).toInt().coerceAtLeast(1)
             // P1 手勢凍結：pinchActive 時沿用上次的快取圖（不配置不重畫），
@@ -2101,6 +2209,18 @@ fun InkCanvas(
                 // 記下這次建圖用的比例（凍結中不記 → 放開必定視為比例變更＝全量重建）
                 lastInkScale.sx = sx
                 lastInkScale.sy = sy
+                // 位圖內筆跡的「有序簽名」：只收真的會烙進位圖的那些（排除預覽／向量層）。
+                // 純換序（同步換 rowid、桌機端覆寫）不產生任何髒區，舊寫法靠
+                // 「dirty==null → 全頁重畫」偶然救到；現在那條路被跳過，得自己補。
+                // 只在「同一個集合、不同順序」時才全量：一般的加筆／刪筆交給髒區。
+                val bitmapIds = ArrayList<String>(strokes.size)
+                for (swp in strokes) {
+                    if (swp.stroke.id in previewIds || swp.stroke.id in overlayIds) continue
+                    bitmapIds.add(swp.stroke.id)
+                }
+                val prevOrder = lastInkScale.order
+                val orderChanged = bitmapOrderChanged(prevOrder, bitmapIds)
+                lastInkScale.order = bitmapIds
                 // ── 髒矩形增量重建 ──
                 // 全量（清空整張＋重畫全筆）是擦除卡頓的最大頭（實測 draw 17.6ms/幀）。
                 // 只清髒區、只重畫相交的筆：重繪成本跟著變化量走。髒區過大／新圖／
@@ -2132,6 +2252,8 @@ fun InkCanvas(
                 strokes.forEach { swp ->
                     if (swp.stroke.shapeType != null) return@forEach
                     if (swp.stroke.id in previewIds) return@forEach
+                    // 向量層（樂觀筆／熱筆）不進位圖，也就不產生髒區——它每幀重畫。
+                    if (swp.stroke.id in overlayIds) return@forEach
                     val cached = committedPathCache[swp.stroke.id]
                     if (cached == null || !swp.matches(cached)) {
                         if (cached != null) {
@@ -2171,8 +2293,25 @@ fun InkCanvas(
                 // 不另開一輪）：退化輸入的包絡數學可能產出 NaN/Inf；minOf/maxOf
                 // 會靜默吞掉 NaN，髒區算小、相交全 false，該畫的全被跳過
                 // （無崩潰無 log 的純隱形）。看到一個就走全量：無條件重畫一定對。
-                val fullRebuild = scaleChanged || boundsBroken || dirty == null ||
-                    damageCoverage(dirty, pageRect) >= INK_FULL_REBUILD_COVERAGE
+                //
+                // dirty == null 不再是「未知，全部重畫」：加了向量層（樂觀筆／熱筆）之後，
+                // 每次提筆都會有一幀「只有向量層變、位圖完全沒變」，那時 dirty 就是 null。
+                // 舊語義會在那裡全頁重畫（實測 17.6ms/幀）＝修閃爍反而多一次卡頓。
+                // 真正的「一定要全量」是：比例變、bounds 壞掉、這張圖是剛配置的。
+                val fullRebuild = scaleChanged || boundsBroken || bitmapFresh || orderChanged ||
+                    (dirty != null && damageCoverage(dirty, pageRect) >= INK_FULL_REBUILD_COVERAGE)
+                // 診斷（release 可見，一行一提筆）：把「這一幀到底畫了什麼」落下來。
+                // scale < 1 ＝ 提筆必然變糊；overlay = 0 ＋ bridge > 0 ＝ 交接空窗；
+                // full = true 而 dirty = null ＝ 有人在無變化時重建整張。
+                android.util.Log.w(
+                    "InkFlowDiag",
+                    "CACHE p=$pageIndex canvas=${bmpWidth}x${bmpHeight} " +
+                        "scale=${"%.3f".format(cacheScale)} cache=${cacheW}x${cacheH} " +
+                        "overlay=${overlayStrokes.size} hot=${hotStrokeId?.take(8) ?: "-"} " +
+                        "bridge=${bridgingIds?.size ?: 0} drawn=$bridgedDrawn " +
+                        "dirty=${dirty != null} full=$fullRebuild order=$orderChanged " +
+                        "seq=$strokeGestureSeq bseq=$bridgingSeq"
+                )
                 cacheCanvas.save()
                 cacheCanvas.scale(sx * cacheScale, sy * cacheScale)
                 if (fullRebuild) {
@@ -2186,6 +2325,7 @@ fun InkCanvas(
                     }
                     strokes.forEach { swp ->
                         if (swp.stroke.id in previewIds) return@forEach
+                        if (swp.stroke.id in overlayIds) return@forEach
                         if (swp.stroke.shapeType != null) {
                             drawShapeOnCanvas(cacheCanvas, swp.stroke, swp.points)
                         } else {
@@ -2208,10 +2348,10 @@ fun InkCanvas(
                                 Color(swp.stroke.color), swp.stroke.strokeWidth, swp.stroke.isHighlighter)
                         }
                     }
-                } else {
+                } else if (dirty != null) {
                     // 增量：只清髒區（外擴吞掉抗鋸齒），只重畫與髒區相交的。
                     // 相交判定用包絡 bounds（含線寬），髒區外舊像素原樣保留、無縫。
-                    val zone = dirty!!.inflate(INK_DIRTY_INFLATE_PX).intersect(pageRect)
+                    val zone = dirty.inflate(INK_DIRTY_INFLATE_PX).intersect(pageRect)
                     // 注意：此時 cacheCanvas 已套 scale(sx*cacheScale)，
                     // clip/clear 都用 model 座標直接給，跟重畫同一套。
                     cacheCanvas.save()
@@ -2222,6 +2362,7 @@ fun InkCanvas(
                     )
                     strokes.forEach { swp ->
                         if (swp.stroke.id in previewIds) return@forEach
+                        if (swp.stroke.id in overlayIds) return@forEach
                         if (!strokeRect(swp).inflate(INK_DIRTY_INFLATE_PX).overlaps(zone)) return@forEach
                         if (swp.stroke.shapeType != null) {
                             drawShapeOnCanvas(cacheCanvas, swp.stroke, swp.points)
@@ -2382,6 +2523,41 @@ fun InkCanvas(
                 filterQuality = FilterQuality.High
             )
 
+            // ── 向量層：樂觀筆（DB 未回報）＋ 最後一筆熱筆 ──
+            // 畫在快取圖之上、提交預覽與選取框之下。用同一支 drawPathOnCanvas，
+            // 幾何與混合模式跟烙進位圖那條逐字一致（螢光筆的 Multiply 對同一張底）。
+            if (overlayStrokes.isNotEmpty()) {
+                overlayPathCache.keys.retainAll(overlayIds)
+                drawIntoCanvas { cvs ->
+                    cvs.save()
+                    cvs.scale(sx, sy)
+                    overlayStrokes.forEach { swp ->
+                        val cached = overlayPathCache[swp.stroke.id]
+                        val path = if (cached != null && swp.matches(cached)) {
+                            cached.path
+                        } else {
+                            swp.points.toComposePath().also {
+                                overlayPathCache[swp.stroke.id] = CachedStrokePath(
+                                    path = it,
+                                    pointCount = swp.points.size,
+                                    boundsLeft = swp.stroke.boundsLeft,
+                                    boundsTop = swp.stroke.boundsTop,
+                                    boundsRight = swp.stroke.boundsRight,
+                                    boundsBottom = swp.stroke.boundsBottom
+                                )
+                            }
+                        }
+                        drawPathOnCanvas(
+                            cvs, path, Color(swp.stroke.color),
+                            swp.stroke.strokeWidth, swp.stroke.isHighlighter
+                        )
+                    }
+                    cvs.restore()
+                }
+            } else if (overlayPathCache.isNotEmpty()) {
+                overlayPathCache.clear()
+            }
+
             val preview = commitPreview
             // 全活頁：只畫歸屬本紙的提交預覽（跨紙移動的另一段由歸屬紙畫）
             val ownPreview = preview?.filter { it.stroke.pageIndex == pageIndex }
@@ -2523,17 +2699,25 @@ fun InkCanvas(
 
                 // Text annotations — apply move/resize delta for the selected annotation
                 drawIntoCanvas { composeCanvas ->
+                    // 文字流：拖一個成員時整條一起跟手（VM 也是整條一起寫）。
+                    // 少了這段，預覽只有那一格在動、放手後鄰居才跳定位 → 看起來像「拉壞了」。
+                    val selFlowAnn = textAnnotations.firstOrNull { it.id == selectedTextAnnotationId }
+                    val selFlowId = selFlowAnn?.flowId
                     textAnnotations.forEach { ann ->
                         // 打字中的那一段不畫，位置由輸入框獨佔（否則新舊兩份文字疊在一起）。
                         // 以前是靠輸入框的白底卡片蓋住它——所以輸入框才長得跟成品完全不同。
                         if (ann.id == inlineTextEditId) return@forEach
                         val isSelected = ann.id == selectedTextAnnotationId
+                        val inSelFlow = selFlowId != null && ann.flowId == selFlowId &&
+                            ann.pageIndex == selFlowAnn?.pageIndex
                         // 同圖片：落定後 DB 已含新值，不再疊預覽（否則閃一下）。見 PendingTextSettle。
                         val tSettle = pendingTextSettleRef.value
                         val txtSettled = tSettle != null &&
                             tSettle.id == ann.id && tSettle.matches(ann)
-                        val dx = if (isSelected && !txtSettled) textMoveDelta.x else 0f
-                        val dy = if (isSelected && !txtSettled) textMoveDelta.y else 0f
+                        // 只有「移動」會帶動整條流；字級/框寬是單格的預覽。
+                        val moves = (isSelected || inSelFlow) && !txtSettled
+                        val dx = if (moves) textMoveDelta.x else 0f
+                        val dy = if (moves) textMoveDelta.y else 0f
                         val fsDelta = if (isSelected && !txtSettled) textFontSizeDelta else 0f
                         val bwDelta = if (isSelected && !txtSettled) textBoxWidthDelta else 0f
                         val effFont = (ann.fontSize + fsDelta).coerceAtLeast(4f)
@@ -2659,7 +2843,9 @@ fun InkCanvas(
                 }
 
                 // Active freehand / eraser / lasso path
-                when (activeTool) {
+                // 交接中的活路徑：若向量層已接手同一筆就不再疊一層
+                //（高亮筆 alpha×2 會偏暗，提筆瞬間反而更明顯）。
+                if (!bridgedDrawn) when (activeTool) {
                     Tool.PEN -> drawPath(activeEnvelopePath, selectedColor) // Uses default Fill style
                     Tool.HIGHLIGHTER -> drawIntoCanvas { cvs ->
                         hlPreviewPaint.color = selectedColor.copy(alpha = HIGHLIGHTER_ALPHA)
