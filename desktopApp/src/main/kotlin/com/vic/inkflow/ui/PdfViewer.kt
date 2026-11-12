@@ -27,6 +27,7 @@ import androidx.compose.material.icons.automirrored.rounded.Backspace
 import androidx.compose.material.icons.automirrored.rounded.Redo
 import androidx.compose.material.icons.automirrored.rounded.Undo
 import androidx.compose.material.icons.rounded.Brush
+import androidx.compose.material.icons.rounded.List
 import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.Gesture
 import androidx.compose.material.icons.rounded.Highlight
@@ -442,6 +443,9 @@ fun PdfViewer(
     }
 
     val h = handles[focusedPage]
+    // 頁面導覽側欄（可收合）。Edge／Acrobat 都有：文件長的時候，
+    // 「跳到第 300 頁」靠打數字太慢，靠一列頁碼最快。
+    var showPagePanel by remember(documentUri) { mutableStateOf(false) }
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -536,6 +540,14 @@ fun PdfViewer(
                 onPrevPage = { scrollToPage(focusedPage - 1) },
                 onNextPage = { scrollToPage(focusedPage + 1) },
                 onGoToPage = { p -> scrollToPage(p) },
+                leadingButton = {
+                    InkToolIcon(
+                        icon = Icons.Rounded.List,
+                        description = "頁面導覽",
+                        selected = showPagePanel,
+                        onClick = { showPagePanel = !showPagePanel }
+                    )
+                },
                 modifier = Modifier.fillMaxWidth()
             )
         }
@@ -567,24 +579,25 @@ fun PdfViewer(
             }
         }
         Row(Modifier.weight(1f).fillMaxWidth()) {
-            if (pageCount == 0) {
-                Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.Center) {
-                    if (docError != null) {
-                        Text(
-                            "無法開啟 PDF：$docError",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.error
-                        )
-                    } else {
-                        CircularProgressIndicator()
+            Box(Modifier.weight(1f).fillMaxHeight()) {
+                if (pageCount == 0) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        if (docError != null) {
+                            Text(
+                                "無法開啟 PDF：$docError",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        } else {
+                            CircularProgressIndicator()
+                        }
                     }
-                }
-            } else {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier.weight(1f).fillMaxHeight(),
-                    verticalArrangement = Arrangement.spacedBy((8f * sharedZoom.floatValue).dp)
-                ) {
+                } else {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.spacedBy((8f * sharedZoom.floatValue).dp)
+                    ) {
                     items(pageCount, key = { "$documentUri:$it" }) { idx ->
                         PageView(
                             documentUri = documentUri,
@@ -607,34 +620,76 @@ fun PdfViewer(
                             noteLanding = if (idx == focusedPage) noteLanding else null
                         )
                     }
+                    }
+                }
+                // 頁面導覽是**疊在頁面上**的，不佔版面寬度。
+                // 佔寬度的話，開關面板會改變頁面的可用寬度，而頁面的 fit 用的
+                // 是量測到的視窗尺寸 → 面板一開，頁面就變成用舊寬度算的縮放，
+                // 右邊被切掉。疊上去就不會動到頁面的版面。
+                if (showPagePanel) {
+                    PagePanel(
+                        pageCount = pageCount,
+                        focusedPage = focusedPage,
+                        onGoToPage = { scrollToPage(it) },
+                        modifier = Modifier.align(Alignment.CenterStart)
+                    )
                 }
             }
         }
+    }
+}
 
-        // ── 底部狀態列 ──────────────────────────────────────────────
-        // Edge 與 Acrobat 都把「我在第幾頁 / 現在幾倍」放在底部。放工具列上
-        // 是要使用者的眼睛在兩個地方來回找；放底部它就是一個狀態列。
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 6.dp)
-        ) {
-            Text(
-                text = if (pageCount > 0) "第 ${focusedPage + 1} / $pageCount 頁" else "",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(Modifier.weight(1f))
-            Text(
-                text = "${((h?.zoom?.value ?: 1f) * 100).roundToInt()}%",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+/**
+ * The page navigation strip.
+ *
+ * A column of page numbers down the left, the current one highlighted. It is
+ * numbers rather than thumbnails on purpose: rendering a thumbnail per page
+ * of a 1400-page textbook would cost a PDF render per page, while the
+ * numbers answer the only question this panel is asked ("which page am I
+ * on, and how do I get to page 300").
+ */
+@Composable
+private fun PagePanel(
+    pageCount: Int,
+    focusedPage: Int,
+    onGoToPage: (Int) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val listState = rememberLazyListState()
+    // 翻頁時側欄跟著捲，否則它停在文件開頭，對 1400 頁的書毫無用處。
+    LaunchedEffect(focusedPage, pageCount) {
+        if (pageCount <= 0) return@LaunchedEffect
+        runCatching { listState.scrollToItem(focusedPage.coerceIn(0, pageCount - 1)) }
+    }
+    LazyColumn(
+        state = listState,
+        modifier = modifier
+            .width(78.dp)
+            .fillMaxHeight()
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.94f))
+    ) {
+        items(pageCount, key = { it }) { index ->
+            val selected = index == focusedPage
+            Box(
                 modifier = Modifier
-                    .clip(androidx.compose.foundation.shape.CircleShape)
-                    .glassClickable(onClick = { h?.onZoomReset() })
-                    .padding(horizontal = 8.dp, vertical = 2.dp)
-            )
+                    .fillMaxWidth()
+                    .padding(horizontal = 10.dp, vertical = 1.dp)
+                    .clip(com.vic.inkflow.ui.theme.ShapeSm)
+                    .background(
+                        if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+                        else androidx.compose.ui.graphics.Color.Transparent
+                    )
+                    .glassClickable(onClick = { onGoToPage(index) })
+                    .padding(vertical = 7.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "${index + 1}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (selected) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
     }
 }
@@ -1919,6 +1974,9 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
             pan.value = Offset.Zero
         }
     }
+    // 開檔時**不要**再動 zoom：zoom = 1 就是「fit」（fitScale 已經把頁面縮到
+    // 視窗裡，見上面的座標說明）。之前以為要自己 fit 一次，其實是把頁面
+    // 乘上了光柵化比例——頁面反而變兩倍大。
     LaunchedEffect(strokes, texts, selectedIds, selectedTextIds, textDraft, pageBox, zoom.floatValue, textSelection) {
             handle.canUndo.value = undoStack.canUndo.value
             handle.canRedo.value = undoStack.canRedo.value
@@ -2747,6 +2805,7 @@ private fun InkToolbar(
     onPrevPage: () -> Unit = {},
     onNextPage: () -> Unit = {},
     onGoToPage: (Int) -> Unit = {},
+    leadingButton: @Composable () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     // One row, period: tools, history, colours, actions and AI ride a single
@@ -2771,6 +2830,7 @@ private fun InkToolbar(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(2.dp)
             ) {
+                leadingButton()
                 InkToolbarTitle(documentTitle, focusedPage, pageCount, onPrevPage, onNextPage, onGoToPage)
                 InkToolbarTools(tool, selectionCount, onToolChange)
                 if (textSelectionActive) InkToolbarTextSelection(onCopyText)
