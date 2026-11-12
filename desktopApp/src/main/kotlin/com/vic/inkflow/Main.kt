@@ -25,6 +25,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -56,6 +57,7 @@ import com.vic.inkflow.ui.glassClickable
 import com.vic.inkflow.ui.glassContentColor
 import com.vic.inkflow.ui.glassFieldColors
 import com.vic.inkflow.ui.glassSelectionPill
+import com.vic.inkflow.ui.fauxGlassPanel
 import com.vic.inkflow.ui.GlassOptionChip
 import com.vic.inkflow.ui.kit.DeskDivider
 import com.vic.inkflow.ui.kit.DeskDims
@@ -404,10 +406,17 @@ fun InkFlowApp(uiPreview: String? = null) {
         Row(modifier = Modifier.fillMaxSize()) {
             // Windows-style left navigation rail: a fixed-width surface instead of
             // the tablet's floating glass capsule. Keeps the same destinations.
-            Surface(
-                color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 1.dp,
-                modifier = Modifier.fillMaxHeight().width(DeskDims.railWidth)
+            //
+            // It used to be an M3 `Surface(tonalElevation = 1.dp)`, which is
+            // Material's own chrome standing on top of our background - exactly
+            // the "two visual languages on one screen" this app is trying to
+            // avoid. fauxGlassPanel gives the same tinted strip with the
+            // product's own edge treatment, and it follows the theme.
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .width(DeskDims.railWidth)
+                    .fauxGlassPanel(InkThemeState.darkMode, RectangleShape)
             ) {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,

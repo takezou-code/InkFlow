@@ -341,8 +341,14 @@ private fun opSummary(op: com.vic.inkflow.agent.EditOp): String {
             "upsert_text 第 ${op.pageIndex + 1} 頁：${op.text.take(60)}${if (op.text.length > 60) "…" else ""}"
         }
         is com.vic.inkflow.agent.EditOp.DeleteText -> "delete_text：${op.id}"
-        is com.vic.inkflow.agent.EditOp.UpsertStroke -> "upsert_stroke 第 ${op.pageIndex + 1} 頁（尚未實作）"
-        is com.vic.inkflow.agent.EditOp.DeleteStroke -> "delete_stroke：${op.id}（尚未實作）"
+        // 筆跡 op 在桌面端不會出現：桌面的 agent 工具只有讀取（readPageText /
+        // renderPage）與寫文字（upsertText），沒有寫筆跡的工具。
+        // 這兩個分支留著是因為 op 型別是共用的（平板那邊有寫筆跡的工具）。
+        // 舊的標籤寫「尚未實作」，看起來像壞掉的功能——其實是「這個環境走不到」。
+        is com.vic.inkflow.agent.EditOp.UpsertStroke ->
+            "upsert_stroke 第 ${op.pageIndex + 1} 頁（桌面版未提供寫筆跡的工具）"
+        is com.vic.inkflow.agent.EditOp.DeleteStroke ->
+            "delete_stroke：${op.id}（桌面版未提供寫筆跡的工具）"
     }
 }
 

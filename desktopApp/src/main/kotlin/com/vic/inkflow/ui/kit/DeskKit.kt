@@ -1,9 +1,12 @@
 package com.vic.inkflow.ui.kit
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -20,16 +23,28 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.gestures.animateScrollBy
+import kotlinx.coroutines.launch
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
@@ -131,13 +146,18 @@ fun DeskScreen(
                 top = DeskSpace.md
             )
     ) {
+        val actionScroll = rememberScrollState()
+        val scope = rememberCoroutineScope()
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(min = DeskDims.headerHeight)
         ) {
-            Column(modifier = Modifier.weight(1f)) {
+            // 標題有寬度上限（它本來就只顯示一行），剩下的全給動作列。
+            // 舊制是標題 weight(1f)、動作列自然寬度：動作列一旦比視窗寬，
+            // 就整個溢出到視窗外——「開啟 PDF」整顆消失，而且沒有任何捲動可達。
+            Column(modifier = Modifier.widthIn(max = 320.dp)) {
                 Text(
                     text = title,
                     style = MaterialTheme.typography.headlineSmall,
@@ -155,11 +175,29 @@ fun DeskScreen(
                     )
                 }
             }
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(DeskSpace.xs),
-                verticalAlignment = Alignment.CenterVertically,
-                content = actions
-            )
+            Box(modifier = Modifier.weight(1f)) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(DeskSpace.xs),
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.horizontalScroll(actionScroll),
+                    content = actions
+                )
+                // 還有更多動作時，右邊放一顆**看得見的**箭頭讓人點。
+                // 用漸層淡出是不行的：深色主題的漸層色跟背景幾乎一樣，
+                // 看不出「被切一半」是故意的。箭頭沒有這個問題。
+                if (actionScroll.maxValue > actionScroll.value) {
+                    DeskIconButton(
+                        icon = Icons.Outlined.ChevronRight,
+                        description = "更多動作",
+                        onClick = {
+                            scope.launch {
+                                actionScroll.animateScrollBy(160f)
+                            }
+                        },
+                        modifier = Modifier.align(Alignment.CenterEnd)
+                    )
+                }
+            }
         }
         Spacer(Modifier.height(DeskSpace.md))
         Box(modifier = Modifier.fillMaxWidth().weight(1f), content = content)
@@ -289,12 +327,19 @@ fun DeskSearchField(
     modifier: Modifier = Modifier
 ) {
     val isDark = InkThemeState.darkMode
+    // 鍵盤 focus ring：`BasicTextField` 沒有 M3 的 focus indicator，
+    // 沒有這圈的話，用 Tab 走過畫面的人看不出焦點在哪一個欄位。
+    var focused by remember { mutableStateOf(false) }
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = modifier
             .height(DeskDims.controlHeight)
             .widthIn(min = 200.dp)
             .chromeGlass(isDark, CircleShape)
+            .then(
+                if (focused) Modifier.border(1.dp, MaterialTheme.colorScheme.primary, CircleShape)
+                else Modifier
+            )
             .padding(horizontal = DeskSpace.sm)
     ) {
         Icon(
@@ -320,7 +365,9 @@ fun DeskSearchField(
                 singleLine = true,
                 textStyle = MaterialTheme.typography.bodyMedium.copy(color = glassContentColor(isDark)),
                 cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onFocusChanged { focused = it.isFocused }
             )
         }
     }
@@ -347,10 +394,15 @@ fun DeskTextField(
 ) {
     val isDark = InkThemeState.darkMode
     val shape = if (singleLine) CircleShape else ShapeMd
+    var focused by remember { mutableStateOf(false) }
     Box(
         modifier = modifier
             .heightIn(min = DeskDims.controlHeight)
             .chromeGlass(isDark, shape)
+            .then(
+                if (focused) Modifier.border(1.dp, MaterialTheme.colorScheme.primary, shape)
+                else Modifier
+            )
             .padding(
                 horizontal = if (singleLine) DeskSpace.md else DeskSpace.sm,
                 vertical = if (singleLine) DeskSpace.xs else DeskSpace.sm
@@ -379,7 +431,9 @@ fun DeskTextField(
                     inner()
                 }
             },
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier
+                .fillMaxWidth()
+                .onFocusChanged { focused = it.isFocused }
         )
     }
 }
