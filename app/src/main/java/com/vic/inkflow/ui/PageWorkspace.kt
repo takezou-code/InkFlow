@@ -24,10 +24,10 @@ import com.vic.inkflow.util.DocTransform
 import com.vic.inkflow.util.GestureStateMachine
 import com.vic.inkflow.util.PalmRejectionFilter
 import com.vic.inkflow.util.Pt
+import com.vic.inkflow.util.ScrollJumpWatch
 import com.vic.inkflow.util.TraceRecorder
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -39,6 +39,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -46,7 +47,6 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.foundation.gestures.ScrollableDefaults
 import androidx.compose.material3.MaterialTheme
@@ -66,6 +66,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -94,6 +95,15 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
+
+/**
+ * 一次 flick 的慣性距離上限＝幾頁。
+ *
+ * 舊制是「一個視窗高」：縮放 0.4 時一頁 1826px、視窗 2136px，預算剛好一頁，
+ * 甩一下走到頁尾就歸零、紙直接停住——「滑一頁之後慣性消失」就是它。
+ * 三頁＝用力 flick 約兩頁多，再用力也只到三頁（仍足以擋「意外飛過十頁」）。
+ */
+private const val FLING_BUDGET_PAGES = 3f
 
 @Composable
 internal fun Workspace(
@@ -134,7 +144,6 @@ internal fun Workspace(
     // 文件級縮放：整份文件同一個 docZoom（Chrome 式），ViewModel 持有、跨頁保持；
     // pinchActive 供 InkCanvas 棄筆判定
     val docZoom by viewModel.docZoom.collectAsState()
-    val hScrollState = rememberScrollState()
     var viewportWpx by remember { mutableIntStateOf(0) }
 
     val density = LocalDensity.current
@@ -142,8 +151,14 @@ internal fun Workspace(
     // 這條是唯一的 fling：接管即殺（新手勢/雙指鎖/筆），禁多重排隊。雙指放手即停（不變）。
     val gestureScope = rememberCoroutineScope()
     var flingJob by remember { mutableStateOf<Job?>(null) }
-    // 原生 fling 行為（spline 衰減）：只驅動 dispatch，不經原生手勢，無打架。
-    val flingBehavior = ScrollableDefaults.flingBehavior()
+    // 慣性法醫：fling 被誰掐掉。只在 cancel=true 時寫進 FLING-end 的 by=。
+    // 空白＝不是我們自己的三個取消點（Compose 捲動互斥鎖被搶 / composition 被拆）。
+    var flingAbort by remember { mutableStateOf("") }
+    // 跳頁稽核：主列表「內容座標」單次取樣跳掉大半頁 → 落 JUMP（正常滑動遠小於門檻）。
+    // 搭配 ScrollWriters 的寫入者日誌，用時間戳就能判定「誰把它跳過去的」。
+    val jumpWatch = remember { ScrollJumpWatch(jumpFraction = 0.5f) }
+    // 樞紐鎖定種類（SINGLE_PAN 也要記）：跳頁發生時要知道當下是手勢中還是放手後。
+    var hubLockedShown by remember { mutableStateOf<GestureStateMachine.Kind?>(null) }
     // 頁間隙 px：必須與下方 LazyColumn 的 Arrangement.spacedBy(18.dp) 一致（跨頁分段用）
     val pageGapPx = with(density) { 18.dp.toPx() }
     val bubbleGapPx = with(density) { 12.dp.toPx() }
@@ -151,27 +166,27 @@ internal fun Workspace(
     val bubbleTopSafePx = with(density) { 12.dp.toPx() }
 
     // 橫移狀態（空白區單指＋雙指全域寫入，放手停留、跨頁保持）：
-    // 鉗制保證至少 1/4 紙留在區內（KEEP=1/4）。
+    // **全文件只有這一個水平數值**。縮放只改變夾鉗範圍，不換寫入目標。
+    //
+    // 舊碼在 docZoom>1 時把位移寫進 hScrollState，兩個數值互不換算：
+    // 100% 時可推 ±2325px，101% 時只剩 32px（突變 75 倍），而 100% 留下的
+    // panOffsetX 在放大後仍被 .offset 套用 → 「推到一邊再放大就卡住偏一邊」、
+    // 「放大後拖到邊界會彈」。單一數值＋連續夾鉗（panRangePx）根治這兩者。
+    //
     // 用 fun 即時重算（讀 State delegate 即時值），不 remember，避免快照訂閱地雷。
     val panOffsetX by viewModel.panOffsetX.collectAsState()
-    fun paperWpxForPan(): Float {
-        val zoom = viewModel.docZoom.value.coerceAtMost(1f)
-        val side = with(density) { 40.dp.toPx() }
-        return ((viewportWpx * zoom) - side).coerceAtLeast(0f)
+    val sidePadPx = with(density) { 40.dp.toPx() }
+    fun clampPanAt(z: Float, raw: Float): Float {
+        val range = panRangePx(viewportWpx.toFloat(), z, sidePadPx)
+        return raw.coerceIn(range.start, range.endInclusive)
     }
-    // KEEP：至少留 1/4 紙在區內。放寬到 3/4 是因為使用者要「能推很遠」——
-    // 0.25 太緊，1/4 的紙在畫面裡等於只能微調；3/4 讓 100% 時左右推紙的手感接近放大後捲動。
-    // 放手就停（不彈回），語意跟放大後的 hScroll 一致。
-    fun clampPan(raw: Float): Float {
-        val max = paperWpxForPan() * 0.75f
-        return raw.coerceIn(-max, max)
-    }
+    fun clampPan(raw: Float): Float = clampPanAt(viewModel.docZoom.value, raw)
     fun isBlankX(x: Float): Boolean {
         // 算式與理由都在 paperEdgesInViewport（純函式，有回歸測試釘住）。
         val (paperLeft, paperRight) = paperEdgesInViewport(
             viewportWpx = viewportWpx.toFloat(),
             docZoom = viewModel.docZoom.value,
-            hScrollPx = hScrollState.value.toFloat(),
+            sidePadPx = sidePadPx,
             panX = clampPan(viewModel.panOffsetX.value)
         )
         // 紙的實際位置＝置中＋當前橫移：推到底後空出來的地方整條都是活區，點哪都能拉回。
@@ -180,7 +195,7 @@ internal fun Workspace(
     val clampedPanX = clampPan(panOffsetX)
     // zoom/旋轉導致邊界縮小：只在 viewport/zoom 變化時收斂一次（直給，不用 spring 追移動目標）。
     // 不以 clampedPanX 為 key——手勢寫入的值出場已鉗制，放手後不再有外力寫回。
-    LaunchedEffect(viewportWpx, docZoom) {
+    LaunchedEffect(viewportWpx, docZoom, sidePadPx) {
         val cur = viewModel.panOffsetX.value
         val fixed = clampPan(cur)
         if (fixed != cur) viewModel.setPanOffsetX(fixed)
@@ -203,6 +218,23 @@ internal fun Workspace(
         val listW = viewportWpx * maxOf(z, 1f)
         val sidePad = with(density) { 40.dp.toPx() }
         return ((listW * z.coerceAtMost(1f) - sidePad) / uniformAspect).coerceAtLeast(0f)
+    }
+
+    // 原生 fling 行為（spline 衰減）：只驅動 dispatch，不經原生手勢，無打架。
+    // 外面再包一層距離上限（見 BoundedFlingBehavior），單位是**頁**，不是視窗。
+    //
+    // 舊制上限＝一個視窗高（2136px）。縮放 0.4 時一頁 1826px，於是預算剛好一頁：
+    // 甩一下走到頁尾就歸零、紙直接停住——使用者回報的「滑一頁之後慣性消失」就是它。
+    // 慣性的意義是「小力推、滑得遠」，上限只該擋「一次意外飛過十頁」，
+    // 不該擋正常的一兩頁。三頁＝用力 flick 約兩頁多，再用力也只到三頁。
+    val baseFlingBehavior = ScrollableDefaults.flingBehavior()
+    val flingBehavior = remember(baseFlingBehavior) {
+        BoundedFlingBehavior(baseFlingBehavior) {
+            val info = mainListState.layoutInfo
+            val pageFull = info.visibleItemsInfo.firstOrNull()?.size?.toFloat()
+                ?: paperHAtZoom(viewModel.docZoom.value)
+            pageFull * FLING_BUDGET_PAGES
+        }
     }
 
     // 工作區層手掌辨識（touchMajor）：手掌和捏合錨定指在位移上長得一樣，
@@ -276,8 +308,10 @@ val allowSinglePan = startedBlank || fingerPanOnPaperAllowed(
 
             fun startKind(kind: GestureStateMachine.Kind) {
                 // 再按住即殺 glide（新起點不疊加不亂飛）。
+                if (flingJob?.isActive == true) flingAbort = "gesture-start:${kind.name}"
                 flingJob?.cancel()
                 flingJob = null
+                hubLockedShown = kind
                 // SINGLE_PAN 不立 pinchActive 旗（空白單指舊制，紙上單指同制：筆一落下就 yield，
                 // 兩者不可能重疊，無需棄筆旗）。但 lockedKind 一定要記，
                 // 否則紙上單指鎖了也不 consume，事件還是漏回 Void。
@@ -303,26 +337,17 @@ val allowSinglePan = startedBlank || fingerPanOnPaperAllowed(
                     pdfViewModel.flushPendingRenders()
                 }
                 lockedKind = null
+                hubLockedShown = null
                 haveZoomFocus = false
             }
             // 水平位移唯一寫者（單指/兩指共用這個出口）。
-            // 依縮放丟去不同地方，因為語意不同：
-            // - 100%：紙比視窗窄，水平拖 = 把紙在視窗內推（panOffsetX，clampPan 夾住）。
-            // - 放大：紙比視窗寬，沒有「紙外」可言，水平拖 = 捲動那張寬紙
-            //   （hScrollState，Compose 自己的 coerceIn(0, maxValue) 夾到紙邊緣）。
-            // 這裡是唯一出口 → 不會有兩個寫者搶同一根手指（原生那條已 enabled=false）。
+            // 只有一個數值、一條連續夾鉗：100% 與放大後是同一條曲線，
+            // 不再有「兩個狀態要交接」的斷點（見 panRangePx）。
             //
             // 符號：panOffsetX 是內容位移（正=紙往右），手指往右 dx>0 → +dx，跟手。
-            // hScrollState 是「捲了多少」的正值，但 ScrollNode 擺放時用 xOffset = -scroll
-            // （Scroll.kt:471-476）→ 值越大內容越往左。手指往右要內容往右＝值變小，
-            // 所以必須取負（跟垂直那條 dispatchRawDelta(-o.dy) 同一個道理）。
             fun applyHorizontalDelta(dx: Float) {
-                when (horizontalPanTarget(viewModel.docZoom.value)) {
-                    HorizontalPanTarget.PAN_OFFSET_X ->
-                        viewModel.setPanOffsetX(clampPan(viewModel.panOffsetX.value + dx))
-                    HorizontalPanTarget.SCROLL_ZOOMED_CONTENT ->
-                        hScrollState.dispatchRawDelta(-dx)
-                }
+                if (dx == 0f || !dx.isFinite()) return
+                viewModel.setPanOffsetX(clampPan(viewModel.panOffsetX.value + dx))
             }
             // 捏合施加：zoom 幀 anchor-set 直接定狀態；factor==1 幀跟隨平滑 focus 漂移
             //（舊碼捏合重心漂移照吃，行為保留，輸入換成平滑後的）。
@@ -332,8 +357,7 @@ val allowSinglePan = startedBlank || fingerPanOnPaperAllowed(
                     if (haveZoomFocus) {
                         val dx = fx - lastZoomFx
                         val dy = fy - lastZoomFy
-                        // 走同一個出口：放大中的捏合重心漂移要捲寬紙，不能再推 panOffsetX
-                        // （那會跟 hScrollState 雙寫，舊碼 pinch 一直在寫 panOffsetX 這裡）。
+                        // 走同一個出口：捏合重心漂移就是水平位移，跟單指同一條路。
                         if (dx != 0f) applyHorizontalDelta(dx)
                         if (dy != 0f) mainListState.dispatchRawDelta(-dy)
                     }
@@ -348,19 +372,24 @@ val allowSinglePan = startedBlank || fingerPanOnPaperAllowed(
                 val old = viewModel.docZoom.value
                 val new = (old * factor).coerceIn(0.4f, 4f)
                 if (!new.isFinite() || new.isNaN() || new == old) return
-                val ratio = new / old
-                // 錨定在雙指中心 fx 下：內容點 = scrollX + fx - panX
-                //（整列被 panOffsetX 平移過，必須扣掉；不扣＝平移後再捏就偏）。
-                val panX = clampPan(viewModel.panOffsetX.value)
-                val currentScrollX = hScrollState.value
-                val maxScrollX = maxOf(0f, viewportWpx * (new - 1f))
-                val targetScrollX = ((currentScrollX + fx - panX) * ratio - fx + panX)
-                    .coerceIn(0f, maxScrollX)
+                // 錨定在雙指中心 fx 下：**紙面座標**在縮放前後必須是同一個點。
+                // 紙寬 = 視窗 × z − 40dp（左右各 20dp 墊），紙在視窗內置中＋panOffsetX。
+                // 直接把「左緣也要跟著縮放」的等式解開（panAfterZoom），比用 ratio 近似
+                // 精確：那 40dp 墊不隨縮放長大，用 ratio 會在邊緣差幾個 mm。
+                val oldPanX = viewModel.panOffsetX.value
+                val newPanX = clampPanAt(
+                    new,
+                    panAfterZoom(
+                        panX = oldPanX,
+                        docZoomOld = old,
+                        docZoomNew = new,
+                        focusX = fx,
+                        viewportWpx = viewportWpx.toFloat(),
+                        sidePadPx = sidePadPx
+                    )
+                )
                 viewModel.setDocZoom(new)
-                val deltaX = targetScrollX - currentScrollX
-                if (kotlin.math.abs(deltaX) > 0.5f) {
-                    hScrollState.dispatchRawDelta(deltaX)
-                }
+                if (newPanX != oldPanX) viewModel.setPanOffsetX(newPanX)
                 // 垂直錨定 fy：uniform 紙高跟 zoom 線性走、縫/頂墊固定，直接定狀態一步到位
                 //（dispatchRawDelta 會跟框架原生保持疊加、每幀 1.8 倍飛走——禁，見 AGENTS）。
                 val paperHOld = paperHAtZoom(old)
@@ -388,6 +417,17 @@ val allowSinglePan = startedBlank || fingerPanOnPaperAllowed(
                     val idxNew = (relNew / itemFullNew).toInt().coerceAtLeast(0)
                         .coerceAtMost((totalItems - 1).coerceAtLeast(0))
                     val offNew = (relNew - idxNew * itemFullNew).coerceAtLeast(0f).toInt()
+                    // 捏合的垂直錨定是唯一允許「一步定態」的程式化寫入；**跳一頁等級**的位移要留痕，
+                    // 否則「捏合時忽然跳一頁」只會看到結果、看不到是誰寫的。逐幀微調不記（太吵）。
+                    val pageSized = kotlin.math.abs(scrollNew - scrollOld) >= itemFullOld * 0.5f
+                    if (idxNew != mainListState.firstVisibleItemIndex || pageSized) {
+                        ScrollWriters.log(
+                            "PINCH-anchor",
+                            "z=${old}->${new} idx=$idxNew off=$offNew" +
+                                " cur=(${mainListState.firstVisibleItemIndex},${mainListState.firstVisibleItemScrollOffset})" +
+                                " scrollOld=${scrollOld.toInt()} scrollNew=${scrollNew.toInt()} fy=${fy.toInt()}"
+                        )
+                    }
                     mainListState.requestScrollToItem(idxNew, offNew)
                 }
                 lastZoomFx = fx
@@ -434,6 +474,7 @@ val allowSinglePan = startedBlank || fingerPanOnPaperAllowed(
             try {
                 run {
                     // 新起點殺舊 glide：甩完立刻再按住，不疊加不亂飛。
+                    if (flingJob?.isActive == true) flingAbort = "new-down"
                     flingJob?.cancel()
                     flingJob = null
                     val id = down.id.value.toInt()
@@ -490,12 +531,58 @@ val allowSinglePan = startedBlank || fingerPanOnPaperAllowed(
                             if (vy.isFinite() && sPoints >= 3 && span >= 50L &&
                                 kotlin.math.abs(vy) > minFling
                             ) {
+                                if (flingJob?.isActive == true) flingAbort = "refling"
                                 flingJob?.cancel()
+                                // 慣性法醫線：起點位置＋初速＋取樣品質；結束時再補一行實際走了多少。
+                                // 「忽然跳一頁」若是這條造成的，兩行一對就看得出來（dz ≫ 一頁就是它）。
+                                val startIdx = mainListState.firstVisibleItemIndex
+                                val startOff = mainListState.firstVisibleItemScrollOffset
+                                // 頁高優先用「實際量到」的 item 高＋縫：跟 ScrollJumpWatch 同一把尺，
+                                // 兩邊的 dz 才對得上（公式估的和量測的差幾個 % 就會讓 pages 失準）。
+                                val measured = mainListState.layoutInfo.visibleItemsInfo
+                                    .firstOrNull()?.size?.toFloat() ?: 0f
+                                val full = (if (measured > 0f) measured else paperHAtZoom(viewModel.docZoom.value)) +
+                                    pageGapPx
+                                val viewportPx = mainListState.layoutInfo.let {
+                                    (it.viewportEndOffset - it.viewportStartOffset).toFloat()
+                                }
+                                ScrollWriters.log(
+                                    "FLING-start",
+                                    "vy=${vy.toInt()} clamp=${(-vy).coerceIn(-8000f, 8000f).toInt()}" +
+                                        " budget=${(full * FLING_BUDGET_PAGES).toInt()}" +
+                                        " pts=$sPoints span=$span idx=$startIdx off=$startOff" +
+                                        " full=${full.toInt()} viewport=${viewportPx.toInt()}" +
+                                        " z=${viewModel.docZoom.value}"
+                                )
+                                flingAbort = ""
                                 flingJob = gestureScope.launch {
-                                    mainListState.scroll {
-                                        with(flingBehavior) {
-                                            performFling((-vy).coerceIn(-8000f, 8000f))
+                                    val t0 = android.os.SystemClock.uptimeMillis()
+                                    var completed = false
+                                    var abortReason = ""
+                                    try {
+                                        mainListState.scroll {
+                                            with(flingBehavior) {
+                                                performFling((-vy).coerceIn(-8000f, 8000f))
+                                            }
                                         }
+                                        completed = true
+                                    } catch (ce: CancellationException) {
+                                        // 慣性不是「走完預算」而是「被掐掉」時，這裡留下兇手。
+                                        // 空字串＝不是我們三個取消點之一（多半是 Compose 的
+                                        // scroll 互斥鎖被別的寫者搶走，或 composition 被拆）。
+                                        abortReason = flingAbort.ifEmpty { "external" }
+                                        throw ce
+                                    } finally {
+                                        val endIdx = mainListState.firstVisibleItemIndex
+                                        val endOff = mainListState.firstVisibleItemScrollOffset
+                                        val dz = (endIdx - startIdx) * full + (endOff - startOff)
+                                        ScrollWriters.log(
+                                            "FLING-end",
+                                            "dz=${dz.toInt()} pages=${"%.2f".format(dz / full)}" +
+                                                " ms=${android.os.SystemClock.uptimeMillis() - t0}" +
+                                                " idx=$endIdx off=$endOff cancel=${!completed}" +
+                                                (if (abortReason.isNotEmpty()) " by=$abortReason" else "")
+                                        )
                                     }
                                 }
                             }
@@ -578,6 +665,8 @@ val allowSinglePan = startedBlank || fingerPanOnPaperAllowed(
     // 半露出的頁只能看不能寫。改最大可見面積後，露出一半以上就能直接寫。
     // （側欄置中由 EditorScreen 跟著做）
     LaunchedEffect(mainListState, pageCount) {
+        // 跳頁稽核基準重設：這個 effect 重啟＝頁數變了/換文件，舊座標不可比。
+        jumpWatch.reset()
         // P0 快滑偵測狀態（effect 作用域內常駐，跨排放累積；只寫 pdfViewModel 快旗，不碰捲動寫者）。
         var lastFastT = 0L
         var lastFastPos = -1L
@@ -604,11 +693,32 @@ val allowSinglePan = startedBlank || fingerPanOnPaperAllowed(
                     best = item.index
                 }
             }
-            Triple(best, first, last)
-        }.collect { (idx, first, last) ->
+            MainListSnap(
+                best = best, first = first, last = last,
+                // 位置一律連 offset 一起取：只看 index 會漏掉「同一頁內瞬移」。
+                offset = mainListState.firstVisibleItemScrollOffset,
+                // 頁高用實測 item 高度＋縫；量不到就 0（稽核自己會忽略）。
+                itemFull = info.visibleItemsInfo.firstOrNull()?.size?.let {
+                    (it + pageGapPx).toInt()
+                } ?: 0
+            )
+        }.collect { snap ->
+            val idx = snap.best
+            val first = snap.first
+            val last = snap.last
             // P0：首可見項位置估速度。>6000px/s（約 3 頁/秒）或單幀跳 ≥3 頁即立快旗；
             // 高速期間只投縮圖（LOD 掠過），高清排隊憑票作廢。
             val now = android.os.SystemClock.uptimeMillis()
+            // 跳頁稽核：一次取樣內內容座標跳掉半頁以上 → JUMP（正常滑動差一個量級）。
+            if (first != Int.MAX_VALUE) {
+                jumpWatch.sample(now, first, snap.offset, snap.itemFull.toFloat())?.let { line ->
+                    android.util.Log.w(
+                        "InkFlowScroll",
+                        "$line hub=${hubLockedShown ?: "-"} pinch=${viewModel.pinchActive.value}" +
+                            " z=${viewModel.docZoom.value} best=$idx first=$first last=$last pages=$pageCount"
+                    )
+                }
+            }
             val pos = first.toLong() * 10_000_000L + mainListState.firstVisibleItemScrollOffset.toLong()
             if (lastFastT > 0 && lastFastPos >= 0) {
                 val dt = now - lastFastT
@@ -747,23 +857,19 @@ val allowSinglePan = startedBlank || fingerPanOnPaperAllowed(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                // enabled = false：原生橫向捲動只留「排版 + 裁切 + 偏移」，
-                // 不再吃觸控。原因：它跟 twoFingerModifier 在同一個 Main pass，
-                // 而且是子節點（由內而外先收到事件）→ 有水平分量就越過自己的 slop 並 consume，
-                // 樞紐那時用絕對座標算位移（不看 isConsumed）→ 同一根手指兩個寫者搶 X：
-                // 約 2 倍速，且兩把鉗制不同（原生物夾 [0,maxValue]、樞紐夾 ±paperW*3/4）
-                // → 撞邊界就卡住或彈回。與 LazyColumn 的 userScrollEnabled=false 同一個道理。
-                // 排版不受影響：ScrollingLayoutElement 無條件套用（Scroll.kt scroll()），
-                // hScrollState.value 的偏移照常套用，pinch 錨定照常 dispatchRawDelta。
-                .horizontalScroll(hScrollState, enabled = false),
+                // 裁切原本由 horizontalScroll 提供；現在水平位移只剩一個 .offset，
+                // 這層負責把放大後超出視窗的紙裁掉（純繪製，不吃觸控）。
+                .clipToBounds(),
             contentAlignment = Alignment.Center
         ) {
             LazyColumn(
                 state = mainListState,
                 modifier = Modifier
-                    .width(listWdp.coerceAtLeast(1.dp))
+                    // requiredWidth：放大後列表比視窗寬，必須忽略父層 maxWidth 才會真的變寬
+                    // （一般 width() 會被夾回視窗寬，整條縮放版式就失效）。
+                    .requiredWidth(listWdp.coerceAtLeast(1.dp))
                     .fillMaxHeight()
-                    // 橫移：整列水平位移（offset 直給，無大圖層、無 spring）
+                    // 橫移：整列水平位移（唯一水平數值，offset 直給，無大圖層、無 spring）
                     .offset { IntOffset(clampedPanX.roundToInt(), 0) },
                 contentPadding = PaddingValues(vertical = 18.dp),
                 verticalArrangement = Arrangement.spacedBy(18.dp),
@@ -934,6 +1040,7 @@ val allowSinglePan = startedBlank || fingerPanOnPaperAllowed(
                 documentUri = documentUri,
                 pageIndex = index,
                 strokes = pageStrokes,
+                pendingIds = pageData.pendingIds,
                 texts = pageTexts,
                 images = pageImages,
                 pageGapPx = pageGapPx,
@@ -1184,12 +1291,37 @@ private fun DragPreviewOverlay(
 }
 
 /**
+ * 主列表版面快照（`snapshotFlow` 用）：只看「位置」與「頁高」兩件事，
+ * 剛好是判定跳頁需要的全部（`ScrollJumpWatch`）。
+ */
+private data class MainListSnap(
+    val best: Int,
+    val first: Int,
+    val last: Int,
+    val offset: Int,
+    val itemFull: Int,
+)
+
+/**
+ * 主列表垂直位置的**寫入者日誌**（tag `InkFlowScroll`，release 可見）。
+ *
+ * 為什麼要有它：`dispatchRawDelta`／`requestScrollToItem`／`animateScrollToItem`／放手慣性
+ * 都能移動紙，出了「忽然跳一頁」時光看畫面分不出是誰。統一在這裡落一行帶時間戳的意圖，
+ * 跟 `ScrollJumpWatch` 的 `JUMP` 行對時間即可歸因（時間戳同一時鐘：uptimeMillis）。
+ */
+internal object ScrollWriters {
+    fun log(writer: String, detail: String = "") {
+        android.util.Log.w("InkFlowScroll", "$writer t=${android.os.SystemClock.uptimeMillis()} $detail")
+    }
+}
+
+/**
  * 紙面單指平移准入（adapter 閘門，狀態機只聽這裡）。
  *
  * 觸控筆模式（STYLUS_ONLY／PALM_REJECTION）下 InkCanvas 對任何 Touch 聯絡
  * 直接 return 不 consume（InkCanvas.kt STYLUS_ONLY 分支），紙上單指就沒人接手了。
  * 這裡開門把它交回樞紐，避免事件沉進 Void（LazyColumn userScrollEnabled=false、
- * horizontalScroll enabled=false、無 nestedScroll → 沒有下游消費者）。
+ * 無 nestedScroll、水平方向只剩樞紐自己寫 panOffsetX → 沒有下游消費者）。
  *
  * 手指模式（FREE）原則上門關著——紙上單指是墨水的。
  * **唯一例外＝IMAGE 工具**：它是唯一不在紙上畫東西的工具（只做選取/移動/縮放/旋轉），
@@ -1201,7 +1333,7 @@ private fun DragPreviewOverlay(
  * （FingerPanAdmissionTest 有逐工具釘住）。
  *
  * 不看 docZoom：放大後行為必須跟 100% 一樣（放大中 isBlankX 恆 false＝整個視窗都算紙上，
- * 若這裡再關門就是「放大後單指全死」）。放大時的 X 軸落點由 applyHorizontalDelta 分流，
+ * 若這裡再關門就是「放大後單指全死」）。水平位移不分縮放層級，一律走 applyHorizontalDelta，
  * 樞紐是唯一寫者，不會跟原生搶。
  */
 internal fun fingerPanOnPaperAllowed(inputMode: InputMode, activeTool: Tool): Boolean =
@@ -1229,44 +1361,86 @@ internal fun hubShouldYieldToInk(hubGotDelta: Boolean, inkConsumed: Boolean): Bo
 /**
  * 紙在視窗座標下的左右邊界（純函數）。
  *
- * 從 Workspace 內聯的 isBlankX 抽出來，理由與 [fingerPanOnPaperAllowed] 相同：
- * 這段是「放大時橫推到極限就推不動」那個 bug 的修法所在，而那個 bug 修過兩輪都沒
- * 修好 —— 因為它沒有任何測試，只能靠實機手勢碰。抽出來之後這段算式有一組純函數
- * 例釘住（FingerPanAdmissionTest），下一次動版式不必再靠手試。
- *
- * 版式（見 Workspace 的 horizontalScroll → offset → LazyColumn 修飾符鏈）：
+ * 版式（見 Workspace 的 requiredWidth → offset 修飾符鏈）：
  *   列表寬 L  = 視窗 × max(z, 1)
  *   置中偏移 = (視窗 − L) / 2             （contentAlignment = Center）
- *   內容左緣 = 置中偏移 − hScroll + pan    （hScroll 由原生排版套用、pan 由樞紐夾）
- *   紙占寬  = L × min(z, 1)               （紙在列表內置中）
+ *   內容左緣 = 置中偏移 + panOffsetX      （單一水平數值，見 panRangePx）
+ *   紙寬     = L × min(z, 1) − 40dp = 視窗 × z − 40dp（Surface 在 20dp 內墊之內）
  *
- * ⚠️ **hScroll 與 pan 都要算。** 放大時水平位移寫進的是 hScrollState
- * （applyHorizontalDelta 分流），不是 panOffsetX；只算 pan 會漏掉 hScroll 那一項 →
- * 紙邊算錯 → 放大後永遠判定不出紙外，單指就推不動。這個漏項正是上一輪修不好的原因。
+ * 所以紙邊界＝「置中」＋「panOffsetX」，只有一項。舊版還要多算 hScroll，
+ * 漏一項就會「放大後判定不出紙外、單指推不動」——那一坑修了兩輪。
  *
- * z ≤ 1：L = 視窗，紙比視窗窄 → 推的是紙本身，紙外是活區（可滑回來）。
- * z > 1：L > 視窗，紙與列表同寬 → 邊界跟著捲動走。
+ * 紙寬刻意與 [panRangePx]／[panAfterZoom] 用同一個式子，避免「夾鉗算一種寬、
+ * 命中算另一種寬」的舊病復發。
  */
 internal fun paperEdgesInViewport(
     viewportWpx: Float,
     docZoom: Float,
-    hScrollPx: Float,
+    sidePadPx: Float,
     panX: Float
 ): Pair<Float, Float> {
-    val listW = viewportWpx * maxOf(docZoom, 1f)
-    val contentLeft = (viewportWpx - listW) / 2f - hScrollPx + panX
-    val slot = listW * minOf(docZoom, 1f)
-    val left = contentLeft + (listW - slot) / 2f
-    return left to (left + slot)
+    if (!(viewportWpx > 0f)) return 0f to 0f
+    val z = if (docZoom.isFinite() && docZoom > 0f) docZoom else 1f
+    val paperW = (viewportWpx * z - sidePadPx).coerceAtLeast(0f)
+    val left = (viewportWpx - paperW) / 2f + panX
+    return left to (left + paperW)
+}
+
+// ── 水平位移：單一數值 + 連續夾鉗 ──────────────────────────────────────────
+//
+// 舊版把水平位移分成兩個狀態：100% 用 panOffsetX（±2325px），放大用 hScrollState
+// （0..視窗×(z−1)）。兩者不換算，於是：
+//   • z=1.00 → ±2325px，z=1.01 → 32px（75 倍突變，100~110% 橫向幾乎是死的）
+//   • 100% 推到一邊（panOffsetX=+2325）再放大，殘留值仍被套用 → 紙卡在一邊拉不回
+// 現在只有一個數值，夾鉗是 z 的連續函數，跨 100% 沒有斷點。
+
+/**
+ * panOffsetX 的合法範圍（對稱）。
+ *
+ * @param sidePadPx 紙左右各留 20dp 的墊（40dp 合計），與 Surface 的 padding 同源。
+ *
+ * 兩個成分：
+ *  - [traverse]：紙比視窗寬時「從左緣捲到右緣」需要的位移 =（紙寬 − 視窗）/2。
+ *    z ≤ 1 時紙比視窗窄，此項為 0。
+ *  - [slack]：允許把紙推出邊界多少（保證至少 1/4 紙還在畫面上）。沿用 100% 的舊手感：
+ *    0.75 ×（視窗 × min(z,1) − 40dp）。z ≥ 1 時是常數，所以 z→1⁺ 不收縮。
+ *
+ * 兩者相加即「捲動全程 + 兩端的超出額度」，且 z=1 前後連續：
+ * z = 0.999 與 1.001 的範圍都約等於 ±slack。
+ */
+internal fun panRangePx(
+    viewportWpx: Float,
+    docZoom: Float,
+    sidePadPx: Float
+): ClosedFloatingPointRange<Float> {
+    if (!(viewportWpx > 0f) || !docZoom.isFinite() || docZoom <= 0f) return 0f..0f
+    val paperW = (viewportWpx * docZoom - sidePadPx).coerceAtLeast(0f)
+    val traverse = ((paperW - viewportWpx) / 2f).coerceAtLeast(0f)
+    val narrowW = (viewportWpx * minOf(docZoom, 1f) - sidePadPx).coerceAtLeast(0f)
+    val slack = narrowW * 0.75f
+    val max = traverse + slack
+    return -max..max
 }
 
 /**
- * 水平位移的唯一寫者分流（純函數，便於回歸測試）。
+ * 縮放時的水平錨定：回傳能讓 [focusX] 底下的紙面點留在原位的 panOffsetX。
  *
- * 100%：紙比視窗窄 → 水平拖是把紙在視窗內推（panOffsetX，clampPan 夾住）。
- * 放大：紙比視窗寬，沒有紙外可言 → 水平拖是捲動那張寬紙（hScrollState，Compose 夾紙邊緣）。
+ * 紙面座標 m ∝（螢幕 x − 紙左緣）/ 紙寬。令縮放前後 m 相等：
+ *   左緣_new = focusX − (focusX − 左緣_old) × 紙寬_new / 紙寬_old
+ * 再換回 panOffsetX。用紙寬比（而不是 z 比）才精確——40dp 的墊不隨縮放長大。
  */
-internal enum class HorizontalPanTarget { PAN_OFFSET_X, SCROLL_ZOOMED_CONTENT }
-
-internal fun horizontalPanTarget(docZoom: Float): HorizontalPanTarget =
-    if (docZoom > 1f) HorizontalPanTarget.SCROLL_ZOOMED_CONTENT else HorizontalPanTarget.PAN_OFFSET_X
+internal fun panAfterZoom(
+    panX: Float,
+    docZoomOld: Float,
+    docZoomNew: Float,
+    focusX: Float,
+    viewportWpx: Float,
+    sidePadPx: Float
+): Float {
+    if (!(viewportWpx > 0f)) return panX
+    val paperOld = (viewportWpx * docZoomOld - sidePadPx).coerceAtLeast(1f)
+    val paperNew = (viewportWpx * docZoomNew - sidePadPx).coerceAtLeast(1f)
+    val leftOld = (viewportWpx - paperOld) / 2f + panX
+    val leftNew = focusX - (focusX - leftOld) * (paperNew / paperOld)
+    return leftNew - (viewportWpx - paperNew) / 2f
+}

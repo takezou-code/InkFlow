@@ -435,6 +435,13 @@ fun TabletEditorScreen(
     fun applyCommit(commit: PageCommit, prefetch: Boolean) {
         previewPage = null
         if (commit.page == currentPageIndex) return
+        // 作用頁提交：只記「誰改的」。跳頁疑雲時，紙沒動但頁碼跳＝這行是唯一線索。
+        ScrollWriters.log(
+            "PAGE-commit",
+            "owner=${commit.owner} from=$currentPageIndex to=${commit.page}" +
+                " idx=${mainListState.firstVisibleItemIndex} off=${mainListState.firstVisibleItemScrollOffset}" +
+                " preview=$previewPage"
+        )
         currentPageIndex = commit.page
         viewModel.setActivePage(commit.page, prefetch = prefetch)
     }
@@ -474,6 +481,12 @@ fun TabletEditorScreen(
     fun goToPage(index: Int, source: PageNavSource) {
         val now = SystemClock.uptimeMillis()
         val page = pageOwner.clamp(index, pageCount)
+        // 程式化導航寫入者日誌：跳頁疑雲時跟 InkFlowScroll 的 JUMP 行對時間戳。
+        ScrollWriters.log(
+            "PROG-$source",
+            "page=$page from=$currentPageIndex cur=(${mainListState.firstVisibleItemIndex}," +
+                "${mainListState.firstVisibleItemScrollOffset}) preview=$previewPage stage=$sidebarStage"
+        )
 
         // ① 頁碼
         if (source == PageNavSource.Preview) {
@@ -530,8 +543,20 @@ fun TabletEditorScreen(
                         androidx.compose.runtime.withFrameNanos { }
                         if (mainListState.firstVisibleItemIndex == page &&
                             mainListState.firstVisibleItemScrollOffset == 0
-                        ) return@launch
+                        ) {
+                            ScrollWriters.log(
+                                "PROG-Restore-done",
+                                "page=$page attempt=$it idx=${mainListState.firstVisibleItemIndex}" +
+                                    " off=${mainListState.firstVisibleItemScrollOffset}"
+                            )
+                            return@launch
+                        }
                     }
+                    ScrollWriters.log(
+                        "PROG-Restore-miss",
+                        "page=$page idx=${mainListState.firstVisibleItemIndex}" +
+                            " off=${mainListState.firstVisibleItemScrollOffset}"
+                    )
                 } finally {
                     restoringPage = false
                 }
