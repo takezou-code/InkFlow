@@ -23,11 +23,11 @@ class PdfRenderBudgetTest {
 
     @Test
     fun `live budget is bounded by heap and never below the floor`() {
-        // 堆 512MB（largeHeap）→ 預算 64MB
-        assertEquals(64L * 1024 * 1024, PdfViewModel.liveBitmapBudgetBytes(512L * 1024 * 1024))
+        // 堆 512MB（largeHeap）→ 預算 = 堆的 1/5（≈102MB）；能容可見頁＋前 1–2 頁 hi 預取
+        assertEquals(512L * 1024 * 1024 / 5, PdfViewModel.liveBitmapBudgetBytes(512L * 1024 * 1024))
         // 小堆也不能低於地板：低於地板會把可見頁也砍掉，畫面就閃白了
         assertEquals(
-            48L * 1024 * 1024,
+            64L * 1024 * 1024,
             PdfViewModel.liveBitmapBudgetBytes(16L * 1024 * 1024)
         )
     }
@@ -36,6 +36,7 @@ class PdfRenderBudgetTest {
     fun `live budget grows with the heap but stays a fraction of it`() {
         val small = PdfViewModel.liveBitmapBudgetBytes(128L * 1024 * 1024)
         val big = PdfViewModel.liveBitmapBudgetBytes(512L * 1024 * 1024)
+        assertTrue("128MB 堆：預算落到地板 64MB", small == 64L * 1024 * 1024)
         assertTrue("大堆的預算必須比小堆大", big > small)
         assertTrue("預算不能超過堆的 1/4", big <= 512L * 1024 * 1024 / 4)
     }

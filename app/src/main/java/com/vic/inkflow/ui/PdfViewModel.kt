@@ -173,10 +173,13 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
          * 最後 native heap 撐爆、App 直接閃退（實測：捲到一半 native heap 裡躺著
          * 13 張 13MB 的頁面圖，Bitmap (malloced) 合計 173MB）。
          *
-         * 取堆的 1/8：可見頁（約 4 頁 × 13MB）放得下，又有上限，不會再往上長。
+         * 取堆的 1/5：A4 紙寬 hi 單頁約 26MB，可見頁（1–2 頁）加上往前預取 2 頁
+         * 約 78–104MB。前一版 heap/8 裝不下預取——預取頁沒人訂閱、年齡最新，
+         * 但整體一旦超預算，[evictColdLayer] 從最舊砍起時預取頁照樣會被砍掉，
+         * 預取等於白渲。必須容得下「可見＋前 1–2 頁」才有意義。
          */
         internal fun liveBitmapBudgetBytes(maxMemoryBytes: Long): Long =
-            (maxMemoryBytes / 8).coerceAtLeast(48L * 1024 * 1024)
+            (maxMemoryBytes / 5).coerceAtLeast(64L * 1024 * 1024)
 
         /**
          * 縮圖層的活著位元組預算。縮圖單張只有 0.3MB，但頁數一多一樣會漲
@@ -700,12 +703,37 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
      * 停止捲動後就不再呼叫 → [scrollingNow] 會在 [SCROLL_SETTLE_MS] 後翻成 false
      * → 那時才把可見頁升級成全解析度（捲動中一律用便宜檔）。
      */
+    /** 最近一次捲動方向（+1 向後／-1 向前／0＝未知）；方向感知預取用。 */
+    @Volatile private var lastScrollDirection: Int = 0
+
     fun setVisiblePageRange(range: IntRange) {
         lastVisibleChangeMs = SystemClock.uptimeMillis()
         scheduleSettledUpgrade()
+        val delta = range.first - hiTierRange.first
+        if (delta != 0) lastScrollDirection = if (delta > 0) 1 else -1
         if (range == hiTierRange) return
         hiTierRange = range
         applyRenderPlan()
+        prefetchAhead()
+    }
+
+    /**
+     * 方向感知預取：非快滑時，往「將捲到」的方向把 D+1、D+2 頁以紙寬 hi 預渲進
+     * bitmapCache。到時頁組成（getPageBitmap）直接命中快取 → 第一幀就是清楚的，
+     * 不必經過「便宜檔 → 落定升級」那個糊窗口。
+     *
+     * 快滑時不預取（PDF 鎖排隊只留給正在看的頁）；預取頁沒人訂閱、年齡最新，
+     * 回收順序上天然是最後被砍的對象（[evictColdLayer] 砍最舊的無訂閱頁）。
+     */
+    private fun prefetchAhead() {
+        val dir = lastScrollDirection
+        if (dir == 0) return
+        if (_isScrollingFast.value || renderHold.get()) return
+        val edge = if (dir > 0) hiTierRange.last else hiTierRange.first
+        for (k in 1..2) {
+            val target = edge + dir * k
+            if (target in 0 until pageCount.value) prefetchPage(target)
+        }
     }
 
     /**
@@ -740,12 +768,12 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
      * 這一頁該用哪個倍率。**只影響「還沒渲的頁」**——已經渲好的頁不會因為
      * 開始捲動就被降級（見 [applyRenderPlan]）。
      *
-     * **捲動中一律用便宜檔**：使用者還在移動，這一頁下一秒就被換掉了，
-     * 這時渲全解析度只是製造記憶體垃圾（見 [CHEAP_PAGE_BYTES] 的說明）。
-     * 落定後可見頁才吃滿倍率，窗外頁維持便宜檔。
+     * **慢捲（非快滑、非手勢凍結）直接 hi**：手指推到哪清到哪，跟 M2 慢滑「跟手清」同一個
+     * 思路——只有快滑（掠過）才用便宜檔，落定再補。前一版用 [scrollingNow] 一刀切，
+     * 連慢捲也全渲便宜檔再等落定升級，造成「滑到每頁糊 ~1 秒」。
      */
     private fun scaleForPage(pageIndex: Int): Float =
-        if (scrollingNow()) loRenderScale
+        if (_isScrollingFast.value || renderHold.get()) loRenderScale
         else if (pageIndex in hiTierRange) hiRenderScale
         else loRenderScale
 
@@ -836,7 +864,9 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         val maxMemory = (Runtime.getRuntime().maxMemory() / 1024).toInt()
-        val cacheSize = maxMemory / 8
+        // LruCache 容量必須 ≥ liveBitmapBudgetBytes：否則超額時 LruCache 會**靜默**
+        // 逐出最久沒用的頁——預取的 hi 頁還沒被看過就先被擠掉了，預取形同白渲。
+        val cacheSize = maxMemory / 5
 
         bitmapCache = object : LruCache<Int, Bitmap>(cacheSize) {
             override fun sizeOf(key: Int, value: Bitmap): Int = value.byteCount / 1024
@@ -1763,14 +1793,21 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private val prefetchInFlight = java.util.Collections.synchronizedSet(mutableSetOf<Int>())
+
+    /** 預取高清頁面（requireInterest=false）；同頁不重複併發渲染。 */
     fun prefetchPage(pageIndex: Int) {
         if (pageIndex < 0 || pageIndex >= pageCount.value) return
         if (bitmapCache[pageIndex] != null) return
-
+        if (!prefetchInFlight.add(pageIndex)) return
         val ticket = scrollGen
         renderScope.launch {
-            renderPage(pageIndex, highQuality = true, ticket = ticket, requireInterest = false)
-                ?.let { stampAge(bitmapAge, pageIndex) }
+            try {
+                renderPage(pageIndex, highQuality = true, ticket = ticket, requireInterest = false)
+                    ?.let { stampAge(bitmapAge, pageIndex) }
+            } finally {
+                prefetchInFlight.remove(pageIndex)
+            }
         }
     }
 
