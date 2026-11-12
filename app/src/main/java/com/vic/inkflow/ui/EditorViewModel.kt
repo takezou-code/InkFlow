@@ -2034,19 +2034,19 @@ class EditorViewModel(
     }
 
     /**
-     * S1 é›™å¯«ï¼šæŠŠé ç©ºé–“å¯¦é«”çš„ docY é‡ç®—ï¼ˆdocY = pageIndex Ã— stride + é å…§é ‚é‚Šï¼‰ã€‚
-     * transformStrokes/copy æœƒæ”œå¸¶é™³èˆŠ docYï¼Œæ‰€æœ‰è½åº«å‰å¿…ç¶“æ­¤è™•ï¼ˆreplaceStrokeSnapshots
-     * æ˜¯ç§»å‹•æäº¤çš„å”¯ä¸€ chokeï¼›æ–°å»ºåœ¨æ§‹é€ æ™‚ç›´æŽ¥å¡«ï¼‰ã€‚
+     * S1 雙寫：把頁空間實體的 docY 重算（docY = pageIndex × stride + 頁內頂邊）。
+     * transformStrokes/copy 會攜帶陳舊 docY，所有落庫前必經此處（replaceStrokeSnapshots
+     * 是移動提交的唯一 choke；新建在構造時直接填）。
      */
     private suspend fun replaceStrokeSnapshots(strokes: List<StrokeWithSamples>) {
-        // èµ° repository çš„æ¼æ–—ï¼šè¦†è“‹ï¼‹bump åœ¨åŒä¸€äº¤æ˜“é‡Œã€‚è‡ªå·±æ‹¼ä¸‰æ­¥æœƒæ¼ bumpï¼Œ
-        // åºè™Ÿè¢«è“‹å›žèˆŠå€¼ï¼Œä»²è£å°±çœ‹ä¸å‡ºé€™ç­†è¢«æ”¹éŽï¼ˆÂ§15.1ï¼‰ã€‚
+        // 走 repository 的漏斗：覆蓋＋bump 在同一交易里。自己拼三步會漏 bump，
+        // 序號被蓋回舊值，仲裁就看不出這筆被改過（§15.1）。
         repos.strokes.replaceStrokeSnapshots(strokes.map { it.redocWith(docStride) })
     }
-    // â”€â”€ å¥—ç´¢é¸å– â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    // ç‹€æ…‹èˆ‡è¡Œç‚ºéƒ½åœ¨ [com.vic.inkflow.ui.editor.SelectionController]ï¼ˆå¥—ç´¢å¤šé‚Šå½¢ã€
-    // é¸ä¸­é›†åˆã€é è¦½å¿«ç…§ã€ç§»å‹•ï¼ç¸®æ”¾æäº¤ã€åˆªé™¤ã€è¤‡è£½ã€æ¸…é™¤ï¼‰ã€‚é€™è£¡åªåšæŽ¥ç·šï¼š
-    // å°å¤– API ä¸€å€‹å­—æ²’è®Šï¼Œæ‰€ä»¥å‘¼å«é»žï¼ˆEditorScreenã€InkCanvasã€PageWorkspaceï¼‰é›¶æ”¹å‹•ã€‚
+    // ── 套索選取 ──────────────────────────────────────────────────────────────
+    // 狀態與行為都在 [com.vic.inkflow.ui.editor.SelectionController]（套索多邊形、
+    // 選中集合、預覽快照、移動／縮放提交、刪除、複製、清除）。這裡只做接線：
+    // 對外 API 一個字沒變，所以呼叫點（EditorScreen、InkCanvas、PageWorkspace）零改動。
     private val selection = SelectionController(
         repos = repos,
         scope = viewModelScope,
@@ -2108,7 +2108,7 @@ class EditorViewModel(
 
     fun selectedImagesNow(): List<ImageAnnotation> = selection.selectedImagesNow()
 
-    /** åŒä¸Šï¼Œçµ¦ overlay ç•«é¸ä¸­å­—ï¼ˆæ‹–æ›³è·¨é å…¨ç¨‹å¯è¦‹ï¼‰ã€‚ */
+    /** 同上，給 overlay 畫選中字（拖曳跨頁全程可見）。 */
     fun selectedTextsNow(): List<TextAnnotation> = selection.selectedTextsNow()
 
     fun deleteSelection() = selection.deleteSelection()

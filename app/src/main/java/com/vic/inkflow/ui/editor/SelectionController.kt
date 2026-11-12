@@ -27,19 +27,19 @@ import kotlinx.coroutines.withContext
 import java.util.UUID
 
 /**
- * å¥—ç´¢é¸å–ï¼šç‹€æ…‹ã€å‘½ä¸­åˆ¤å®šã€ç§»å‹•ï¼ç¸®æ”¾æäº¤ã€åˆªé™¤ã€è¤‡è£½ã€æ¸…é™¤ã€‚
+ * 套索選取：狀態、命中判定、移動／縮放提交、刪除、複製、清除。
  *
- * ç‚ºä»€éº¼å¾ž [EditorViewModel] æ‹†å‡ºä¾†ï¼š
- * é¸å–æ˜¯é€™å€‹ç·¨è¼¯å™¨è£¡**è€¦åˆæœ€å¯†**çš„ä¸€å¡Šâ€”â€”å®ƒåŒæ™‚ç¢°å¾—åˆ°å¥—ç´¢å¤šé‚Šå½¢ã€é¸ä¸­é›†åˆã€
- * é è¦½å¿«ç…§ã€åœ–ï¼å­—ï¼å¢¨ä¸‰ç¨®ç‰©ä»¶ã€è·¨é åº§æ¨™æ›ç®—ã€undo è¨˜éŒ„èˆ‡è³‡æ–™åº«å¯«å…¥ã€‚åŽŸä¾†å®ƒè·Ÿ
- * ç•«ç­†ã€é é¢ã€å·¥å…·åˆ—ã€AI é¢æ¿å…±ç”¨åŒä¸€å€‹é¡žåˆ¥ï¼Œæ–¼æ˜¯ã€Œç•«ç­†æ€Žéº¼ç•«ã€èˆ‡ã€Œé¸å–æ€Žéº¼æäº¤ã€
- * ä½åœ¨åŒä¸€å€‹ 2,500 è¡Œçš„æª”æ¡ˆè£¡ï¼Œèª°æ”¹èª°æ€•ã€‚
+ * 為什麼從 [EditorViewModel] 拆出來：
+ * 選取是這個編輯器裡**耦合最密**的一塊——它同時碰得到套索多邊形、選中集合、
+ * 預覽快照、圖／字／墨三種物件、跨頁座標換算、undo 記錄與資料庫寫入。原來它跟
+ * 畫筆、頁面、工具列、AI 面板共用同一個類別，於是「畫筆怎麼畫」與「選取怎麼提交」
+ * 住在同一個 2,500 行的檔案裡，誰改誰怕。
  *
- * é€™å€‹é¡žåˆ¥çš„é‚Šç•Œï¼š**é¸å–ç‹€æ…‹æ­¸å®ƒï¼Œé¸å–æ±ºç­–ä¹Ÿæ­¸å®ƒï¼›ä½†ã€Œè¦ undo å°± undoã€è¦å¯«åº«
- * å°±å¯«åº«ã€æ˜¯å®ƒèˆ‡å¤–ç•Œå”¯ä¸€çš„å…©å€‹å‡ºå£**ï¼ˆæ³¨å…¥çš„ callbackï¼‰ã€‚å®ƒä¸çŸ¥é“ ViewModel å­˜åœ¨ã€‚
+ * 這個類別的邊界：**選取狀態歸它，選取決策也歸它；但「要 undo 就 undo、要寫庫
+ * 就寫庫」是它與外界唯一的兩個出口**（注入的 callback）。它不知道 ViewModel 存在。
  *
- * ä¾è³´ä»¥ lambda æ³¨å…¥ï¼Œå› ç‚ºå®ƒéœ€è¦çš„æ±è¥¿å…¨éƒ½æœƒè®Šï¼šç´™çš„å°ºå¯¸ï¼ˆæ¨¡åž‹åº§æ¨™æ›ç®—ï¼‰ã€
- * ç•«å¸ƒå°ºå¯¸ï¼ˆç•«å¸ƒåº§æ¨™æ›ç®—ï¼‰ã€ç›®å‰é ã€é¸å–æ­¸å±¬é ã€è¦è¨˜çš„é‚£ä¸€æ ¼ undoã€‚
+ * 依賴以 lambda 注入，因為它需要的東西全都會變：紙的尺寸（模型座標換算）、
+ * 畫布尺寸（畫布座標換算）、目前頁、選取歸屬頁、要記的那一格 undo。
  */
 internal class SelectionController(
     private val repos: InkFlowRepositories,
@@ -48,7 +48,7 @@ internal class SelectionController(
     private val modelHeight: () -> Float,
     private val canvasW: () -> Float,
     private val canvasH: () -> Float,
-    /** S1 é›™å¯«æ­¥å¹…ï¼šdocY = pageIndex Ã— stride + é å…§é ‚é‚Šã€‚ */
+    /** S1 雙寫步幅：docY = pageIndex × stride + 頁內頂邊。 */
     private val docStride: () -> Float,
     private val pageDataFlow: (Int) -> StateFlow<EditorViewModel.NeighborPageData>,
     private val pageFlows: () -> Map<Int, StateFlow<EditorViewModel.NeighborPageData>>,
@@ -56,7 +56,7 @@ internal class SelectionController(
     private val currentTextAnnotations: () -> StateFlow<List<TextAnnotation>>,
     private val pageIndex: () -> Int,
     private val pushUndo: (DrawCommand) -> Unit,
-    /** è½åº«çš„å”¯ä¸€ chokeï¼šè¦†è“‹ï¼‹bump åœ¨åŒä¸€äº¤æ˜“è£¡ï¼ˆè¦‹ EditorViewModel çš„èªªæ˜Žï¼‰ã€‚ */
+    /** 落庫的唯一 choke：覆蓋＋bump 在同一交易裡（見 EditorViewModel 的說明）。 */
     private val replaceStrokeSnapshots: suspend (List<StrokeWithSamples>) -> Unit,
     private val hideIds: (Collection<String>) -> Unit,
     private val showIds: (Collection<String>) -> Unit
