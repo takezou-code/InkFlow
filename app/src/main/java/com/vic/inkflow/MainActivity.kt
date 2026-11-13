@@ -14,6 +14,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // 診斷開關（見 DevLog）：release 預設關，現場放 devlog 旗標檔就開。
+        com.vic.inkflow.util.DevLog.init(applicationContext)
         // Haze 功能開關（**不是**診斷旗標，關掉整個玻璃效果會 no-op：
         // 不採樣、不 blur、tint 也不畫，畫面看起來跟沒套玻璃一樣）。
         // 必須在 effect node 掛上之前設定，所以放 onCreate。

@@ -687,10 +687,9 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         // 捲一圈就製造幾百 MB 的垃圾，是 PDF 捲動閃退的根源。
         loRenderScale = cheapRenderScale(pageWidthPt, pageWidthPt * 1.4142f)
         hiRenderScale = resolveRenderScale(paperWidthPx, pageWidthPt, maxScale)
-        android.util.Log.d(
-            "InkFlowDbg",
+        com.vic.inkflow.util.DevLog.d("InkFlowDbg") {
             "renderPlan paper=${paperWidthPx.toInt()}px lo=$loRenderScale hi=$hiRenderScale max=$maxScale range=$hiTierRange"
-        )
+        }
         applyRenderPlan()
     }
 
@@ -1146,7 +1145,7 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
 
             val currentCount = _pageCount.value
             val insertionIndex = if (afterIndex >= currentCount - 1) currentCount else afterIndex + 1
-            android.util.Log.d(
+            com.vic.inkflow.util.DevLog.d(
                 "PdfViewModel",
                 "insertPdfPages start: currentCount=$currentCount, afterIndex=$afterIndex, insertionIndex=$insertionIndex, inserted=$insertedPageCount"
             )
@@ -2039,10 +2038,9 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         if (!gcArmed.compareAndSet(true, false)) return
         renderedBytesSinceGc.set(0)
         viewModelScope.launch(Dispatchers.Default) {
-            android.util.Log.d(
-                "PdfViewModel",
+            com.vic.inkflow.util.DevLog.d("PdfViewModel") {
                 "GC: 頁面圖垃圾已累積 >=${GC_TRIGGER_BYTES / 1024 / 1024}MB，閒置收一次"
-            )
+            }
             System.gc()
         }
     }
@@ -2151,13 +2149,12 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         // 只在真的砍了東西、或已經超預算時才落 log：這函式每個捲動幀都可能被呼叫，
         // 無條件印會把 logcat 灌滿（查別的問題時很難看）。
         if (evicted.isNotEmpty() || liveBytes > budget) {
-            android.util.Log.d(
-                "PdfViewModel",
+            com.vic.inkflow.util.DevLog.d("PdfViewModel") {
                 "evict[$label] live=${liveBytes / 1024}KB budget=${budget / 1024}KB " +
                     "maxMem=${maxMemory / 1024 / 1024}MB pages=${candidates.size} " +
                     "subscribed=${candidates.count { it.hasSubscriber }} evicted=${evicted.size} " +
                     "pending=${pending.size} paused=${rendersPaused.get()}"
-            )
+            }
         }
     }
 

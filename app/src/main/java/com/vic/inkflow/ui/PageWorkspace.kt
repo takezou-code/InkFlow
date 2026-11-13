@@ -460,13 +460,13 @@ val allowSinglePan = startedBlank || fingerPanOnPaperAllowed(
                     is GestureStateMachine.Output.GestureEnd -> {
                         endedKind = o.kind
                         endAll()
-                        tracer.flush("END-${o.kind}").forEach { android.util.Log.d("InkFlowTrace", it) }
+                        tracer.flush("END-${o.kind}").forEach { com.vic.inkflow.util.DevLog.d("InkFlowTrace", it) }
                     }
                     GestureStateMachine.Output.YieldToStylus,
                     GestureStateMachine.Output.AbortGesture -> {
                         fedIds.clear() // 下幀還壓著的手指當新起點重吃（舊 reset 語義）
                         endAll()
-                        tracer.flush("$o").forEach { android.util.Log.d("InkFlowTrace", it) }
+                        tracer.flush("$o").forEach { com.vic.inkflow.util.DevLog.d("InkFlowTrace", it) }
                     }
                     null -> {}
                 }
@@ -1244,7 +1244,9 @@ private data class MainListSnap(
  */
 internal object ScrollWriters {
     fun log(writer: String, detail: String = "") {
-        android.util.Log.w("InkFlowScroll", "$writer t=${android.os.SystemClock.uptimeMillis()} $detail")
+        // 診斷級：每個捲動幀都會走到這裡，所以 release 預設不印
+        // （見 DevLog：現場要用可以用 devlog 旗標檔開回來）。
+        com.vic.inkflow.util.DevLog.w("InkFlowScroll", "$writer t=${android.os.SystemClock.uptimeMillis()} $detail")
     }
 }
 
