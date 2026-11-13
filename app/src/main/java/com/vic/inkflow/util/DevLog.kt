@@ -52,7 +52,14 @@ object DevLog {
     fun init(context: Context) {
         appContext = context.applicationContext
         refresh()
+        // 開了就在 logcat 留一句，讓「診斷到底有沒有開」是看得到的，
+        // 而不是靠猜（現場最常見的問題就是「我沒看到 log」）。
+        if (enabled && !BuildConfig.DEBUG) {
+            Log.i(TAG, "diagnostic logging ON (devlog flag present)")
+        }
     }
+
+    private const val TAG = "DevLog"
 
     /** 診斷級（Log.d）。release 預設不印。 */
     fun d(tag: String, message: String) {
