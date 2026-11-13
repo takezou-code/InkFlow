@@ -159,7 +159,11 @@ class AgentPanelViewModel(
                             flowId = existing.flowId,
                             docY = existing.docY,
                             version = existing.version,
-                            versionNonce = existing.versionNonce
+                            versionNonce = existing.versionNonce,
+                            // Keep the wrap and stamp when the op omits them: an
+                            // AI rewrite must not silently un-wrap the paragraph.
+                            boxWidth = op.boxWidth ?: existing.boxWidth,
+                            isStamp = existing.isStamp
                         )
                     }
                     db.saveTextAnnotation(entity)
