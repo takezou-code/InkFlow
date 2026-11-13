@@ -1656,7 +1656,12 @@ fun InkCanvas(
                 }
 
                 currentPathPoints.clear()
-                currentPathPoints.add(StrokePoint(startOffset.x, startOffset.y, currentW))
+                // 寬度每點都乘入庫歸一化的同一個 docZoom，讓活筆畫＝提筆快照＝落庫後成品
+                // 三者一致；不然縮放 ≠ 1 時提筆瞬間墨會突然變粗（實機 log zoom=1.32 實測）。
+                val liftZoom = viewModel.docZoom.value
+                currentPathPoints.add(
+                    StrokePoint(startOffset.x, startOffset.y, currentW * liftZoom)
+                )
                 activePathVersion++
                 down.consume()
                 // 連貫畫布：寫筆全程鎖頁，自動捲不觸發作用頁切換，鬆筆才結算跨頁
@@ -1820,14 +1825,14 @@ fun InkCanvas(
                             val hp   = calPos(historical.position)
                             val prev = currentPathPoints.last()
                             activePath.quadraticTo(prev.x, prev.y, (prev.x + hp.x) / 2f, (prev.y + hp.y) / 2f)
-                            val w = calcWidth(hp, historical.uptimeMillis, lastSmoothPressure)
+                            val w = calcWidth(hp, historical.uptimeMillis, lastSmoothPressure) * viewModel.docZoom.value
                             currentPathPoints.add(StrokePoint(hp.x, hp.y, w))
                             quickSwipeTrace.add(hp)
                         }
                         val newPoint  = calPos(drag.position)
                         val prevPoint = currentPathPoints.last()
                         activePath.quadraticTo(prevPoint.x, prevPoint.y, (prevPoint.x + newPoint.x) / 2f, (prevPoint.y + newPoint.y) / 2f)
-                        val w = calcWidth(newPoint, drag.uptimeMillis, smoothPressure)
+                        val w = calcWidth(newPoint, drag.uptimeMillis, smoothPressure) * viewModel.docZoom.value
                         currentPathPoints.add(StrokePoint(newPoint.x, newPoint.y, w))
                         quickSwipeTrace.add(newPoint)
 
@@ -2167,6 +2172,17 @@ fun InkCanvas(
             val scaleChanged = lastInkScale.sx != sx || lastInkScale.sy != sy
 
             val strokes = committedStrokes
+            // 快照兜底：這筆已經被刪除／復原（strokes 和樂觀層都找不到它）→ 立即丟棄殘影。
+            // 只在交接完成後判：交接未完成的瞬間 strokes 可能合法為空（頁流排空），
+            // 那時丟快照就等於提筆閃再回來。bridgingIds == null ＝ 頁流已把這筆交上。
+            liftedSnapshot?.let { snap ->
+                if (bridgingIds == null) {
+                    val stillThere =
+                        strokes.any { it.stroke.id in snap.ids } ||
+                            pendingIds.any { it in snap.ids }
+                    if (!stillThere) liftedSnapshot = null
+                }
+            }
             val preview = commitPreview
             val previewIds = preview?.map { it.stroke.id }?.toHashSet() ?: emptySet()
             // ── 向量層：樂觀筆（DB 未回報）＋ 最後一筆熱筆 ──
