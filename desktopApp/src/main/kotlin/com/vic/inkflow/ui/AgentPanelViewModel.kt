@@ -32,7 +32,9 @@ class AgentPanelViewModel(
     private val landing: NoteLandingHandle,
     private val scope: CoroutineScope,
     private val db: DatabaseManager,
-    private val proposalQueue: ProposalQueue
+    private val proposalQueue: ProposalQueue,
+    /** The reader's preview bridge — null in headless contexts (tests). */
+    private val previewHandle: com.vic.inkflow.agent.PreviewHandle? = null
 ) {
 
     data class UiState(
@@ -40,6 +42,8 @@ class AgentPanelViewModel(
         val steps: List<AgentStep> = emptyList(),
         val note: LessonNote? = null,
         val editPlan: EditPlan? = null,
+        val editMode: Boolean = false,
+        val previewAck: com.vic.inkflow.agent.PreviewAck? = null,
         val failure: String? = null,
         val landed: String? = null,
         val busy: Boolean = false,
@@ -54,6 +58,8 @@ class AgentPanelViewModel(
         data object Generate : AgentEvent
         data object LandNote : AgentEvent
         data object ApplyEditPlan : AgentEvent
+        data object RejectEditPlan : AgentEvent
+        data object ToggleEditMode : AgentEvent
     }
 
     private val _state = MutableStateFlow(UiState())
@@ -81,8 +87,31 @@ class AgentPanelViewModel(
                 _state.value = _state.value.copy(landed = msg)
             }
             is AgentEvent.ApplyEditPlan -> {
+                // Persist first (the database assigns ids/versions), then let the
+                // reader reload the true state from the database and drop the
+                // preview overlay.
                 val msg = applyEditPlan()
-                _state.value = _state.value.copy(landed = msg)
+                previewHandle?.accept()
+                _state.value = _state.value.copy(landed = msg, editPlan = null, previewAck = null)
+            }
+            is AgentEvent.RejectEditPlan -> {
+                // Drop the overlay without writing anything; the page is unchanged.
+                previewHandle?.clear()
+                _state.value = _state.value.copy(landed = "已捨棄修改提案", editPlan = null, previewAck = null)
+            }
+            is AgentEvent.ToggleEditMode -> {
+                if (_state.value.busy) return@onEvent
+                // Leaving edit mode must clear any overlay — the reader must not
+                // keep showing a simulated page the user chose not to adopt.
+                previewHandle?.clear()
+                _state.value = _state.value.copy(
+                    editMode = !_state.value.editMode,
+                    note = null,
+                    editPlan = null,
+                    previewAck = null,
+                    landed = null,
+                    failure = null
+                )
             }
         }
     }
@@ -108,16 +137,26 @@ class AgentPanelViewModel(
     private fun generate() {
         val s = _state.value
         if (s.busy) return
-        _state.value = s.copy(busy = true, failure = null, landed = null, note = null, editPlan = null, steps = emptyList())
+        // Leaving the page in "simulated" while a fresh plan is coming in would
+        // mismatch; drop it up front.
+        previewHandle?.clear()
+        val editMode = s.editMode
+        _state.value = s.copy(busy = true, failure = null, landed = null, note = null, editPlan = null, previewAck = null, steps = emptyList())
         scope.launch {
             val prov = currentProvider()
-            // Note mode: the agent composes a LessonNote (study note) from the
-            // material it gathered. EditPlan mode (document-level edits) is
-            // available on AgentLoop but this panel's job is to make notes.
-            val loop = AgentLoop(
-                provider = prov,
-                tools = tools
-            )
+            val loop = if (editMode) {
+                AgentLoop(
+                    provider = prov,
+                    tools = tools,
+                    composeSchema = EditPlan.schema,
+                    composeDecode = { value -> EditPlan.decode(value) }
+                )
+            } else {
+                AgentLoop(
+                    provider = prov,
+                    tools = tools
+                )
+            }
             val instruction = _state.value.instruction.ifBlank { DEFAULT_INSTRUCTION }
             val outcome = loop.run(
                 AgentGoal(
@@ -126,9 +165,14 @@ class AgentPanelViewModel(
                     documentUri = documentUri
                 )
             ) { step -> _state.value = _state.value.copy(steps = _state.value.steps + step) }
+            // Auto-preview in edit mode: show the outcome on the page before the
+            // user confirms — the whole-page diff is the confirmation surface.
+            val plan = outcome.editPlan
+            val ack = if (editMode && plan != null) previewHandle?.preview(plan) else null
             _state.value = _state.value.copy(
                 note = outcome.note,
                 editPlan = outcome.editPlan,
+                previewAck = ack,
                 failure = outcome.failure,
                 busy = false
             )

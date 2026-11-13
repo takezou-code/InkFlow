@@ -318,6 +318,8 @@ fun InkFlowApp(uiPreview: String? = null, paletteOpen: Boolean = false, onPalett
     var showAgent by remember { mutableStateOf(uiPreview == "ai") }
     // The bridge between the panel and the reader's page state.
     val noteLanding = remember { com.vic.inkflow.agent.NoteLandingHandle() }
+    // The bridge for the whole-page edit preview — same binding pattern.
+    val previewHandle = remember { com.vic.inkflow.agent.PreviewHandle() }
     var currentPageIndex by remember { mutableStateOf(0) }
 
     // `--ui=settings|reader|ai` opens straight onto a screen with the most
@@ -638,6 +640,7 @@ fun InkFlowApp(uiPreview: String? = null, paletteOpen: Boolean = false, onPalett
                                 refreshToken = libraryRefresh,
                                 documentTitle = displayName,
                                 noteLanding = noteLanding,
+                                previewHandle = previewHandle,
                                 // `weight`, not `fillMaxSize`: in a Row the reader
                                 // used to take the whole width and squeeze the AI
                                 // panel to zero, so the panel never actually
@@ -651,7 +654,8 @@ fun InkFlowApp(uiPreview: String? = null, paletteOpen: Boolean = false, onPalett
                                     landing = noteLanding,
                                     onToggleCollapsed = { showAgent = false },
                                     databaseManager = databaseManager,
-                                    proposalQueue = proposalQueue
+                                    proposalQueue = proposalQueue,
+                                    previewHandle = previewHandle
                                 )
                             }
                         }

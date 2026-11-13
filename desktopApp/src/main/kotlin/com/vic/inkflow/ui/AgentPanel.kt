@@ -21,6 +21,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Image
@@ -80,11 +81,12 @@ fun AgentPanel(
     onToggleCollapsed: () -> Unit,
     databaseManager: DatabaseManager,
     proposalQueue: ProposalQueue,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    previewHandle: com.vic.inkflow.agent.PreviewHandle? = null
 ) {
     val scope = rememberCoroutineScope()
-    val vm = remember(documentUri, pageIndex, databaseManager, proposalQueue) {
-        AgentPanelViewModel(documentUri, pageIndex, landing, scope, databaseManager, proposalQueue)
+    val vm = remember(documentUri, pageIndex, databaseManager, proposalQueue, previewHandle) {
+        AgentPanelViewModel(documentUri, pageIndex, landing, scope, databaseManager, proposalQueue, previewHandle)
     }
     val state by vm.state.collectAsState()
 
@@ -110,7 +112,8 @@ fun AgentPanel(
                     DeskTextField(
                         value = state.instruction,
                         onValueChange = { vm.onEvent(AgentPanelViewModel.AgentEvent.SetInstruction(it)) },
-                        placeholder = "要 AI 做什麼？例如「把這頁的重點整理成筆記」",
+                        placeholder = if (state.editMode) "要改什麼？例如「把這頁的重複段落刪掉」"
+                                      else "要 AI 做什麼？例如「把這頁的重點整理成筆記」",
                         singleLine = false,
                         minLines = 2,
                         maxLines = 6,
@@ -159,13 +162,22 @@ fun AgentPanel(
                 val hasNote = state.note != null
                 val hasPlan = state.editPlan != null && state.editPlan!!.ops.isNotEmpty()
                 when {
-                    hasPlan -> DeskPrimaryButton(
-                        text = "套用變更",
-                        icon = Icons.Default.Check,
-                        onClick = { vm.onEvent(AgentPanelViewModel.AgentEvent.ApplyEditPlan) },
-                        enabled = !state.busy,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    hasPlan -> Row(verticalAlignment = Alignment.CenterVertically) {
+                        DeskPrimaryButton(
+                            text = "套用變更",
+                            icon = Icons.Default.Check,
+                            onClick = { vm.onEvent(AgentPanelViewModel.AgentEvent.ApplyEditPlan) },
+                            enabled = !state.busy,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Spacer(Modifier.width(DeskSpace.xs))
+                        DeskPillButton(
+                            text = "捨棄",
+                            icon = Icons.Default.Close,
+                            onClick = { vm.onEvent(AgentPanelViewModel.AgentEvent.RejectEditPlan) },
+                            enabled = !state.busy
+                        )
+                    }
                     hasNote -> DeskPrimaryButton(
                         text = "寫入頁面",
                         icon = Icons.Default.Check,
@@ -238,6 +250,22 @@ fun AgentPanel(
 
             Spacer(Modifier.height(DeskSpace.sm))
 
+            // ── Mode: produce a note, or edit the document ──────────────
+            Row(horizontalArrangement = Arrangement.spacedBy(DeskSpace.xs)) {
+                ModeChip(
+                    label = "整理成筆記",
+                    selected = !state.editMode,
+                    onClick = { if (state.editMode) vm.onEvent(AgentPanelViewModel.AgentEvent.ToggleEditMode) }
+                )
+                ModeChip(
+                    label = "編輯文件",
+                    selected = state.editMode,
+                    onClick = { if (!state.editMode) vm.onEvent(AgentPanelViewModel.AgentEvent.ToggleEditMode) }
+                )
+            }
+
+            Spacer(Modifier.height(DeskSpace.sm))
+
             // ── The run: the transcript grows upwards from the composer ──
             LazyColumn(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
@@ -246,6 +274,7 @@ fun AgentPanel(
                 if (state.steps.isEmpty() && state.failure == null && state.note == null && state.editPlan == null && !state.busy) {
                     item {
                         AgentEmptyState(
+                            editMode = state.editMode,
                             onPick = { vm.onEvent(AgentPanelViewModel.AgentEvent.SetInstruction(it)) }
                         )
                     }
@@ -282,7 +311,7 @@ fun AgentPanel(
                     item { NotePreview(preview) }
                 }
                 state.editPlan?.let { plan ->
-                    item { EditPlanPreview(plan) }
+                    item { EditPlanPreview(plan, state.previewAck) }
                 }
                 state.landed?.let { message ->
                     item {
@@ -322,12 +351,20 @@ fun AgentPanel(
  * a prompt they can press is the fastest way to find out.
  */
 @Composable
-private fun AgentEmptyState(onPick: (String) -> Unit) {
-    val examples = listOf(
-        "把這頁的重點整理成三條筆記",
-        "把這個公式的每一步推導寫成說明",
-        "替這頁出一題練習題與解答"
-    )
+private fun AgentEmptyState(editMode: Boolean, onPick: (String) -> Unit) {
+    val examples = if (editMode) {
+        listOf(
+            "把這頁重複的段落合併成一段",
+            "把這頁的長段落重排成條列重點",
+            "找出這頁的筆記錯字並改過來"
+        )
+    } else {
+        listOf(
+            "把這頁的重點整理成三條筆記",
+            "把這個公式的每一步推導寫成說明",
+            "替這頁出一題練習題與解答"
+        )
+    }
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
@@ -350,15 +387,17 @@ private fun AgentEmptyState(onPick: (String) -> Unit) {
         }
         Spacer(Modifier.height(DeskSpace.sm))
         Text(
-            text = "描述你要 AI 做什麼",
+            text = if (editMode) "描述你想怎麼改這頁" else "描述你要 AI 做什麼",
             style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.onSurface
         )
         Spacer(Modifier.height(2.dp))
         Text(
-            text = "AI 會讀頁面、查模型，最後把成果先給你確認。",
+            text = if (editMode) "AI 會讀頁面，先把修改提案顯示在頁面上，你按套用才會寫入。"
+                   else "AI 會讀頁面、查模型，最後把成果先給你確認。",
             style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center
         )
         Spacer(Modifier.height(DeskSpace.md))
         examples.forEach { prompt ->
@@ -469,7 +508,7 @@ private fun NotePreview(note: LessonNote) {
 
 /** The edit plan preview: shows each op as a diff line. */
 @Composable
-private fun EditPlanPreview(plan: EditPlan) {
+private fun EditPlanPreview(plan: EditPlan, ack: com.vic.inkflow.agent.PreviewAck?) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -482,6 +521,37 @@ private fun EditPlanPreview(plan: EditPlan) {
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.SemiBold
         )
+        if (ack != null) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = if (ack.isNoop) "頁面預覽：沒有變更（模型的提案等於現狀）"
+                       else "頁面預覽：＋${ack.added} 新增 · ${ack.changed} 改寫 · −${ack.deleted} 刪除",
+                style = MaterialTheme.typography.bodySmall,
+                color = if (ack.isNoop) MaterialTheme.colorScheme.onSurfaceVariant
+                        else MaterialTheme.colorScheme.primary
+            )
+            if (ack.problems.isNotEmpty()) {
+                Spacer(Modifier.height(2.dp))
+                ack.problems.forEach { problem ->
+                    Row(verticalAlignment = Alignment.Top) {
+                        Icon(
+                            Icons.Default.WarningAmber,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier
+                                .width(14.dp)
+                                .padding(top = 1.dp)
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            text = problem,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+            }
+        }
         Spacer(Modifier.height(4.dp))
         plan.ops.forEachIndexed { index, op ->
             Row(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
@@ -533,4 +603,21 @@ private fun previewTextOf(block: com.vic.inkflow.data.NoteBlock): String = when 
     is com.vic.inkflow.data.NoteBlock.Quiz -> "Q: ${block.question}\n" +
         block.options.mapIndexed { index, option -> "${index + 1}) $option" }.joinToString("\n") +
         "\nAnswer: ${block.options.getOrNull(block.answerIndex).orEmpty()}"
+}
+
+/** A small segmented choice for the panel's two modes. */
+@Composable
+private fun ModeChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    val fill = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
+    val content = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(fill)
+            .glassClickable(onClick = onClick, shape = RoundedCornerShape(999.dp))
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(label, style = MaterialTheme.typography.labelSmall, color = content)
+    }
 }

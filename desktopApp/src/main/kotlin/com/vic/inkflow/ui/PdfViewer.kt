@@ -109,6 +109,7 @@ import androidx.compose.ui.unit.dp
 import com.vic.inkflow.data.DatabaseManager
 import com.vic.inkflow.data.StrokeWithPoints
 import com.vic.inkflow.data.toModel
+import com.vic.inkflow.data.toRow
 import com.vic.inkflow.data.LessonNote
 import com.vic.inkflow.data.TextAnnotationEntity
 import com.vic.inkflow.data.TextMetrics
@@ -290,11 +291,20 @@ fun PdfViewer(
      * Where an AI-produced note is landed.
      *
      * The agent panel lives outside this composable, but the note has to land
-     * in the page that has the ink, the undo stack and the proposal queue —
+     * in the page that has the ink, the undo stack and the proposal queue -
      * so the reader binds its landing function into the handle while it is on
      * screen.
      */
-    noteLanding: com.vic.inkflow.agent.NoteLandingHandle? = null
+    noteLanding: com.vic.inkflow.agent.NoteLandingHandle? = null,
+    /**
+     * Where the panel previews a proposed edit before it is applied.
+     *
+     * Same binding trick as [noteLanding]: only the focused page binds, so the
+     * whole-page diff renders where the user is looking. The preview is pure
+     * in-memory — nothing is persisted until the panel persists it and then
+     * calls [com.vic.inkflow.agent.PreviewHandle.accept].
+     */
+    previewHandle: com.vic.inkflow.agent.PreviewHandle? = null
 ) {
     var pageCount by remember(documentUri) { mutableIntStateOf(0) }
     var docError by remember(documentUri) { mutableStateOf<String?>(null) }
@@ -617,7 +627,8 @@ fun PdfViewer(
                             sharedZoom = sharedZoom,
                             onFocused = { focusPage(idx) },
                             onDocCleared = { docRefresh++ },
-                            noteLanding = if (idx == focusedPage) noteLanding else null
+                            noteLanding = if (idx == focusedPage) noteLanding else null,
+                            previewHandle = if (idx == focusedPage) previewHandle else null
                         )
                     }
                     }
@@ -715,10 +726,12 @@ private fun PageView(
     onFocused: () -> Unit = {},
     onDocCleared: () -> Unit = {},
     noteLanding: com.vic.inkflow.agent.NoteLandingHandle? = null,
+    /** Same binding pattern as [noteLanding], for the whole-page edit preview. */
+    previewHandle: com.vic.inkflow.agent.PreviewHandle? = null,
     modifier: Modifier = Modifier
 ) {
     // Fixed page: the parent owns navigation, so the page-turn state is gone.
-    // Everything below still says `requestedPage` — one alias, zero rewrites.
+    // Everything below still says `requestedPage` - one alias, zero rewrites.
     val requestedPage = pageIndex
 
     // ── Page raster ─────────────────────────────────────────────────────────
@@ -748,6 +761,16 @@ private fun PageView(
     var texts by remember(documentUri, requestedPage, refreshToken, docRefresh) {
         mutableStateOf<List<TextAnnotationEntity>>(emptyList())
     }
+
+    // �� Edit preview overlay ����������������������������������������������
+    // The whole-page diff the user approves before anything is written. Pure
+    // in-memory: the simulated set renders INSTEAD of `texts` while active.
+    // Nothing here persists; rejecting just drops the overlay.
+    var previewProposed by remember(documentUri, requestedPage) { mutableStateOf<List<TextAnnotationEntity>?>(null) }
+    var previewDeleted by remember(documentUri, requestedPage) { mutableStateOf<List<TextAnnotationEntity>>(emptyList()) }
+    var previewAddedIds by remember(documentUri, requestedPage) { mutableStateOf<Set<String>>(emptySet()) }
+    var previewChangedIds by remember(documentUri, requestedPage) { mutableStateOf<Set<String>>(emptySet()) }
+    var localReload by remember(documentUri, requestedPage) { mutableIntStateOf(0) }
 
     var textSpans by remember(documentUri, requestedPage) { mutableStateOf<List<com.vic.inkflow.util.PdfTextSpan>>(emptyList()) }
     // Keyed on the page: indices from page 1 must never highlight page 2's chars.
@@ -958,7 +981,7 @@ private fun PageView(
     }
 
     // ── Text ────────────────────────────────────────────────────────────────
-    LaunchedEffect(documentUri, requestedPage, refreshToken, docRefresh) {
+    LaunchedEffect(documentUri, requestedPage, refreshToken, docRefresh, localReload) {
         texts = runCatching {
             withContext(Dispatchers.IO) {
                 databaseManager.getTextAnnotationsForPage(documentUri, requestedPage)
@@ -1569,6 +1592,53 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
     DisposableEffect(noteLanding) {
         noteLanding?.bind { note -> landNote(note) }
         onDispose { noteLanding?.unbind() }
+    }
+
+    // ── Edit preview ────────────────────────────────────────────────────────
+    // Binds the whole-page diff preview for the AI edit path. The agent panel
+    // hands us an EditPlan; we simulate it against the current text set and
+    // render the result INSTEAD of the stored notes until the user accepts
+    // (persisted by the panel, then we reload from the database) or rejects
+    // (overlay dropped, nothing written).
+    fun clearPreview() {
+        previewProposed = null
+        previewDeleted = emptyList()
+        previewAddedIds = emptySet()
+        previewChangedIds = emptySet()
+    }
+    DisposableEffect(previewHandle) {
+        if (previewHandle != null) {
+            previewHandle.bind(
+                com.vic.inkflow.agent.PreviewHandle.Session(
+                    preview = { plan ->
+                        // Simulate against the live snapshot state. Mapping to the
+                        // shared model and back loses version/nonce on purpose —
+                        // the preview is a look, not a write.
+                        val models = texts.map { it.toModel() }
+                        val preview = com.vic.inkflow.agent.previewEditPlan(documentUri, models, plan)
+                        previewProposed = preview.proposed.map { it.toRow() }
+                        previewDeleted = preview.deleted.map { it.toRow() }
+                        previewAddedIds = preview.addedIds
+                        previewChangedIds = preview.changedIds
+                        com.vic.inkflow.agent.PreviewAck(
+                            added = preview.addedIds.size,
+                            changed = preview.changedIds.size,
+                            deleted = preview.deleted.size,
+                            problems = preview.problems,
+                            isNoop = preview.isNoop
+                        )
+                    },
+                    accept = {
+                        // The panel has already persisted via applyEditPlan();
+                        // pull the truth from the database and drop the overlay.
+                        clearPreview()
+                        localReload++
+                    },
+                    clear = { clearPreview() }
+                )
+            )
+        }
+        onDispose { previewHandle?.unbind() }
     }
 
     // (export lives in the parent reader)
@@ -2562,8 +2632,44 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
         // so notes track zoom and pan with the ink. `pointerInput` is absent on
         // purpose: a note must never intercept a drag meant for the page beneath it.
         val noteBox = box
-        if (noteBox != null && texts.isNotEmpty()) {
-            texts.forEach { t ->
+        // The proposed page from the AI edit preview takes over the layer while
+        // it is active — the stored notes are rendered only when no preview is on.
+        val previewActive = previewProposed != null
+        val renderTexts = previewProposed ?: texts
+        if (noteBox != null) {
+            // Deleted annotations drawn as struck-through ghosts, behind the set.
+            if (previewActive) {
+                previewDeleted.forEach { t ->
+                    val tb = TextMetrics.boundsFor(t) ?: return@forEach
+                    val boxW = t.boxWidth?.takeIf { it > 0f }
+                    val display = if (boxW != null)
+                        TextMetrics.wrapLines(t.text, t.fontSize, boxW).joinToString("\n")
+                    else t.text
+                    Text(
+                        text = display,
+                        modifier = Modifier.offset {
+                            IntOffset(
+                                (tb[0] * scale + (originX - noteBox.originX * scale)).roundToInt(),
+                                (tb[1] * scale + (originY - noteBox.originY * scale)).roundToInt()
+                            )
+                        }.then(
+                            if (boxW != null) Modifier.width(with(density) { (boxW * scale).toDp() })
+                            else Modifier
+                        ),
+                        color = MaterialTheme.colorScheme.error.copy(alpha = 0.65f),
+                        fontSize = with(density) { (t.fontSize * scale).toSp() },
+                        softWrap = false,
+                        textAlign = when (t.alignment) {
+                            1 -> TextAlign.Center
+                            2 -> TextAlign.End
+                            else -> TextAlign.Start
+                        },
+                        textDecoration = androidx.compose.ui.text.style.TextDecoration.LineThrough,
+                        lineHeight = with(density) { (t.fontSize * TextMetrics.LINE_SPACING * scale).toSp() }
+                    )
+                }
+            }
+            renderTexts.forEach { t ->
                 val tb = TextMetrics.boundsFor(t)
                     ?: return@forEach
                 // Text box (boxWidth set): wrap to the box and align inside it, so a
@@ -2573,6 +2679,13 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                 val display = if (boxW != null)
                     TextMetrics.wrapLines(t.text, t.fontSize, boxW).joinToString("\n")
                 else t.text
+                // Diff markers from the AI preview: ADDED gets a solid accent
+                // wash, CHANGED a lighter one — the eye goes to what moved.
+                val highlight = when (t.id) {
+                    in previewAddedIds -> MaterialTheme.colorScheme.primary.copy(alpha = 0.26f)
+                    in previewChangedIds -> MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                    else -> null
+                }
                 Text(
                     text = display,
                     modifier = Modifier.offset {
@@ -2582,6 +2695,11 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                         )
                     }.then(
                         if (boxW != null) Modifier.width(with(density) { (boxW * scale).toDp() })
+                        else Modifier
+                    ).then(
+                        if (highlight != null) Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(highlight)
                         else Modifier
                     ).alpha(if (t.id in eraserPreviewTextIds) ERASER_PREVIEW_ALPHA else 1f),
                     color = Color(t.colorArgb),
