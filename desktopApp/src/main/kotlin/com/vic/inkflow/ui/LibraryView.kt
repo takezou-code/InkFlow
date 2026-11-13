@@ -207,30 +207,39 @@ private fun LibraryNavPane(
     val destination = state.destination
     Column(
         modifier = Modifier
-            .width(232.dp)
+            .width(236.dp)
             .fillMaxHeight()
             .verticalScroll(rememberScrollState())
             .padding(end = DeskSpace.sm)
     ) {
-        DeskNavLabel("文件庫")
+        // 窗格自己的小標：上面已經有一個大標題「文件庫」了，
+        // 這裡再寫一次「文件庫」會變成同一個畫面兩個同名標題。
+        Text(
+            text = "瀏覽",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = DeskSpace.sm, top = DeskSpace.xs, bottom = DeskSpace.xxs)
+        )
         DeskNavItem(
             icon = Icons.Outlined.Home,
             label = "全部文件",
             selected = destination == LibraryViewModel.Destination.All,
             onClick = { onDestination(LibraryViewModel.Destination.All) },
-            trailing = state.folders.size.let { null }
+            trailing = state.totalCount.toString()
         )
         DeskNavItem(
             icon = Icons.Default.Star,
             label = "我的最愛",
             selected = destination == LibraryViewModel.Destination.Favorites,
-            onClick = { onDestination(LibraryViewModel.Destination.Favorites) }
+            onClick = { onDestination(LibraryViewModel.Destination.Favorites) },
+            trailing = state.favoriteCount.toString()
         )
         DeskNavItem(
             icon = Icons.Outlined.Inbox,
             label = "未分類",
             selected = destination == LibraryViewModel.Destination.Uncategorized,
-            onClick = { onDestination(LibraryViewModel.Destination.Uncategorized) }
+            onClick = { onDestination(LibraryViewModel.Destination.Uncategorized) },
+            trailing = state.uncategorizedCount.toString()
         )
 
         if (state.folders.isNotEmpty()) {

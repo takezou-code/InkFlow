@@ -1,8 +1,8 @@
 package com.vic.inkflow.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -12,9 +12,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
@@ -37,6 +39,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.vic.inkflow.DesktopSettings
 import com.vic.inkflow.agent.EditPlan
@@ -51,11 +54,23 @@ import com.vic.inkflow.ui.kit.DeskSidePanel
 import com.vic.inkflow.ui.kit.DeskSpace
 import com.vic.inkflow.ui.kit.DeskTextField
 import com.vic.inkflow.ui.kit.DeskPillButton
-import com.vic.inkflow.ui.GlassOptionChip
-import com.vic.inkflow.ui.GlassTextButton
 
 /**
  * The AI panel: an agent that edits the whole document.
+ *
+ * ## The shape of it
+ *
+ * Everything a modern assistant panel does, in this order:
+ *
+ *  - **status strip** on top: is the model reachable, how fast, does it get
+ *    the page image. One line, so it never competes with the content.
+ *  - **the run** in the middle: the steps of what the agent did, as a log that
+ *    reads like a transcript rather than a stack trace.
+ *  - **the composer at the bottom**, pinned: the input is where the hand is,
+ *    and the transcript grows upwards. (It used to be at the top, with the
+ *    result underneath - which reads like a form, not a conversation.)
+ *  - **the landing action** at the very bottom, because it is the thing the
+ *    user came for: put the agent's work on the page.
  */
 @Composable
 fun AgentPanel(
@@ -76,140 +91,163 @@ fun AgentPanel(
     val modelSet = DesktopSettings.modelName.isNotBlank()
 
     DeskSidePanel(
-        title = "AI 教材筆記",
+        title = "AI 助理",
         titleIcon = Icons.Default.AutoAwesome,
-        subtitle = if (modelSet) DesktopSettings.modelName else "未設定模型",
+        subtitle = if (modelSet) DesktopSettings.modelName else "尚未設定模型",
         onClose = onToggleCollapsed,
         modifier = modifier,
+        headerActions = {
+            DeskPillButton(
+                text = if (state.models.isEmpty()) "檢查" else "${state.models.size} 個",
+                icon = Icons.Default.Search,
+                onClick = { vm.onEvent(AgentPanelViewModel.AgentEvent.CheckModels) }
+            )
+        },
         footer = {
-            val hasNote = state.note != null
-            val hasPlan = state.editPlan != null && state.editPlan!!.ops.isNotEmpty()
-            if (hasPlan) {
-                DeskPrimaryButton(
-                    text = "套用編輯計畫",
-                    icon = Icons.Default.Check,
-                    onClick = { vm.onEvent(AgentPanelViewModel.AgentEvent.ApplyEditPlan) },
-                    enabled = !state.busy,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            } else if (hasNote) {
-                DeskPrimaryButton(
-                    text = "寫進文件",
-                    icon = Icons.Default.Check,
-                    onClick = { vm.onEvent(AgentPanelViewModel.AgentEvent.LandNote) },
-                    enabled = !state.busy,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            } else null
+            Column(modifier = Modifier.fillMaxWidth()) {
+                // ── The composer: pinned to the bottom, like every assistant ──
+                Row(verticalAlignment = Alignment.Bottom) {
+                    DeskTextField(
+                        value = state.instruction,
+                        onValueChange = { vm.onEvent(AgentPanelViewModel.AgentEvent.SetInstruction(it)) },
+                        placeholder = "要 AI 做什麼？例如「把這頁的重點整理成筆記」",
+                        singleLine = false,
+                        minLines = 2,
+                        maxLines = 6,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(Modifier.width(DeskSpace.xs))
+                    // A round accent button instead of a full-width bar: the eye
+                    // goes to the thing you press, and the composer stays the
+                    // biggest thing in the footer.
+                    val canSend = !state.busy && state.instruction.isNotBlank()
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (canSend) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.surfaceVariant
+                            )
+                            .glassClickable(
+                                onClick = { vm.onEvent(AgentPanelViewModel.AgentEvent.Generate) },
+                                shape = CircleShape,
+                                enabled = canSend
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (state.busy) {
+                            androidx.compose.material3.CircularProgressIndicator(
+                                Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.onPrimary
+                            )
+                        } else {
+                            Icon(
+                                Icons.Default.AutoAwesome,
+                                contentDescription = "產生草稿",
+                                tint = if (canSend) MaterialTheme.colorScheme.onPrimary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(DeskSpace.xs))
+
+                val hasNote = state.note != null
+                val hasPlan = state.editPlan != null && state.editPlan!!.ops.isNotEmpty()
+                when {
+                    hasPlan -> DeskPrimaryButton(
+                        text = "套用變更",
+                        icon = Icons.Default.Check,
+                        onClick = { vm.onEvent(AgentPanelViewModel.AgentEvent.ApplyEditPlan) },
+                        enabled = !state.busy,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    hasNote -> DeskPrimaryButton(
+                        text = "寫入頁面",
+                        icon = Icons.Default.Check,
+                        onClick = { vm.onEvent(AgentPanelViewModel.AgentEvent.LandNote) },
+                        enabled = !state.busy,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    else -> Text(
+                        text = "產生的筆記會先出現在這裡，確認後才寫進頁面。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
         }
     ) {
         Column(modifier = Modifier.fillMaxSize().padding(DeskSpace.md)) {
+            // ── Status strip: one line, never competing with the content ──
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(DeskSpace.xs),
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+                    .padding(horizontal = DeskSpace.sm, vertical = 6.dp)
             ) {
                 Box(
                     modifier = Modifier
-                        .size(8.dp)
-                        .clip(RoundedCornerShape(4.dp))
+                        .size(7.dp)
+                        .clip(CircleShape)
                         .background(if (modelSet) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline)
                 )
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = if (modelSet) DesktopSettings.modelBaseUrl else "請到設定填入本機模型",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                    )
-                    state.connection?.let { health ->
-                        val (label, tint) = when (health) {
-                            is ModelHealth.Reachable -> "已連線（${health.latencyMs}ms）" to MaterialTheme.colorScheme.primary
-                            is ModelHealth.Unreachable -> "未連線：${health.reason}" to MaterialTheme.colorScheme.error
-                        }
-                        Text(
-                            text = label,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = tint,
-                            maxLines = 1,
-                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                        )
+                Text(
+                    text = if (modelSet) DesktopSettings.modelBaseUrl else "尚未設定模型網址",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                state.connection?.let { health ->
+                    val (label, tint) = when (health) {
+                        is ModelHealth.Reachable -> "${health.latencyMs} ms" to MaterialTheme.colorScheme.primary
+                        is ModelHealth.Unreachable -> health.reason to MaterialTheme.colorScheme.error
                     }
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = tint,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
-                DeskPillButton(
-                    text = if (state.models.isEmpty()) "檢查模型" else "${state.models.size} 個",
-                    icon = Icons.Default.Search,
-                    onClick = { vm.onEvent(AgentPanelViewModel.AgentEvent.CheckModels) }
+                Text(
+                    text = if (DesktopSettings.modelSendImages) "含圖" else "純文字",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .glassClickable(
+                            onClick = { vm.onEvent(AgentPanelViewModel.AgentEvent.ToggleSendImages) },
+                            shape = RoundedCornerShape(6.dp)
+                        )
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
                 )
             }
 
-            Spacer(Modifier.height(DeskSpace.xs))
-
-            GlassOptionChip(
-                text = if (DesktopSettings.modelSendImages) "送圖：開" else "送圖：關",
-                selected = DesktopSettings.modelSendImages,
-                onClick = { vm.onEvent(AgentPanelViewModel.AgentEvent.ToggleSendImages) },
-                isDark = InkThemeState.darkMode
-            )
-
             Spacer(Modifier.height(DeskSpace.sm))
 
-            DeskTextField(
-                value = state.instruction,
-                onValueChange = { vm.onEvent(AgentPanelViewModel.AgentEvent.SetInstruction(it)) },
-                placeholder = "把這一份文件整理成教材：重點、範例、字卡與自測題",
-                singleLine = false,
-                minLines = 2,
-                maxLines = 4,
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            Spacer(Modifier.height(DeskSpace.xs))
-
-            DeskPrimaryButton(
-                text = if (state.busy) "進行中…" else "產生教材筆記",
-                icon = Icons.Default.AutoAwesome,
-                onClick = { vm.onEvent(AgentPanelViewModel.AgentEvent.Generate) },
-                enabled = !state.busy,
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            Spacer(Modifier.height(DeskSpace.sm))
-
+            // ── The run: the transcript grows upwards from the composer ──
             LazyColumn(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(DeskSpace.xs)
             ) {
                 if (state.steps.isEmpty() && state.failure == null && state.note == null && state.editPlan == null && !state.busy) {
                     item {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = DeskSpace.lg),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Icon(
-                                    Icons.Default.MenuBook,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(32.dp)
-                                )
-                                Spacer(Modifier.height(DeskSpace.xs))
-                                Text(
-                                    "尚無筆記",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                                Spacer(Modifier.height(2.dp))
-                                Text(
-                                    "輸入指令後點「產生編輯計畫」",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
+                        AgentEmptyState(
+                            onPick = { vm.onEvent(AgentPanelViewModel.AgentEvent.SetInstruction(it)) }
+                        )
                     }
                 }
                 items(state.steps) { step ->
@@ -217,7 +255,14 @@ fun AgentPanel(
                 }
                 state.failure?.let { message ->
                     item {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(MaterialTheme.colorScheme.error.copy(alpha = 0.10f))
+                                .padding(DeskSpace.sm)
+                        ) {
                             Icon(
                                 Icons.Default.ErrorOutline,
                                 contentDescription = null,
@@ -241,7 +286,14 @@ fun AgentPanel(
                 }
                 state.landed?.let { message ->
                     item {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.10f))
+                                .padding(DeskSpace.sm)
+                        ) {
                             Icon(
                                 Icons.Default.Check,
                                 contentDescription = null,
@@ -249,7 +301,11 @@ fun AgentPanel(
                                 modifier = Modifier.width(16.dp)
                             )
                             Spacer(Modifier.width(DeskSpace.xs))
-                            Text(message, style = MaterialTheme.typography.bodySmall)
+                            Text(
+                                message,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
                         }
                     }
                 }
@@ -258,31 +314,143 @@ fun AgentPanel(
     }
 }
 
-/** One step of the run, in one line. */
+/**
+ * What the panel shows before anything has happened.
+ *
+ * Three example prompts, and clicking one fills the composer. An empty panel
+ * that only says "type something" makes the user guess what the agent can do;
+ * a prompt they can press is the fastest way to find out.
+ */
 @Composable
-private fun StepRow(step: com.vic.inkflow.agent.AgentStep) {
-    val (icon, text, tint) = when (step) {
-        is com.vic.inkflow.agent.AgentStep.Thought -> Triple(Icons.Default.AutoAwesome, step.text, MaterialTheme.colorScheme.onSurfaceVariant)
-        is com.vic.inkflow.agent.AgentStep.ToolCall -> Triple(Icons.Default.Search, "呼叫 ${step.tool}", MaterialTheme.colorScheme.primary)
-        is com.vic.inkflow.agent.AgentStep.ToolOutcome -> Triple(
-            if (step.ok) Icons.Default.Check else Icons.Default.WarningAmber,
-            "${step.tool}：${step.summary}",
-            if (step.ok) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error
+private fun AgentEmptyState(onPick: (String) -> Unit) {
+    val examples = listOf(
+        "把這頁的重點整理成三條筆記",
+        "把這個公式的每一步推導寫成說明",
+        "替這頁出一題練習題與解答"
+    )
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = DeskSpace.lg)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(52.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(AccentGradient),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                Icons.Default.AutoAwesome,
+                contentDescription = null,
+                tint = androidx.compose.ui.graphics.Color.White,
+                modifier = Modifier.size(24.dp)
+            )
+        }
+        Spacer(Modifier.height(DeskSpace.sm))
+        Text(
+            text = "描述你要 AI 做什麼",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurface
         )
-        is com.vic.inkflow.agent.AgentStep.NoteProduced -> Triple(Icons.Default.MenuBook, "計畫完成", MaterialTheme.colorScheme.primary)
-        is com.vic.inkflow.agent.AgentStep.Warning -> Triple(Icons.Default.WarningAmber, step.message, MaterialTheme.colorScheme.error)
-    }
-    Row(verticalAlignment = Alignment.Top) {
-        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.width(16.dp))
-        Spacer(Modifier.width(6.dp))
-        Text(text, style = MaterialTheme.typography.bodySmall, color = tint)
+        Spacer(Modifier.height(2.dp))
+        Text(
+            text = "AI 會讀頁面、查模型，最後把成果先給你確認。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(DeskSpace.md))
+        examples.forEach { prompt ->
+            Text(
+                text = prompt,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .border(
+                        1.dp,
+                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f),
+                        RoundedCornerShape(10.dp)
+                    )
+                    .glassClickable(onClick = { onPick(prompt) }, shape = RoundedCornerShape(10.dp))
+                    .padding(horizontal = DeskSpace.sm, vertical = 8.dp)
+            )
+            Spacer(Modifier.height(6.dp))
+        }
     }
 }
+
+/** One step of the run: an icon chip and the line it produced. */
+@Composable
+private fun StepRow(step: com.vic.inkflow.agent.AgentStep) {
+    val (icon, text, tint, emphasised) = when (step) {
+        is com.vic.inkflow.agent.AgentStep.Thought ->
+            Quad(Icons.Default.AutoAwesome, step.text, MaterialTheme.colorScheme.onSurfaceVariant, false)
+        is com.vic.inkflow.agent.AgentStep.ToolCall ->
+            Quad(Icons.Default.Search, "呼叫 ${step.tool}", MaterialTheme.colorScheme.primary, true)
+        is com.vic.inkflow.agent.AgentStep.ToolOutcome ->
+            Quad(
+                if (step.ok) Icons.Default.Check else Icons.Default.WarningAmber,
+                "${step.tool}：${step.summary}",
+                if (step.ok) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+                !step.ok
+            )
+        is com.vic.inkflow.agent.AgentStep.NoteProduced ->
+            Quad(Icons.Default.MenuBook, "筆記已產生", MaterialTheme.colorScheme.primary, true)
+        is com.vic.inkflow.agent.AgentStep.Warning ->
+            Quad(Icons.Default.WarningAmber, step.message, MaterialTheme.colorScheme.error, true)
+    }
+    Row(verticalAlignment = Alignment.Top) {
+        Box(
+            modifier = Modifier
+                .size(20.dp)
+                .clip(CircleShape)
+                .background(
+                    if (emphasised) tint.copy(alpha = 0.16f)
+                    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                icon,
+                contentDescription = null,
+                tint = tint,
+                modifier = Modifier.size(12.dp)
+            )
+        }
+        Spacer(Modifier.width(DeskSpace.xs))
+        Text(
+            text,
+            style = MaterialTheme.typography.bodySmall,
+            color = if (emphasised) MaterialTheme.colorScheme.onSurface
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f, fill = false)
+        )
+    }
+}
+
+/** Four values in one tuple: Kotlin has no data class in a `when` branch. */
+private data class Quad(
+    val icon: androidx.compose.ui.graphics.vector.ImageVector,
+    val text: String,
+    val tint: androidx.compose.ui.graphics.Color,
+    val emphasised: Boolean
+)
 
 /** The produced note, shown before it lands (legacy single-page mode). */
 @Composable
 private fun NotePreview(note: LessonNote) {
-    Column(Modifier.fillMaxWidth()) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+            .padding(DeskSpace.sm)
+    ) {
         Text(
             note.title,
             style = MaterialTheme.typography.titleSmall,
@@ -302,9 +470,15 @@ private fun NotePreview(note: LessonNote) {
 /** The edit plan preview: shows each op as a diff line. */
 @Composable
 private fun EditPlanPreview(plan: EditPlan) {
-    Column(Modifier.fillMaxWidth()) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+            .padding(DeskSpace.sm)
+    ) {
         Text(
-            text = "編輯計畫（${plan.ops.size} 項操作）",
+            text = "變更預覽（${plan.ops.size} 項）",
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.SemiBold
         )
@@ -341,10 +515,8 @@ private fun opSummary(op: com.vic.inkflow.agent.EditOp): String {
             "upsert_text 第 ${op.pageIndex + 1} 頁：${op.text.take(60)}${if (op.text.length > 60) "…" else ""}"
         }
         is com.vic.inkflow.agent.EditOp.DeleteText -> "delete_text：${op.id}"
-        // 筆跡 op 在桌面端不會出現：桌面的 agent 工具只有讀取（readPageText /
-        // renderPage）與寫文字（upsertText），沒有寫筆跡的工具。
-        // 這兩個分支留著是因為 op 型別是共用的（平板那邊有寫筆跡的工具）。
-        // 舊的標籤寫「尚未實作」，看起來像壞掉的功能——其實是「這個環境走不到」。
+        // 筆跡 op 在桌面端不會出現：桌面的 agent 工具只有讀頁面
+        // （readPageText / renderPage）與寫文字（upsertText），沒有寫筆跡的工具。
         is com.vic.inkflow.agent.EditOp.UpsertStroke ->
             "upsert_stroke 第 ${op.pageIndex + 1} 頁（桌面版未提供寫筆跡的工具）"
         is com.vic.inkflow.agent.EditOp.DeleteStroke ->
@@ -355,7 +527,7 @@ private fun opSummary(op: com.vic.inkflow.agent.EditOp): String {
 private fun previewTextOf(block: com.vic.inkflow.data.NoteBlock): String = when (block) {
     is com.vic.inkflow.data.NoteBlock.Heading -> "▍${block.text}"
     is com.vic.inkflow.data.NoteBlock.Paragraph -> block.text
-    is com.vic.inkflow.data.NoteBlock.Bullet -> "· ${block.text}"
+    is com.vic.inkflow.data.NoteBlock.Bullet -> "• ${block.text}"
     is com.vic.inkflow.data.NoteBlock.Example -> "Q: ${block.question}\nA: ${block.answer}"
     is com.vic.inkflow.data.NoteBlock.Flashcard -> "Q: ${block.front}\nA: ${block.back}"
     is com.vic.inkflow.data.NoteBlock.Quiz -> "Q: ${block.question}\n" +

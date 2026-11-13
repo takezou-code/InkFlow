@@ -58,6 +58,10 @@ class LibraryViewModel(
         val folders: List<SharedFolder> = emptyList(),
         val query: String = "",
         val destination: Destination = Destination.All,
+        /** 導覽窗格右邊的數字：全部 / 最愛 / 未分類各有幾份。 */
+        val totalCount: Int = 0,
+        val favoriteCount: Int = 0,
+        val uncategorizedCount: Int = 0,
         /**
          * 只看最愛。
          *
@@ -167,7 +171,13 @@ class LibraryViewModel(
                     folders.firstOrNull { it.id == doc.folderId }?.name?.contains(s.query, ignoreCase = true) == true
             }
             val favorites = if (s.favoritesOnly) searched.filter { it.isFavorite } else searched
-            _state.value = s.copy(documents = favorites, folders = folders)
+            _state.value = s.copy(
+                documents = favorites,
+                folders = folders,
+                totalCount = all.size,
+                favoriteCount = all.count { it.isFavorite },
+                uncategorizedCount = all.count { it.folderId == null }
+            )
         }
     }
 }

@@ -540,12 +540,12 @@ fun DeskSectionLabel(text: String, modifier: Modifier = Modifier) {
 }
 
 /**
- * One row of the navigation pane: an icon and a label, selected = glass pill.
+ * One row of the navigation pane: an icon and a label, selected = accent bar.
  *
- * The pane is the modern replacement for a row of filter chips: a horizontal
- * chip row cannot hold a folder tree, and it pushes the content down the
- * screen. Windows 11 Explorer puts the destinations in a pane on the left
- * for the same reason.
+ * The selection is an **accent bar on the left**, not a filled pill. A filled
+ * pill on every pane reads as a button, and a navigation pane is not a list of
+ * buttons - it is a position indicator. The bar's space is always reserved so
+ * the labels do not jump when the selection moves.
  */
 @Composable
 fun DeskNavItem(
@@ -562,18 +562,25 @@ fun DeskNavItem(
         verticalAlignment = Alignment.CenterVertically,
         modifier = modifier
             .fillMaxWidth()
-            // 選取態用主色的淡底，不是玻璃藥丸：藥丸在深色底上是**一塊白斑**，
-            // 選取哪一項反而最刺眼。Windows 11 的導覽窗格是低調的染色。
-            .then(
-                if (selected) Modifier.background(
-                    MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
-                    CircleShape
-                ) else Modifier
-            )
             .clip(CircleShape)
+            .background(
+                if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
+                else androidx.compose.ui.graphics.Color.Transparent
+            )
             .glassClickable(onClick = onClick, shape = CircleShape)
-            .padding(horizontal = DeskSpace.sm, vertical = 9.dp)
+            .padding(start = DeskSpace.sm, end = DeskSpace.sm, top = 9.dp, bottom = 9.dp)
     ) {
+        Box(
+            modifier = Modifier
+                .width(3.dp)
+                .height(16.dp)
+                .clip(CircleShape)
+                .background(
+                    if (selected) MaterialTheme.colorScheme.primary
+                    else androidx.compose.ui.graphics.Color.Transparent
+                )
+        )
+        Spacer(Modifier.width(DeskSpace.xs))
         Icon(
             imageVector = icon,
             contentDescription = null,
