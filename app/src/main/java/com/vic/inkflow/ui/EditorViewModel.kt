@@ -372,10 +372,10 @@ class EditorViewModel(
         _pendingStrokes
     ) { dbStrokes, pending ->
         val dbIds = dbStrokes.map { it.stroke.id }.toSet()
-        val resolvedIds = pending.keys.intersect(dbIds)
-        if (resolvedIds.isNotEmpty()) {
-            _pendingStrokes.value = _pendingStrokes.value - resolvedIds
-        }
+        // 不在這裡清 _pendingStrokes：這一條流（與 pageDataFlow 各有一份 DB flow）誰先
+        // 收到資料沒有保證。先清的人會讓另一條流的下一次合併短少一幀——畫面就是
+        // 「提筆後墨消失一幀再回來」＝提筆閃。樂觀層的壽命只由 pageDataFlow 擁有。
+        // 這裡照樣把已落庫的 id 濾掉，輸出不會重複。
         // 跨頁筆分段暫存時，只顯示屬於作用頁的那段，避免 B 頁的墨鬼影到 A 頁
         val activePage = pageIndex.value
         val unresolved = pending.filterKeys { it !in dbIds }.values
@@ -652,6 +652,24 @@ class EditorViewModel(
         // over＝正規化後超出紙面的量（用錯框架時會整片越界，只是筆寬造成的貼邊不算）。
         val firstPt = normalizedPoints.first()
         val lastPt = normalizedPoints.last()
+        // WIDE 法醫線：筆寬剖面（min/avg/max 與最大相鄰跳動）。
+        // 用來分辨「跳粗跳細」是壓力路徑的逐點震盪（竹節）還是交接/渲染層的問題。
+        val widths = points.map { it.width }
+        val wMin = widths.minOrNull() ?: 0f
+        val wMax = widths.maxOrNull() ?: 0f
+        val wAvg = widths.average().toFloat()
+        val wMed = widths.sorted().let { it[it.size / 2] }
+        val maxJump = widths.zipWithNext()
+            .maxOfOrNull { (a, b) -> kotlin.math.abs(a - b) }
+            ?: 0f
+        android.util.Log.w(
+            "InkFlowDiag",
+            "WIDE id=${strokeId.take(8)} n=${points.size} base=${"%.2f".format(baseWidth)} " +
+                "z=${"%.2f".format(zoom)} sw=${"%.2f".format(wAvg * zoom)} " +
+                "min=${"%.2f".format(wMin)} avg=${"%.2f".format(wAvg)} med=${"%.2f".format(wMed)} " +
+                "max=${"%.2f".format(wMax)} jump=${"%.2f".format(maxJump)} " +
+                "jumpRatio=${"%.2f".format(maxJump / baseWidth.coerceAtLeast(0.01f))}"
+        )
         val overX = maxOf(-bounds.left, bounds.right - modelWidth, 0f)
         val overY = maxOf(-bounds.top, bounds.bottom - modelHeight, 0f)
         android.util.Log.w(

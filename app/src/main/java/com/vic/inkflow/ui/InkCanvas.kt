@@ -207,7 +207,16 @@ private data class LiftedStrokeSnapshot(
     val isHighlighter: Boolean,
     /** 烙下來的時刻（uptimeMillis）；超過 TTL 自動丟棄。 */
     val atMs: Long,
-)
+) {
+    /**
+     * 這一筆是否「真的在頁流裡出現過」。
+     *
+     * 刪除判定不能只看「現在不在 strokes 裡」：頁流在交接完成後仍可能排空一幀
+     * （多條 DB flow 競速，實機 log `overlay=0`），那一幀正是快照要補的。
+     * 只有「曾經出現過、之後又不見」才是真的被刪除／復原，才准立刻丟快照。
+     */
+    var seenInFlow: Boolean = false
+}
 
 /** 浮動比較。DB 走 Float 落盤（REAL），model 座標算完再存會有微小誤差，
  * 用整數容差比對避免「差 0.0001 永遠不落定」→ 預覽卡住不歸零。
@@ -1656,12 +1665,7 @@ fun InkCanvas(
                 }
 
                 currentPathPoints.clear()
-                // 寬度每點都乘入庫歸一化的同一個 docZoom，讓活筆畫＝提筆快照＝落庫後成品
-                // 三者一致；不然縮放 ≠ 1 時提筆瞬間墨會突然變粗（實機 log zoom=1.32 實測）。
-                val liftZoom = viewModel.docZoom.value
-                currentPathPoints.add(
-                    StrokePoint(startOffset.x, startOffset.y, currentW * liftZoom)
-                )
+                currentPathPoints.add(StrokePoint(startOffset.x, startOffset.y, currentW))
                 activePathVersion++
                 down.consume()
                 // 連貫畫布：寫筆全程鎖頁，自動捲不觸發作用頁切換，鬆筆才結算跨頁
@@ -1825,14 +1829,14 @@ fun InkCanvas(
                             val hp   = calPos(historical.position)
                             val prev = currentPathPoints.last()
                             activePath.quadraticTo(prev.x, prev.y, (prev.x + hp.x) / 2f, (prev.y + hp.y) / 2f)
-                            val w = calcWidth(hp, historical.uptimeMillis, lastSmoothPressure) * viewModel.docZoom.value
+                            val w = calcWidth(hp, historical.uptimeMillis, lastSmoothPressure)
                             currentPathPoints.add(StrokePoint(hp.x, hp.y, w))
                             quickSwipeTrace.add(hp)
                         }
                         val newPoint  = calPos(drag.position)
                         val prevPoint = currentPathPoints.last()
                         activePath.quadraticTo(prevPoint.x, prevPoint.y, (prevPoint.x + newPoint.x) / 2f, (prevPoint.y + newPoint.y) / 2f)
-                        val w = calcWidth(newPoint, drag.uptimeMillis, smoothPressure) * viewModel.docZoom.value
+                        val w = calcWidth(newPoint, drag.uptimeMillis, smoothPressure)
                         currentPathPoints.add(StrokePoint(newPoint.x, newPoint.y, w))
                         quickSwipeTrace.add(newPoint)
 
@@ -2067,9 +2071,13 @@ fun InkCanvas(
                             // 合併流還沒吐出這筆），那一幀靠這張補——墨不會消失。
                             bridged.lastOrNull()?.let { newHot ->
                                 hotStrokeId = newHot
+                                // 快照的寬度必須跟「最後一幀預覽」逐字相同：預覽畫的是
+                                // currentPathPoints × docZoom（見上方 F2）。少了這一步，
+                                // 提筆瞬間墨會突然換成另一個粗細＝使用者看到的「提筆閃」。
+                                val snapPts = currentPathPoints.map { it.copy(width = it.width * zoomAtStrokeStart) }
                                 liftedSnapshot = LiftedStrokeSnapshot(
                                     ids = bridged.toSet(),
-                                    path = EnvelopeUtils.generateEnvelopePath(currentPathPoints),
+                                    path = EnvelopeUtils.generateEnvelopePath(snapPts),
                                     color = selectedColor,
                                     isHighlighter = activeTool == Tool.HIGHLIGHTER,
                                     atMs = android.os.SystemClock.uptimeMillis()
@@ -2172,15 +2180,19 @@ fun InkCanvas(
             val scaleChanged = lastInkScale.sx != sx || lastInkScale.sy != sy
 
             val strokes = committedStrokes
-            // 快照兜底：這筆已經被刪除／復原（strokes 和樂觀層都找不到它）→ 立即丟棄殘影。
-            // 只在交接完成後判：交接未完成的瞬間 strokes 可能合法為空（頁流排空），
-            // 那時丟快照就等於提筆閃再回來。bridgingIds == null ＝ 頁流已把這筆交上。
+            // 快照兜底：這筆已經被刪除／復原 → 立即丟棄殘影。
+            // 判定必須是「曾經出現過、現在不見了」：交接完成後頁流偶爾仍會排空一幀
+            // （實機 log overlay=0），單純「不在 strokes 裡」會把快照誤刪＝閃爍回來。
             liftedSnapshot?.let { snap ->
                 if (bridgingIds == null) {
                     val stillThere =
                         strokes.any { it.stroke.id in snap.ids } ||
                             pendingIds.any { it in snap.ids }
-                    if (!stillThere) liftedSnapshot = null
+                    if (stillThere) {
+                        snap.seenInFlow = true
+                    } else if (snap.seenInFlow) {
+                        liftedSnapshot = null
+                    }
                 }
             }
             val preview = commitPreview

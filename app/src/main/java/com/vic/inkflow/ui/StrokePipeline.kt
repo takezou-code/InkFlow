@@ -75,6 +75,14 @@ internal data class NormalizedStroke(
  * （預覽還在筆尖，所以肉眼只看到「一放手就歪」）。寬度同理吃同一個框架，
  * 座標與線寬才不會分屬兩個空間。
  *
+ * **寬度必須乘 docZoom**：墨是「印在紙上」的，放大紙時筆畫要跟著變粗。
+ * 畫布框架本身已經含縮放（frameW ＝ 紙寬 × zoom），只除框架會把 zoom 也除掉，
+ * 結果是「放大到 4 倍，墨還是 1 倍寬」＝相對變細、縮小則相對變粗（實機回報）。
+ * 這裡乘一次 zoom 抵掉框架裡的那一份，存進 model 的寬度才與縮放無關；
+ * 畫布再乘回 `modelW × sx` 時，螢幕寬度就正好是 `原始 px × zoom`。
+ *
+ * 預覽（活的向量、提筆快照、跨頁共享預覽）也走 `width × zoom`，四條鏈路同一個寬度。
+ *
  * 純函數，跟 [mergePageStrokes] 一樣可單測：同一個實體落點在兩個不同框架下量到
  * （點 ×k、框架 ×k）必須得到完全一樣的 model 座標。
  */
@@ -88,8 +96,7 @@ internal fun normalizeStrokePoints(
 ): NormalizedStroke {
     val scaleX = DocTransform.invScaleXUnchecked(frameW, modelW)
     val scaleY = DocTransform.invScaleYUnchecked(frameH, modelH)
-    // 寬度用 zoom=1 基準歸一（× docZoom 還原）：座標用實際框架映射，
-    // 新墨在任何縮放下存入同樣的 model 寬，放大等比變粗（與預覽同管線）。
+    // 寬度用「螢幕 px」存成與縮放無關的 model 寬：÷ 框架 × zoom 兩者互相抵掉。
     val widthScaleX = scaleX * docZoom.coerceAtLeast(0.1f)
     val normalized = points.map { StrokePoint(it.x * scaleX, it.y * scaleY, it.width * widthScaleX) }
     return NormalizedStroke(normalized, widthScaleX)

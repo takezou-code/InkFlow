@@ -155,16 +155,42 @@ class StrokePipelineTest {
     }
 
     @Test
-    fun `width scale follows frame and docZoom`() {
+    fun `stored width is screen px independent of zoom`() {
         val n = normalizeStrokePoints(
             points = listOf(StrokePoint(100f, 100f, 8f)),
             frameW = 2000f, frameH = 2800f,
             modelW = 1000f, modelH = 1400f,
             docZoom = 2f
         )
-        // 2000px 框架 → invScale 0.5；寬度再 ×docZoom 2 = 1.0（存 zoom=1 基準）。
+        // 2 倍縮放下畫布寬 2000（紙 1000）→ invScale 0.5；
+        // 寬度 ×docZoom 2 = 1.0，抵消框架裡的那一份 zoom。
         assertEquals(1f, n.widthScale, 0.0001f)
         assertEquals(8f, n.points.first().width, 0.0001f)
         assertEquals(50f, n.points.first().x, 0.0001f)
+    }
+
+    /**
+     * 墨印在紙上：放大紙時筆畫必須跟著變粗。model 寬度固定時，
+     * 螢幕寬度 = model 寬 × (畫布寬 / 紙寬)；畫布寬含 zoom，所以放大大 = 墨變粗。
+     * 這條把「放大變細、縮小變粗」釘死成回歸測試。
+     */
+    @Test
+    fun `ink thickness grows with document zoom`() {
+        val modelW = 1000f
+        val modelH = 1400f
+        fun screenWidth(zoom: Float): Float {
+            // 紙寬 1000 在 zoom 下的畫布寬；點是「原始 px」收下來的（未乘 zoom）。
+            val frameW = modelW * zoom
+            val n = normalizeStrokePoints(
+                points = listOf(StrokePoint(0f, 0f, 8f)),
+                frameW = frameW, frameH = modelH * zoom,
+                modelW = modelW, modelH = modelH, docZoom = zoom
+            )
+            // 畫布再以 sx = frameW / modelW 放大回螢幕。
+            return n.points.first().width * (frameW / modelW)
+        }
+        assertEquals(8f, screenWidth(1f), 0.001f)
+        assertEquals(16f, screenWidth(2f), 0.001f)
+        assertEquals(3.2f, screenWidth(0.4f), 0.001f)
     }
 }
