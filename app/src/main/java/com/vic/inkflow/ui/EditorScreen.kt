@@ -361,7 +361,7 @@ fun TabletEditorScreen(
     var aiRequestSeq by remember { mutableLongStateOf(0L) }
     var aiRequest by remember { mutableStateOf<AiRequest?>(null) }
     var isSendingPage by remember { mutableStateOf(false) }
-    // 抽屜：面板寬度依內容區實寬算（不再用螢幕寬）、滑動進度、WebView 是否活著
+    // 抽屜：面板寬度依內容區實寬算（不再用蟳幕寬）、滑動進度、WebView 是否活著
     var contentW by remember { mutableIntStateOf(0) }
     val aiDrawerProgress = remember { Animatable(0f) }
     var aiPanelLive by remember { mutableStateOf(false) }
@@ -1352,7 +1352,7 @@ fun TabletEditorScreen(
                 SidebarStageMachine.onSystemBack(sidebarStage)?.let { goToStage(it) }
             }
 
-            // AI 抽屜的可用寬度基準：側欄寬度往右到螢幕右緣。
+            // AI 抽屜的可用寬度基準：側欄寬度往右到蟳幕右緣。
             val sidebarVisualWpx = with(density) { currentWidthDp.toPx() }
 
 
@@ -1396,7 +1396,7 @@ fun TabletEditorScreen(
                 }
                 if (gridOverlayProgress < 0.98f) {
                 // ── 紙：整屏最底層 ────────────────────────────────────────────
-                // 紙必須是「整個螢幕」大小，不能只佔側欄右邊那一塊。
+                // 紙必須是「整個蟳幕」大小，不能只佔側欄右邊那一塊。
                 // 這樣它才會延伸到左邊頁碼底下，頁碼／+／展開鈕才能浮在紙上（iOS 全出血）。
                 // 側欄與 AI 抽屜是後面畫的薄層，疊在紙上面。
                 Box(
@@ -1507,7 +1507,7 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
             // 這裡只留 AI 抽屜：浮層玻璃卡，畫在紙上面。
             // 面板永不離開 composition → WebView 不死，對話與捲動位置留著。
             // 滑動只動 graphicsLayer 的 translationX：純合成器層，不觸發 layout/measure。
-            // AI 抽屜可用寬度：側欄右緣 → 螢幕右緣。
+            // AI 抽屜可用寬度：側欄右緣 → 蟳幕右緣。
             // 不拿 contentW（現在是整屏寬）當基準，否則閉合擋板會蓋到側欄。
             val density0 = LocalDensity.current
             val sidebarWpx = sidebarVisualWpx
@@ -1515,7 +1515,7 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
             val panelW = (aiAvailW * aiPanelWeight).coerceAtLeast(260f)
                 .coerceAtMost(aiAvailW)
             val density = LocalDensity.current
-            // AI 抽屜寬度基準＝側欄右緣到螢幕右緣（不是整屏 contentW）。
+            // AI 抽屜寬度基準＝側欄右緣到蟳幕右緣（不是整屏 contentW）。
             // 整屏底層重構後 contentW 變成整屏 3200px，panelW 撐到 1280px，
             // 閉合時那塊「透明擋板」就蓋住 x=389..1251，把側欄觸控全吃掉
             // （實測 AI_BLOCKER 73 次、SIDEBAR_ITEM 0 次）。舊基準是內容區寬度所以沒事。
@@ -1773,7 +1773,7 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
         } // Box（紙底層＋chrome 疊層）
 
         // 浮空工具列：只蓋「工作區那一欄」，紙從它下面透上來；
-        // 側欄維持自己的上邊界（不被工具列壓到），全螢幕態才吃滿寬。
+        // 側欄維持自己的上邊界（不被工具列壓到），全蟳幕態才吃滿寬。
         Column(modifier = Modifier.align(Alignment.TopStart).fillMaxWidth()) {
             TabletEditorTopBar(
                 documentTitle = documentTitle,

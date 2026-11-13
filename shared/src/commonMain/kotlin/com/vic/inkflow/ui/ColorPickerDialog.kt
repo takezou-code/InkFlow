@@ -54,7 +54,7 @@ private const val RADIANS_PER_DEGREE = PI / 180.0
 fun ColorPickerDialog(
     initialColor: Color = Color.White,
     /** 標題下方那行小字：同一個挑色器也拿來挑主題色，文案要能換。 */
-    subtitle: String = "調整墨水、螢光筆與標註色彩",
+    subtitle: String = "調整墨水、蟳光筆與標註色彩",
     onColorSelected: (Color) -> Unit,
     onDismiss: () -> Unit
 ) {

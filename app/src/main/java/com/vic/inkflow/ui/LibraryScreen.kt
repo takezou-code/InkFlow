@@ -268,7 +268,7 @@ fun DocumentLibraryScreen(
     val libraryChromeHaze = rememberHazeState()
 
     // Chromium 預熱：編輯器 AI 面板首建 WebView 會卡主執行緒數百毫秒，
-    // 那幾百毫秒正好把玻璃採樣空窗的那幀凍在螢幕上 = 黑閃。書庫閒置 2s 後先建一個即丟，
+    // 那幾百毫秒正好把玻璃採樣空窗的那幀凍在蟳幕上 = 黑閃。書庫閒置 2s 後先建一個即丟，
     // 之後編輯器裡就是熱的。一個進程只跑一次。
     val appContext = context.applicationContext
     LaunchedEffect(Unit) {
@@ -591,7 +591,7 @@ fun DocumentLibraryScreen(
             orbCount = 12
         )
 
-    // 全螢幕：狀態列已藏，不再留白
+    // 全蟳幕：狀態列已藏，不再留白
     Row(
         modifier = Modifier.fillMaxSize()
     ) {

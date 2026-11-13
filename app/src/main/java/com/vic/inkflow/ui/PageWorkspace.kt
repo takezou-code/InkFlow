@@ -997,7 +997,7 @@ val allowSinglePan = startedBlank || fingerPanOnPaperAllowed(
                     } // 紙 Surface
                     // 跨頁拖曳 overlay：框+墨畫在紙上層、可溢出紙界（clip=false），
                     // InkCanvas 側同時讓位（同像素只畫一次）；放開提交後清旗接回。
-                    // 全活頁下只在選取歸屬紙畫（他紙同像素會重影，螢光筆疊色）。
+                    // 全活頁下只在選取歸屬紙畫（他紙同像素會重影，蟳光筆疊色）。
                     if ((dragActive && itemWidthPx > 0 && viewModel.selectionPage() == index) ||
                         (dragImgOverlap && itemWidthPx > 0)
                     ) {
@@ -1065,7 +1065,7 @@ private fun DragPreviewOverlay(
     val dragImg by viewModel.imageDragPreview.collectAsState()
     if (preview.isEmpty() && selImages.isEmpty() && selTexts.isEmpty() && dragImg == null) return
     val context = LocalContext.current
-    // 把手尺寸（dp 基準，1 畫布 px 恆＝1 螢幕 px，不做 docZoom 補償）。跟 InkCanvas 那層一致。
+    // 把手尺寸（dp 基準，1 畫布 px 恆＝1 蟳幕 px，不做 docZoom 補償）。跟 InkCanvas 那層一致。
     // 必須在 Composable 層算：LocalDensity 不能在 drawWithCache 的繪製層取。
     val overlayDensity = LocalDensity.current
     val overlayHandleVisualPx = with(overlayDensity) {
@@ -1358,7 +1358,7 @@ internal fun panRangePx(
 /**
  * 縮放時的水平錨定：回傳能讓 [focusX] 底下的紙面點留在原位的 panOffsetX。
  *
- * 紙面座標 m ∝（螢幕 x − 紙左緣）/ 紙寬。令縮放前後 m 相等：
+ * 紙面座標 m ∝（蟳幕 x − 紙左緣）/ 紙寬。令縮放前後 m 相等：
  *   左緣_new = focusX − (focusX − 左緣_old) × 紙寬_new / 紙寬_old
  * 再換回 panOffsetX。用紙寬比（而不是 z 比）才精確——40dp 的墊不隨縮放長大。
  */

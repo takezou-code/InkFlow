@@ -11,7 +11,7 @@ import androidx.compose.ui.geometry.Offset
  * - 資料步幅（無縫）：第 i 頁窗口 = `[tops[i], tops[i] + heights[i])`，
  *   `tops` 為各頁高前綴和；等大文件退化為 `docY = pageIndex × stride + 頁內頂邊`
  *  （與 S1 回填/雙寫公式一致，見 EditorViewModel.ensureDocSpaceMigrated）。
- * - 版式間隙只存在於螢幕（`layoutStride = canvasH + gapPx`），不進資料；
+ * - 版式間隙只存在於蟳幕（`layoutStride = canvasH + gapPx`），不進資料；
  *   新墨水落在縫裡時用 [gapOwnerIsUpper] 中線切（user 決議維持現狀）。
  * - `pageIndex` 是衍生視圖（錨點歸屬），真相來源是 `docY`。
  *

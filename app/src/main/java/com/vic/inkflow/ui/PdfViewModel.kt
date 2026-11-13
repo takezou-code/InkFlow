@@ -84,7 +84,7 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
          * 為什麼從 1/12 收到 1/32：頁面圖的像素住在 **native heap**，不在 Java heap，
          * 而 GC 只看 Java heap。單頁 42MB 的時候，可見頁三四張就 130MB——
          * 加上捲動產生的垃圾，native heap 會直接撐爆（實測：原生堆用到 94% 就閃退）。
-         * 16MB 已經足夠在任何螢幕上畫得清楚（A4 滿版約 1520×2150 = 13MB）。
+         * 16MB 已經足夠在任何蟳幕上畫得清楚（A4 滿版約 1520×2150 = 13MB）。
          */
         internal fun pageBudgetBytes(maxMemoryBytes: Long): Long =
             (maxMemoryBytes / 32).coerceIn(4L * 1024 * 1024, 16L * 1024 * 1024)
@@ -191,7 +191,7 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         /**
          * 這一頁現在還值得渲嗎？
          *
-         * - [hasSubscriber]：螢幕上有人在看（LazyColumn item 還活著）→ 一定要渲。
+         * - [hasSubscriber]：蟳幕上有人在看（LazyColumn item 還活著）→ 一定要渲。
          * - [msSinceRequest]：沒人看時，只有「剛被要求過」才值得渲。
          *
          * 為什麼需要：捲動時 LazyColumn 會把**經過的頁**一頁組成，每一頁都會發起
@@ -215,10 +215,10 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
          * 規則只有兩條，但兩條都是生死線：
          *
          *  1. **從最舊的开始砍。** 新的頁比較可能馬上被看見。
-         *  2. **有人顯示的不砍。** 砍了螢幕上就是閃白，比記憶體吃緊更難受。
+         *  2. **有人顯示的不砍。** 砍了蟳幕上就是閃白，比記憶體吃緊更難受。
          *
          * 砍到活著位元組回到預算內就停。回不去也沒關係——那代表現在
-         * 螢幕上的頁就已經超過預算了，這時寧可超一點也不能讓畫面跳掉。
+         * 蟳幕上的頁就已經超過預算了，這時寧可超一點也不能讓畫面跳掉。
          */
         internal fun selectColdEvictions(
             candidates: List<BitmapCandidate>,
@@ -324,7 +324,7 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
      * 一張活著的頁面圖，給回收政策用的描述。
      *
      * @param bytes 這張圖佔多少位元組
-     * @param hasSubscriber 螢幕上有人在看（LazyColumn item 還活著）→ 不能砍
+     * @param hasSubscriber 蟳幕上有人在看（LazyColumn item 還活著）→ 不能砍
      * @param age 越舊越先被砍
      */
     internal data class BitmapCandidate(
@@ -1987,7 +1987,7 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
     /**
      * 這一頁現在還有人要嗎？
      *
-     * 兩個來源：螢幕上有人在看（flow 有訂閱），或是剛被要求過（時間窗內）。
+     * 兩個來源：蟳幕上有人在看（flow 有訂閱），或是剛被要求過（時間窗內）。
      * 詳見 [shouldRenderPage] 的理由——這是「捲動時不要白渲被捲過的頁」那道閘門。
      */
     private fun isPageStillWanted(pageIndex: Int, highQuality: Boolean): Boolean {
@@ -2061,7 +2061,7 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
      * ## 為什麼可以砍
      *
      * 「沒人訂閱」= 沒有 LazyColumn item 在顯示它 = 已經被捲過去的頁。
-     * 有人訂閱的頁不砍：那是螢幕上正在看的，砍了就是閃白。
+     * 有人訂閱的頁不砍：那是蟳幕上正在看的，砍了就是閃白。
      * 砍掉後 flow 的值被清空、entry 也從快取移除，所以滑回來時
      * `getPageBitmap` 會重新發起渲染（記得 flow 實例不變，不會閃白成黑頁）。
      */
@@ -2134,7 +2134,7 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
             BitmapCandidate(
                 index = index,
                 bytes = bmp.byteCount.toLong(),
-                // 螢幕上正在顯示的頁不砍：砍了就是閃白。
+                // 蟳幕上正在顯示的頁不砍：砍了就是閃白。
                 hasSubscriber = flows[index]?.subscriptionCount?.value?.let { it > 0 } ?: false,
                 age = ages[index] ?: Long.MAX_VALUE
             )

@@ -20,12 +20,12 @@ import org.junit.Test
  * ## 把手尺寸不需要縮放補償
  *
  * 這裡曾有一個 [被移除] 的 `handleScaleFor(dpPx, canvasScale) = dpPx / scale`，
- * 意圖是讓把手在螢幕上「不隨紙張縮放變化」。**那個假設是錯的**：
+ * 意圖是讓把手在蟳幕上「不隨紙張縮放變化」。**那個假設是錯的**：
  * `docZoom` 是把紙的 layout 尺寸調大（`listWdp = viewportWpx * max(docZoom,1)`、
  * `Surface.fillMaxWidth(docZoom)`），**不是**對畫布做像素縮放——畫布鏈路上沒有任何
  * `graphicsLayer`（全專案只在跨頁 overlay 用到）。
  *
- * 所以 1 個畫布 px 恆等於 1 個螢幕 px，結果 docZoom=2 時把手只剩螢幕上的 12dp、
+ * 所以 1 個畫布 px 恆等於 1 個蟳幕 px，結果 docZoom=2 時把手只剩蟳幕上的 12dp、
  * 4x 只剩 6dp。實機回報「放大後把手變小、整個倒過來」。已移除該函式，
  * 呼叫端直接用 `toPx()`。
  */

@@ -1519,6 +1519,10 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
         ) ?: return NoteLanding.NoRoom
         if (page.placed.isEmpty()) return NoteLanding.Placed(0)
 
+        // One flowId for the whole landing (the same contract the tablet's AI
+        // import uses: "ai-<uuid>"): the blocks belong to one article, so the
+        // tablet's reflow treats them as a unit instead of loose boxes.
+        val landingFlowId = "ai-" + java.util.UUID.randomUUID()
         val notes = page.placed.map { placed ->
             TextAnnotationEntity(
                 documentUri = documentUri,
@@ -1529,9 +1533,10 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                 modelY = placed.modelY,
                 fontSize = placed.fontSize,
                 // The text is pre-wrapped to this width, so the box is the wrap
-                // width — the same contract the tablet's AI text uses.
+                // width - the same contract the tablet's AI text uses.
                 boxWidth = placed.boxWidth,
-                colorArgb = inkColour
+                colorArgb = inkColour,
+                flowId = landingFlowId
             )
         }
         var saved = true
@@ -1651,7 +1656,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
         // 先上畫面，後面寫資料庫。
         //
         // 舊流程是「等資料庫寫完才把這一筆放進畫面」：抬筆的那一瞬间，
-        // 手上那筆已經從預覽消失，而正式筆跡還沒進來 → 螢幕上閃一個空洞；
+        // 手上那筆已經從預覽消失，而正式筆跡還沒進來 → 蟳幕上閃一個空洞；
         // 而且這一筆整整落後一個寫入的時間，看起來像「預覽跟實際對不上」。
         // 現在抬起筆它立刻在；寫不進去才收回來（persist 會同時說明失敗）。
         strokes = strokes + saved

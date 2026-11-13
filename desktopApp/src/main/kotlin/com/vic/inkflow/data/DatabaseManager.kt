@@ -188,7 +188,8 @@ class DatabaseManager(private val dbPath: String) {
                     alignment INTEGER NOT NULL DEFAULT 0,
                     version INTEGER NOT NULL DEFAULT 1,
                     versionNonce INTEGER NOT NULL DEFAULT 0,
-                    deletedAt INTEGER
+                    deletedAt INTEGER,
+                    flowId TEXT
                 )
             """)
 
@@ -244,6 +245,9 @@ class DatabaseManager(private val dbPath: String) {
      * v3 = adds `text_annotations`.
      * v4 = adds `sync_proposals` / `sync_oplog` (the v5 proposal outbox).
      * v5 = adds the v6 merge columns (`version` / `versionNonce` / `deletedAt`).
+     * v6 = adds the text-box columns (`boxWidth` / `alignment`, tablet DB v30).
+     * v7 = adds `text_annotations.flowId` (the tablet's v32 text-flow group, so a
+     *      note the desktop emitted lands in the same reflowable flow on the tablet).
      *
      * Additive only — the desktop is a read-only mirror, so there is nothing to
      * rewrite, and a column that the tablet sends as NULL stays NULL rather than
@@ -330,6 +334,21 @@ class DatabaseManager(private val dbPath: String) {
             }
         }
 
+        if (version < 7) {
+            // The tablet's v32 text-flow column: blocks written by one AI landing
+            // share a flowId so the tablet treats them as one reflowable article.
+            // Additive and idempotent. Never backfilled — a fabricated shared id
+            // would merge unrelated pre-v7 notes into one flow on the tablet.
+            if (tableExists(stmt, "text_annotations")) {
+                if (!columnExists(stmt, "text_annotations", "flowId")) {
+                    stmt.execute("ALTER TABLE text_annotations ADD COLUMN flowId TEXT")
+                }
+                logger.info { "Schema v6 -> v7: flowId column added" }
+            } else {
+                logger.warn { "Schema v6 -> v7: text_annotations missing after init" }
+            }
+        }
+
         // sync_meta / sync_docs are created by initializeDatabase()'s CREATE TABLE IF NOT
         // EXISTS statements, so nothing to do here for them.
 
@@ -357,7 +376,7 @@ class DatabaseManager(private val dbPath: String) {
     }
 
     companion object {
-        const val SCHEMA_VERSION = 6
+        const val SCHEMA_VERSION = 7
 
         /**
          * Exposed for tests only: `TextAnnotationDbTest` asserts that a legacy
@@ -1247,8 +1266,8 @@ class DatabaseManager(private val dbPath: String) {
         connection?.prepareStatement(
             """
             INSERT INTO text_annotations
-                (id, documentUri, pageIndex, docY, text, modelX, modelY, fontSize, colorArgb, isStamp, boxWidth, alignment, version, versionNonce, deletedAt)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, documentUri, pageIndex, docY, text, modelX, modelY, fontSize, colorArgb, isStamp, boxWidth, alignment, version, versionNonce, deletedAt, flowId)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 documentUri = excluded.documentUri,
                 pageIndex = excluded.pageIndex,
@@ -1263,7 +1282,8 @@ class DatabaseManager(private val dbPath: String) {
                 alignment = excluded.alignment,
                 version = excluded.version,
                 versionNonce = excluded.versionNonce,
-                deletedAt = excluded.deletedAt
+                deletedAt = excluded.deletedAt,
+                flowId = excluded.flowId
             """.trimIndent()
         )?.use { stmt ->
             stmt.setString(1, annotation.id)
@@ -1281,10 +1301,15 @@ class DatabaseManager(private val dbPath: String) {
             stmt.setInt(13, nextVersion)
             stmt.setInt(14, nextNonce)
             if (annotation.deletedAt == null) stmt.setNull(15, java.sql.Types.BIGINT) else stmt.setLong(15, annotation.deletedAt!!)
+            if (annotation.flowId == null) stmt.setNull(16, java.sql.Types.VARCHAR) else stmt.setString(16, annotation.flowId)
             stmt.executeUpdate()
         }
         Unit
     }
+
+    /** One row by id, or null when the tablet renumbered / never had it. Used by the edit path to keep a replaced note's flowId. */
+    fun getTextAnnotation(id: String): TextAnnotationEntity? =
+        queryText("SELECT * FROM text_annotations WHERE id = ?", id).firstOrNull()
 
     fun getTextAnnotationsForPage(documentUri: String, pageIndex: Int): List<TextAnnotationEntity> =
         queryText("SELECT * FROM text_annotations WHERE documentUri = ? AND pageIndex = ? ORDER BY rowid", documentUri, pageIndex)
@@ -1382,7 +1407,8 @@ class DatabaseManager(private val dbPath: String) {
                             // v6: see queryStrokes — the base version must survive a load.
                             version = rs.getInt("version"),
                             versionNonce = rs.getInt("versionNonce"),
-                            deletedAt = rs.getObject("deletedAt")?.let { (it as Number).toLong() }
+                            deletedAt = rs.getObject("deletedAt")?.let { (it as Number).toLong() },
+                            flowId = rs.getString("flowId")
                         )
                     )
                 }

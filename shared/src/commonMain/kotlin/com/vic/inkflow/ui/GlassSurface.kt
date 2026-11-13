@@ -563,7 +563,7 @@ fun GlassDialog(
     confirmColor: Color = Color.Unspecified,
     dismissText: String? = "取消",
     onDismissClick: () -> Unit = onDismissRequest,
-    // 穿窗真玻璃：傳入背後螢幕的 HazeState 即升 glassPanelDialog，不傳沿用 faux
+    // 穿窗真玻璃：傳入背後蟳幕的 HazeState 即升 glassPanelDialog，不傳沿用 faux
     hazeState: HazeState? = null,
     properties: DialogProperties = DialogProperties(usePlatformDefaultWidth = false)
 ) {
@@ -596,7 +596,7 @@ fun GlassDialogCustom(
     isDark: Boolean = MaterialTheme.colorScheme.background.luminance() < 0.5f,
     title: @Composable () -> Unit,
     text: (@Composable () -> Unit)? = null,
-    // 穿窗真玻璃：傳入背後螢幕的 HazeState 即升 glassPanelDialog，不傳沿用 faux
+    // 穿窗真玻璃：傳入背後蟳幕的 HazeState 即升 glassPanelDialog，不傳沿用 faux
     hazeState: HazeState? = null,
     properties: DialogProperties = DialogProperties(usePlatformDefaultWidth = false),
     buttons: @Composable RowScope.() -> Unit

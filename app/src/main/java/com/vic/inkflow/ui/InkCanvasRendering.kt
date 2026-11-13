@@ -78,7 +78,7 @@ internal fun DrawScope.drawArrowHeadInScope(start: Offset, end: Offset, color: C
 //
 // `toComposePath()`（筆跡的包絡路徑）與 `strokePaint()`（畫法）都在 `:shared`
 // （`com.vic.inkflow.ui.StrokePaint`）：平板、桌面、PDF 匯出必須是同一份，
-// 否則螢幕上看到的粗細與匯出的 PDF 會對不上。
+// 否則蟳幕上看到的粗細與匯出的 PDF 會對不上。
 
 /**
  * 兩段式降採樣解碼：先讀尺寸再按 2 的冪降採樣，長邊不超過 [maxSidePx]。

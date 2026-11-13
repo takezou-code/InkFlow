@@ -241,7 +241,7 @@ internal class CalcSession {
  * - **記憶體**：MC／MR／M+／M− 一列小鍵，不佔主鍵盤（主鍵盤留給每天要按的東西）。
  *
  * 視覺：面板走共用三件套（`AnimatedDialog`＋`GlassDialogCustom`），按鍵走
- * `fauxGlassPanel`＋`glassClickable`；「螢幕」是一塊內凹玻璃（自繪內陰影、主色微光、
+ * `fauxGlassPanel`＋`glassClickable`；「蟳幕」是一塊內凹玻璃（自繪內陰影、主色微光、
  * 頂端高光），結果用主題重點色，看起來像真的背光 LCD 而不是一個灰盒子。
  */
 @Composable
@@ -289,7 +289,7 @@ internal fun EngineeringCalculatorDialog(
 }
 
 /**
- * 內凹的「螢幕」。
+ * 內凹的「蟳幕」。
  *
  * 三層疊起來才有玻璃深度（都不靠 `Modifier.shadow()`，那是明令禁止的）：
  * ① 面板底（深色主題偏暗、淺色主題偏亮）；
@@ -429,7 +429,7 @@ private fun CalcScreen(session: CalcSession, isDark: Boolean) {
     }
 }
 
-/** 螢幕上的小膠囊：DEG／2nd／AUTO-ENG。亮起來＝目前生效。 */
+/** 蟳幕上的小膠囊：DEG／2nd／AUTO-ENG。亮起來＝目前生效。 */
 @Composable
 private fun StatusChip(
     text: String,

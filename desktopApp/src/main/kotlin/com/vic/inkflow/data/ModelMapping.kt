@@ -89,7 +89,8 @@ fun TextAnnotation.toRow(): TextAnnotationEntity = TextAnnotationEntity(
     alignment = alignment,
     version = version,
     versionNonce = versionNonce,
-    deletedAt = deletedAt
+    deletedAt = deletedAt,
+    flowId = flowId
 )
 
 fun Document.toRow(): DocumentEntity = DocumentEntity(
@@ -170,7 +171,8 @@ fun TextAnnotationEntity.toModel(): TextAnnotation = TextAnnotation(
     alignment = alignment,
     version = version,
     versionNonce = versionNonce,
-    deletedAt = deletedAt
+    deletedAt = deletedAt,
+    flowId = flowId
 )
 
 fun DocumentEntity.toModel(): Document = Document(

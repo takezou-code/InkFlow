@@ -47,7 +47,14 @@ data class TextAnnotationEntity(
     // ── v6 merge columns: identical semantics to StrokeEntity (§15.1) ────────
     val version: Int = 1,
     val versionNonce: Int = 0,
-    val deletedAt: Long? = null
+    val deletedAt: Long? = null,
+    /**
+     * The text-flow group (tablet DB v32, `ai-<uuid>`): blocks written by one
+     * AI landing share a flowId so the tablet treats them as one reflowable
+     * article instead of independent boxes. NULL = an independent text box,
+     * which is every note saved before this column existed.
+     */
+    val flowId: String? = null
 )
 
 /**

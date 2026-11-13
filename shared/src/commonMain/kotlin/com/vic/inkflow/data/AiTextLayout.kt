@@ -549,7 +549,7 @@ fun isSelfPage(dbEmpty: Boolean, whiteRatio: Float, whiteThreshold: Float = SELF
  *
  * `n` ＝**畫面上真正的行數**：文字框（`boxWidth` 有值）走與畫面／匯出同一支
  * [wrapTextLines]，舊資料（`boxWidth` null）才是逐 `\n` 行數。
- * 這裡曾寫死 `text.split("\n").size`，前提是「螢幕不折行」——文字框上線後該前提
+ * 這裡曾寫死 `text.split("\n").size`，前提是「蟳幕不折行」——文字框上線後該前提
  * 不再成立，折了行的框若仍照 `\n` 數算，量到的底會**偏小**，接著寫的 AI 文字會疊上去。
  *
  * @param metrics fontSize → (行高, descent)，由呼叫端注入平台量測。

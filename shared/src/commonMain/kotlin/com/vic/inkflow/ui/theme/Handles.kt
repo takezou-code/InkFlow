@@ -5,9 +5,9 @@ import androidx.compose.ui.unit.dp
 /**
  * 觸控目標與手勢把手尺寸。
  *
- * 為什麼是 dp 而不是 px：把手常數若寫死物理 px，在高密度螢幕（density 2.75 的平板）
+ * 為什麼是 dp 而不是 px：把手常數若寫死物理 px，在高密度蟳幕（density 2.75 的平板）
  * 換算回 dp 會大幅缩水——48px 命中框只剩 17.5dp，遠低於 Material 的 48dp 最低標準，
- * 使用者必須瞄準才能抓到。dp 保證「不管什麼螢幕都是同樣的手指體驗」。
+ * 使用者必須瞄準才能抓到。dp 保證「不管什麼蟳幕都是同樣的手指體驗」。
  *
  * 分成兩層（Material 3 明確區分）：
  * - **觸控目標（hit）**：畫面上看不到，但在視覺之外。使用者只靠它抓，決定好不好用。
@@ -16,7 +16,7 @@ import androidx.compose.ui.unit.dp
  * 引用：`InkCanvasGeometry.kt`（圖/字/套索/筆跡四種選取框共用）。
  */
 object Handles {
-    /** 命中半徑。24dp → 螢幕上 48×48dp 觸控框，Material 3 最低標準（≈9mm 實體）。 */
+    /** 命中半徑。24dp → 蟳幕上 48×48dp 觸控框，Material 3 最低標準（≈9mm 實體）。 */
     val TouchRadius = 24.dp
 
     /**

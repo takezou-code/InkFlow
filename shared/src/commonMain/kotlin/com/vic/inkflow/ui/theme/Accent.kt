@@ -50,7 +50,7 @@ fun Color.blendWith(other: Color, amount: Float): Color {
     )
 }
 
-/** 玻璃選中藥丸的頂端（珍珠色）：重點色只留一點點染色，不能變成螢光色塊。 */
+/** 玻璃選中藥丸的頂端（珍珠色）：重點色只留一點點染色，不能變成蟳光色塊。 */
 fun accentPillTop(accent: Color): Color = accent.blendWith(Color.White, 0.93f)
 
 /** 玻璃選中藥丸的底部（比頂端深一階，做出厚度）。 */

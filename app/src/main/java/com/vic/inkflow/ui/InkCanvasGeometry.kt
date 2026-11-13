@@ -277,8 +277,8 @@ internal fun damageCoverage(dirty: Rect, page: Rect): Float {
 // （Material 最低 48dp），使用者必須瞄準才抓得到——那個 bug 的根因。
 //
 // 命中半徑另有一層「畫布縮放補償」：紙放大時畫布變寬，把手若跟著放大，
-// 在螢幕上的實體觸控目標反而變大／縮小不定。handleScaleFor 把它校正回
-// 「螢幕上恆定」（同 Editframe transform handles 的 canvas-scale 做法）。
+// 在蟳幕上的實體觸控目標反而變大／縮小不定。handleScaleFor 把它校正回
+// 「蟳幕上恆定」（同 Editframe transform handles 的 canvas-scale 做法）。
 internal const val SEL_FRAME_CORNER_PX = 14f
 internal const val SEL_FRAME_HALO_PX = 6f
 internal const val SEL_FRAME_INNER_PX = 2.2f
@@ -301,11 +301,11 @@ internal const val SEL_HANDLE_CAPSULE_LEN_MULT = 2.5f
 // 把手尺寸不在這裡換算：紙面放大是「layout 尺寸變大」（PageWorkspace 的
 // listWdp = viewportWpx * max(docZoom,1) + Surface.fillMaxWidth(docZoom)），
 // **不是**對畫布做像素縮放——畫布鏈路上沒有任何 graphicsLayer（只在 overlay 用）。
-// 所以 1 個畫布 px 恆等於 1 個螢幕 px，把手直接用 dp.toPx() 即可，
-// 在任何 docZoom 下螢幕上都是同一個大小。
+// 所以 1 個畫布 px 恆等於 1 個蟳幕 px，把手直接用 dp.toPx() 即可，
+// 在任何 docZoom 下蟳幕上都是同一個大小。
 //
-// 曾有 handleScaleFor(dpPx, canvasScale) = dpPx / scale 做「螢幕恆定」補償，
-// 但那個假設錯了（誤以為有像素縮放層），結果 docZoom=2 把手只剩螢幕 12dp、
+// 曾有 handleScaleFor(dpPx, canvasScale) = dpPx / scale 做「蟳幕恆定」補償，
+// 但那個假設錯了（誤以為有像素縮放層），結果 docZoom=2 把手只剩蟳幕 12dp、
 // 4x 只剩 6dp——實機回報「放大後把手變小，整個倒過來」。已移除。
 
 /**
@@ -343,7 +343,7 @@ internal fun nearestHandleIndex(
  * 手柄是白圓玻璃體（靛圈 + 左上高光點 + 外暈）。深淺紙都可讀。
  */
 /**
- * 一顆把手的視覺狀態。半徑全部是「螢幕上的大小」經 handleScaleFor 換算後的畫布 px。
+ * 一顆把手的視覺狀態。半徑全部是「蟳幕上的大小」經 handleScaleFor 換算後的畫布 px。
  */
 internal data class HandleVisual(
     val center: Offset,

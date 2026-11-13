@@ -88,7 +88,7 @@ enum class ThemeMode { SYSTEM, LIGHT, DARK }
  * 設定頁版面規則（改版後維持這四條，新增一列照抄）：
  *
  *  1. 內容收在 820dp 的中央直欄。平板橫向原本是滿版，控制項被拉成超寬一條，
- *     校正方框甚至長成整個螢幕大的正方形——這是「看起來亂」的根源，不是顏色。
+ *     校正方框甚至長成整個蟳幕大的正方形——這是「看起來亂」的根源，不是顏色。
  *  2. 一節＝標題（加一條細線收尾）＋一張 faux 玻璃卡。卡內每一列固定
  *     左右 20dp／上下 12～14dp，控制項一律靠右或撐滿，不再有 16/8/12 混用。
  *  3. 選項列一律 [GlassSegmentedBar]，下拉一律 [GlassMenu]；不用 M3 OutlinedTextField，
@@ -469,7 +469,7 @@ fun GlobalSettingsScreen(
 
                     SettingsSwitchRow(
                         title = "快劃橡皮擦",
-                        subtitle = "使用畫筆在螢幕上快速來回滑動來觸發橡皮擦",
+                        subtitle = "使用畫筆在蟳幕上快速來回滑動來觸發橡皮擦",
                         checked = defaultQuickSwipe,
                         onCheckedChange = {
                             defaultQuickSwipe = it
@@ -538,7 +538,7 @@ fun GlobalSettingsScreen(
                         prefs.edit().putFloat("default_pen_width", it).apply()
                     }
 
-                    SettingsGroupLabel("螢光筆")
+                    SettingsGroupLabel("蟳光筆")
                     SettingsColorRow("顏色", Color(defaultHighlighterColor)) { showHighlighterColorPicker = true }
                     SettingsSliderRow("粗細", defaultHighlighterWidth, 4f..40f) {
                         defaultHighlighterWidth = it
@@ -1410,7 +1410,7 @@ private fun SettingsHint(text: String, isError: Boolean = false) {
     )
 }
 
-/** 群組小標（畫筆／螢光筆／調色盤）。 */
+/** 群組小標（畫筆／蟳光筆／調色盤）。 */
 @Composable
 private fun SettingsGroupLabel(text: String) {
     Text(

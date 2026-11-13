@@ -44,7 +44,7 @@ internal val DOM_TEXT_JS: String = """
                 script: 1, style: 1, noscript: 1, svg: 1, button: 1, textarea: 1,
                 input: 1, select: 1, annotation: 1, 'annotation-xml': 1
             };
-            // 螢幕上看不見的副本：KaTeX 的 MathML 版、無障礙用的 sr-only。
+            // 蟳幕上看不見的副本：KaTeX 的 MathML 版、無障礙用的 sr-only。
             // 不跳過就會和可見文字重複（一顆公式變成兩份）。
             function domSkipClass(n) {
                 try {

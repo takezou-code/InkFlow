@@ -80,7 +80,7 @@ fun InkToolbarTitle(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.widthIn(max = 180.dp).padding(end = 4.dp)
             )
-            // 工具列是七顆無文字的圖示（畫筆／螢光筆／橡皮擦／套索／文字／圖形／手），
+            // 工具列是七顆無文字的圖示（畫筆／蟳光筆／橡皮擦／套索／文字／圖形／手），
             // 其中套索是 SelectAll、橡皮擦是 DeleteSweep——光看圖示猜不出來。
             // 名稱放在標題旁邊，不用把工具列塞成文字條。
             Text(
@@ -130,7 +130,7 @@ fun InkToolbarTools(
 ) {
     InkToolIcon(Icons.Rounded.PanTool, "抓手（拖曳捲動）", tool == InkTool.Hand, onClick = { onToolChange(InkTool.Hand) })
     InkToolIcon(Icons.Rounded.Draw, "筆", tool == InkTool.Pen, onClick = { onToolChange(InkTool.Pen) })
-    InkToolIcon(Icons.Rounded.Brush, "螢光筆", tool == InkTool.Highlighter, onClick = { onToolChange(InkTool.Highlighter) })
+    InkToolIcon(Icons.Rounded.Brush, "蟳光筆", tool == InkTool.Highlighter, onClick = { onToolChange(InkTool.Highlighter) })
     InkToolIcon(Icons.Rounded.DeleteSweep, "橡皮擦", tool == InkTool.Eraser, onClick = { onToolChange(InkTool.Eraser) })
     InkToolIcon(Icons.Rounded.SelectAll, if (selectionCount > 0) "選取（$selectionCount）" else "選取", tool == InkTool.Select, badgeCount = selectionCount, onClick = { onToolChange(InkTool.Select) })
     InkToolIcon(Icons.Rounded.TextFields, "文字", tool == InkTool.Text, onClick = { onToolChange(InkTool.Text) })

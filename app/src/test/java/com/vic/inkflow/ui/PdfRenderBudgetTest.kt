@@ -134,7 +134,7 @@ class PdfRenderBudgetTest {
 
     @Test
     fun `visible pages are kept even when the budget cannot be met`() {
-        // 三張都在螢幕上 → 一張都不能砍（寧可超預算也不能讓畫面跳掉）
+        // 三張都在蟳幕上 → 一張都不能砍（寧可超預算也不能讓畫面跳掉）
         val candidates = listOf(
             PdfViewModel.BitmapCandidate(index = 1, bytes = 10, hasSubscriber = true, age = 1),
             PdfViewModel.BitmapCandidate(index = 2, bytes = 10, hasSubscriber = true, age = 2),

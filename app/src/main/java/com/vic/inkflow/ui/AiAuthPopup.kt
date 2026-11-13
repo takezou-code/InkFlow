@@ -151,7 +151,7 @@ class AiAuthPopup(
                 LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
             )
         }
-        // 全螢幕 Dialog 會蓋到狀態列／導覽列；用 insets 讓標題列與內容不被切掉。
+        // 全蟳幕 Dialog 會蓋到狀態列／導覽列；用 insets 讓標題列與內容不被切掉。
         ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             v.updatePadding(top = bars.top, bottom = bars.bottom, left = bars.left, right = bars.right)

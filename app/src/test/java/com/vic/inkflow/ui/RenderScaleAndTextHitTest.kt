@@ -147,7 +147,7 @@ fun theTextPartScalesWithTheCanvas() {
 
 @Test
 fun theTouchPadStaysScreenSpaceAndDoesNotScale() {
-    // 墊片是「螢幕上的手指容忍度」。1 畫布 px ＝ 1 螢幕 px，所以它不該跟著縮放長大：
+    // 墊片是「蟳幕上的手指容忍度」。1 畫布 px ＝ 1 蟳幕 px，所以它不該跟著縮放長大：
     // 放大 3 倍後觸控目標變 3 倍大，會蓋到鄰近物件、搶走它們的點擊。
     val labelAt1x = 16f * 0.65f // 半形字寬 @16pt
     val labelAt3x = 16f * 3f * 0.65f

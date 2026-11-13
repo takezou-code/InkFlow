@@ -70,7 +70,7 @@ fun DrawScope.skyVertical(dark: Boolean, darkColors: List<Color>, lightColors: L
 }
 
 /**
- * 定點閃爍粒子（星空／螢火）：位置固定、只有亮度在呼吸。
+ * 定點閃爍粒子（星空／蟳火）：位置固定、只有亮度在呼吸。
  * 跟 [DriftParticle] 分開是因為運動模型不同——硬塞進同一型別只會讓兩邊都難讀。
  */
 data class Twinkle(

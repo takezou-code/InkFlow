@@ -184,7 +184,7 @@ class FingerPanAdmissionTest {
 
     // ---- 捏合水平錨定 -----------------------------------------------------
 
-    /** 螢幕 x 底下的紙面座標（0=紙左緣、1=紙右緣）。 */
+    /** 蟳幕 x 底下的紙面座標（0=紙左緣、1=紙右緣）。 */
     private fun paperFractionAt(x: Float, z: Float, panX: Float): Float {
         val paperW = viewport * z - sidePad
         val left = (viewport - paperW) / 2f + panX

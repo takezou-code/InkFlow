@@ -279,7 +279,7 @@ fun InkCanvas(
     val pageGapPxRef = rememberUpdatedState(pageGapPx)
     val pageCountRef = rememberUpdatedState(pageCount)
     val onEdgeAutoScrollRef = rememberUpdatedState(onEdgeAutoScroll)
-    // 拖曳 overlay 接手時，紙內選取預覽讓位（同像素只畫一次，螢光筆疊色會變深）
+    // 拖曳 overlay 接手時，紙內選取預覽讓位（同像素只畫一次，蟳光筆疊色會變深）
     val dragPreviewActive by viewModel.dragPreviewActive.collectAsState()
     // 套索虛線動畫按需組成：無選取時不跑 choreographer，省常駐喚醒；靜模式凍結
     val needLassoAnim = activeTool == Tool.LASSO && selectedStrokePreview.isNotEmpty() && !LocalQuietMode.current
@@ -459,10 +459,10 @@ fun InkCanvas(
     }
 
 // ── 選取把手尺寸（dp → 畫布 px，直接 1:1）──────────────────────────────
-// 命中半徑 24dp → 螢幕上 48dp 觸控框（Material 最低標準）。舊碼寫死 24 物理px，
+// 命中半徑 24dp → 蟳幕上 48dp 觸控框（Material 最低標準）。舊碼寫死 24 物理px，
 // 在 density 2.75 的平板上只剩 17.5dp，必須瞄準才抓得到。
 // 不做 docZoom 補償：紙放大是 layout 變大、不是像素縮放（畫布無 graphicsLayer），
-// 1 畫布 px 恆＝1 螢幕 px，所以任何縮放下把手都該是同一個螢幕大小。
+// 1 畫布 px 恆＝1 蟳幕 px，所以任何縮放下把手都該是同一個蟳幕大小。
     val handleHitRadiusPx = with(density) {
         com.vic.inkflow.ui.theme.Handles.TouchRadius.toPx()
     }
@@ -569,7 +569,7 @@ fun InkCanvas(
             ann.id to if (bw != null) wrapTextLines(ann.text, ann.fontSize, bw) else ann.text.split("\n")
         }
     }
-    // 螢光筆作用中預覽共用 Paint：每幀只換色，不再 new
+    // 蟳光筆作用中預覽共用 Paint：每幀只換色，不再 new
     val hlPreviewPaint = remember {
         Paint().apply {
             style = PaintingStyle.Fill
@@ -2591,7 +2591,7 @@ fun InkCanvas(
 
             // ── 向量層：樂觀筆（DB 未回報）＋ 最後一筆熱筆 ──
             // 畫在快取圖之上、提交預覽與選取框之下。用同一支 drawPathOnCanvas，
-            // 幾何與混合模式跟烙進位圖那條逐字一致（螢光筆的 Multiply 對同一張底）。
+            // 幾何與混合模式跟烙進位圖那條逐字一致（蟳光筆的 Multiply 對同一張底）。
             if (overlayStrokes.isNotEmpty()) {
                 overlayPathCache.keys.retainAll(overlayIds)
                 drawIntoCanvas { cvs ->

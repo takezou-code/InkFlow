@@ -37,7 +37,7 @@ private data class OrbSpec(
         (0.5f + xAmp * sin(6.2832f * t / xPeriod + xPhase)) * w
 
     fun currentY(t: Float, h: Float): Float {
-        // 回收區收緊：之前上下各 0.15  invisible，一次少兩成泡泡在螢幕外
+        // 回收區收緊：之前上下各 0.15  invisible，一次少兩成泡泡在蟳幕外
         val span = 1.1f
         val raw = (t * yRate + yOffset) % span
         return (1.05f - raw) * h
