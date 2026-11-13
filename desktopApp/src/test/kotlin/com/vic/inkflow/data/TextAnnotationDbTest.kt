@@ -86,6 +86,20 @@ class TextAnnotationDbTest {
     }
 
     @Test
+    fun `flowId survives a save and read back, and defaults to null`() {
+        // The text-flow group the tablet reflow joins by. NULL stays NULL — a
+        // fabricated shared id would merge unrelated notes into one article.
+        val db = newDb("flowid")
+        db.saveTextAnnotation(ann.copy(id = "note-1", flowId = "ai-abc123"))
+        db.saveTextAnnotation(ann.copy(id = "note-2"))
+
+        val all = db.getAllTextAnnotationsForDocument("file:///a.pdf")
+        assertEquals("ai-abc123", all.first { it.id == "note-1" }.flowId)
+        assertNull(all.first { it.id == "note-2" }.flowId)
+        db.disconnect()
+    }
+
+    @Test
     fun `a null docY stays null instead of being invented`() {
         // A guessed stride places notes on the wrong page — the failure is silent,
         // so preserving NULL is load-bearing, not cosmetic.

@@ -1,8 +1,5 @@
 package com.vic.inkflow.ui
 
-import com.google.gson.Gson
-import com.google.gson.JsonObject
-import com.google.gson.JsonPrimitive
 import com.vic.inkflow.DesktopSettings
 import com.vic.inkflow.agent.AgentGoal
 import com.vic.inkflow.agent.AgentLoop
@@ -15,6 +12,7 @@ import com.vic.inkflow.agent.ModelHealth
 import com.vic.inkflow.agent.NoteLanding
 import com.vic.inkflow.agent.NoteLandingHandle
 import com.vic.inkflow.agent.ReadDocumentTextTool
+import com.vic.inkflow.agent.ReadAnnotationsTool
 import com.vic.inkflow.agent.ReadPageTextTool
 import com.vic.inkflow.agent.RenderPageTool
 import com.vic.inkflow.agent.UpsertTextTool
@@ -141,15 +139,31 @@ class AgentPanelViewModel(
         val plan = _state.value.editPlan ?: return "沒有可套用的編輯計畫"
         if (plan.ops.isEmpty()) return "編輯計畫為空"
 
-        val gson = Gson()
         var applied = 0
 
         for (op in plan.ops) {
-            // 1. Apply to local DB immediately so the user sees the change.
+            // The DB write and the proposal must carry the SAME id, so the entity
+            // is built once here and the proposal is assembled from what actually
+            // got persisted (the database assigns the version on write).
+            var persisted: com.vic.inkflow.data.TextAnnotationEntity? = null
+
             when (op) {
                 is EditOp.UpsertText -> {
-                    val entity = upsertEntity(op)
+                    // A replace keeps the existing row's identity — flowId, docY and
+                    // the version base the tablet arbitrates against. The AI edits
+                    // content, not identity. A create keeps what the model asked for.
+                    val existing = op.id?.let { db.getTextAnnotation(it) }
+                    val entity = upsertEntity(op).let { e ->
+                        if (existing == null) e
+                        else e.copy(
+                            flowId = existing.flowId,
+                            docY = existing.docY,
+                            version = existing.version,
+                            versionNonce = existing.versionNonce
+                        )
+                    }
                     db.saveTextAnnotation(entity)
+                    persisted = db.getTextAnnotation(entity.id) ?: entity
                 }
                 is EditOp.DeleteText -> {
                     db.deleteTextAnnotation(op.id)
@@ -159,34 +173,15 @@ class AgentPanelViewModel(
                 }
             }
 
-            // 2. Convert EditOp to ProposalOp for the sync queue.
+            // Convert EditOp to ProposalOp for the sync queue. Text ops carry the
+            // persisted entity, so id, flowId and the DB-assigned version all ride
+            // along to the tablet (the model never mints ids itself).
             val proposalOp = when (op) {
                 is EditOp.UpsertText -> {
-                    val entity = upsertEntity(op)
-                    val textJson = JsonObject()
-                    textJson.add("id", JsonPrimitive(entity.id))
-                    textJson.add("documentUri", JsonPrimitive(entity.documentUri))
-                    textJson.add("pageIndex", JsonPrimitive(entity.pageIndex))
-                    textJson.add("docY", com.google.gson.JsonNull())
-                    textJson.add("text", JsonPrimitive(entity.text))
-                    textJson.add("modelX", JsonPrimitive(entity.modelX))
-                    textJson.add("modelY", JsonPrimitive(entity.modelY))
-                    textJson.add("fontSize", JsonPrimitive(entity.fontSize))
-                    textJson.add("colorArgb", JsonPrimitive(entity.colorArgb))
-                    textJson.add("isStamp", JsonPrimitive(entity.isStamp))
-                    if (entity.boxWidth != null) {
-                        textJson.add("boxWidth", JsonPrimitive(entity.boxWidth))
-                    } else {
-                        textJson.add("boxWidth", com.google.gson.JsonNull())
-                    }
-                    textJson.add("alignment", JsonPrimitive(entity.alignment))
-                    textJson.add("version", JsonPrimitive(entity.version))
-                    textJson.add("versionNonce", JsonPrimitive(entity.versionNonce))
-                    textJson.add("deletedAt", com.google.gson.JsonNull())
-
+                    val entity = persisted!!
                     com.vic.inkflow.sync.ProposalOp(
                         op = com.vic.inkflow.sync.ProposalOp.UPSERT_TEXT,
-                        text = textJson,
+                        text = entity,
                         id = entity.id,
                         baseVersion = op.baseVersion,
                         baseNonce = op.baseNonce
@@ -238,6 +233,7 @@ class AgentPanelViewModel(
         val base = mutableListOf<com.vic.inkflow.agent.AgentTool>(
             ReadPageTextTool(documentUri),
             ReadDocumentTextTool(documentUri),
+            ReadAnnotationsTool(documentUri, db),
             UpsertTextTool(documentUri, db),
             DeleteTextTool(documentUri, db)
         )

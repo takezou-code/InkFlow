@@ -478,6 +478,12 @@ version 大者贏、打平比 nonce）。
 現況` 即為 pull（平板的版本單調），否則是拿記憶體裡的舊值回寫的本地編輯。兩者都會
 改到 nonce，所以 pull 必須連 nonce 一起照抄——只照抄 version 等於對內容動了手。
 
+#### 15.1.2 text op 的 payload：附加的 `flowId`
+
+`upsert_text` 的 `text` 欄是平板 `TextAnnotation` 的 JSON（欄位即 shared `Model.kt` 的 `TextAnnotation`）。桌面端（desktop schema v7）起在該 JSON 裡多帶一個**可選**欄位 `flowId`——文字流的群組 id，與平板 v32 的 `ai-<uuid>` 同一語義：同一次 AI 落頁產生的多個區塊共用一個 flowId，平板據此把它們當成一條可自動重排的文章，而不是一堆獨立的文字框。
+
+平板解碼走 shared `TextAnnotation`，`flowId` 會被存下；不帶此欄位的舊桌面 payload 會解碼為 `null`，行為不變（每個註記視為獨立文字框）。此欄位為**純附加、舊端可忽略**，不影響 `incomingWins` 仲裁——仲裁只看 `version`／`versionNonce`，不看內容欄位。
+
 ### 15.2 逐 op 仲裁（取代整筆駁回）
 
 `ProposalArbiter.decideOps` 的規則順序（`decide` 是無版本資訊時的 v5 相容入口）：
