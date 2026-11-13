@@ -13,6 +13,8 @@ import com.vic.inkflow.agent.NoteLanding
 import com.vic.inkflow.agent.NoteLandingHandle
 import com.vic.inkflow.agent.ReadDocumentTextTool
 import com.vic.inkflow.agent.ReadAnnotationsTool
+import com.vic.inkflow.agent.ComposeKind
+import com.vic.inkflow.agent.classifyComposeKind
 import com.vic.inkflow.agent.ReadPageTextTool
 import com.vic.inkflow.agent.RenderPageTool
 import com.vic.inkflow.agent.UpsertTextTool
@@ -42,7 +44,6 @@ class AgentPanelViewModel(
         val steps: List<AgentStep> = emptyList(),
         val note: LessonNote? = null,
         val editPlan: EditPlan? = null,
-        val editMode: Boolean = false,
         val previewAck: com.vic.inkflow.agent.PreviewAck? = null,
         val failure: String? = null,
         val landed: String? = null,
@@ -59,7 +60,6 @@ class AgentPanelViewModel(
         data object LandNote : AgentEvent
         data object ApplyEditPlan : AgentEvent
         data object RejectEditPlan : AgentEvent
-        data object ToggleEditMode : AgentEvent
     }
 
     private val _state = MutableStateFlow(UiState())
@@ -99,20 +99,6 @@ class AgentPanelViewModel(
                 previewHandle?.clear()
                 _state.value = _state.value.copy(landed = "已捨棄修改提案", editPlan = null, previewAck = null)
             }
-            is AgentEvent.ToggleEditMode -> {
-                if (_state.value.busy) return@onEvent
-                // Leaving edit mode must clear any overlay — the reader must not
-                // keep showing a simulated page the user chose not to adopt.
-                previewHandle?.clear()
-                _state.value = _state.value.copy(
-                    editMode = !_state.value.editMode,
-                    note = null,
-                    editPlan = null,
-                    previewAck = null,
-                    landed = null,
-                    failure = null
-                )
-            }
         }
     }
 
@@ -140,11 +126,14 @@ class AgentPanelViewModel(
         // Leaving the page in "simulated" while a fresh plan is coming in would
         // mismatch; drop it up front.
         previewHandle?.clear()
-        val editMode = s.editMode
         _state.value = s.copy(busy = true, failure = null, landed = null, note = null, editPlan = null, previewAck = null, steps = emptyList())
         scope.launch {
             val prov = currentProvider()
-            val loop = if (editMode) {
+            val instruction = _state.value.instruction.ifBlank { DEFAULT_INSTRUCTION }
+            // The panel shows no mode switch: the model routes the instruction
+            // to note vs edit before composing. One agent, one button.
+            val kind = classifyComposeKind(prov, instruction)
+            val loop = if (kind == ComposeKind.EDIT) {
                 AgentLoop(
                     provider = prov,
                     tools = tools,
@@ -157,7 +146,6 @@ class AgentPanelViewModel(
                     tools = tools
                 )
             }
-            val instruction = _state.value.instruction.ifBlank { DEFAULT_INSTRUCTION }
             val outcome = loop.run(
                 AgentGoal(
                     instruction = instruction,
@@ -165,10 +153,10 @@ class AgentPanelViewModel(
                     documentUri = documentUri
                 )
             ) { step -> _state.value = _state.value.copy(steps = _state.value.steps + step) }
-            // Auto-preview in edit mode: show the outcome on the page before the
-            // user confirms — the whole-page diff is the confirmation surface.
+            // Auto-preview when the plan path produced changes: show them on the
+            // page before the user confirms — the whole-page diff is the confirm surface.
             val plan = outcome.editPlan
-            val ack = if (editMode && plan != null) previewHandle?.preview(plan) else null
+            val ack = if (plan != null) previewHandle?.preview(plan) else null
             _state.value = _state.value.copy(
                 note = outcome.note,
                 editPlan = outcome.editPlan,

@@ -112,8 +112,7 @@ fun AgentPanel(
                     DeskTextField(
                         value = state.instruction,
                         onValueChange = { vm.onEvent(AgentPanelViewModel.AgentEvent.SetInstruction(it)) },
-                        placeholder = if (state.editMode) "要改什麼？例如「把這頁的重複段落刪掉」"
-                                      else "要 AI 做什麼？例如「把這頁的重點整理成筆記」",
+                        placeholder = "例如：把這頁整理成三條筆記，或把重複的段落刪掉",
                         singleLine = false,
                         minLines = 2,
                         maxLines = 6,
@@ -186,7 +185,7 @@ fun AgentPanel(
                         modifier = Modifier.fillMaxWidth()
                     )
                     else -> Text(
-                        text = "產生的筆記會先出現在這裡，確認後才寫進頁面。",
+                        text = "成果會先出現在這裡；確認後才寫進頁面。",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 2,
@@ -250,20 +249,6 @@ fun AgentPanel(
 
             Spacer(Modifier.height(DeskSpace.sm))
 
-            // ── Mode: produce a note, or edit the document ──────────────
-            Row(horizontalArrangement = Arrangement.spacedBy(DeskSpace.xs)) {
-                ModeChip(
-                    label = "整理成筆記",
-                    selected = !state.editMode,
-                    onClick = { if (state.editMode) vm.onEvent(AgentPanelViewModel.AgentEvent.ToggleEditMode) }
-                )
-                ModeChip(
-                    label = "編輯文件",
-                    selected = state.editMode,
-                    onClick = { if (!state.editMode) vm.onEvent(AgentPanelViewModel.AgentEvent.ToggleEditMode) }
-                )
-            }
-
             Spacer(Modifier.height(DeskSpace.sm))
 
             // ── The run: the transcript grows upwards from the composer ──
@@ -274,7 +259,6 @@ fun AgentPanel(
                 if (state.steps.isEmpty() && state.failure == null && state.note == null && state.editPlan == null && !state.busy) {
                     item {
                         AgentEmptyState(
-                            editMode = state.editMode,
                             onPick = { vm.onEvent(AgentPanelViewModel.AgentEvent.SetInstruction(it)) }
                         )
                     }
@@ -351,20 +335,13 @@ fun AgentPanel(
  * a prompt they can press is the fastest way to find out.
  */
 @Composable
-private fun AgentEmptyState(editMode: Boolean, onPick: (String) -> Unit) {
-    val examples = if (editMode) {
-        listOf(
-            "把這頁重複的段落合併成一段",
-            "把這頁的長段落重排成條列重點",
-            "找出這頁的筆記錯字並改過來"
-        )
-    } else {
-        listOf(
-            "把這頁的重點整理成三條筆記",
-            "把這個公式的每一步推導寫成說明",
-            "替這頁出一題練習題與解答"
-        )
-    }
+private fun AgentEmptyState(onPick: (String) -> Unit) {
+    val examples = listOf(
+        "把這頁的重點整理成三條筆記",
+        "把這頁重複的段落合併成一段",
+        "把這頁的長段落重排成條列重點",
+        "替這頁出一題練習題與解答"
+    )
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
@@ -387,38 +364,45 @@ private fun AgentEmptyState(editMode: Boolean, onPick: (String) -> Unit) {
         }
         Spacer(Modifier.height(DeskSpace.sm))
         Text(
-            text = if (editMode) "描述你想怎麼改這頁" else "描述你要 AI 做什麼",
+            text = "描述你要 AI 做什麼",
             style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.onSurface
         )
         Spacer(Modifier.height(2.dp))
         Text(
-            text = if (editMode) "AI 會讀頁面，先把修改提案顯示在頁面上，你按套用才會寫入。"
-                   else "AI 會讀頁面、查模型，最後把成果先給你確認。",
+            text = "AI 會讀這頁，先給你看成果，確認後才會寫入。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = androidx.compose.ui.text.style.TextAlign.Center
         )
         Spacer(Modifier.height(DeskSpace.md))
-        examples.forEach { prompt ->
-            Text(
-                text = prompt,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(10.dp))
-                    .border(
-                        1.dp,
-                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f),
-                        RoundedCornerShape(10.dp)
-                    )
-                    .glassClickable(onClick = { onPick(prompt) }, shape = RoundedCornerShape(10.dp))
-                    .padding(horizontal = DeskSpace.sm, vertical = 8.dp)
-            )
-            Spacer(Modifier.height(6.dp))
+        // 2×2 grid of quick prompts — a full-width list reads like a menu; a
+        // grid reads like a dashboard.
+        Column(verticalArrangement = Arrangement.spacedBy(DeskSpace.xs)) {
+            examples.chunked(2).forEach { row ->
+                Row(horizontalArrangement = Arrangement.spacedBy(DeskSpace.xs)) {
+                    row.forEach { prompt ->
+                        Text(
+                            text = prompt,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(12.dp))
+                                .border(
+                                    1.dp,
+                                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f),
+                                    RoundedCornerShape(12.dp)
+                                )
+                                .glassClickable(onClick = { onPick(prompt) }, shape = RoundedCornerShape(12.dp))
+                                .padding(horizontal = DeskSpace.sm, vertical = 10.dp)
+                        )
+                    }
+                    if (row.size == 1) Spacer(Modifier.weight(1f))
+                }
+            }
         }
     }
 }
@@ -490,11 +474,20 @@ private fun NotePreview(note: LessonNote) {
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
             .padding(DeskSpace.sm)
     ) {
-        Text(
-            note.title,
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.SemiBold
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                Icons.Default.MenuBook,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.width(18.dp)
+            )
+            Spacer(Modifier.width(DeskSpace.xs))
+            Text(
+                note.title,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
         Spacer(Modifier.height(4.dp))
         note.blocks.forEach { block ->
             Text(
@@ -516,11 +509,20 @@ private fun EditPlanPreview(plan: EditPlan, ack: com.vic.inkflow.agent.PreviewAc
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
             .padding(DeskSpace.sm)
     ) {
-        Text(
-            text = "變更預覽（${plan.ops.size} 項）",
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.SemiBold
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                Icons.Default.Edit,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.width(18.dp)
+            )
+            Spacer(Modifier.width(DeskSpace.xs))
+            Text(
+                text = "變更預覽（${plan.ops.size} 項）",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
         if (ack != null) {
             Spacer(Modifier.height(4.dp))
             Text(
@@ -605,19 +607,3 @@ private fun previewTextOf(block: com.vic.inkflow.data.NoteBlock): String = when 
         "\nAnswer: ${block.options.getOrNull(block.answerIndex).orEmpty()}"
 }
 
-/** A small segmented choice for the panel's two modes. */
-@Composable
-private fun ModeChip(label: String, selected: Boolean, onClick: () -> Unit) {
-    val fill = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
-    val content = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
-    Box(
-        modifier = Modifier
-            .clip(RoundedCornerShape(999.dp))
-            .background(fill)
-            .glassClickable(onClick = onClick, shape = RoundedCornerShape(999.dp))
-            .padding(horizontal = 12.dp, vertical = 6.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(label, style = MaterialTheme.typography.labelSmall, color = content)
-    }
-}
