@@ -34,8 +34,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -469,6 +472,29 @@ class EditorViewModel(
     fun cachedNeighbor(page: Int): NeighborPageData? = _neighborCache.value[page]
 
     /**
+     * Page emission fingerprint. Room invalidates by table, so every strokes/texts/images
+     * write re-queries pages whose rows didn't change; mapping the whole page again on
+     * Main was the re-map storm behind the 工數歷屆 OOM (2026-11-14). Stroke/text writes
+     * always bump `version`; images have no version, so they hash id+geometry instead.
+     */
+    private fun fingerprint(s: List<StrokeWithSamples>, t: List<com.vic.inkflow.data.TextAnnotation>, i: List<com.vic.inkflow.data.ImageAnnotation>, pending: Map<String, StrokeWithSamples>): List<Long> {
+        val sFp = s.fold(s.size.toLong()) { acc, it -> acc * 131L + it.stroke.id.hashCode().toLong() * 31L + it.stroke.version.toLong() }
+        val tFp = t.fold(t.size.toLong()) { acc, it -> acc * 131L + it.id.hashCode().toLong() * 31L + it.version.toLong() }
+        val iFp = i.fold(i.size.toLong()) { acc, it ->
+            var x = acc * 131L + it.id.hashCode().toLong()
+            x = x * 131 + java.lang.Float.floatToRawIntBits(it.modelX).toLong()
+            x = x * 131 + java.lang.Float.floatToRawIntBits(it.modelY).toLong()
+            x = x * 131 + java.lang.Float.floatToRawIntBits(it.modelWidth).toLong()
+            x = x * 131 + java.lang.Float.floatToRawIntBits(it.modelHeight).toLong()
+            x * 131 + java.lang.Float.floatToRawIntBits(it.rotation).toLong()
+        }
+        val pFp = pending.values.fold(pending.size.toLong()) { acc, it -> acc * 131L + it.stroke.id.hashCode().toLong() * 31L + it.stroke.version.toLong() }
+        return listOf(sFp, tFp, iFp, pFp)
+    }
+
+    private data class FingerprintedPage(val fp: List<Long>, val data: NeighborPageData)
+
+    /**
      * 各頁常駐熱流：同一頁在捲動中反覆組成/拆掉時不斷線、不重查，
      * 上游在無人訂閱 5 秒後自動停，有人回來即時吐舊值（無空白幀）。
      * 主線程調用（composition / setActivePage），map 增減只在主線程。
@@ -485,7 +511,7 @@ class EditorViewModel(
             // 第五路：樂觀筆跡層。少了這一路，提筆到落庫之間這一頁是空的
             //（UI 只有這條流；currentStrokes 那條早已刪除）。
             _pendingStrokes
-        ) { s, t, i, _, pending ->
+        ) { s, t, i, hv, pending ->
             val merged = mergePageStrokes(s, pending, page, hiddenIds)
             // DB 一出現同 id 就從樂觀層退場，否則同一筆會被畫兩次
             //（高亮筆＝alpha 疊兩層，提筆瞬間明顯偏暗）。
@@ -498,13 +524,21 @@ class EditorViewModel(
                     _pendingStrokes.value = _pendingStrokes.value - resolved
                 }
             }
-            NeighborPageData(
-                strokes = merged.strokes,
-                texts = if (hiddenIds.isEmpty()) t else t.filter { it.id !in hiddenIds },
-                images = if (hiddenIds.isEmpty()) i else i.filter { it.id !in hiddenIds },
-                pendingIds = merged.pendingIds
+            val textsF = if (hiddenIds.isEmpty()) t else t.filter { it.id !in hiddenIds }
+            val imagesF = if (hiddenIds.isEmpty()) i else i.filter { it.id !in hiddenIds }
+            FingerprintedPage(
+                fp = fingerprint(s, t, i, pending) + hv.toLong(),
+                data = NeighborPageData(
+                    strokes = merged.strokes,
+                    texts = textsF,
+                    images = imagesF,
+                    pendingIds = merged.pendingIds
+                )
             )
         }
+            .distinctUntilChanged { a, b -> a.fp == b.fp }
+            .map { it.data }
+            .flowOn(Dispatchers.Default)
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), cachedNeighbor(page) ?: NeighborPageData())
     }
 
