@@ -11,8 +11,10 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.asAndroidPath
 import com.vic.inkflow.data.Point
 import com.vic.inkflow.data.Stroke
+import com.vic.inkflow.data.StrokeWithSamples
 import com.vic.inkflow.util.ShapeGeometry
 import com.vic.inkflow.util.ShapeType
 
@@ -126,4 +128,92 @@ internal fun drawPathOnCanvas(
 ) {
     // 畫法（高亮的 Multiply 混合與透明度）共用 `:shared` 的 `strokePaint`。
     canvas.drawPath(path, strokePaint(color, isHighlighter))
+}
+
+// ── P0-A 背景墨跡重烘（drawWithCache 派發，Default 執行緒執行）──────────────
+
+/**
+ * 背景重烘請求。帶快照：strokes/excludeIds 在派發瞬間凍結；背景烘到一半
+ * 使用者又落筆時，快照不變——下一幀 order 檢測會再派發一次（收斂）。
+ */
+internal data class InkBakeRequest(
+    val pageIndex: Int,
+    val targetWidth: Int,
+    val targetHeight: Int,
+    /** model px → bitmap px 的縮放（sx * cacheScale） */
+    val scaleX: Float,
+    val scaleY: Float,
+    /** 這次烘焙對應的墨跡內容指紋（inkContentKey）：swap 時回寫 lastInkScale */
+    val contentKey: Long,
+    val strokes: List<StrokeWithSamples>,
+    val excludeIds: Set<String>
+)
+
+private val bakeSlots = java.util.concurrent.Semaphore(2)
+internal fun tryAcquireBakeSlot(): Boolean = bakeSlots.tryAcquire()
+internal fun releaseBakeSlot() = bakeSlots.release()
+
+/**
+ * 在背景執行緒把整頁「已提交、非高亮、非 preview/overlay」筆跡烙到新 Bitmap。
+ * 語意與主執行緒 full-rebuild 一致（高亮不烙入、走 live 疊層）；不共用 Compose
+ * 的 committedPathCache（跨執行緒不安全），直接從 points 重建包絡路徑。
+ * 異常由呼叫端（InkCanvas）捕捉——失敗就等下一幀的檢測重派。
+ */
+internal fun rasterizeInkPageBitmap(req: InkBakeRequest): android.graphics.Bitmap {
+    val bmp = android.graphics.Bitmap.createBitmap(
+        req.targetWidth, req.targetHeight, android.graphics.Bitmap.Config.ARGB_8888
+    )
+    val canvas = android.graphics.Canvas(bmp)
+    canvas.scale(req.scaleX, req.scaleY)
+    for (swp in req.strokes) {
+        val st = swp.stroke
+        if (st.isHighlighter) continue
+        if (st.id in req.excludeIds) continue
+        if (st.shapeType != null) {
+            drawShapeAndroid(canvas, st, swp.points)
+            continue
+        }
+        val path = swp.points.toComposePath().asAndroidPath()
+        val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            style = android.graphics.Paint.Style.FILL
+            color = st.color
+        }
+        canvas.drawPath(path, paint)
+    }
+    return bmp
+}
+
+private fun drawShapeAndroid(
+    canvas: android.graphics.Canvas,
+    stroke: Stroke,
+    points: List<Point>
+) {
+    val r = android.graphics.RectF(
+        stroke.boundsLeft, stroke.boundsTop, stroke.boundsRight, stroke.boundsBottom
+    )
+    val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        style = android.graphics.Paint.Style.STROKE
+        strokeWidth = stroke.strokeWidth
+        strokeCap = android.graphics.Paint.Cap.ROUND
+        strokeJoin = android.graphics.Paint.Join.ROUND
+        color = stroke.color
+    }
+    val type = ShapeGeometry.parseType(stroke.shapeType) ?: return
+    when (type) {
+        ShapeType.RECT -> canvas.drawRect(r, paint)
+        ShapeType.CIRCLE -> canvas.drawOval(r, paint)
+        ShapeType.LINE -> if (points.size >= 2) {
+            canvas.drawLine(points.first().x, points.first().y, points.last().x, points.last().y, paint)
+        }
+        ShapeType.ARROW -> if (points.size >= 2) {
+            val p0 = points.first()
+            val p1 = points.last()
+            canvas.drawLine(p0.x, p0.y, p1.x, p1.y, paint)
+            val (left, right) = ShapeGeometry.arrowHead(
+                p0.x, p0.y, p1.x, p1.y, ShapeGeometry.arrowHeadSize(stroke.strokeWidth)
+            )
+            canvas.drawLine(p1.x, p1.y, left.x, left.y, paint)
+            canvas.drawLine(p1.x, p1.y, right.x, right.y, paint)
+        }
+    }
 }

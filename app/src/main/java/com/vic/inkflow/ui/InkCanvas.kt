@@ -52,6 +52,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.graphics.ImageBitmapConfig
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -562,9 +563,7 @@ fun InkCanvas(
     // 普通 Map，同上只在建構區讀寫。
     val lastShapeBounds = remember { mutableMapOf<String, Rect>() }
 
-    // 圖片註解走共享預算制快取（ImageAnnotationCache）：跨頁／跨面板共用、heap/8 LRU、
-    // 超預算自動砍、刪除不會洩漏。這裡只在 Composition 訂閱它的 version，draw 直接讀快取。
-    val imageCacheVersion = com.vic.inkflow.util.ImageAnnotationCache.version
+    // P0-B：畫布不再讀全域 version——draw 直接訂閱 ImageAnnotationCache.states 的 per-URI 標記
     // 文字共用 Paint + 分行快取：繪製時只改字號顏色，不再 new
     val textPaint = remember {
         android.graphics.Paint().apply {
@@ -632,11 +631,11 @@ fun InkCanvas(
         }
     }
 
-    // 缺圖就排解碼；版本 bump 後自癒重查。解碼統一走共享快取（2048 封頂），這裡不重複存。
-    LaunchedEffect(imageAnnotations, imageCacheVersion) {
-        imageAnnotations.forEach { ann ->
-            // 自己切 IO；這裡只排隊
-            com.vic.inkflow.util.ImageAnnotationCache.getOrDecode(context, ann.uri, 2048)
+    // P0-B：draw 缺圖即派發 decode（bucket 依顯示長邊），collector 逐筆在 IO 解碼
+    val decodeRequests = remember { kotlinx.coroutines.channels.Channel<Pair<String, Int>>(kotlinx.coroutines.channels.Channel.UNLIMITED) }
+    LaunchedEffect(Unit) {
+        for ((uri, px) in decodeRequests) {
+            com.vic.inkflow.util.ImageAnnotationCache.getOrDecode(context, uri, px)
         }
     }
 
@@ -660,11 +659,43 @@ fun InkCanvas(
 
     // 手勢凍結槽：draw 階段讀寫普通物件（非 State），不觸發重組
     val pinchReuse = remember { object { var bmp: ImageBitmap? = null } }
+    // 背景重烘管線（P0-A）：drawWithCache 發現「原生快取圖不在／比例不對」時不阻塞主執行緒，
+    // 改送一筆 conflate 的重烘請求到 Channel；LaunchedEffect 收集後在 Default 執行緒
+    // rasterize 整頁筆跡、swap 進 pinchReuse，並 bump inkBakeVersion 觸發 draw 換新圖。
+    // — inkBakeVersion 必須在 drawWithCache 內讀到：讀了才訂閱、換圖那幀才會重畫。
+    val inkBakeVersion = remember { mutableIntStateOf(0) }
+    val inkBakeInFlight = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
+    val inkBakeRequests = remember { kotlinx.coroutines.channels.Channel<InkBakeRequest>(capacity = kotlinx.coroutines.channels.Channel.CONFLATED) }
+    // P0-A 背景重烘收集器：conflated → 只保留最新請求；Default 執行緒 rasterize 後
+    // swap 進 pinchReuse 並 bump inkBakeVersion。全局限 2 個並行（多頁同時 zoom 不互踩）。
     // 上次建墨跡快取用的比例（同上，普通物件不觸發重組）。比例一變就必須全量重建：
     // 增量只補髒區，髒區外的像素會留著舊比例＝紙面與墨跡對不上（縮放才自愈的那個病）。
     // order＝位圖內筆跡的有序簽名，只用來抓「同一個集合、換了順序」（見重建區說明）。
-    val lastInkScale = remember {
-        object { var sx = Float.NaN; var sy = Float.NaN; var order: List<String>? = null }
+    // 墨跡快取的內容指紋簿記：背景 swap／冷啟動烘時寫入（inkContentKey）；draw 比對不一致才重烘。
+    val lastInkScale = remember { object { var contentKey: Long = 0L } }
+    LaunchedEffect(pageIndex) {
+        for (req in inkBakeRequests) {
+            val bitmap = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                if (!tryAcquireBakeSlot()) return@withContext null
+                try {
+                    rasterizeInkPageBitmap(req)
+                } catch (e: Exception) {
+                    android.util.Log.w("InkFlowDiag", "INKBG fail p=$pageIndex: ${e.message}")
+                    null
+                } finally {
+                    releaseBakeSlot()
+                }
+            } ?: run {
+                inkBakeInFlight.set(false)
+                continue
+            }
+            // 以「這次派發的快照」算 order——stroke 在烘焙期間落筆的情況由 order 檢測收斂（再烘一次）
+            pinchReuse.bmp = bitmap.asImageBitmap()
+            lastInkScale.contentKey = req.contentKey
+            inkBakeVersion.intValue += 1
+            inkBakeInFlight.set(false)
+            android.util.Log.w("InkFlowDiag", "INKBG swap p=$pageIndex ${req.targetWidth}x${req.targetHeight}")
+        }
     }
     val drawModifier = Modifier.fillMaxSize()
         .onSizeChanged { size ->
@@ -2162,6 +2193,8 @@ fun InkCanvas(
             }
         }
         .drawWithCache {
+            // P0-A：inkBakeVersion 換圖通知——swap 後 inkBakeVersion++ → 這個 draw block 重跑畫新位圖
+            val bakedSwap = inkBakeVersion.intValue
             // 過期快照兜底丟棄（2s 後一定不需要了；過期後至多多畫一個無害的 expired 檢查）。
             liftedSnapshot?.let { snap ->
                 if (android.os.SystemClock.uptimeMillis() - snap.atMs > 2000L) {
@@ -2176,8 +2209,6 @@ fun InkCanvas(
             val modelH = paper.heightPt
             val sx = DocTransform.scaleX(size.width, modelW)
             val sy = DocTransform.scaleY(size.height, modelH)
-            // 建圖比例變了就必須全量重建（增量只補髒區，會留下舊比例的像素）。
-            val scaleChanged = lastInkScale.sx != sx || lastInkScale.sy != sy
 
             val strokes = committedStrokes
             // 快照兜底：這筆已經被刪除／復原 → 立即丟棄殘影。
@@ -2247,49 +2278,24 @@ fun InkCanvas(
             // P1 手勢凍結：pinchActive 時沿用上次的快取圖（不配置不重畫），
             // 讀 pinchActive 會訂閱——放開切換時失效重建，剛好是銳利化的時機。
             // 注意：手勢中若有新墨提交（理論上不會，門衛會棄筆），放開後自然重建。
-            val frozen = pinchActive && pinchReuse.bmp != null
-            // 新圖＝空白，不用清；重用舊圖的清空搬到下面的髒區邏輯
-            // （全量清整張／增量只清髒區）。原來在這裡無條件全清——增量重建下，
-            // 那會把髒區外的有效像素一起洗掉，整頁只剩髒區有墨。
-            var bitmapFresh = frozen
-            val cachedImage = if (frozen) {
-                pinchReuse.bmp!!
-            } else {
-                val reuse = pinchReuse.bmp
-                if (reuse != null && reuse.width == cacheW && reuse.height == cacheH) {
-                    // 同尺寸重用：提筆不再配置數十 MB（卡頓主因）。不清，
-                    // 清空動作由下面的全量／增量分支决定。
-                    reuse
-                } else {
-                    bitmapFresh = true
-                    ImageBitmap(cacheW, cacheH, ImageBitmapConfig.Argb8888).also {
-                        pinchReuse.bmp = it
-                    }
-                }
-            }
-            val cacheCanvas = androidx.compose.ui.graphics.Canvas(cachedImage)
+            val reuseBmp = pinchReuse.bmp
+            val frozen = pinchActive && reuseBmp != null
+            // P0-A：尺寸變了（縮放後）沿用舊位圖拉伸繪製，不在主執行緒配置新位圖或全頁重烘；
+            // 一律派發到 inkBakeRequests 背景重烘，swap 後由 inkBakeVersion 通知換圖。
+            var cachedImage = reuseBmp
 
             // 凍結中連畫都跳過：整塊重建是捏合卡頓的最大頭
             if (!frozen) {
-                // 記下這次建圖用的比例（凍結中不記 → 放開必定視為比例變更＝全量重建）
-                lastInkScale.sx = sx
-                lastInkScale.sy = sy
                 // 位圖內筆跡的「有序簽名」：只收真的會烙進位圖的那些（排除預覽／向量層）。
                 // 純換序（同步換 rowid、桌機端覆寫）不產生任何髒區，舊寫法靠
                 // 「dirty==null → 全頁重畫」偶然救到；現在那條路被跳過，得自己補。
                 // 只在「同一個集合、不同順序」時才全量：一般的加筆／刪筆交給髒區。
-                val bitmapIds = ArrayList<String>(strokes.size)
-                for (swp in strokes) {
-                    if (swp.stroke.id in previewIds || swp.stroke.id in overlayIds) continue
-                    bitmapIds.add(swp.stroke.id)
-                }
-                val prevOrder = lastInkScale.order
-                val orderChanged = bitmapOrderChanged(prevOrder, bitmapIds)
-                lastInkScale.order = bitmapIds
                 // ── 髒矩形增量重建 ──
                 // 全量（清空整張＋重畫全筆）是擦除卡頓的最大頭（實測 draw 17.6ms/幀）。
                 // 只清髒區、只重畫相交的筆：重繪成本跟著變化量走。髒區過大／新圖／
                 // 尺寸變 → 走全量（舊行為原樣保留當 fallback）。
+                val contentKey = inkContentKey(sx, sy, strokes)
+                val bakedFresh = lastInkScale.contentKey == contentKey && cachedImage != null
                 val pageRect = Rect(0f, 0f, modelW, modelH)
                 fun strokeRect(swp: StrokeWithSamples) = Rect(
                     swp.stroke.boundsLeft, swp.stroke.boundsTop,
@@ -2363,40 +2369,42 @@ fun InkCanvas(
                 // 每次提筆都會有一幀「只有向量層變、位圖完全沒變」，那時 dirty 就是 null。
                 // 舊語義會在那裡全頁重畫（實測 17.6ms/幀）＝修閃爍反而多一次卡頓。
                 // 真正的「一定要全量」是：比例變、bounds 壞掉、這張圖是剛配置的。
-                val fullRebuild = scaleChanged || boundsBroken || bitmapFresh || orderChanged ||
-                    (dirty != null && damageCoverage(dirty, pageRect) >= INK_FULL_REBUILD_COVERAGE)
-                // 診斷（release 可見，一行一提筆）：把「這一幀到底畫了什麼」落下來。
-                // scale < 1 ＝ 提筆必然變糊；overlay = 0 ＋ bridge > 0 ＝ 交接空窗；
-                // full = true 而 dirty = null ＝ 有人在無變化時重建整張。
+                val fullRebuild = !bakedFresh
+                val canBackgroundBake = fullRebuild && cachedImage != null
+                if (canBackgroundBake && inkBakeInFlight.compareAndSet(false, true)) {
+                    inkBakeRequests.trySend(
+                        InkBakeRequest(
+                            pageIndex = pageIndex,
+                            targetWidth = cacheW,
+                            targetHeight = cacheH,
+                            scaleX = sx * cacheScale,
+                            scaleY = sy * cacheScale,
+                            strokes = ArrayList(strokes),
+                            excludeIds = previewIds + overlayIds,
+                            contentKey = contentKey
+                        )
+                    )
+                }
                 android.util.Log.w(
                     "InkFlowDiag",
                     "CACHE p=$pageIndex canvas=${bmpWidth}x${bmpHeight} " +
                         "scale=${"%.3f".format(cacheScale)} cache=${cacheW}x${cacheH} " +
                         "overlay=${overlayStrokes.size} hot=${hotStrokeId?.take(8) ?: "-"} " +
-                        "snap=${liftedSnapshot?.ids?.contains(hotStrokeId) == true} " +
                         "bridge=${bridgingIds?.size ?: 0} drawn=$bridgedDrawn " +
-                        "dirty=${dirty != null} full=$fullRebuild order=$orderChanged " +
+                        "dirty=${dirty != null} full=$fullRebuild fresh=$bakedFresh broken=$boundsBroken " +
                         "seq=$strokeGestureSeq bseq=$bridgingSeq"
                 )
-                cacheCanvas.save()
-                cacheCanvas.scale(sx * cacheScale, sy * cacheScale)
-                if (fullRebuild) {
-                    // 舊行為：一律清空＋重畫全部（含形狀）。新圖／尺寸變／大髒區走這裡。
-                    // 新圖本來就是空白，只有重用舊圖才需要清（跟原來一字一樣的語義）。
-                    if (!bitmapFresh) {
-                        androidx.compose.ui.graphics.Canvas(cachedImage).drawRect(
-                            0f, 0f, cacheW.toFloat(), cacheH.toFloat(),
-                            Paint().apply { blendMode = BlendMode.Clear }
-                        )
-                    }
-                    // 高亮筆永不烙進透明位圖：Multiply 需要「底」，透明底會烤成半透明灰
-                    // （文字被洗灰而高亮失去黃）；走下面 drawImage 後面的向量層。
+                if (cachedImage == null) {
+                    // P0-A 冷啟動：沒有 stale 可沿用，主執行緒配置並全烘，保底首幀有圖
+                    cachedImage = ImageBitmap(cacheW, cacheH, ImageBitmapConfig.Argb8888).also { pinchReuse.bmp = it }
+                    val c0 = androidx.compose.ui.graphics.Canvas(cachedImage!!)
+                    c0.scale(sx * cacheScale, sy * cacheScale)
                     strokes.forEach { swp ->
                         if (swp.stroke.isHighlighter) return@forEach
                         if (swp.stroke.id in previewIds) return@forEach
                         if (swp.stroke.id in overlayIds) return@forEach
                         if (swp.stroke.shapeType != null) {
-                            drawShapeOnCanvas(cacheCanvas, swp.stroke, swp.points)
+                            drawShapeOnCanvas(c0, swp.stroke, swp.points)
                         } else {
                             val cached = committedPathCache[swp.stroke.id]
                             val path = if (cached != null && swp.matches(cached)) {
@@ -2413,19 +2421,19 @@ fun InkCanvas(
                                     )
                                 }
                             }
-                            drawPathOnCanvas(cacheCanvas, path,
+                            drawPathOnCanvas(c0, path,
                                 Color(swp.stroke.color), swp.stroke.strokeWidth, swp.stroke.isHighlighter)
                         }
                     }
-                } else if (dirty != null) {
-                    // 增量：只清髒區（外擴吞掉抗鋸齒），只重畫與髒區相交的。
-                    // 相交判定用包絡 bounds（含線寬），髒區外舊像素原樣保留、無縫。
+                    lastInkScale.contentKey = contentKey
+                } else if (!fullRebuild && dirty != null) {
                     val zone = dirty.inflate(INK_DIRTY_INFLATE_PX).intersect(pageRect)
-                    // 注意：此時 cacheCanvas 已套 scale(sx*cacheScale)，
-                    // clip/clear 都用 model 座標直接給，跟重畫同一套。
-                    cacheCanvas.save()
-                    cacheCanvas.clipRect(zone.left, zone.top, zone.right, zone.bottom)
-                    cacheCanvas.drawRect(
+                    // c0 內已 scale(sx*cacheScale)，clip/clear 都在 model 座標
+                    val c0 = androidx.compose.ui.graphics.Canvas(cachedImage!!)
+                    c0.save()
+                    c0.scale(sx * cacheScale, sy * cacheScale)
+                    c0.clipRect(zone.left, zone.top, zone.right, zone.bottom)
+                    c0.drawRect(
                         zone.left, zone.top, zone.right, zone.bottom,
                         Paint().apply { blendMode = BlendMode.Clear }
                     )
@@ -2435,7 +2443,7 @@ fun InkCanvas(
                         if (swp.stroke.id in overlayIds) return@forEach
                         if (!strokeRect(swp).inflate(INK_DIRTY_INFLATE_PX).overlaps(zone)) return@forEach
                         if (swp.stroke.shapeType != null) {
-                            drawShapeOnCanvas(cacheCanvas, swp.stroke, swp.points)
+                            drawShapeOnCanvas(c0, swp.stroke, swp.points)
                         } else {
                             val cached = committedPathCache[swp.stroke.id]
                             val path = if (cached != null && swp.matches(cached)) {
@@ -2452,13 +2460,12 @@ fun InkCanvas(
                                     )
                                 }
                             }
-                            drawPathOnCanvas(cacheCanvas, path,
+                            drawPathOnCanvas(c0, path,
                                 Color(swp.stroke.color), swp.stroke.strokeWidth, swp.stroke.isHighlighter)
                         }
                     }
-                    cacheCanvas.restore()
+                    c0.restore()
                 }
-                cacheCanvas.restore()
             }
 
             onDrawBehind {
@@ -2548,7 +2555,13 @@ fun InkCanvas(
 
             // Image annotations — drawn BELOW strokes (above PDF layer which is a separate Composable)
             currentImageAnns.forEach { ann ->
-                val bmp = com.vic.inkflow.util.ImageAnnotationCache.getFor(ann.uri, 2048)
+                // P0-B：依顯示長邊（model 尺寸 × 當下縮放，忽略旋轉微差，bucket 是 2 倍步距）選桶；缺圖 → 派發 decode
+                val displayLongPx = maxOf((ann.modelWidth * sx).toInt(), (ann.modelHeight * sy).toInt()).coerceAtLeast(1)
+                val requestPx = com.vic.inkflow.util.ImageAnnotationCache.bucketPx(displayLongPx)
+                val bmp = com.vic.inkflow.util.ImageAnnotationCache.getFor(ann.uri, requestPx)
+                if (bmp == null && !com.vic.inkflow.util.ImageAnnotationCache.isPendingOrFailed(ann.uri)) {
+                    decodeRequests.trySend(ann.uri to requestPx)
+                }
                 if (bmp != null) {
                     val isSelectedInImageTool = ann.id == selectedImageAnnotationId && activeTool == Tool.IMAGE
                     val isSelectedInSelectionTool = ann.id in selectedImageAnnotationIds && activeTool == Tool.LASSO
@@ -2612,7 +2625,7 @@ fun InkCanvas(
             // Committed strokes from DB.
             // Play the cached strokes layer! 快取是封頂小圖，放大回全畫布
             drawImage(
-                image = cachedImage,
+                image = cachedImage!!,
                 dstSize = IntSize(
                     size.width.toInt().coerceAtLeast(1),
                     size.height.toInt().coerceAtLeast(1)

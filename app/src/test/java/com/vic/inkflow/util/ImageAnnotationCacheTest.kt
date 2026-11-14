@@ -17,6 +17,18 @@ import org.junit.Test
 class ImageAnnotationCacheTest {
 
     @Test
+    fun `bucketPx rounds up to the four decode buckets`() {
+        assertTrue(ImageAnnotationCache.bucketPx(100) == 256)
+        assertTrue(ImageAnnotationCache.bucketPx(256) == 256)
+        assertTrue(ImageAnnotationCache.bucketPx(257) == 512)
+        assertTrue(ImageAnnotationCache.bucketPx(512) == 512)
+        assertTrue(ImageAnnotationCache.bucketPx(513) == 1024)
+        assertTrue(ImageAnnotationCache.bucketPx(1024) == 1024)
+        assertTrue(ImageAnnotationCache.bucketPx(1025) == 2048)
+        assertTrue(ImageAnnotationCache.bucketPx(4096) == 2048)
+    }
+
+    @Test
     fun `serves the bitmap that was decoded for this request`() {
         assertTrue(cacheAccepts(1020, 2048, 2048))    // 公式圖 native 1020，請 2048 → 拿到 1020 就是上限，必須吃
         assertTrue(cacheAccepts(900, 2048, 2048))     // 900px 的圖也一樣：不能永遠重解

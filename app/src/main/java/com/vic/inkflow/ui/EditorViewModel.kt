@@ -203,6 +203,23 @@ class EditorViewModel(
     }
 
     /**
+     * P0-B：單頁「要不要顯示拖曳預覽」的布林流（derived，distinctUntilChanged）。
+     * 圖片拖曳／選取拖曳是全域 Flow，不想讓 52 個頁面各自 collectAsState 全重組——
+     * 每頁訂閱這個 Boolean，只有「這一頁」的結果變了才重組。
+     */
+    fun dragOverlayFor(pageIndex: Int): kotlinx.coroutines.flow.Flow<Boolean> =
+        kotlinx.coroutines.flow.combine(_dragPreviewActive, _imageDragPreview) { da, d ->
+            (da && selectionPage() == pageIndex) ||
+                (d != null && com.vic.inkflow.util.DocLayout.draggedLocalVertical(
+                    anchorPage = d.image.pageIndex,
+                    offsetInAnchorPage = d.image.modelY + d.dyModel,
+                    extent = d.image.modelHeight,
+                    pageIndex = pageIndex,
+                    pageH = modelHeight.coerceAtLeast(1f)
+                ) != null)
+        }.distinctUntilChanged()
+
+    /**
      * P0：鎖看門狗——set(true) 後 10s 若還沒人清，強制清並記 log（協議：無超時的鎖視為 bug）。
      * 全活頁下誤觸成本低（只影響側欄跟隨／棄筆判定，不會斷筆）；epoch 保證後來的 set 蓋掉舊表。
      */

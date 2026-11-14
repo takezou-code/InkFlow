@@ -1695,8 +1695,14 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         renderScope.launch {
             // M2 慢滑跟手清：只在快旗時等待落定；慢滑直接渲（手指推到哪清到哪）。
             // 票被超車（快旗升/落）直接丟棄，不欠渲染債。
+            // M1 零白頁：快速翻頁期間「LO 層」照渲不誤——LO 就是這個便宜解析度的存在理由，
+            // 讓快滑時的每一頁都能先靠 LO 頂住，不等 HI 也不白頁。
+            // 但手勢暫停（renderHold，例如雙指縮放）時一律讓路，避免手勢中 60fps 配位圖。
+            // HI 層照舊等停穩（settle upgrade）——HI 才是這套讓路策略的主體。
+            val allowLoDuringScroll = _isScrollingFast.value && scaleForPage(pageIndex) == loRenderScale
             var waits = 0
             while (
+                !allowLoDuringScroll &&
                 (_isScrollingFast.value || renderHold.get()) &&
                 ticket == scrollGen && waits < 100
             ) {

@@ -265,7 +265,9 @@ fun InkLayerApp(db: AppDatabase) {
     }
 
     // 流光／靜總開關：關＝流光（預設），開＝靜。往下透 isPowerSaver，各層內部分支。
-    var powerSaver by rememberSaveable(prefs) { mutableStateOf(prefs.getBoolean(KEY_POWER_SAVER, false)) }
+    // 預設靜態：backdrop aurora 是解場用的裝飾，不值得用常駐 45fps 渲染去換（見 2026-11-15 閃退調查）。
+    // 想要流光的人可在設定裡關掉「省電」隨時打開；KEY_POWER_SAVER_MANUAL 不受影響。
+    var powerSaver by rememberSaveable(prefs) { mutableStateOf(prefs.getBoolean(KEY_POWER_SAVER, true)) }
     // byUser＝使用者自己按的（記住就不被低電量自動切覆蓋）；自動切不記。
     fun setPowerSaver(v: Boolean, byUser: Boolean = true, from: String = "unknown") {
         powerSaver = v
@@ -451,7 +453,9 @@ fun InkLayerApp(db: AppDatabase) {
                     navController = navController,
                     uri = pdfUri,
                     db = db,
-                    isPowerSaver = powerSaver,
+                    // 2026-11-15：背影靜態化（覆寫 isPowerSaver 預設）——使用者已同意；
+                    // prefs 裡存的 false 會讓之前的「預設靜態」全部失效，這裡直接斷開。
+                    isPowerSaver = true,
                     backdropTheme = backdropTheme,
                     backdropKind = backdropKind,
                     backdropScene = backdropScene,

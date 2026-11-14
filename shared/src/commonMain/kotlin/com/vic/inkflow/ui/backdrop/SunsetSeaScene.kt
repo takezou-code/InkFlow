@@ -22,13 +22,37 @@ object SunsetSeaScene : BackdropScene {
     /** 水面碎光：定點閃爍粒子，y 再映射到海面區間。 */
     private val glints = twinkles(count = 44, seed = 0x51E7A11L, alpha = 0.3f..0.9f, speed = 0.9f..2.8f)
 
+    /** 天空／海面的垂直漸層不隨幀變化——Brush 重建是 backdrop 每幀配置的主力，快取共用。 */
+    private var darkSkyBrush: Brush? = null
+    private var lightSkyBrush: Brush? = null
+    private var darkSeaBrush: Brush? = null
+    private var lightSeaBrush: Brush? = null
+
+    private fun skyBrush(dark: Boolean): Brush =
+        if (dark) {
+            darkSkyBrush ?: Brush.verticalGradient(
+                colors = listOf(Color(0xFF1B0E24), Color(0xFF4A1533), Color(0xFFB0541F))
+            ).also { darkSkyBrush = it }
+        } else {
+            lightSkyBrush ?: Brush.verticalGradient(
+                colors = listOf(Color(0xFFFFF7EE), Color(0xFFFFD8B2), Color(0xFFFFAE79))
+            ).also { lightSkyBrush = it }
+        }
+
+    private fun seaBrush(dark: Boolean): Brush =
+        if (dark) {
+            darkSeaBrush ?: Brush.verticalGradient(
+                colors = listOf(Color(0xFF54241C), Color(0xFF1E1018), Color(0xFF0A0509))
+            ).also { darkSeaBrush = it }
+        } else {
+            lightSeaBrush ?: Brush.verticalGradient(
+                colors = listOf(Color(0xFFFFD3A6), Color(0xFF9FBED6), Color(0xFF6E90AE))
+            ).also { lightSeaBrush = it }
+        }
+
     override fun DrawScope.render(t: Float, w: Float, h: Float, dark: Boolean) {
         val hz = h * HORIZON
-        skyVertical(
-            dark = dark,
-            darkColors = listOf(Color(0xFF1B0E24), Color(0xFF4A1533), Color(0xFFB0541F)),
-            lightColors = listOf(Color(0xFFFFF7EE), Color(0xFFFFD8B2), Color(0xFFFFAE79))
-        )
+        drawRect(brush = skyBrush(dark))
         // 太陽：坐在海平線上，暈開一大片（暈比本體重要，本體只是一個亮點）
         val sunC = Offset(w * 0.5f, hz)
         val sunR = minOf(w, h) * 0.070f
@@ -49,10 +73,7 @@ object SunsetSeaScene : BackdropScene {
         val seaH = h - hz
         // 海面：靠岸暖、往深處冷（日落的方向感全在這條漸層）
         drawRect(
-            brush = Brush.verticalGradient(
-                colors = if (dark) listOf(Color(0xFF54241C), Color(0xFF1E1018), Color(0xFF0A0509))
-                else listOf(Color(0xFFFFD3A6), Color(0xFF9FBED6), Color(0xFF6E90AE))
-            ),
+            brush = seaBrush(dark),
             topLeft = Offset(0f, hz),
             size = Size(w, seaH)
         )

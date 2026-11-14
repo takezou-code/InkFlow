@@ -201,6 +201,28 @@ internal fun bitmapOrderChanged(prev: List<String>?, now: List<String>): Boolean
     return prev.toHashSet() == now.toHashSet()
 }
 
+/**
+ * 墨跡快取的「畫布內容指紋」（P0-A）：sx/sy（縮放後的實際解析度）＋ 每一筆已提交墨跡的
+ * (id, version)。相同指紋 = 畫到的東西一模一樣 → 不需要重烘。順序敏感（疊圖順序影響像素）。
+ *
+ * 為什麼需要：bounds 殘缺的筆跡會讓「dirty != null」永遠成立，舊的 fullRebuild 於是
+ * 每一幀都成立 → 主執行緒 60fps 全頁重畫 → GC 追不上、Java heap OOM（2026-11-14 實錄）。
+ * 指紋與「這次烘焙是不是最新」解耦：烘一次、比一次、畫到一致就停手。
+ */
+internal fun inkContentKey(sx: Float, sy: Float, strokes: List<StrokeWithSamples>): Long {
+    var h = -3750763034362895579L // FNV-1a offset basis
+    fun mix(v: Long) {
+        h = h xor v
+        h *= 0x100000001b3L
+    }
+    mix((sx.toRawBits().toLong() shl 32) or (sy.toRawBits().toLong() and 0xffffffffL))
+    for (swp in strokes) {
+        mix(swp.stroke.id.hashCode().toLong() and 0xffffffffL)
+        mix(swp.stroke.version.toLong() and 0xffffffffL)
+    }
+    return h
+}
+
 // ── 髒矩形（damage region）增量重建 ─────────────────────────────────────────
 // 全量重建（清空整張墨圖＋重畫全筆）是擦除卡頓的最大頭（實測 draw 17.6ms/幀）。
 // 標準解法跟 Android View.invalidate(rect)／Skia clip 同一思想：重繪成本跟著

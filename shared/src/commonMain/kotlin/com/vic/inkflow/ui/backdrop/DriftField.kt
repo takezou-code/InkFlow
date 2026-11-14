@@ -106,13 +106,21 @@ fun twinkles(
 }
 
 /** 圓形柔光（月暈／日暈／光源）：中心 alpha 到邊緣歸零。 */
+private val softGlowCache = mutableMapOf<SoftGlowKey, Brush>()
+private data class SoftGlowKey(val cx: Float, val cy: Float, val radius: Float, val color: Color)
+
 fun DrawScope.softGlow(center: Offset, radius: Float, color: Color) {
-    drawCircle(
-        brush = Brush.radialGradient(
+    val key = SoftGlowKey(center.x, center.y, radius, color)
+    if (softGlowCache.size >= 32) softGlowCache.clear()
+    val brush = softGlowCache.getOrPut(key) {
+        Brush.radialGradient(
             colors = listOf(color, Color.Transparent),
             center = center,
             radius = radius
-        ),
+        )
+    }
+    drawCircle(
+        brush = brush,
         radius = radius,
         center = center
     )

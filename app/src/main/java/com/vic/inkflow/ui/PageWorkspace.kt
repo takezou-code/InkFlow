@@ -883,20 +883,10 @@ val allowSinglePan = startedBlank || fingerPanOnPaperAllowed(
             ) {
         items(pageCount, key = { it }) { index ->
             val aspect = uniformAspect
-            // 套索跨頁拖曳中：overlay 接手選取預覽（本 item 需配合置頂）
-            val dragActive by viewModel.dragPreviewActive.collectAsState()
-            // F4 圖片直接拖：本頁窗口有重疊才顯示 overlay（各頁按自己窗口畫一段）。
-            val imageDrag by viewModel.imageDragPreview.collectAsState()
-            val dragImgOverlap = remember(imageDrag, index) {
-                val d = imageDrag ?: return@remember false
-                DocLayout.draggedLocalVertical(
-                    anchorPage = d.image.pageIndex,
-                    offsetInAnchorPage = d.image.modelY + d.dyModel,
-                    extent = d.image.modelHeight,
-                    pageIndex = index,
-                    pageH = viewModel.modelHeight.coerceAtLeast(1f)
-                ) != null
-            }
+            // P0-B：圖片拖曳／選取拖曳導流的 per-page Boolean 訂閱（distinctUntilChanged），
+            // 只有這一頁的結果變了才重組；不再讓所有 item 跟著全域 Flow 全部重跑。
+            val showDragOverlay by remember(index) { viewModel.dragOverlayFor(index) }
+                .collectAsState(initial = false)
             // 數據上提：bitmap + 三路註記流放在分支外面，作用頁/靜態頁身份互換時
             // remember 不重建、Flow 不重訂、實例不變 —— 翻頁不再有空窗白閃。
             // （之前翻頁閃光的主因：分支內各自 remember，切換必重載 + Crossfade 重播）
@@ -936,7 +926,7 @@ val allowSinglePan = startedBlank || fingerPanOnPaperAllowed(
                         .fillMaxWidth()
                         // 拖曳 overlay 置頂：溢出紙界的框/墨/圖不被後頁蓋住；
                         // 全活頁下只頂選取歸屬紙＋圖片拖曳重疊紙（其餘紙的 overlay 不畫，見下）
-                        .zIndex(if ((dragActive && viewModel.selectionPage() == index) || dragImgOverlap) 1f else 0f),
+                        .zIndex(if (showDragOverlay) 1f else 0f),
                     contentAlignment = Alignment.Center
                 ) {
                     Surface(
@@ -998,9 +988,7 @@ val allowSinglePan = startedBlank || fingerPanOnPaperAllowed(
                     // 跨頁拖曳 overlay：框+墨畫在紙上層、可溢出紙界（clip=false），
                     // InkCanvas 側同時讓位（同像素只畫一次）；放開提交後清旗接回。
                     // 全活頁下只在選取歸屬紙畫（他紙同像素會重影，蟳光筆疊色）。
-                    if ((dragActive && itemWidthPx > 0 && viewModel.selectionPage() == index) ||
-                        (dragImgOverlap && itemWidthPx > 0)
-                    ) {
+                    if (showDragOverlay && itemWidthPx > 0) {
                         DragPreviewOverlay(
                             viewModel = viewModel,
                             paperWpx = itemWidthPx.toFloat(),
@@ -1075,8 +1063,7 @@ private fun DragPreviewOverlay(
         com.vic.inkflow.ui.theme.Handles.HaloRadius.toPx()
     }
     // 圖片走共享預算制快取（1024 封頂夠拖曳預覽用；與 InkCanvas/側欄同一份快取，不重複解碼）。
-    val imageCacheVersion = com.vic.inkflow.util.ImageAnnotationCache.version
-    androidx.compose.runtime.LaunchedEffect(selImages, dragImg?.image?.uri, imageCacheVersion) {
+    androidx.compose.runtime.LaunchedEffect(selImages, dragImg?.image?.uri) {
         (selImages.map { it.uri } + listOfNotNull(dragImg?.image?.uri)).distinct().forEach { uri ->
             com.vic.inkflow.util.ImageAnnotationCache.getOrDecode(context, uri, 1024)
         }
