@@ -39,7 +39,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -57,6 +56,7 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.vic.inkflow.ui.INK_PALETTE
@@ -68,38 +68,33 @@ import kotlin.math.roundToInt
 
 /**
  * Pieces of the reader's command bar, split out of `PdfViewer.kt` so the
- * toolbar body becomes a sequence of named groups instead of one wall of icons.
+ * toolbar body reads as a sequence of named groups instead of one wall of icons.
  *
  * ## How the bar is put together
  *
  * ```
- * [file + armed tool] | [drawing tools][annotate tools][shape][history] | [ink][page][zoom][more]
- *   fixed: who you are  | scrolls: what you do                        | fixed: where you are
+ * [file + armed tool] | [drawing tools][annotate tools][history] | [ink][page][zoom][more]
+ *   fixed: who you are  | scrolls: what you do                    | fixed: where you are
  * ```
  *
- * The middle scrolls (there are more tools than fit on a small window), but
- * the two ends never move. The page number used to sit in the middle of the
- * tool row, which made it look like one more tool and buried it half a
- * screen away from the page you were reading.
+ * ## Two rules that keep it still
  *
- * ## Rules this bar follows
- *
- * - Every glyph is the real thing. The highlighter was a paintbrush, the
- *   lasso was a dashed "select all" box, the eraser was a trash can.
- * - The armed tool is named next to the file name, and hovering a tool
- *   reports its name there too (the tool row scrolls, and a tooltip inside a
- *   scrolling row gets clipped by it).
- * - Actions you use once per document (export, clear) live in a menu; the
- *   bar only carries what you touch while reading.
+ * - **Nothing moves on hover.** An earlier revision reported the hovered
+ *   tool's name up to the title block; the name's width changed, the row
+ *   re-laid out, the tool slid out from under the pointer, hover cancelled,
+ *   the name reverted - and the bar trembled for as long as the pointer
+ *   rested on it. Hover state now stays inside the button and only paints a
+ *   fill there; the armed tool's name lives in a slot of fixed width.
+ * - **One bottom per surface.** The pill is [fauxGlassPanel]; the sub-groups
+ *   (page stepper, zoom) are inset fields, not stacked surfaces.
  */
 
 /**
  * A tool button.
  *
- * Hovering reports the tool's name upward instead of painting a tooltip here:
- * the tools live in a horizontally scrolling row, and a tooltip inside a scroll
- * container gets clipped by it. The name goes to the fixed identity block on
- * the left, where it is always visible.
+ * Hover paints a quiet fill on the button itself - it never reports upward,
+ * never resizes anything, never re-lays out the row. That discipline is what
+ * fixed the "toolbar trembles under the mouse" report.
  */
 @Composable
 fun InkToolIcon(
@@ -108,31 +103,28 @@ fun InkToolIcon(
     selected: Boolean,
     enabled: Boolean = true,
     badgeCount: Int = 0,
-    onHover: (String?) -> Unit = {},
     onClick: () -> Unit
 ) {
     val isDark = InkThemeState.darkMode
-    // Selected state in the theme colour, not the pearl pill: pearl-on-glass
-    // washes out to near-white in both modes, so the armed tool was invisible.
-    // Armed = primary-tinted fill + primary ring + primary icon; the icon stays
-    // readable on light and dark alike.
+    // Armed = the pearl pill in the theme colour; hover = a whisper of ink.
+    // Both are painted on the button, so neither can shift the layout.
     val primary = MaterialTheme.colorScheme.primary
     val interaction = remember { MutableInteractionSource() }
     val hovered by interaction.collectIsHoveredAsState()
 
-    LaunchedEffect(hovered, enabled) {
-        onHover(if (hovered && enabled) description else null)
-    }
-
     Box(
         modifier = Modifier
-            .size(38.dp)
+            .size(36.dp)
             .clip(CircleShape)
             .then(
-                if (selected) Modifier
-                    .clip(CircleShape)
-                    .glassSelectionPill(CircleShape)
-                else Modifier
+                when {
+                    selected -> Modifier.glassSelectionPill(CircleShape)
+                    hovered && enabled -> Modifier.background(
+                        glassContentColor(isDark).copy(alpha = 0.10f),
+                        CircleShape
+                    )
+                    else -> Modifier
+                }
             )
             .hoverable(interaction)
             .glassClickable(onClick = onClick, shape = CircleShape, enabled = enabled),
@@ -146,16 +138,17 @@ fun InkToolIcon(
                 selected -> primary
                 else -> glassContentColor(isDark)
             },
-            modifier = Modifier.size(21.dp)
+            modifier = Modifier.size(20.dp)
         )
-        // Selection count rides on the icon rather than in a label: the row stays
-        // compact and the number is visible exactly where the mode is armed.
+        // Selection count rides on the icon: the number is visible exactly
+        // where the mode is armed, and the row stays compact.
         if (badgeCount > 0) {
             Text(
                 text = if (badgeCount > 99) "99+" else badgeCount.toString(),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.align(Alignment.BottomEnd)
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
                     .background(MaterialTheme.colorScheme.surface, CircleShape)
                     .padding(horizontal = 3.dp)
             )
@@ -167,39 +160,44 @@ fun InkToolIcon(
 @Composable
 fun InkToolbarDivider() {
     androidx.compose.material3.VerticalDivider(
-        modifier = Modifier.height(24.dp).padding(horizontal = 6.dp),
-        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
+        modifier = Modifier
+            .height(20.dp)
+            .padding(horizontal = 5.dp),
+        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.30f)
     )
 }
 
-/** File name and the tool that is armed (or the one the pointer is on). */
+/** File name and the tool that is armed. The tool name sits in a fixed-width slot. */
 @Composable
 fun InkToolbarTitle(
     documentTitle: String,
-    tool: InkTool,
-    hoveredTool: String? = null
+    tool: InkTool
 ) {
     if (documentTitle.isBlank()) return
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(
             documentTitle,
-            style = MaterialTheme.typography.labelMedium.copy(
-                fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold
-            ),
+            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
             color = glassContentColor(InkThemeState.darkMode),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.widthIn(max = 130.dp).padding(end = 8.dp)
+            modifier = Modifier
+                .widthIn(max = 130.dp)
+                .padding(end = 6.dp)
         )
         // 現在手上拿的是哪一支：圖示列看不出來時，這裡是答案。
-        // 指標停在某個工具上時，這裡改成那個工具的名稱——工具列是捲動的，
-        // tooltip 會被捲動容器切掉，所以名稱放在這個永遠看得見的位置。
-        Text(
-            text = hoveredTool ?: inkToolLabel(tool),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.primary,
-            maxLines = 1
-        )
+        // 槽位寬度固定——換工具時名字換字不換位，整條列不會因此左右挪動。
+        Box(
+            modifier = Modifier.width(46.dp),
+            contentAlignment = Alignment.CenterStart
+        ) {
+            Text(
+                text = inkToolLabel(tool),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+                maxLines = 1
+            )
+        }
     }
 }
 
@@ -219,16 +217,15 @@ fun InkToolbarTitle(
 fun InkToolbarTools(
     tool: InkTool,
     selectionCount: Int,
-    onToolChange: (InkTool) -> Unit,
-    onHover: (String?) -> Unit = {}
+    onToolChange: (InkTool) -> Unit
 ) {
-    InkToolIcon(Icons.Rounded.PanTool, "手形（拖曳捲動）", tool == InkTool.Hand, onHover = onHover, onClick = { onToolChange(InkTool.Hand) })
+    InkToolIcon(Icons.Rounded.PanTool, "手形（拖曳捲動）", tool == InkTool.Hand, onClick = { onToolChange(InkTool.Hand) })
 
     InkToolbarDivider()
 
-    InkToolIcon(Icons.Rounded.Brush, "畫筆", tool == InkTool.Pen, onHover = onHover, onClick = { onToolChange(InkTool.Pen) })
-    InkToolIcon(Icons.Rounded.Highlight, "螢光筆", tool == InkTool.Highlighter, onHover = onHover, onClick = { onToolChange(InkTool.Highlighter) })
-    InkToolIcon(EraserGlyph, "橡皮擦", tool == InkTool.Eraser, onHover = onHover, onClick = { onToolChange(InkTool.Eraser) })
+    InkToolIcon(Icons.Rounded.Brush, "畫筆", tool == InkTool.Pen, onClick = { onToolChange(InkTool.Pen) })
+    InkToolIcon(Icons.Rounded.Highlight, "螢光筆", tool == InkTool.Highlighter, onClick = { onToolChange(InkTool.Highlighter) })
+    InkToolIcon(EraserGlyph, "橡皮擦", tool == InkTool.Eraser, onClick = { onToolChange(InkTool.Eraser) })
 
     InkToolbarDivider()
 
@@ -237,11 +234,10 @@ fun InkToolbarTools(
         if (selectionCount > 0) "套索選取（已選 $selectionCount）" else "套索選取",
         tool == InkTool.Select,
         badgeCount = selectionCount,
-        onHover = onHover,
         onClick = { onToolChange(InkTool.Select) }
     )
-    InkToolIcon(Icons.Rounded.Title, "文字註解", tool == InkTool.Text, onHover = onHover, onClick = { onToolChange(InkTool.Text) })
-    InkToolIcon(Icons.Rounded.Rectangle, "圖形", tool == InkTool.Shape, onHover = onHover, onClick = { onToolChange(InkTool.Shape) })
+    InkToolIcon(Icons.Rounded.Title, "文字註解", tool == InkTool.Text, onClick = { onToolChange(InkTool.Text) })
+    InkToolIcon(Icons.Rounded.Rectangle, "圖形", tool == InkTool.Shape, onClick = { onToolChange(InkTool.Shape) })
 }
 
 @Composable
@@ -286,11 +282,9 @@ fun InkToolbarShapeSubtypes(
 /**
  * The ink settings: colour and stroke width, in one control.
  *
- * They used to be four or five swatches and three width chips sitting
- * side by side in the bar. On a 1000dp window that is 200dp of the command
- * bar spent on something you touch once per stroke - and it pushed the tools
- * off the bar entirely. Now it is one button that shows the current colour
- * and opens the palette when clicked.
+ * Four swatches and three width chips used to sit side by side in the bar -
+ * 200dp of command bar spent on something you touch once per stroke. Now it
+ * is one button that shows the current colour and opens the palette.
  */
 @Composable
 fun InkToolbarBrush(
@@ -300,13 +294,14 @@ fun InkToolbarBrush(
     onWidthChange: (Float) -> Unit
 ) {
     var open by remember { mutableStateOf(false) }
+    val isDark = InkThemeState.darkMode
     Box {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(7.dp),
             modifier = Modifier
                 .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+                .background(glassContentColor(isDark).copy(alpha = 0.10f))
                 .glassClickable(onClick = { open = true }, shape = CircleShape)
                 .padding(horizontal = 10.dp, vertical = 7.dp)
         ) {
@@ -316,20 +311,20 @@ fun InkToolbarBrush(
                     .size(14.dp)
                     .clip(CircleShape)
                     .background(Color(colour))
-                    .border(1.dp, MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f), CircleShape)
+                    .border(1.dp, glassContentColor(isDark).copy(alpha = 0.55f), CircleShape)
             )
             // 三條粗細不同的線＝粗細設定（Material 的 line_weight）。
             Icon(
                 Icons.Rounded.LineWeight,
                 contentDescription = "筆刷設定（顏色與粗細）",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                tint = glassContentColor(isDark),
                 modifier = Modifier.size(16.dp)
             )
         }
         GlassMenu(
             expanded = open,
             onDismissRequest = { open = false },
-            isDark = InkThemeState.darkMode
+            isDark = isDark
         ) {
             Column {
                 Text(
@@ -377,7 +372,7 @@ fun InkToolbarBrush(
                                 onWidthChange(w)
                                 open = false
                             },
-                            isDark = InkThemeState.darkMode
+                            isDark = isDark
                         )
                     }
                 }
@@ -390,11 +385,9 @@ fun InkToolbarBrush(
 /**
  * The page stepper.
  *
- * It used to be two arrows and a number sitting in the middle of the tool
- * row, which read as one more tool instead of navigation. It is now one
- * control of its own, on the fixed right-hand side - and the number is a
- * field you can type into, which is the only sane way to reach page 900 of
- * a 1400-page textbook.
+ * Two arrows and the page number as one control on the fixed right-hand
+ * side. The number is a field you can type into - the only sane way to reach
+ * page 900 of a 1400-page textbook.
  */
 @Composable
 fun InkToolbarPageNav(
@@ -420,7 +413,7 @@ fun InkToolbarPageNav(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .clip(CircleShape)
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+            .background(glassContentColor(InkThemeState.darkMode).copy(alpha = 0.10f))
             .padding(horizontal = 2.dp, vertical = 2.dp)
     ) {
         InkToolIcon(
@@ -490,11 +483,12 @@ fun InkToolbarZoom(
     onFitWidth: () -> Unit,
     onZoomIn: () -> Unit
 ) {
+    val isDark = InkThemeState.darkMode
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .clip(CircleShape)
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+            .background(glassContentColor(isDark).copy(alpha = 0.10f))
             .padding(horizontal = 2.dp, vertical = 2.dp)
     ) {
         InkToolIcon(Icons.Rounded.ZoomOut, "縮小", false, onClick = onZoomOut)
@@ -508,7 +502,7 @@ fun InkToolbarZoom(
             Text(
                 "${(zoom * 100).roundToInt()}%",
                 style = MaterialTheme.typography.labelMedium,
-                color = glassContentColor(InkThemeState.darkMode)
+                color = glassContentColor(isDark)
             )
         }
         InkToolIcon(Icons.Rounded.ZoomIn, "放大", false, onClick = onZoomIn)
@@ -520,9 +514,8 @@ fun InkToolbarZoom(
  * Everything that happens once per document, behind one button.
  *
  * Export and clear used to be two text buttons at the end of the bar: 160dp
- * of a 1000dp bar for actions you use once per file. They live in a menu
- * now, which is also how they read - "more" rather than "two more things to
- * click".
+ * for actions you use once per file. They live in a menu now, which is also
+ * how they read - "more" rather than "two more things to click".
  */
 @Composable
 fun InkToolbarMore(exporting: Boolean, onExport: () -> Unit, onClear: () -> Unit) {
@@ -566,7 +559,7 @@ fun InkToolbarMore(exporting: Boolean, onExport: () -> Unit, onClear: () -> Unit
  * The name of the armed tool.
  *
  * The toolbar's tools are glyphs, and several of them look alike at 20px, so
- * the current tool is named next to the document title as well as on hover.
+ * the current tool is named next to the document title.
  */
 internal fun inkToolLabel(tool: InkTool): String = when (tool) {
     InkTool.Pen -> "畫筆"
@@ -583,8 +576,8 @@ internal fun inkToolLabel(tool: InkTool): String = when (tool) {
  *
  * Material Icons has no eraser, so the eraser tool wore a trash can - which
  * says "delete everything", not "rub out this stroke". This is the classic
- * two-tone eraser block, drawn as two filled paths so it takes the icon tint
- * like any other glyph.
+ * eraser block, drawn as two filled paths so it takes the icon tint like any
+ * other glyph.
  */
 private val EraserGlyph: ImageVector = ImageVector.Builder(
     name = "Eraser",

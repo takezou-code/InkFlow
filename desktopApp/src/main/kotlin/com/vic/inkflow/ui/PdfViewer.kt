@@ -2956,9 +2956,6 @@ private fun InkToolbar(
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         val pillShape = ShapeLg
         val toolbarScroll = rememberScrollState()
-        // 指標停在某個工具上時，它的名稱顯示在左側的固定區（工具列本身會捲動，
-        // tooltip 會被捲動容器切掉）。
-        var hoveredTool by remember { mutableStateOf<String?>(null) }
         // 工具列分成三段：
         //   左＝身分（檔名＋手上的工具）固定
         //   中＝工具（會捲動，工具比視窗多時才需要）
@@ -2968,8 +2965,7 @@ private fun InkToolbar(
         Row(
             modifier = modifier
                 .padding(12.dp)
-                .background(MaterialTheme.colorScheme.surface, pillShape)
-                .clip(pillShape),
+                .fauxGlassPanel(InkThemeState.darkMode, pillShape),
             verticalAlignment = Alignment.CenterVertically
         ) {
             // ── 左：身分 ──
@@ -2978,7 +2974,7 @@ private fun InkToolbar(
                 modifier = Modifier.padding(start = 6.dp, end = 4.dp)
             ) {
                 leadingButton()
-                InkToolbarTitle(documentTitle, tool, hoveredTool)
+                InkToolbarTitle(documentTitle, tool)
             }
 
             // ── 中：工具（可捲動）──
@@ -2990,7 +2986,7 @@ private fun InkToolbar(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(2.dp)
             ) {
-                InkToolbarTools(tool, selectionCount, onToolChange, onHover = { hoveredTool = it })
+                InkToolbarTools(tool, selectionCount, onToolChange)
                 if (textSelectionActive) InkToolbarTextSelection(onCopyText)
                 InkToolbarHistory(canUndo, canRedo, selectionCount, onUndo, onRedo, onDeleteSelection)
                 InkToolbarShapeSubtypes(tool, shapeSubType, onShapeSubTypeChange)
