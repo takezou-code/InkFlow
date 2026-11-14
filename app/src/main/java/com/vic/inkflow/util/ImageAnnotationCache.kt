@@ -27,20 +27,29 @@ import com.vic.inkflow.ui.decodeBoundedBitmap
  * 設計：
  * - 預算 heap/8 KB（與 PDF hi 層同一思想；至少 16MB），sizeOf 用 ARGB8888 4 bytes/px。
  * - key = uri。存的是 ImageBitmap（drawImage 直接可用）。
- * - 「夠大」判斷：快取長邊 * 2 >= 要求的 maxSidePx 就算命中；否則視為過小重解並取代
- *   （側欄先要 512、畫布後要 2048 → 畫布重解一次，之後都吃 2048 那份）。
+ * - 「夠大」判斷：快取圖是逐圖記錄的「按 maxSidePx 解出來的」——只要這張圖就是為這次
+ *   需求解出來的（native 上限 1020px 請 2048 也算夠，因為不可能更大），就算命中；
+ *   否則要求長邊至少為 maxSidePx 的一半，才不算側欄縮圖冒充畫布原圖。
  * - [version] 是 Compose state：任何寫入／驅逐都會 bump，Composable 讀它後
  *   用 LaunchedEffect 重查缺圖並補解。自癒畫面，不依賴「annotation list 有變」才修圖。
  * - 解碼失敗記入 [failed]（有上限），避免每次 version bump 都重打無法解碼的 uri。
  */
 object ImageAnnotationCache {
+    private const val TAG = "ImageAnnotationCache"
 
     private val maxKb: Int =
         ((Runtime.getRuntime().maxMemory() / 1024) / 8).toInt().coerceAtLeast(16 * 1024)
 
-    private val cache = object : LruCache<String, ImageBitmap>(maxKb) {
-        override fun sizeOf(key: String, value: ImageBitmap): Int =
-            ((value.width.toLong() * value.height) / 256L).toInt().coerceAtLeast(1)
+    /**
+     * 快取裡每張圖記住它是「針對多大的 maxSidePx 解出來的」——解碼不會放大：
+     * 一張 1020px 寬的公式圖請 2048 只會得到 1020 的原生上限，硬套「長邊至少一半」
+     * 的規則會永遠判定它「太小」、永遠重解、永遠不畫（2026-11-14 公式圖空白事故）。
+     */
+    private data class Entry(val bitmap: ImageBitmap, val decodedForPx: Int)
+
+    private val cache = object : LruCache<String, Entry>(maxKb) {
+        override fun sizeOf(key: String, value: Entry): Int =
+            ((value.bitmap.width.toLong() * value.bitmap.height) / 256L).toInt().coerceAtLeast(1)
 
         override fun trimToSize(maxSize: Int) {
             super.trimToSize(maxSize)
@@ -59,10 +68,17 @@ object ImageAnnotationCache {
     var version by mutableIntStateOf(0)
         private set
 
-    /** 快取中是否有「夠大」的圖（長邊至少為 maxSidePx 的一半）。純粹查詢，不觸發解碼。 */
+    /**
+     * 快取裡有沒有「足夠大」的圖（長邊至少為 maxSidePx 的一半，或這張圖本來就是按
+     * maxSidePx 解出來的原生上限）。純粹查詢，不觸發解碼。
+     */
     fun getFor(uri: String, maxSidePx: Int): ImageBitmap? {
-        val cached = cache.get(uri) ?: return null
-        return if (isLargeEnough(maxOf(cached.width, cached.height), maxSidePx)) cached else null
+        val entry = cache.get(uri) ?: return null
+        return if (cacheAccepts(maxOf(entry.bitmap.width, entry.bitmap.height), entry.decodedForPx, maxSidePx)) {
+            entry.bitmap
+        } else {
+            null
+        }
     }
 
     /** 命中就回；否則（IO dispatcher 上）解碼、放入、bump version。失敗回 null 並記入 failed。 */
@@ -78,16 +94,20 @@ object ImageAnnotationCache {
             val decoded = withContext(Dispatchers.IO) {
                 try {
                     decodeBoundedBitmap(context, Uri.parse(uri), maxSidePx)?.asImageBitmap()
-                } catch (_: Exception) {
+                } catch (e: Exception) {
+                    android.util.Log.w(TAG, "decode exception uri=$uri: ${e.message}")
                     null
                 }
             }
             if (decoded == null) {
+                val p = if (uri.startsWith("file:")) Uri.parse(uri).path else null
+                val sz = p?.let { java.io.File(it).length() }
+                android.util.Log.w(TAG, "decode FAILED uri=$uri (scheme=${Uri.parse(uri).scheme}, exists=${p?.let { java.io.File(it).exists() }}, size=$sz)")
                 if (failed.size > 64) failed.clear()
                 failed.add(uri)
                 return null
             }
-            cache.put(uri, decoded)
+            cache.put(uri, Entry(decoded, maxSidePx))
             version++
             return decoded
         } finally {
@@ -102,6 +122,10 @@ object ImageAnnotationCache {
     }
 }
 
-/** 快取長邊夠不夠大的純判斷（抽出來給單測釘住）。 */
-internal fun isLargeEnough(cachedLongSide: Int, maxSidePx: Int): Boolean =
-    cachedLongSide * 2 >= maxSidePx
+/**
+ * 快取圖片夠不夠用的純判斷（抽出來給單測釘住）：
+ * 只要這張圖是為 maxSidePx 這次需求解出來的（解碼不會放大，native 就是上限）→ 直接吃；
+ * 否則要求長邊至少為 maxSidePx 的一半（避免側欄 512 的縮圖冒充畫布 2048 的原圖）。
+ */
+internal fun cacheAccepts(entryLongSide: Int, entryDecodedForPx: Int, maxSidePx: Int): Boolean =
+    entryDecodedForPx >= maxSidePx || entryLongSide >= maxSidePx / 2
