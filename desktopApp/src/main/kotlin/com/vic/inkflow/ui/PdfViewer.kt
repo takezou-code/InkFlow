@@ -2956,55 +2956,61 @@ private fun InkToolbar(
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         val pillShape = ShapeLg
         val toolbarScroll = rememberScrollState()
-        Box {
+        // 指標停在某個工具上時，它的名稱顯示在左側的固定區（工具列本身會捲動，
+        // tooltip 會被捲動容器切掉）。
+        var hoveredTool by remember { mutableStateOf<String?>(null) }
+        // 工具列分成三段：
+        //   左＝身分（檔名＋手上的工具）固定
+        //   中＝工具（會捲動，工具比視窗多時才需要）
+        //   右＝頁碼、縮放、匯出固定
+        // 舊版是一整條捲動，頁碼夾在工具中間，看起來像另一個工具，
+        // 而且捲到一半就找不到了。
+        Row(
+            modifier = modifier
+                .padding(12.dp)
+                .background(MaterialTheme.colorScheme.surface, pillShape)
+                .clip(pillShape),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // ── 左：身分 ──
             Row(
-                modifier = modifier
-                    .padding(12.dp)
-                    .background(MaterialTheme.colorScheme.surface, pillShape)
-                    .clip(pillShape)
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(start = 6.dp, end = 4.dp)
+            ) {
+                leadingButton()
+                InkToolbarTitle(documentTitle, tool, hoveredTool)
+            }
+
+            // ── 中：工具（可捲動）──
+            Row(
+                modifier = Modifier
+                    .weight(1f)
                     .horizontalScroll(toolbarScroll)
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                    .padding(horizontal = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(2.dp)
             ) {
-                leadingButton()
-                InkToolbarTitle(documentTitle, tool, focusedPage, pageCount, onPrevPage, onNextPage, onGoToPage)
-                InkToolbarTools(tool, selectionCount, onToolChange)
+                InkToolbarTools(tool, selectionCount, onToolChange, onHover = { hoveredTool = it })
                 if (textSelectionActive) InkToolbarTextSelection(onCopyText)
-                androidx.compose.material3.VerticalDivider(
-                    modifier = Modifier.height(24.dp).padding(horizontal = 6.dp),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
-                )
                 InkToolbarHistory(canUndo, canRedo, selectionCount, onUndo, onRedo, onDeleteSelection)
                 InkToolbarShapeSubtypes(tool, shapeSubType, onShapeSubTypeChange)
-                InkToolbarWidthPresets(tool, widthPt, onWidthChange)
-                androidx.compose.material3.VerticalDivider(
-                    modifier = Modifier.height(24.dp).padding(horizontal = 6.dp),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
-                )
-                InkToolbarZoom(zoom, onZoomOut, onZoomReset, onFitWidth, onZoomIn)
-                androidx.compose.material3.VerticalDivider(
-                    modifier = Modifier.height(24.dp).padding(horizontal = 6.dp),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
-                )
-                InkToolbarColors(colour, onColourChange)
-                Spacer(Modifier.width(6.dp))
-                InkToolbarExport(exporting, onExport, onClear)
             }
-            // 右緣淡出：這條工具列是**會捲動**的，但沒有任何提示時，
-            // 被切掉一半的最後一顆按鈕看起來像畫壞了，而不是「往右還有」。
-            if (toolbarScroll.maxValue > toolbarScroll.value) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .width(28.dp)
-                        .height(40.dp)
-                        .background(
-                            Brush.horizontalGradient(
-                                listOf(Color.Transparent, MaterialTheme.colorScheme.surface)
-                            )
-                        )
-                )
+
+            // ── 右：選項與導覽（固定，永遠看得到）──
+            // 筆刷（顏色＋粗細）、頁碼、縮放、更多：這些是「你在哪裡、看多大、
+            // 畫什麼」，跟「用哪支工具」是兩回事，所以固定在右邊，不會被工具
+            // 擠掉，也不用捲到中間才找得到。
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(end = 8.dp)
+            ) {
+                InkToolbarBrush(colour, widthPt, onColourChange, onWidthChange)
+                InkToolbarDivider()
+                InkToolbarPageNav(focusedPage, pageCount, onPrevPage, onNextPage, onGoToPage)
+                InkToolbarDivider()
+                InkToolbarZoom(zoom, onZoomOut, onZoomReset, onFitWidth, onZoomIn)
+                InkToolbarDivider()
+                InkToolbarMore(exporting, onExport, onClear)
             }
         }
         // Export feedback lives under the toolbar rather than in a dialog: a modal
@@ -3021,66 +3027,6 @@ private fun InkToolbar(
                 color = if (failed) MaterialTheme.colorScheme.error
                 else MaterialTheme.colorScheme.primary,
                 maxLines = 2
-            )
-        }
-    }
-}
-
-/**
- * One icon tool button, in the tablet's language: the icon carries the meaning,
- * the selection pill carries the state, and the tint follows the theme.
- *
- * Icon-only on purpose — six text labels plus undo/redo is what overflowed the old
- * row on a normal window. The description survives for screen readers and tooltips.
- */
-@Composable
-internal fun InkToolIcon(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    description: String,
-    selected: Boolean,
-    enabled: Boolean = true,
-    badgeCount: Int = 0,
-    onClick: () -> Unit
-) {
-    val isDark = InkThemeState.darkMode
-    // Selected state in the theme colour, not the pearl pill: pearl-on-glass
-    // washes out to near-white in both modes, so the armed tool was invisible.
-    // Armed = primary-tinted fill + primary ring + primary icon; the icon stays
-    // readable on light and dark alike.
-    val primary = MaterialTheme.colorScheme.primary
-    Box(
-        modifier = Modifier
-            .size(40.dp)
-            .clip(CircleShape)
-            .then(
-                if (selected) Modifier
-                    .clip(CircleShape)
-                    .glassSelectionPill(CircleShape)
-                else Modifier
-            )
-            .glassClickable(onClick = onClick, shape = CircleShape, enabled = enabled),
-        contentAlignment = Alignment.Center
-    ) {
-        Icon(
-            icon,
-            contentDescription = description,
-            tint = when {
-                !enabled -> glassContentColor(isDark).copy(alpha = 0.35f)
-                selected -> primary
-                else -> glassContentColor(isDark)
-            },
-            modifier = Modifier.size(22.dp)
-        )
-        // Selection count rides on the icon rather than in a label: the row stays
-        // compact and the number is visible exactly where the mode is armed.
-        if (badgeCount > 0) {
-            Text(
-                text = if (badgeCount > 99) "99+" else badgeCount.toString(),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.align(Alignment.BottomEnd)
-                    .background(MaterialTheme.colorScheme.surface, CircleShape)
-                    .padding(horizontal = 3.dp)
             )
         }
     }
