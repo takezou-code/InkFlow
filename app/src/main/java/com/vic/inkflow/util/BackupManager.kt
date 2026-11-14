@@ -284,9 +284,16 @@ object BackupManager {
                     Col("math_sources", "documentUri"),
                     Col("math_sources", "imageUri")
                 ).forEach { target ->
-                    db.execSQL(
-                        "UPDATE ${target.table} SET ${target.col} = REPLACE(${target.col}, '$escapedOld', '$escapedNew') WHERE ${target.col} LIKE '$escapedOld%'"
-                    )
+                    // 不能 WHERE x LIKE 'oldBase%'：uri 以 "file://" 開頭，永遠匹配不到，
+                    // REPLACE 整條路徑重寫等於沒跑（還原後每份文件都 ENOENT）。
+                    // LIKE '%' || old || '%' 才會命中 "file:///storage/.../oldBase/…" 這種字串；
+                    // REPLACE 本身對不含 old 的字串是 no-op。executeUpdateDelete 計數供日誌驗證。
+                    db.compileStatement(
+                        "UPDATE ${target.table} SET ${target.col} = REPLACE(${target.col}, '$escapedOld', '$escapedNew') WHERE ${target.col} LIKE '%' || '$escapedOld' || '%'"
+                    ).use { stmt ->
+                        val changed = stmt.executeUpdateDelete()
+                        if (changed > 0) Log.i(TAG, "rewrote $changed rows in ${target.table}.${target.col}")
+                    }
                 }
                 db.setTransactionSuccessful()
             } finally {
