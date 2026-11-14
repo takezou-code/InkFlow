@@ -35,6 +35,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 // v30: text_annotations 加 boxWidth ＋ alignment（文字框化，見 MIGRATION_29_30 註解）。
 // v31: 舊文字的 boxWidth 回填成「貼合內容」寬（折行收斂成一個權威，見 MIGRATION_30_31）。
 // v32: text_annotations 加 flowId（文字流＝Word 式自動重排的群組，見 MIGRATION_31_32）。
+// v33: documents 加 deletedAt（垃圾桶：軟刪除，隱藏於圖書館／同步／備份，見 MIGRATION_32_33）。
 //
 // ⚠️ v28～v32 這幾條 migration **不可以拿掉**。beta 曾在 2026-10-16 reset 回 1.6.1
 // （拿掉蠟筆；文字框後來又加回來，但 boxWidth 欄位從 v30 就在），而平板上既有的
@@ -47,7 +48,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
                 TextAnnotationEntity::class, ImageAnnotationEntity::class,
                 DocumentPreferenceEntity::class, BookmarkEntity::class,
                 MathSourceEntity::class],
-    version = 32
+    version = 33
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun strokeDao(): StrokeDao
@@ -752,6 +753,30 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v33 — 文件層垃圾桶。
+         *
+         * `documents.deletedAt` 是**本機**狀態：非 NULL 表示在垃圾桶裡。所有
+         * 圖書館 / 同步 manifest / 備份查詢都加 `deletedAt IS NULL`，所以垃圾桶
+         * 文件不會被上傳、不會被同步刪除、也不會進 .inkbak。刪除的檔案與筆跡
+         * 要等保留期滿或使用者按「永久刪除」才真正清掉。
+         *
+         * 冪等：先讀 PRAGMA table_info，重跑不會炸。
+         * 沒有索引：文件數量是幾百個等級，全表掃描足夠；加索引只是多一份 schema。
+         */
+        private val MIGRATION_32_33 = object : Migration(32, 33) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                val existing = mutableSetOf<String>()
+                db.query("PRAGMA table_info(documents)").use { c ->
+                    val nameIdx = c.getColumnIndexOrThrow("name")
+                    while (c.moveToNext()) existing.add(c.getString(nameIdx))
+                }
+                if ("deletedAt" !in existing) {
+                    db.execSQL("ALTER TABLE documents ADD COLUMN deletedAt INTEGER DEFAULT NULL")
+                }
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val appContext = context.applicationContext
@@ -793,7 +818,8 @@ abstract class AppDatabase : RoomDatabase() {
                     MIGRATION_28_29,
                     MIGRATION_29_30,
                     MIGRATION_30_31,
-                    MIGRATION_31_32
+                    MIGRATION_31_32,
+                    MIGRATION_32_33
                 )
                 // Only allow destructive migration on downgrade (e.g. user reverts to an
                 // older APK). Unknown *upgrade* paths surface as a hard crash rather than

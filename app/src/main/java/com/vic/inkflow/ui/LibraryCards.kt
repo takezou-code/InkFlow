@@ -720,11 +720,11 @@ internal fun DocumentCard(
         GlassDialog(
             onDismissRequest = { showDeleteDialog = false },
             isDark = isDarkTheme,
-            title = { Text("刪除筆記本") },
+            title = { Text("移入垃圾桶") },
             text = {
-                Text("確定要刪除「${document.displayName}」嗎？此操作會一併移除筆跡與標註，且無法復原。")
+                Text("「${document.displayName}」會移到垃圾桶，可在垃圾桶還原；保留期滿後才會永久刪除筆跡與標註。")
             },
-            confirmText = "刪除",
+            confirmText = "移入垃圾桶",
             onConfirm = {
                 showDeleteDialog = false
                 onDelete()
@@ -954,7 +954,7 @@ internal fun DocumentCard(
                                 renameInput = document.displayName
                                 showRenameDialog = true
                             }
-                            GlassMenuItem("刪除", Icons.Outlined.DeleteOutline, isDarkTheme) {
+                            GlassMenuItem("移入垃圾桶", Icons.Outlined.DeleteOutline, isDarkTheme) {
                                 showMenu = false
                                 showDeleteDialog = true
                             }
@@ -1091,7 +1091,7 @@ internal fun DocumentListRow(
                         renameInput = document.displayName
                         showRenameDialog = true
                     }
-                    GlassMenuItem("刪除", Icons.Outlined.DeleteOutline, isDarkTheme) {
+                    GlassMenuItem("移入垃圾桶", Icons.Outlined.DeleteOutline, isDarkTheme) {
                         showMenu = false
                         showDeleteDialog = true
                     }
@@ -1229,9 +1229,9 @@ internal fun DocumentListRow(
         GlassDialog(
             onDismissRequest = { showDeleteDialog = false },
             isDark = isDarkTheme,
-            title = { Text("刪除文件") },
-            text = { Text("確定要刪除「${document.displayName}」嗎？此操作無法還原。") },
-            confirmText = "刪除",
+            title = { Text("移入垃圾桶") },
+            text = { Text("「${document.displayName}」會移到垃圾桶，可在垃圾桶還原；保留期滿後才會永久刪除。") },
+            confirmText = "移入垃圾桶",
             onConfirm = {
                 onDelete()
                 showDeleteDialog = false

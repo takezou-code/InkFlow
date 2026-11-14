@@ -8,6 +8,7 @@ import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.vic.inkflow.data.AppDatabase
 import com.vic.inkflow.ui.InkLayerApp
 import com.vic.inkflow.util.AutoBackupScheduler
+import com.vic.inkflow.util.TrashCleanupScheduler
 
 class MainActivity : ComponentActivity() {
 
@@ -39,6 +40,8 @@ PDFBoxResourceLoader.init(applicationContext)
         // 靜模式不回來排備份（開機時就已經在靜，排了等於白排）
         val quiet = settings.getBoolean("power_saver", false)
         AutoBackupScheduler.ensureScheduled(this, quiet)
+        // 垃圾桶清運：每天一次，保留天數由設定頁決定（見 TrashSettings）。
+        TrashCleanupScheduler.ensureScheduled(this)
         setContent {
             InkLayerApp(db = db)
         }

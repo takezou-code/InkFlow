@@ -28,5 +28,13 @@ data class DocumentEntity(
     @ColumnInfo(defaultValue = "0")
     val isFavorite: Boolean = false,
     @ColumnInfo(defaultValue = "NULL")
-    val folderId: String? = null
+    val folderId: String? = null,
+    /**
+     * Non-null while the document sits in the trash (epoch millis when it was
+     * moved there). Trashed rows are hidden from every library/sync/backup query
+     * and only purged — with their files and annotations — after the retention
+     * window. This is local-only: the sync protocol has no document-level ops.
+     */
+    @ColumnInfo(defaultValue = "NULL")
+    val deletedAt: Long? = null
 )

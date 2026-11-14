@@ -74,8 +74,11 @@ import com.vic.inkflow.ui.backdrop.backdropScenes
 import com.vic.inkflow.ui.theme.ShapeLg
 import com.vic.inkflow.ui.theme.ShapeMd
 import com.vic.inkflow.ui.theme.ShapeSm
+import com.vic.inkflow.data.TrashRetention
 import com.vic.inkflow.util.AutoBackupScheduler
 import com.vic.inkflow.util.BackupManager
+import com.vic.inkflow.util.TrashCleanupScheduler
+import com.vic.inkflow.util.TrashSettings
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -236,6 +239,7 @@ fun GlobalSettingsScreen(
 
     var autoEnabled by remember { mutableStateOf(AutoBackupScheduler.isEnabled(context)) }
     var publicKeep by remember { mutableIntStateOf(AutoBackupScheduler.publicKeep(context)) }
+    var trashRetentionDays by remember { mutableIntStateOf(TrashSettings.retentionDays(context)) }
     var publicLine by remember { mutableStateOf("讀取中…") }
     var allBackups by remember { mutableStateOf(emptyList<AutoBackupScheduler.BackupItem>()) }
     var isRefreshing by remember { mutableStateOf(false) }
@@ -883,6 +887,34 @@ fun GlobalSettingsScreen(
 
                     backupStatus?.let {
                         SettingsHint(it)
+                    }
+                }
+
+                // ===== 垃圾桶 ==============================================
+                SettingsSection("垃圾桶", isDarkSettings) {
+                    SettingsHint("刪除的筆記會先放進垃圾桶，保留期內都能還原；期滿才真正刪除筆跡、標註與原始檔。")
+
+                    SettingsChoiceBlock(
+                        title = "保留天數",
+                        options = TrashRetention.CHOICE_DAYS.map {
+                            if (it == 0) "永不自動清除" else "$it 天"
+                        },
+                        selectedIndex = TrashRetention.CHOICE_DAYS
+                            .indexOf(trashRetentionDays).coerceAtLeast(0),
+                        isDark = isDarkSettings,
+                        hint = if (trashRetentionDays == 0) {
+                            "垃圾桶不會自動清除；檔案會一直佔用儲存空間，需要時請手動「清空垃圾桶」。"
+                        } else {
+                            "目前保留 $trashRetentionDays 天；改短之後，逾期的項目會在背景立即清除。"
+                        }
+                    ) { idx ->
+                        val days = TrashRetention.CHOICE_DAYS[idx]
+                        if (days != trashRetentionDays) {
+                            trashRetentionDays = days
+                            TrashSettings.setRetentionDays(context, days)
+                            // 改短 → 立刻把已經逾期的清掉，不用等下一次每日排程。
+                            TrashCleanupScheduler.runOnce(context)
+                        }
                     }
                 }
 

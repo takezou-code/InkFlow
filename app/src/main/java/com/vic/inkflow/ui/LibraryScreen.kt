@@ -121,6 +121,7 @@ import androidx.compose.material.icons.outlined.FileUpload
 import androidx.compose.material.icons.outlined.LightMode
 import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.Bookmark
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Star
@@ -137,6 +138,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -205,6 +210,7 @@ import com.vic.inkflow.data.Folder
 import com.vic.inkflow.data.ImageAnnotation
 import com.vic.inkflow.data.StrokeWithSamples
 import com.vic.inkflow.data.TextAnnotation
+import com.vic.inkflow.util.TrashSettings
 import com.vic.inkflow.ui.backdrop.BackdropScene
 import com.vic.inkflow.ui.backdrop.DuneScene
 import com.vic.inkflow.ui.theme.InkFlowTheme
@@ -250,8 +256,10 @@ fun DocumentLibraryScreen(
     )
     val documents by docViewModel.documents.collectAsState()
     val folders by docViewModel.folders.collectAsState()
+    val trashed by docViewModel.trashed.collectAsState()
     val folderOperationMessage by docViewModel.folderOperationMessage.collectAsState()
     val scope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
     var showFabMenu by remember { mutableStateOf(false) }
     var showNewDocSizeDialog by remember { mutableStateOf(false) }
     var showCreateFolderDialog by remember { mutableStateOf(false) }
@@ -517,7 +525,27 @@ fun DocumentLibraryScreen(
 
     var selectedNavIndex by remember { mutableStateOf(0) }
     var searchQuery by rememberSaveable { mutableStateOf("") }
+    // 保留天數在進入垃圾桶時重讀：設定頁改完回來，倒數要立刻正確。
+    var trashRetentionDays by remember { mutableStateOf(TrashSettings.retentionDays(context)) }
+    LaunchedEffect(selectedNavIndex) {
+        if (selectedNavIndex == 3) trashRetentionDays = TrashSettings.retentionDays(context)
+    }
     val normalizedQuery = searchQuery.trim()
+
+    fun moveToTrash(uri: String) {
+        docViewModel.moveToTrash(uri)
+        scope.launch {
+            val result = snackbarHostState.showSnackbar(
+                message = "已移入垃圾桶",
+                actionLabel = "復原",
+                withDismissAction = true,
+                duration = SnackbarDuration.Short
+            )
+            if (result == SnackbarResult.ActionPerformed) {
+                docViewModel.restoreFromTrash(uri)
+            }
+        }
+    }
     val filteredDocs = remember(documents, normalizedQuery, selectedNavIndex) {
         documents.filter { doc ->
             val matchesQuery = normalizedQuery.isEmpty() || doc.displayName.contains(normalizedQuery, ignoreCase = true)
@@ -553,10 +581,12 @@ fun DocumentLibraryScreen(
             matchesQuery && noFolder
         }
     }
-    val visibleDocumentCount = if (selectedNavIndex == 1) {
-        folderTree.sumOf { it.documents.size } + uncategorizedDocs.size
-    } else {
-        filteredDocs.size
+    val visibleDocumentCount = when (selectedNavIndex) {
+        1 -> folderTree.sumOf { it.documents.size } + uncategorizedDocs.size
+        3 -> trashed.count {
+            normalizedQuery.isEmpty() || it.document.displayName.contains(normalizedQuery, ignoreCase = true)
+        }
+        else -> filteredDocs.size
     }
     var isGridView by rememberSaveable { mutableStateOf(true) }
 
@@ -653,6 +683,14 @@ fun DocumentLibraryScreen(
                 hazeState = libraryChromeHaze,
                 isDarkTheme = isDarkTheme
             )
+            GlassRailItem(
+                selected = selectedNavIndex == 3,
+                onClick = { selectedNavIndex = 3 },
+                icon = Icons.Outlined.Delete,
+                label = "垃圾桶",
+                hazeState = libraryChromeHaze,
+                isDarkTheme = isDarkTheme
+            )
             Spacer(Modifier.weight(1f))
             // 靜模式快捷已移除（跟編輯器工具列同一條理由）：它是設定，不是每天要按的工具；
             // 功能仍在「設定 → 外觀 → 靜模式」。省下的位置留給下面兩顆真正會用的。
@@ -679,6 +717,7 @@ fun DocumentLibraryScreen(
             modifier = Modifier.weight(1f).fillMaxHeight(),
             containerColor = Color.Transparent,
             contentColor = MaterialTheme.colorScheme.onBackground,
+            snackbarHost = { SnackbarHost(snackbarHostState) },
             topBar = {
                 LibraryHeroPanel(
                     searchQuery = searchQuery,
@@ -763,7 +802,21 @@ fun DocumentLibraryScreen(
                 }
 
                 Box(modifier = Modifier.fillMaxSize()) {
-                if (selectedNavIndex == 1) {
+                if (selectedNavIndex == 3) {
+                    LibraryTrashView(
+                        trashed = trashed,
+                        searchQuery = normalizedQuery,
+                        retentionDays = trashRetentionDays,
+                        docViewModel = docViewModel,
+                        context = context,
+                        onRestore = { uri -> docViewModel.restoreFromTrash(uri) },
+                        onPurge = { uri -> docViewModel.purge(context, uri) },
+                        onPurgeAll = { trashed.forEach { docViewModel.purge(context, it.document.uri) } },
+                        isDarkTheme = isDarkTheme,
+                        brandGradient = brandGradient,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else if (selectedNavIndex == 1) {
                     if (folders.isEmpty() && uncategorizedDocs.isEmpty()) {
                         LibraryEmptyState(
                             modifier = Modifier.fillMaxSize(),
@@ -787,7 +840,7 @@ fun DocumentLibraryScreen(
                                 val encodedUri = URLEncoder.encode(uri, StandardCharsets.UTF_8.toString())
                                 navController.navigate("editor/$encodedUri")
                             },
-                            onDelete = { uri -> docViewModel.delete(context, uri) },
+                            onDelete = { uri -> moveToTrash(uri) },
                             onFavoriteToggle = { uri, isFav -> docViewModel.toggleFavorite(uri, isFav) },
                             onRename = { uri, newName -> docViewModel.rename(uri, newName) },
                             onMoveToFolder = { uri, folderId -> docViewModel.moveDocumentToFolder(uri, folderId) },
@@ -871,7 +924,7 @@ fun DocumentLibraryScreen(
                                             val encodedUri = URLEncoder.encode(doc.uri, StandardCharsets.UTF_8.toString())
                                             navController.navigate("editor/$encodedUri")
                                         },
-                                        onDelete = { docViewModel.delete(context, doc.uri) },
+                                        onDelete = { moveToTrash(doc.uri) },
                                         onFavoriteToggle = { isFav -> docViewModel.toggleFavorite(doc.uri, isFav) },
                                         onRename = { newName -> docViewModel.rename(doc.uri, newName) },
                                         onMoveToFolder = { folderId -> docViewModel.moveDocumentToFolder(doc.uri, folderId) },
@@ -911,7 +964,7 @@ fun DocumentLibraryScreen(
                                             val encodedUri = URLEncoder.encode(doc.uri, StandardCharsets.UTF_8.toString())
                                             navController.navigate("editor/$encodedUri")
                                         },
-                                        onDelete = { docViewModel.delete(context, doc.uri) },
+                                        onDelete = { moveToTrash(doc.uri) },
                                         onFavoriteToggle = { isFav -> docViewModel.toggleFavorite(doc.uri, isFav) },
                                         onRename = { newName -> docViewModel.rename(doc.uri, newName) },
                                         onMoveToFolder = { folderId -> docViewModel.moveDocumentToFolder(doc.uri, folderId) },

@@ -21,6 +21,8 @@ class InkFlowRepositories(private val db: AppDatabase) {
 
     val strokes = RoomStrokeRepository(db, db.strokeDao())
     val documents = RoomDocumentRepository(db, db.documentDao())
+    /** Local-only (Android) trash; see [TrashRepository] for why it is not shared. */
+    val trash: TrashRepository = com.vic.inkflow.data.RoomTrashRepository(db.documentDao())
     val folders = RoomFolderRepository(db, db.folderDao())
     val texts = RoomTextAnnotationRepository(db, db.textAnnotationDao())
     val images = RoomImageAnnotationRepository(db, db.imageAnnotationDao())
