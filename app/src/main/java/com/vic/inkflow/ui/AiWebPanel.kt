@@ -339,6 +339,17 @@ fun AiWebPanel(
         }
     }
 
+    // SPA 路由切換（doUpdateVisitedHistory 才抓得到，onPageFinished 不會發）→ 亮 1.4 秒
+    // loading 光條，蓋住 SPA 換頁的黑窗期。tick 累加驅動 LaunchedEffect；
+    // 連續切換時 effect 被 key 重啟，光條留到最後一次切換 +1.4s 才熄。
+    var navShimmerTick by remember { mutableLongStateOf(0L) }
+    var showNavShimmer by remember { mutableStateOf(false) }
+    androidx.compose.runtime.LaunchedEffect(navShimmerTick) {
+        if (navShimmerTick == 0L) return@LaunchedEffect
+        showNavShimmer = true
+        delay(1400)
+        showNavShimmer = false
+    }
     // 站方 window.open() 開的子視窗（Google／Apple／Microsoft 登入）。null＝目前沒有。
     var authPopup by androidx.compose.runtime.remember {
         androidx.compose.runtime.mutableStateOf<AiAuthPopup?>(null)
@@ -1046,6 +1057,9 @@ override fun onPageFinished(view: android.webkit.WebView?, url: String?) {
                         // 只回報、不做任何注入或重載，避免跟投遞鏈互相踩。
                         override fun doUpdateVisitedHistory(view: android.webkit.WebView?, url: String?, isReload: Boolean) {
                             super.doUpdateVisitedHistory(view, url, isReload)
+                            // SPA 切換才亮 loading 光條；這是唯一 reliable 的訊號。
+                            android.util.Log.d("InkFlowDbg", "NAV_SHIMMER url=${url?.take(120)} isReload=$isReload")
+                            navShimmerTick += 1
                             reportUrl(url.orEmpty())
                         }
                     }
@@ -1070,6 +1084,44 @@ update = { view ->
             },
             modifier = androidx.compose.ui.Modifier.fillMaxSize()
         )
+        }
+        // SPA 切換 loading 光條：SPA 路由沒有頁面事件，Compose 完全看不到「在載入」，
+        // 所以用 doUpdateVisitedHistory 的 NAV_SHIMMER 訊號亮一條 browser-style 細光條。
+        // 只蓋在最上緣、不擋互動、純提示，1.4s 無新事件就熄。
+        androidx.compose.animation.AnimatedVisibility(
+            visible = showNavShimmer,
+            enter = fadeIn(tween(120)),
+            exit = fadeOut(tween(280)),
+            modifier = androidx.compose.ui.Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+        ) {
+            var trackW by remember { mutableIntStateOf(0) }
+            val transition = rememberInfiniteTransition(label = "navShimmer")
+            val frac by transition.animateFloat(
+                0f,
+                1f,
+                infiniteRepeatable(tween(750, easing = LinearEasing), RepeatMode.Restart),
+                label = "navShimmerFrac"
+            )
+            Box(
+                modifier = androidx.compose.ui.Modifier
+                    .fillMaxWidth()
+                    .height(3.dp)
+                    .onSizeChanged { trackW = it.width }
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f))
+            ) {
+                Box(
+                    modifier = androidx.compose.ui.Modifier
+                        .fillMaxHeight()
+                        .width(96.dp)
+                        .offset {
+                            val seg = 96.dp.roundToPx()
+                            IntOffset(((trackW + seg) * frac - seg).roundToInt(), 0)
+                        }
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.85f))
+                )
+            }
         }
     }
 
