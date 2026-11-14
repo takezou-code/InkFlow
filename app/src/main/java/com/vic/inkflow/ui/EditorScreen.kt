@@ -354,6 +354,11 @@ fun TabletEditorScreen(
 
     var showAiPanel by rememberSaveable { mutableStateOf(false) }
     var aiPanelWeight by rememberSaveable { mutableFloatStateOf(0.4f) }
+    // 拖曳調寬的預覽：拖曳中只畫目標線、卡片與 WebView 都不動，放開才提交到 aiPanelWeight。
+    // WebView 每改一次寬度整頁 reflow 一次，邊拖邊改＝每幀 reflow，這就是「字慢慢移」的卡頓來源。
+    // null＝沒在拖；非 null＝預覽中的寬度比例。
+    // guide 的 graphicsLayer 在 layer 階段讀這個 state：拖曳中不觸發重組。
+    var aiDragTargetWeight by remember { mutableStateOf<Float?>(null) }
     // L0 意圖層：兩個入口（整頁鈕／圈選快捷列）都只產生一個 AiRequest，
     // 不再各自維護 fileUri／prompt／autoSend 三個隱性變數。
     // seq 給每個請求一個遞增序號：去重靠序號，不靠內容推導（內容會在投遞後被清掉）。
@@ -746,49 +751,35 @@ fun TabletEditorScreen(
         }
     }
 
-    // Persist current page and sync sidebar scroll whenever the user navigates or changes sidebar mode
     // 跟隨門衛：主列表推側欄時舉旗，側欄推主列表的那條看到旗就讓路，
     // 否則兩邊互推、底端來回彈（4↔5跳不停）。State 寫一天幾次，重組成本忽略。
     var sidebarFollowActive by remember { mutableStateOf(false) }
+    // 顯示頁＝逐幀最大可見頁（紙→側欄即時跟隨用）。currentPageIndex 維持 settle 才提交，
+    // DB 落盤、結構判斷都只認它。
+    val displayedPage = previewPage ?: currentPageIndex
+    // ① DB 落盤：只聽已提交頁，滑停 150ms 才寫，別每幀碰 DB。
     androidx.compose.runtime.LaunchedEffect(currentPageIndex, sidebarStage) {
-        // 旗子從 effect 一進來就舉（涵蓋防抖等待期），結束/取消才放下——
-        // 之前只包著 animate，等待期有洞，迴圈從洞裡鑽。
+        if (!initialPageRestored) return@LaunchedEffect
+        // 側欄帶的頭不搶寫；但 DB 照寫，不然甩完直接退出重開頁碼是舊的。
+        if (SystemClock.uptimeMillis() - lastSidebarDriveMs < 1000) {
+            docViewModel.updateLastPage(uri.toString(), currentPageIndex)
+            return@LaunchedEffect
+        }
+        // 防抖：滑動中頁碼連跳時 effect 被取消重進，只有停穩 150ms 才真的寫 DB。
+        kotlinx.coroutines.delay(150)
+        docViewModel.updateLastPage(uri.toString(), currentPageIndex)
+    }
+    // ② 側欄即時跟隨：聽 displayedPage，紙滑到哪一頁、側欄就亮到哪一頁、並跟到哪一頁。
+    //    快滑時頁碼每 <150ms 變、動畫排不到落地，改瞬時 scrollToCenter；平滑滑動用動畫。
+    //    DB 在上面 ①；GRID 階段由 SidebarPageGrid 的 followPage 自己跟。
+    androidx.compose.runtime.LaunchedEffect(displayedPage, sidebarStage) {
+        if (sidebarStage == SidebarStage.GRID || !initialPageRestored) return@LaunchedEffect
         sidebarFollowActive = true
         try {
-            if (initialPageRestored) {
-                // 側欄帶的頭不回拉：1 秒內是側欄點選/轉頁造成的換頁，
-                // 回拉會勒死側欄的 fling（只能一頁一頁切）。主列表自己動的不影響。
-                // 但 DB 照寫，不然甩完直接退出、重開頁碼是舊的。
-                if (SystemClock.uptimeMillis() - lastSidebarDriveMs < 1000) {
-                    docViewModel.updateLastPage(uri.toString(), currentPageIndex)
-                    return@LaunchedEffect
-                }
-                // 防抖：滑動中頁碼連跳時，每次重進 effect 會重設計時，
-                // 只有停穩 150ms 才跟側欄 + 寫 DB。
-                kotlinx.coroutines.delay(150)
-                docViewModel.updateLastPage(uri.toString(), currentPageIndex)
-                // P2 快滑：高速捲動中別排 animateScrollToCenter（每幀取消重進，
-                // 動畫永遠排不到落地，側欄停在舊頁）。改成瞬時定位，不排隊。
-                // 注意：用 scrollToCenter 不是 scrollToItem —— scrollToItem 只把頁碼對齊
-                // viewport「起點」，不置中。收合模式 contentPadding 幾乎半個視窗高，
-                // 用 scrollToItem 會把當前頁留在很靠上＝中央丸子那裡是空的（置中跑掉）。
-                // 第 3 階期間側欄不在 composition：對它下捲動指令會卡在沒有節點的
-                // 互斥鎖上（與紙面同一個坑）。掛回時這個 effect 會因 sidebarStage
-                // 變回 PANEL/RAIL 再跑一次，屆時才定位。
-                if (sidebarStage != SidebarStage.GRID) {
-                    // 只做動畫，不做瞬時跳位（實機回報：滑紙面時側欄頁碼直接跳過去）。
-                    //
-                    // 不需要再看 isScrollingFast：上面 150ms 防抖本身就是節流——
-                    // 快滑時頁碼每 <150ms 就變，這個 effect 每次都被取消重進，
-                    // 根本輪不到動畫；等頁碼穩下來 150ms 才真的動一次。
-                    // 舊碼在防抖之後又用「快滑旗標」把它降級成瞬時 scrollToCenter
-                    // （旗標要落定後 500ms 才放，正常滑完一定還在旗標內），所以幾乎永遠瞬跳。
-                    //
-                    // 側欄自己正在被拖時不會打到這裡：側欄帶的頭 1 秒內走的是上面
-                    // lastSidebarDriveMs 的早退；就算撞上，LazyList 的 MutatorMutex
-                    // 也讓手指（UserInput）贏過程式捲動（Default）。
-                    sidebarListState.animateScrollToCenter(currentPageIndex)
-                }
+            if (pdfViewModel.isScrollingFast.value) {
+                sidebarListState.scrollToCenter(displayedPage)
+            } else {
+                sidebarListState.animateScrollToCenter(displayedPage)
             }
         } finally {
             sidebarFollowActive = false
@@ -1465,6 +1456,7 @@ fun TabletEditorScreen(
                 pdfViewModel = pdfViewModel,
                 pageCount = pageCount,
                 currentPageIndex = currentPageIndex,
+                followPage = displayedPage,
                 repos = repos,
                 documentUri = uri.toString(),
                 modelWidth = viewModel.modelWidth,
@@ -1651,10 +1643,19 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                             .padding(top = toolbarH + 6.dp, bottom = 6.dp)
                             .width(20.dp)
                             .pointerInput(Unit) {
-                                detectHorizontalDragGestures { change, dragAmount ->
+                                detectHorizontalDragGestures(
+                                    onDragStart = { aiDragTargetWeight = aiPanelWeight },
+                                    onDragEnd = {
+                                        // 放開才提交：WebView 只 reflow 一次
+                                        aiDragTargetWeight?.let { aiPanelWeight = it }
+                                        aiDragTargetWeight = null
+                                    },
+                                    onDragCancel = { aiDragTargetWeight = null },
+                                ) { change, dragAmount ->
                                     change.consume()
                                     // 分母用 aiAvailW：panelW 的基準就是它，用 contentW 會拖不準
-                                    aiPanelWeight = (aiPanelWeight + dragAmount / aiAvailW.coerceAtLeast(1f))
+                                    val base = aiDragTargetWeight ?: aiPanelWeight
+                                    aiDragTargetWeight = (base + dragAmount / aiAvailW.coerceAtLeast(1f))
                                         .coerceIn(0.2f, 0.8f)
                                 }
                             },
@@ -1714,6 +1715,39 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                     }
                 }
             }
+            // 拖曳調寬預覽線：拖把手時卡片與 WebView 原地不動（見上方 onDragStart／onDragEnd），
+            // 只讓這條線跟手。一定在最上層（之後畫的蓋住之前的），比照把手的樣子畫藥丸。
+            // graphicsLayer 在 layer 階段讀 aiDragTargetWeight，拖曳中不重組、不 measure。
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .width(44.dp)
+                    .graphicsLayer {
+                        val t = aiDragTargetWeight
+                        alpha = if (t == null) 0f else 1f
+                        translationX = if (t == null) {
+                            -100f
+                        } else {
+                            // 線心對齊 panel 右緣目標位置；本 Box 以 fillMaxHeight 佔滿、靠左起算
+                            aiAvailW * t - 22.dp.toPx()
+                        }
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .width(2.dp)
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.55f))
+                )
+                Box(
+                    modifier = Modifier
+                        .width(5.dp)
+                        .height(44.dp)
+                        .clip(RoundedCornerShape(2.5.dp))
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.8f))
+                )
+            }
         } // Box(內容區：Workspace ＋ AI 抽屜)
         } // Row（側欄＋AI 抽屜，疊在紙上）
                 } // if（疊層完全顯示 → 編輯器內容暫時消失）
@@ -1742,6 +1776,7 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                 SidebarPageGrid(
                     pageCount = pageCount,
                     currentPageIndex = currentPageIndex,
+                    followPage = displayedPage,
                     pdfViewModel = pdfViewModel,
                     repos = repos,
                     documentUri = uri.toString(),
