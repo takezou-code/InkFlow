@@ -32,7 +32,8 @@ import org.junit.Test
  *
  * 這個 bug 的因果：頁面畫布只訂閱 `pageDataFlow`，而那條流原本只 combine 三張表的
  * DB 查詢。`saveStroke` 的樂觀層（`_pendingStrokes`）只有早已沒人訂閱的 `currentStrokes`
- * 在用 → DB 落定前的幾幀整頁是空的（快速連筆時甚至「上一筆消失一下」）。
+ * 在用 → DB 落定前的幾幀整頁是空的（快速連筆時甚至「上一筆消失一下」）。這條流已於
+ * 稍後整條刪除。
  *
  * 這裡讓 DB 全程不發射，證明筆是從樂觀層來的；再讓 DB 補上同 id，
  * 證明它會退場（不重複畫）而且 `pendingIds` 會清空（畫布把墨烙回位圖）。

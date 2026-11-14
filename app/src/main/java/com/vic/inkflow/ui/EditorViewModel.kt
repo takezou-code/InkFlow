@@ -367,22 +367,6 @@ class EditorViewModel(
 
     private val _pendingStrokes = MutableStateFlow<Map<String, StrokeWithSamples>>(emptyMap())
 
-    val currentStrokes: StateFlow<List<StrokeWithSamples>> = kotlinx.coroutines.flow.combine(
-        pageIndex.flatMapLatest { index -> repos.strokes.getStrokesForPage(documentUri, index) },
-        _pendingStrokes
-    ) { dbStrokes, pending ->
-        val dbIds = dbStrokes.map { it.stroke.id }.toSet()
-        // 不在這裡清 _pendingStrokes：這一條流（與 pageDataFlow 各有一份 DB flow）誰先
-        // 收到資料沒有保證。先清的人會讓另一條流的下一次合併短少一幀——畫面就是
-        // 「提筆後墨消失一幀再回來」＝提筆閃。樂觀層的壽命只由 pageDataFlow 擁有。
-        // 這裡照樣把已落庫的 id 濾掉，輸出不會重複。
-        // 跨頁筆分段暫存時，只顯示屬於作用頁的那段，避免 B 頁的墨鬼影到 A 頁
-        val activePage = pageIndex.value
-        val unresolved = pending.filterKeys { it !in dbIds }.values
-            .filter { it.stroke.pageIndex == activePage }
-        dbStrokes + unresolved
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-
     val currentTextAnnotations: StateFlow<List<TextAnnotation>> = pageIndex.flatMapLatest { index ->
         repos.texts.getForPage(documentUri, index)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -499,7 +483,7 @@ class EditorViewModel(
             // 這裡不複製、只讀；版本號變一次就重組一次（同一批多個 id 只發一幀）。
             hiddenVersion,
             // 第五路：樂觀筆跡層。少了這一路，提筆到落庫之間這一頁是空的
-            //（UI 只有這條流；currentStrokes 那條早就沒人訂閱了）。
+            //（UI 只有這條流；currentStrokes 那條早已刪除）。
             _pendingStrokes
         ) { s, t, i, _, pending ->
             val merged = mergePageStrokes(s, pending, page, hiddenIds)

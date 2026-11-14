@@ -337,7 +337,6 @@ fun TabletEditorScreen(
         factory = EditorViewModelFactory(repos, uri.toString(), settingsRepository)
     )
     val pdfViewModel: PdfViewModel = viewModel()
-    val strokes by viewModel.currentStrokes.collectAsState()
     val scope = rememberCoroutineScope()
 
     val docViewModel: DocumentViewModel = viewModel(
