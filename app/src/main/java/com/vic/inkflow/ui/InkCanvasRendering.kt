@@ -85,24 +85,39 @@ internal fun DrawScope.drawArrowHeadInScope(start: Offset, end: Offset, color: C
  * 原圖直解（一張照片 4000×3000×4 = 48MB 起跳）會吃光記憶體，
  * 交給 drawImage 時還會觸發「too large bitmap」閃退。
  */
+private fun openDecodedStream(
+    context: android.content.Context,
+    uri: android.net.Uri
+): java.io.InputStream? =
+    try {
+        // file:// 必須走 FileInputStream —— ContentResolver 在這台上不吃 file://，
+        // 圖片註解因此靜默解不了（快取 swallow 失敗，畫布只剩空框）。content:// 照舊。
+        if (uri.scheme == "file") {
+            uri.path?.takeIf { it.isNotEmpty() }?.let { java.io.FileInputStream(it) }
+        } else {
+            context.contentResolver.openInputStream(uri)
+        }
+    } catch (_: Exception) {
+        null
+    }
+
 internal fun decodeBoundedBitmap(
     context: android.content.Context,
     uri: android.net.Uri,
     maxSidePx: Int = 2048
 ): android.graphics.Bitmap? {
-    val cr = context.contentResolver
-    val (w, h) = cr.openInputStream(uri)?.use { stream ->
+    val (w, h) = openDecodedStream(context, uri)?.use { stream ->
         val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeStream(stream, null, opts)
         opts.outWidth to opts.outHeight
     } ?: return null
     if (w <= 0 || h <= 0) {
-        return cr.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
+        return openDecodedStream(context, uri)?.use { BitmapFactory.decodeStream(it) }
     }
     var sample = 1
     while (w / sample > maxSidePx || h / sample > maxSidePx) sample *= 2
     val opts = BitmapFactory.Options().apply { inSampleSize = sample }
-    return cr.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) }
+    return openDecodedStream(context, uri)?.use { BitmapFactory.decodeStream(it, null, opts) }
 }
 
 internal fun drawPathOnCanvas(
