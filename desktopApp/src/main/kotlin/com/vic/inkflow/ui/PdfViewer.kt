@@ -181,10 +181,11 @@ private fun persistWith(
  * the wrong scale, jammed into one corner.
  *
  * The fix is a single explicit transform, and it is the *only* place that converts model
- * space to screen space. `zoom = 1` means "fit the page to the window":
+ * space to screen space. `zoom = 1` means "fit width" — the standard continuous reader:
+ * every page spans the viewport edge to edge:
  *
  * ```
- * fitScale = min(viewportWidth / pageWidthPt, viewportHeight / pageHeightPt)
+ * fitScale = viewportWidth / pageWidthPt          // fit-width base
  * scale    = fitScale * zoom                      // screen pixels per PDF point
  * pageW    = pageWidthPt  * scale                 // drawn size
  * originX  = (viewportWidth  - pageW) / 2 + panX  // drawn position, centred then panned
@@ -606,7 +607,9 @@ fun PdfViewer(
                     LazyColumn(
                         state = listState,
                         modifier = Modifier.fillMaxSize(),
-                        verticalArrangement = Arrangement.spacedBy((8f * sharedZoom.floatValue).dp)
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                        // 固定 8dp 頁距：主流連續檢視器的頁距不隨縮放變（舊版乘上
+                        // zoom，放大到 8x 時頁距變 64dp，看起來像頁面斷開）。
                     ) {
                     items(pageCount, key = { "$documentUri:$it" }) { idx ->
                         PageView(
@@ -999,9 +1002,15 @@ private fun PageView(
     val box = frame?.box
     val viewportW = viewport.value.width
     val viewportH = viewport.value.height
-    // fitScale is screen pixels per PDF point at zoom = 1 ("fit to window").
-    val fitScale = if (box != null && box.widthPt > 0f && box.heightPt > 0f && viewportW > 0f && viewportH > 0f) {
-        minOf(viewportW / box.widthPt, viewportH / box.heightPt)
+    // fitScale is screen pixels per PDF point at zoom = 1. The base is fit WIDTH —
+    // the standard continuous reader: each page spans the full viewport width, so
+    // at 100% there are no horizontal margins and no slack between the item box
+    // and the drawn page (which is where the "huge gaps between pages" came from:
+    // a height-limited page was centred inside a taller item, and that slack
+    // scaled with zoom). Tall pages simply overflow the item and scroll; the
+    // fit-width button is then just "return to 100%".
+    val fitScale = if (box != null && box.widthPt > 0f && viewportW > 0f) {
+        viewportW / box.widthPt
     } else 1f
     val scale = fitScale * zoom.floatValue
     val pageWidthPx = (box?.widthPt ?: 0f) * scale
@@ -2055,16 +2064,13 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
         pan.value = Offset.Zero
     }
     handle.onFitWidth = {
-        val box = pageBox
-        val viewportW = viewport.value.width
-        if (box != null && box.widthPt > 0f && viewportW > 0f) {
-            // Fit width: scale at which the page's width equals the viewport's.
-            zoom.floatValue = (viewportW / box.widthPt).coerceIn(MIN_ZOOM, MAX_ZOOM)
-            pan.value = Offset.Zero
-        }
+        // With the fit-width base, 100% already IS fit width — the page spans the
+        // viewport edge to edge. The button returns to it and drops any zoom/pan.
+        zoom.floatValue = 1f
+        pan.value = Offset.Zero
     }
-    // 開檔時**不要**再動 zoom：zoom = 1 就是「fit」（fitScale 已經把頁面縮到
-    // 視窗裡，見上面的座標說明）。之前以為要自己 fit 一次，其實是把頁面
+    // 開檔時**不要**再動 zoom：zoom = 1 就是「符合寬度」（fitScale 是 fit-width
+    // 基準，見上面的座標說明）。之前以為要自己 fit 一次，其實是把頁面
     // 乘上了光柵化比例——頁面反而變兩倍大。
     LaunchedEffect(strokes, texts, selectedIds, selectedTextIds, textDraft, pageBox, zoom.floatValue, textSelection) {
             handle.canUndo.value = undoStack.canUndo.value
@@ -2132,13 +2138,15 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
     // keeps working unchanged.
     BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
         val aspect = pageBox?.let { it.heightPt / it.widthPt } ?: 1.4142f
-        // Zoomed-out never shrinks the item: below 1x the fit math already draws
-        // the page smaller inside a full-size item, and shrinking the item too
-        // would apply the zoom twice and strand the page in a void.
+        // Item height = the page's drawn height exactly (fit-width base × zoom):
+        // page width is the item width, page height is width × aspect. Any slack
+        // between this and the drawn page repeats once per page and reads as gaps;
+        // the old max(zoom, 1f) floor also kept a full-size item under a shrunken
+        // zoomed-out page.
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(maxWidth * aspect * max(zoom.floatValue, 1f))
+                .height(maxWidth * aspect * zoom.floatValue)
         ) {
 
         // ── Page + ink, one transformable surface ───────────────────────────

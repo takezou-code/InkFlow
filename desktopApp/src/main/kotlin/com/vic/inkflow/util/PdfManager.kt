@@ -242,11 +242,13 @@ object PdfManager {
     /**
      * The DPI at which this page should be rasterised for the current view.
      *
-     * `zoom = 1` means "fit the page to the window", so the number of screen pixels per
-     * PDF point is `fitScale * zoom` and a 1:1 raster would need `fitScale * zoom * 72` DPI.
-     * Anything below that upscales the bitmap and the text visibly softens, so this
-     * returns "1:1 plus headroom", clamped into [MIN_RENDER_DPI]..[MAX_RENDER_DPI]. An
-     * oversized page is capped further down, inside [dpiWithinBudget].
+     * `zoom = 1` means "fit width" (the viewer's fitScale is `viewportWidth / pageWidthPt`),
+     * so the number of screen pixels per PDF point is `fitScale * zoom` and a 1:1 raster
+     * needs `fitScale * zoom * 72` DPI. Width is the only axis that matters: the page is
+     * laid out to the viewport width and anything taller simply scrolls. Anything below
+     * 1:1 upscales the bitmap and the text visibly softens, so this returns "1:1 plus
+     * headroom", clamped into [MIN_RENDER_DPI]..[MAX_RENDER_DPI]. An oversized page is
+     * capped further down, inside [dpiWithinBudget].
      */
     fun renderDpiFor(
         pageWidthPt: Float,
@@ -257,7 +259,7 @@ object PdfManager {
     ): Float {
         if (pageWidthPt <= 0f || pageHeightPt <= 0f) return BASE_RENDER_DPI
         if (viewportWidthPx <= 0f || viewportHeightPx <= 0f) return BASE_RENDER_DPI
-        val fit = min(viewportWidthPx / pageWidthPt, viewportHeightPx / pageHeightPt)
+        val fit = viewportWidthPx / pageWidthPt
         val needed = fit * zoom * POINTS_PER_INCH * RENDER_HEADROOM
         return needed.coerceIn(MIN_RENDER_DPI, MAX_RENDER_DPI)
     }
