@@ -2965,7 +2965,13 @@ private fun InkToolbar(
         Row(
             modifier = modifier
                 .padding(12.dp)
-                .fauxGlassPanel(InkThemeState.darkMode, pillShape),
+                // chromeGlass over an opaque surface: the chrome material's own
+                // tint is 0.88 alpha, and the remaining 12% let the animated
+                // aurora bleed through the pill — measured as a moving ~10-level
+                // shimmer across 350px, i.e. the "toolbar flickers" report. The
+                // opaque base pins the pill; the dressing still gives the glass.
+                .background(MaterialTheme.colorScheme.surface, pillShape)
+                .chromeGlass(InkThemeState.darkMode, pillShape),
             verticalAlignment = Alignment.CenterVertically
         ) {
             // ── 左：身分 ──
