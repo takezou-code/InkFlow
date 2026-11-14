@@ -2389,7 +2389,10 @@ fun InkCanvas(
                             Paint().apply { blendMode = BlendMode.Clear }
                         )
                     }
+                    // 高亮筆永不烙進透明位圖：Multiply 需要「底」，透明底會烤成半透明灰
+                    // （文字被洗灰而高亮失去黃）；走下面 drawImage 後面的向量層。
                     strokes.forEach { swp ->
+                        if (swp.stroke.isHighlighter) return@forEach
                         if (swp.stroke.id in previewIds) return@forEach
                         if (swp.stroke.id in overlayIds) return@forEach
                         if (swp.stroke.shapeType != null) {
@@ -2427,6 +2430,7 @@ fun InkCanvas(
                         Paint().apply { blendMode = BlendMode.Clear }
                     )
                     strokes.forEach { swp ->
+                        if (swp.stroke.isHighlighter) return@forEach
                         if (swp.stroke.id in previewIds) return@forEach
                         if (swp.stroke.id in overlayIds) return@forEach
                         if (!strokeRect(swp).inflate(INK_DIRTY_INFLATE_PX).overlaps(zone)) return@forEach
@@ -2616,6 +2620,44 @@ fun InkCanvas(
                 // 放大用 High 品質，歷史墨不糊。
                 filterQuality = FilterQuality.High
             )
+
+            // 高亮筆向量層：快取烙不進透明位圖——Multiply 需要底，透明底烤出來的是
+            // 半透明灰球（文字被洗灰、黃色不見）；與活筆／快照／PDF／桌面同源
+            // （:shared strokePaint＝Multiply）。每幀向量直畫，髒區邏輯不受影響
+            // （pen 底層不變），刪筆／復原照常走 strokes 的增刪。
+            run {
+                val hlCommitted = strokes.filter {
+                    it.stroke.isHighlighter && it.stroke.shapeType == null
+                }
+                if (hlCommitted.isNotEmpty()) {
+                    drawIntoCanvas { cvs ->
+                        cvs.save()
+                        cvs.scale(sx, sy)
+                        hlCommitted.forEach { swp ->
+                            val cached = committedPathCache[swp.stroke.id]
+                            val path = if (cached != null && swp.matches(cached)) {
+                                cached.path
+                            } else {
+                                swp.points.toComposePath().also {
+                                    committedPathCache[swp.stroke.id] = CachedStrokePath(
+                                        path = it,
+                                        pointCount = swp.points.size,
+                                        boundsLeft = swp.stroke.boundsLeft,
+                                        boundsTop = swp.stroke.boundsTop,
+                                        boundsRight = swp.stroke.boundsRight,
+                                        boundsBottom = swp.stroke.boundsBottom
+                                    )
+                                }
+                            }
+                            drawPathOnCanvas(
+                                cvs, path, Color(swp.stroke.color),
+                                swp.stroke.strokeWidth, swp.stroke.isHighlighter
+                            )
+                        }
+                        cvs.restore()
+                    }
+                }
+            }
 
             // ── 向量層：樂觀筆（DB 未回報）＋ 最後一筆熱筆 ──
             // 畫在快取圖之上、提交預覽與選取框之下。用同一支 drawPathOnCanvas，
