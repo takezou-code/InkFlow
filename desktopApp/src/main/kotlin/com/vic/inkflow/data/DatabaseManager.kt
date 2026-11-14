@@ -1153,6 +1153,27 @@ class DatabaseManager(private val dbPath: String) {
             )
         }
 
+    /** Mirror of the tablet's aggregate queries: no full points scan for the continue-page probe. */
+    fun strokeBottomY(documentUri: String, pageIndex: Int): Float = synchronized(dbLock) {
+        connection?.prepareStatement(
+            "SELECT COALESCE(MAX(boundsBottom), 0) FROM strokes WHERE documentUri = ? AND pageIndex = ? AND deletedAt IS NULL"
+        )?.use { stmt ->
+            stmt.setString(1, documentUri)
+            stmt.setInt(2, pageIndex)
+            stmt.executeQuery().use { rs -> if (rs.next()) rs.getFloat(1) else 0f }
+        } ?: 0f
+    }
+
+    fun hasLiveStrokes(documentUri: String, pageIndex: Int): Boolean = synchronized(dbLock) {
+        connection?.prepareStatement(
+            "SELECT EXISTS(SELECT 1 FROM strokes WHERE documentUri = ? AND pageIndex = ? AND deletedAt IS NULL)"
+        )?.use { stmt ->
+            stmt.setString(1, documentUri)
+            stmt.setInt(2, pageIndex)
+            stmt.executeQuery().use { rs -> rs.next() && rs.getInt(1) != 0 }
+        } ?: false
+    }
+
     fun getAllStrokesForDocument(documentUri: String): List<StrokeWithPoints> =
         synchronized(dbLock) { queryStrokes("SELECT * FROM strokes WHERE documentUri = ?", documentUri) }
 

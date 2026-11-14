@@ -66,6 +66,12 @@ class DesktopStrokeStore(
     override suspend fun getStrokesForPageSync(documentUri: String, pageIndex: Int): List<StrokeWithSamples> =
         db.getStrokesForPage(documentUri, pageIndex).map { it.toModel() }
 
+    override suspend fun strokeBottomY(documentUri: String, pageIndex: Int): Float =
+        db.strokeBottomY(documentUri, pageIndex)
+
+    override suspend fun hasLiveStrokes(documentUri: String, pageIndex: Int): Boolean =
+        db.hasLiveStrokes(documentUri, pageIndex)
+
     override suspend fun getAllStrokesForDocument(documentUri: String): List<StrokeWithSamples> =
         db.getAllStrokesForDocument(documentUri).map { it.toModel() }
 

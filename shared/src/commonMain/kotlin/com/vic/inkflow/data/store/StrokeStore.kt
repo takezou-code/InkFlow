@@ -41,6 +41,16 @@ interface StrokeStore {
     suspend fun getAllStrokesForDocument(documentUri: String): List<StrokeWithSamples>
 
     /**
+     * 這頁活著筆跡的最大 `boundsBottom`（model pt）——只讀彙總（`MAX(boundsBottom)`），
+     * 不撈點列。AI 匯入的續頁量測每次都要問這個，用整頁 sync fetch 會把 1.5M 點的
+     * 表反覆掃過去，大文件直接 OOM（2026-11-14 實機）。無活著筆跡回 0。
+     */
+    suspend fun strokeBottomY(documentUri: String, pageIndex: Int): Float
+
+    /** 這頁有沒有活著的筆跡（`SELECT 1 … LIMIT 1`），不撈整頁。 */
+    suspend fun hasLiveStrokes(documentUri: String, pageIndex: Int): Boolean
+
+    /**
      * Per-page stroke counts, for the `page_counts` sync verb. A GROUP BY query —
      * not a full load — because the verb exists precisely to avoid loading the
      * whole document on large files.

@@ -44,6 +44,17 @@ interface StrokeDao {
     @Query("SELECT * FROM strokes WHERE documentUri = :documentUri AND pageIndex = :pageIndex AND deletedAt IS NULL")
     suspend fun getStrokesForPageSync(documentUri: String, pageIndex: Int): List<StrokeWithPoints>
 
+    /**
+     * 這頁活著筆跡的最大 boundsBottom——純彙總，不碰 points 關係查詢。
+     * AI 匯入的續頁量測每次都問這個，整頁撈 points 是 OOM 的直接來源。
+     */
+    @Query("SELECT COALESCE(MAX(boundsBottom), 0) FROM strokes WHERE documentUri = :documentUri AND pageIndex = :pageIndex AND deletedAt IS NULL")
+    suspend fun strokeBottomY(documentUri: String, pageIndex: Int): Float
+
+    /** 這頁有沒有活著的筆跡（EXISTS，索引走得動，不撈整頁）。 */
+    @Query("SELECT EXISTS(SELECT 1 FROM strokes WHERE documentUri = :documentUri AND pageIndex = :pageIndex AND deletedAt IS NULL)")
+    suspend fun hasLiveStrokes(documentUri: String, pageIndex: Int): Boolean
+
     @Transaction
     @Query("SELECT * FROM strokes WHERE documentUri = :documentUri AND deletedAt IS NULL")
     suspend fun getAllStrokesForDocument(documentUri: String): List<StrokeWithPoints>

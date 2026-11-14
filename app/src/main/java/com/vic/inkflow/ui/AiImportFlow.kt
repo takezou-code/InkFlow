@@ -502,11 +502,15 @@ suspend fun resolveContinueTop(
     if (sourcePage < 0 || sourcePage >= pdfViewModel.pageCount.value) return null
     Log.d("InkFlowDbg", "CONTINUE begin p=$sourcePage pageCount=${pdfViewModel.pageCount.value} modelH=$modelH")
     try {
-        val strokes = repos.strokes.getStrokesForPageSync(documentUri, sourcePage)
+        // Long-page probe must NOT sweep the points relation table (1.5M rows in big
+        // notebooks): read the two aggregates instead. Texts/images stay row fetches —
+        // they're a few dozen rows per page, no points involved.
+        val strokeExists = repos.strokes.hasLiveStrokes(documentUri, sourcePage)
+        val strokeBottom = if (strokeExists) repos.strokes.strokeBottomY(documentUri, sourcePage) else 0f
         val texts = repos.texts.getForPageSync(documentUri, sourcePage)
         val images = repos.images.getForPageSync(documentUri, sourcePage)
-        val dbEmpty = strokes.isEmpty() && texts.isEmpty() && images.isEmpty()
-        Log.d("InkFlowDbg", "CONTINUE DB p=$sourcePage strokes=${strokes.size} texts=${texts.size} images=${images.size} dbEmpty=$dbEmpty")
+        val dbEmpty = !strokeExists && texts.isEmpty() && images.isEmpty()
+        Log.d("InkFlowDbg", "CONTINUE DB p=$sourcePage strokeBottom=$strokeBottom strokeExists=$strokeExists texts=${texts.size} images=${images.size} dbEmpty=$dbEmpty")
         val bmp = withTimeoutOrNull(1200) {
             pdfViewModel.getPageBitmap(sourcePage).filterNotNull().first()
         } ?: pdfViewModel.getPageBitmap(sourcePage).value
@@ -524,10 +528,12 @@ suspend fun resolveContinueTop(
             return null
         }
         val trace = mutableListOf<String>()
-        val bottom = measureContentBottom(strokes.map { it.stroke }, texts, images, ::textMetricsOf, trace = trace) ?: run {
+        val restBottom = measureContentBottom(emptyList(), texts, images, ::textMetricsOf, trace = trace) ?: run {
             Log.d("InkFlowDbg", "CONTINUE skip p=$sourcePage unmeasurable (stamp?)")
             return null
         }
+        trace.add("strokeBottom=$strokeBottom (aggregate probe)")
+        val bottom = maxOf(strokeBottom, restBottom)
         trace.forEach { Log.d("InkFlowDbg", "CONTINUE $it") }
         val top = continueTop(bottom, modelH, textMetricsOf(16f).first) // 16 = paginate 預設字號
         Log.d("InkFlowDbg", "CONTINUE decision p=$sourcePage bottom=$bottom top=$top modelH=$modelH")
