@@ -92,6 +92,8 @@ import sh.calvin.reorderable.rememberReorderableLazyGridState
 internal fun SidebarPageGrid(
     pageCount: Int,
     currentPageIndex: Int,
+    // 顯示頁（逐幀最大可見頁）：高亮/自動捲列用這個；currentPageIndex 保留給提交語意。
+    followPage: Int = currentPageIndex,
     pdfViewModel: PdfViewModel,
     repos: InkFlowRepositories,
     documentUri: String,
@@ -226,14 +228,14 @@ internal fun SidebarPageGrid(
     val orderForGrid = previewOrder
 
     // 欄數實測，不能寫死。
-    // 舊碼寫 `currentPageIndex / 4`，欄數一改（現在是 7 欄）就會把當前頁捲到錯的列。
+    // 舊碼寫 `followPage / 4`，欄數一改（現在是 7 欄）就會把當前頁捲到錯的列。
     // 同一列的 item 共用同一個 y offset，取最上面一列數幾個即為欄數。
     val columnCount by remember { derivedStateOf { gridState.measuredColumnCount() } }
     var didInitialScroll by remember { mutableStateOf(false) }
     LaunchedEffect(columnCount) {
         if (!didInitialScroll && columnCount > 0) {
             didInitialScroll = true
-            val row = currentPageIndex / columnCount
+            val row = followPage / columnCount
             gridState.scrollToItem(index = (row * columnCount).coerceAtLeast(0))
         }
     }
@@ -469,7 +471,7 @@ internal fun SidebarPageGrid(
                 val imagesShown = frozenImages ?: images
                 val textsShown = frozenTexts ?: texts
                 val currentListIndex = it
-                val isCurrent = !isSelectionMode && index == currentPageIndex
+                val isCurrent = !isSelectionMode && index == followPage
                 // 選中放大必須套在「整張卡」（玻璃框＋白紙）上。
                 // 舊碼只放大內層白紙 → 白紙溢出框外，看起來像破版。
                 // 彈簧參數沿用 PageThumbnail 原本那組，手感才一致。
@@ -559,7 +561,7 @@ internal fun SidebarPageGrid(
                                 imageAnnotations = imagesShown,
                                 textAnnotations = textsShown,
                                 isSelected = index in selectedPages ||
-                                    (!isSelectionMode && index == currentPageIndex),
+                                    (!isSelectionMode && index == followPage),
                                 isBookmarked = index in bookmarkedPages,
                                 onBookmarkToggle = { newState ->
                                     pdfViewModel.toggleBookmark(documentUri, index, newState)

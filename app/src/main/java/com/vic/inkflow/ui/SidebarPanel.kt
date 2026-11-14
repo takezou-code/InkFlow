@@ -156,8 +156,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -233,7 +231,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -245,6 +242,9 @@ internal fun Sidebar(
     pdfViewModel: PdfViewModel,
     pageCount: Int,
     currentPageIndex: Int,
+    // 顯示頁（逐幀最大可見頁）：高亮／跟隨用這個，提交類（新增/還原對照）還是 currentPageIndex。
+    // 預設 = currentPageIndex，其他呼叫端行為不變。
+    followPage: Int = currentPageIndex,
     repos: InkFlowRepositories,
     documentUri: String,
     modelWidth: Float,
@@ -456,37 +456,14 @@ internal fun Sidebar(
                     val sidebarStageRef = androidx.compose.runtime.rememberUpdatedState(sidebarStage)
                     val sidebarCurrentRef = androidx.compose.runtime.rememberUpdatedState(currentPageIndex)
 
-                    // 高亮（主題色）跟隨：**捲動時完全不上色，停穩才亮**。
+                    // 高亮（主題色）＝顯示頁：跟逐幀最大可見頁即時跳，不等停穩。
                     //
-                    // 實機回報兩個症狀：換頁時主題色先跳到新頁碼、清單才滑到中間（順序反了）；
-                    // 而且滑動過程中舊頁碼一直亮著，看起來像「亮錯頁」。
-                    // 現在一律：一換頁／一拖曳就熄燈，等清單真的停下來才在正中央那頁點燈。
-                    //
-                    // 判定用「清單是否在捲」而不是旗標；「紙面跟隨」是 EditorScreen 150ms 防抖後
-                    // 才排動畫，所以先等 250ms 看有沒有捲動要開始，避免「先亮再熄」的閃爍。
-                    // 拖曳中不亮（跟手會變成拖過去的每一頁都在閃），放手＋慣性停穩才亮。
-                    var highlightedPage by remember { mutableStateOf<Int?>(currentPageIndex) }
-                    LaunchedEffect(currentPageIndex, sidebarUserScrolling) {
-                        if (currentPageIndex == highlightedPage) return@LaunchedEffect
-                        highlightedPage = null
-                        // 已經在捲（手指拖曳）就不用等：等停穩由下面的 watcher 點燈。
-                        if (listState.isScrollInProgress) return@LaunchedEffect
-                        val started = withTimeoutOrNull(250L) {
-                            snapshotFlow { listState.isScrollInProgress }.first { it }
-                        }
-                        // 有捲動 → 交給 watcher；沒有 → 這次換頁不會動清單，直接亮。
-                        if (started == null) highlightedPage = currentPageIndex
-                    }
-                    LaunchedEffect(listState) {
-                        snapshotFlow { listState.isScrollInProgress }.collect { scrolling ->
-                            if (scrolling) {
-                                highlightedPage = null
-                            } else if (highlightedPage == null) {
-                                // 停穩那一幀 currentPageIndex 可能還沒落定，讓一幀再點燈。
-                                withFrameNanos { }
-                                highlightedPage = sidebarCurrentRef.value
-                            }
-                        }
+                    // 舊碼的兩道閘（捲動中熄燈＋停穩才點燈＋250ms 等清單開動）是為了
+                    // 解決「換頁瞬間亮錯頁」——但病根是高亮 key 在已提交頁上，跟側欄
+                    // 置中對不齊。現在紙滑到哪一頁、哪一頁就亮，循序由 displayedPage 保證。
+                    var highlightedPage by remember { mutableStateOf(followPage) }
+                    LaunchedEffect(followPage) {
+                        if (highlightedPage != followPage) highlightedPage = followPage
                     }
                     androidx.compose.runtime.LaunchedEffect(listState) {
                         listState.interactionSource.interactions.collect { interaction ->
@@ -582,8 +559,7 @@ internal fun Sidebar(
                                         strokes = strokes,
                                         imageAnnotations = images,
                                         textAnnotations = texts,
-                                        // 高亮不跟 currentPageIndex 即時跳：等它滑到中央才亮
-                                        // （見上方 highlightedPage 的說明）。
+                                        // 高亮＝顯示頁即時跟（紙滑到哪頁哪頁亮）。
                                         isSelected = index == highlightedPage,
                                         isBookmarked = index in bookmarkedPages,
                                         onBookmarkToggle = { newState -> pdfViewModel.toggleBookmark(documentUri, index, newState) },
