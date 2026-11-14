@@ -42,6 +42,32 @@ import com.vic.inkflow.util.StrokePoint
  * @param alpha multiplier on the stroke's own colour alpha; 1f draws normally,
  *   <1f is used for the eraser's live "about to be erased" dimming.
  */
+/**
+ * One ink point mapped to screen pixels, with the ONE width pipeline that both
+ * the live preview and the committed stroke go through: per-point model width
+ * (falling back to the stroke's base width), floored in model units, scaled,
+ * then floored in pixels. The desktop preview used to take the per-point model
+ * width straight as a pixel width - no scale, no floors - so the stroke visibly
+ * changed width the moment it was committed. The preview and the committed path
+ * must be pixel-identical; both build their points through this function.
+ */
+fun inkStrokePoint(
+    x: Float,
+    y: Float,
+    modelWidth: Float,
+    fallbackPt: Float,
+    originX: Float,
+    originY: Float,
+    scale: Float
+): StrokePoint = StrokePoint(
+    x = (x - originX) * scale,
+    y = (y - originY) * scale,
+    width = (modelWidth.takeIf { w -> w > 0f } ?: fallbackPt)
+        .coerceAtLeast(MIN_INK_PT)
+        .times(scale)
+        .coerceAtLeast(MIN_INK_PX)
+)
+
 fun DrawScope.drawModelStroke(
     swp: StrokeWithSamples,
     scale: Float,
@@ -60,13 +86,10 @@ fun DrawScope.drawModelStroke(
     }
 
     val strokePoints = pts.map {
-        StrokePoint(
-            x = (it.x - originX) * scale,
-            y = (it.y - originY) * scale,
-            width = (it.width.takeIf { w -> w > 0f } ?: swp.stroke.strokeWidth)
-                .coerceAtLeast(MIN_INK_PT)
-                .times(scale)
-                .coerceAtLeast(MIN_INK_PX)
+        inkStrokePoint(
+            x = it.x, y = it.y,
+            modelWidth = it.width, fallbackPt = swp.stroke.strokeWidth,
+            originX = originX, originY = originY, scale = scale
         )
     }
     val ink = Color(swp.stroke.color)

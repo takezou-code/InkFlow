@@ -90,6 +90,7 @@ import androidx.compose.ui.input.pointer.isCtrlPressed
 import androidx.compose.ui.input.pointer.isMetaPressed
 import androidx.compose.ui.input.pointer.isShiftPressed
 import androidx.compose.ui.input.pointer.onPointerEvent
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.runtime.rememberUpdatedState
@@ -129,6 +130,7 @@ import com.vic.inkflow.util.PdfManager
 import com.vic.inkflow.util.PdfResult
 import com.vic.inkflow.util.RenderedPage
 import com.vic.inkflow.ui.drawModelStroke
+import com.vic.inkflow.ui.inkStrokePoint
 import com.vic.inkflow.util.ShapeGeometry
 import com.vic.inkflow.util.UndoStack
 import kotlinx.coroutines.Dispatchers
@@ -628,6 +630,7 @@ fun PdfViewer(
                             shapeSubType = shapeSubType,
                             handle = handles.getOrPut(idx) { PageHandle() },
                             sharedZoom = sharedZoom,
+                            listState = listState,
                             onFocused = { focusPage(idx) },
                             onDocCleared = { docRefresh++ },
                             noteLanding = if (idx == focusedPage) noteLanding else null,
@@ -726,6 +729,8 @@ private fun PageView(
     shapeSubType: com.vic.inkflow.util.ShapeType = com.vic.inkflow.util.ShapeType.RECT,
     handle: PageHandle,
     sharedZoom: androidx.compose.runtime.MutableFloatState,
+    /** The document list, for the hand tool: a grab that the page can't absorb scrolls the document. */
+    listState: androidx.compose.foundation.lazy.LazyListState,
     onFocused: () -> Unit = {},
     onDocCleared: () -> Unit = {},
     noteLanding: com.vic.inkflow.agent.NoteLandingHandle? = null,
@@ -752,7 +757,14 @@ private fun PageView(
         persistWith(label, { saveError = it }, block)
 
     // ── Ink ─────────────────────────────────────────────────────────────────
-    var strokes by remember(documentUri, requestedPage, refreshToken, docRefresh) {
+    // NOTE: refreshToken / docRefresh must NOT be remember keys here. They are
+    // keyed on the LaunchedEffect below (which reloads from the database), but
+    // putting them here too reset the list to EMPTY on every token bump — and
+    // every pen lift bumps one via onInkChanged, and every sync pass bumps it
+    // again. The user saw the ink blank out and fade back in twice per stroke.
+    // With the token only on the effect, the old list stays on screen until the
+    // reload swaps in the fresh (identical) one: no blank frame, no flicker.
+    var strokes by remember(documentUri, requestedPage) {
         mutableStateOf<List<StrokeWithPoints>>(emptyList())
     }
 
@@ -761,7 +773,7 @@ private fun PageView(
     // no width, and forcing it into the envelope renderer would invent geometry
     // for it. Its own list also keeps the ink fast path from re-measuring text
     // metrics on every pointer move.
-    var texts by remember(documentUri, requestedPage, refreshToken, docRefresh) {
+    var texts by remember(documentUri, requestedPage) {
         mutableStateOf<List<TextAnnotationEntity>>(emptyList())
     }
 
@@ -2217,10 +2229,6 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                     // coroutine captures values at start, so without them every
                     // gesture after a switch would keep drawing with the old tool.
                     if (!editable) return@pointerInput
-                    // Hand tool: pan via the page list (unconsumed drags fall
-                    // through to it). Text selection only takes over the stream
-                    // when the press actually lands on a character.
-                    if (tool == InkTool.Hand && textSpans.isEmpty()) return@pointerInput
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
                         // Any press on this page makes it the focused one, so the
@@ -2231,8 +2239,7 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                         val start = toModel(down.position)
                             ?: return@awaitEachGesture // press landed in the margin
                         // Text selection on the grab hand: only when the press
-                        // hits a character. Otherwise nothing is consumed and the
-                        // drag falls through to the page list, which pans.
+                        // hits a character.
                         if (tool == InkTool.Hand) {
                             val sIdx = charIndexAt(start)
                             if (sIdx != null) {
@@ -2248,6 +2255,32 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                                         }
                                     }
                                     ch.consume()
+                                }
+                            } else {
+                                // Grab. Consuming the down is what stops the
+                                // transform-gesture handler above from turning the
+                                // drag into a page pan - which clamps to zero at
+                                // fit-width zoom 1 and made the tool read as dead.
+                                // The zoomed page absorbs the drag up to its edge;
+                                // whatever is left over scrolls the document list,
+                                // so a drag past the page edge keeps moving the
+                                // document the way a mainstream reader pans.
+                                down.consume()
+                                while (true) {
+                                    val ev = awaitPointerEvent()
+                                    val ch = ev.changes.firstOrNull { it.pressed } ?: break
+                                    val delta = ch.positionChange()
+                                    if (delta != Offset.Zero) {
+                                        val before = pan.value
+                                        val next = clampPan(before + delta)
+                                        pan.value = next
+                                        val leftover = Offset(
+                                            delta.x - (next.x - before.x),
+                                            delta.y - (next.y - before.y)
+                                        )
+                                        if (leftover.y != 0f) listState.dispatchRawDelta(leftover.y)
+                                        ch.consume()
+                                    }
                                 }
                             }
                             return@awaitEachGesture
@@ -2533,18 +2566,17 @@ fun upsertStrokeOp(swp: com.vic.inkflow.data.StrokeWithPoints) =
                     // the page was centred with a margin.
                     liveStroke?.takeIf { it.isNotEmpty() }?.let { pts ->
                         val previewBase = if (tool == InkTool.Highlighter) inkWidthPt * HIGHLIGHTER_WIDTH_MULT else inkWidthPt
-                        val screenPts = pts.map {
-                            Offset(
-                                (it.x - b.originX) * scale,
-                                (it.y - b.originY) * scale
-                            )
-                        }
                         drawPath(
                             path = com.vic.inkflow.util.EnvelopeUtils.generateEnvelopePath(
-                                screenPts.mapIndexed { i, o ->
-                                    com.vic.inkflow.util.StrokePoint(
-                                        o.x, o.y,
-                                        liveStrokeWidths.getOrNull(i) ?: (previewBase * scale)
+                                pts.mapIndexed { i, p ->
+                                    // 同一個寬度管線（`:shared` 的 inkStrokePoint）：
+                                    // 預覽與定稿必須像素級一致，抬筆那一幀才不會變形。
+                                    inkStrokePoint(
+                                        x = p.x, y = p.y,
+                                        modelWidth = liveStrokeWidths.getOrElse(i) { 0f },
+                                        fallbackPt = previewBase,
+                                        originX = b.originX, originY = b.originY,
+                                        scale = scale
                                     )
                                 }
                             ),
