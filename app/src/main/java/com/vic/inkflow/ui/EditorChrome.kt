@@ -313,6 +313,7 @@ fun TabletEditorTopBar(
     val canRedo by viewModel.canRedo.collectAsState()
     val inputMode by viewModel.inputMode.collectAsState()
     val strokeWidth by viewModel.strokeWidth.collectAsState()
+    val eraserRadius by viewModel.eraserRadius.collectAsState()
     val isDarkSurface = MaterialTheme.colorScheme.background.luminance() < 0.5f
     val shellColor = MaterialTheme.colorScheme.primary.copy(alpha = if (isDarkSurface) 0.10f else 0.08f)
     val clusterColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = if (isDarkSurface) 0.78f else 0.94f)
@@ -457,8 +458,11 @@ fun TabletEditorTopBar(
                             )
                             EditorIconButton(
                                 onClick = {
-                                    viewModel.onToolSelected(Tool.ERASER)
-                                    onHideStrokeWidthSlider()
+                                    if (activeTool == Tool.ERASER) onToggleStrokeWidthSlider()
+                                    else {
+                                        viewModel.onToolSelected(Tool.ERASER)
+                                        onHideStrokeWidthSlider()
+                                    }
                                 },
                                 isActive = activeTool == Tool.ERASER,
                                 icon = Icons.Outlined.DeleteOutline,
@@ -668,7 +672,8 @@ fun TabletEditorTopBar(
                     }
 
                     AnimatedVisibility(
-                        visible = showStrokeWidthSlider && (activeTool == Tool.PEN || activeTool == Tool.HIGHLIGHTER),
+                        visible = showStrokeWidthSlider &&
+                            (activeTool == Tool.PEN || activeTool == Tool.HIGHLIGHTER || activeTool == Tool.ERASER),
                         enter = fadeIn(tween(180)) + androidx.compose.animation.expandHorizontally(tween(220)),
                         exit = fadeOut(tween(150)) + androidx.compose.animation.shrinkHorizontally(tween(180))
                     ) {
@@ -679,7 +684,7 @@ fun TabletEditorTopBar(
                             contentColor = MaterialTheme.colorScheme.primary
                         ) {
                             Text(
-                                text = "粗細 ${strokeWidth.toInt()} px",
+                                text = if (activeTool == Tool.ERASER) "大小 ${eraserRadius.toInt()} px" else "粗細 ${strokeWidth.toInt()} px",
                                 modifier = Modifier
                                     .fauxGlassPanel(isDarkTheme, ShapeMd)
                                     .padding(horizontal = 10.dp, vertical = 7.dp),

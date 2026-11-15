@@ -54,6 +54,12 @@ class FakeEditorSettingsRepository(
 
     override fun getWidthResponsiveness(): Float = widthResponsiveness
 
+    override suspend fun setEraserRadius(radius: Float) {
+        writes += "setEraserRadius($radius)"
+    }
+
+    override fun getEraserRadius(): Float = prefs.eraserRadius
+
     companion object {
         fun defaultPrefs() = DrawingPreferences(
             tool = Tool.PEN,
@@ -72,7 +78,8 @@ class FakeEditorSettingsRepository(
             strokeSpeedSensitivity = 1f,
             touchCalEnabled = false,
             touchCalDxDp = 0f,
-            touchCalDyDp = 0f
+            touchCalDyDp = 0f,
+            eraserRadius = 10f
         )
     }
 }

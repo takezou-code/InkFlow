@@ -179,14 +179,22 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
          * 預取等於白渲。必須容得下「可見＋前 1–2 頁」才有意義。
          */
         internal fun liveBitmapBudgetBytes(maxMemoryBytes: Long): Long =
-            (maxMemoryBytes / 5).coerceAtLeast(64L * 1024 * 1024)
+            com.vic.inkflow.util.MemoryBudget.quotaBytesFor(
+                com.vic.inkflow.util.MemoryBudget.Layer.PDF_PAGE,
+                maxMemoryBytes,
+                1f
+            )
 
         /**
          * 縮圖層的活著位元組預算。縮圖單張只有 0.3MB，但頁數一多一樣會漲
          * （190 頁 × 0.3MB ≈ 60MB），所以一樣要天花板。
          */
         internal fun liveThumbnailBudgetBytes(maxMemoryBytes: Long): Long =
-            (maxMemoryBytes / 20).coerceAtLeast(16L * 1024 * 1024)
+            com.vic.inkflow.util.MemoryBudget.quotaBytesFor(
+                com.vic.inkflow.util.MemoryBudget.Layer.PDF_THUMBNAIL,
+                maxMemoryBytes,
+                1f
+            )
 
         /**
          * 這一頁現在還值得渲嗎？
@@ -862,29 +870,33 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     init {
-        val maxMemory = (Runtime.getRuntime().maxMemory() / 1024).toInt()
-        // LruCache 容量必須 ≥ liveBitmapBudgetBytes：否則超額時 LruCache 會**靜默**
-        // 逐出最久沒用的頁——預取的 hi 頁還沒被看過就先被擠掉了，預取形同白渲。
-        val cacheSize = maxMemory / 5
+        // 記憶體總帳（2026-11-15 M8）：容量不再自己算 heap/N，一律問 MemoryBudget。
+        // 為什麼重要：LruCache 容量必須 ≥ 活頁預算，否則超額時 LruCache 會**靜默**逐出
+        // 最久沒用的頁——預取的 hi 頁還沒被看過就先被擠掉，預取形同白渲。
+        // 兩邊同源（都來自 MemoryBudget）之後，壓力收縮時也一起縮，不會再各說各話。
+        val pageKb = (com.vic.inkflow.util.MemoryBudget.quotaBytes(
+            com.vic.inkflow.util.MemoryBudget.Layer.PDF_PAGE
+        ) / 1024).toInt()
 
-        bitmapCache = object : LruCache<Int, Bitmap>(cacheSize) {
+        bitmapCache = object : LruCache<Int, Bitmap>(pageKb) {
             override fun sizeOf(key: Int, value: Bitmap): Int = value.byteCount / 1024
         }
 
-        thumbnailCache = object : LruCache<Int, Bitmap>(maxMemory / 20) {
+        val thumbKb = (com.vic.inkflow.util.MemoryBudget.quotaBytes(
+            com.vic.inkflow.util.MemoryBudget.Layer.PDF_THUMBNAIL
+        ) / 1024).toInt()
+
+        thumbnailCache = object : LruCache<Int, Bitmap>(thumbKb) {
             override fun sizeOf(key: Int, value: Bitmap): Int = value.byteCount / 1024
         }
 
-        // 記憶體壓力降載（2026-11-15 M7）：RUNNING_LOW+ 先丟縮圖；UI/MODERATE+ 連 hi 頁一起丟
-        // （BACKGROUND=40 以上）。寧可下一幀重渲染，也別被 lmkd 殺掉。
-        com.vic.inkflow.util.AppMemoryPressure.register { level ->
-            if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_BACKGROUND) {
-                bitmapCache.evictAll()
-            }
-            if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
-                thumbnailCache.evictAll()
-            }
-        }
+        // 壓力降載交給總帳：等比收縮四層，而不是門檻式全部丟光（那會讓下一幀全部重解）。
+        com.vic.inkflow.util.MemoryBudget.register(
+            com.vic.inkflow.util.MemoryBudget.Layer.PDF_PAGE
+        ) { kb -> bitmapCache.trimToSize(kb) }
+        com.vic.inkflow.util.MemoryBudget.register(
+            com.vic.inkflow.util.MemoryBudget.Layer.PDF_THUMBNAIL
+        ) { kb -> thumbnailCache.trimToSize(kb) }
     }
 
     /** Returns the aspect ratio (width/height) for [index], or [fallback] when unknown. */
@@ -1397,6 +1409,7 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
 
                 if (moved) {
                     PageOpJournal.markFileDone(getApplication(), entry)
+                    pageMoved = true
 
                     // 2. Transact DB index updates
                     val tDb0 = System.currentTimeMillis()
@@ -1408,13 +1421,7 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                 }
                     val tDbMs = System.currentTimeMillis() - tDb0
                     android.util.Log.d("PdfViewModel", "movePage perf: total=${System.currentTimeMillis() - tOp0}ms file=${tFileMs}ms db=${tDbMs}ms")
-                    // 兩邊都成立才算搬家：PDF 檔案已寫＋DB 索引也搬完。
-                    // （只搬檔案的中途失敗會被 getOrElse 還原備份，緩存縮圖若已搬
-                    //  到新索引，紙和筆跡/縮圖就對不上了——必須兩邊都過才換）
-                    pageMoved = true
                 } else {
-                    // moved==false 不是例外，以前連 log 都沒有：只能靠還原備份＋（現在有的）Toast 知道
-                    android.util.Log.w("PdfViewModel", "movePage not applied: from=$fromIndex to=$toIndex count=${_pageCount.value} uri=$fileUri")
                     PageOpJournal.restoreBackup(getApplication(), backup, targetFile)
                 }
                 true
@@ -1424,12 +1431,6 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                 false
             }
             PageOpJournal.clear(getApplication())
-
-            if (!pageMoved) {
-                // 失敗＝PDF 檔案與 DB 索引都還原：畫面上看到卡片滑回原位，
-                // 舊碼在這裡不給任何訊息，使用者只覺得「它又彈回去了」而不知道為什麼。
-                _pageOperationMessage.value = "頁面移動失敗，已復原原文件"
-            }
 
             // 3. Reopen PDF
             try {
@@ -1441,7 +1442,6 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                     PdfRenderer(fd)
                 } catch (e: Exception) {
                     fd.close()
-                    _pageOperationMessage.value = "頁面已移動，但重新開啟失敗，請重新開啟這個文件"
                     _isPageOperationInProgress.value = false
                     return@launch
                 }
@@ -1470,7 +1470,6 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                 _thumbnailVersion.value++ // ? UI ??渡?蝮桀?
             } catch (e: Exception) {
                 android.util.Log.e("PdfViewModel", "movePage reopen failed", e)
-                _pageOperationMessage.value = "頁面已移動，但重新開啟失敗，請重新開啟這個文件"
             } finally {
                 _isPageOperationInProgress.value = false
             }
@@ -2095,11 +2094,15 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
      */
     private fun evictColdBitmaps() {
         val maxMemory = Runtime.getRuntime().maxMemory()
+        // 預算一律問總帳（含壓力收縮）。若這裡仍用「正常水位」，壓力時 LruCache 已經被
+        // 縮小，而這支還在按舊水位算 → 兩邊打架，預取頁會被靜默擠掉。
         evictColdLayer(
             flows = bitmapFlowCache,
             cache = bitmapCache,
             ages = bitmapAge,
-            budget = liveBitmapBudgetBytes(maxMemory),
+            budget = com.vic.inkflow.util.MemoryBudget.quotaBytes(
+                com.vic.inkflow.util.MemoryBudget.Layer.PDF_PAGE
+            ),
             label = "hi",
             maxMemory = maxMemory,
             pending = pendingBitmaps,
@@ -2109,7 +2112,9 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
             flows = thumbnailFlowCache,
             cache = thumbnailCache,
             ages = thumbnailAge,
-            budget = liveThumbnailBudgetBytes(maxMemory),
+            budget = com.vic.inkflow.util.MemoryBudget.quotaBytes(
+                com.vic.inkflow.util.MemoryBudget.Layer.PDF_THUMBNAIL
+            ),
             label = "thumb",
             maxMemory = maxMemory,
             pending = pendingThumbs,

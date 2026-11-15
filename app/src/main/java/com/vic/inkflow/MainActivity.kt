@@ -63,4 +63,16 @@ PDFBoxResourceLoader.init(applicationContext)
             InkLayerApp(db = db)
         }
     }
+
+    /**
+     * 回到前景：記憶體總帳解除「真壓力」水位（2026-11-15 M8）。
+     *
+     * 為什麼需要：`TRIM_MEMORY_RUNNING_*` 是真壓力，收到後四層快取會等比縮小；
+     * 但系統沒有「壓力解除」的回調。若不主動還原，使用者切出去再回來，快取永遠停在
+     * 縮小後的水位 → 每頁重解、處處等待。前景化是唯一可靠的還原時機。
+     */
+    override fun onResume() {
+        super.onResume()
+        com.vic.inkflow.util.MemoryBudget.onForeground()
+    }
 }

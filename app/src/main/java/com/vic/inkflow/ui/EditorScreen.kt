@@ -769,17 +769,21 @@ fun TabletEditorScreen(
         kotlinx.coroutines.delay(150)
         docViewModel.updateLastPage(uri.toString(), currentPageIndex)
     }
-    // ② 側欄即時跟隨：聽 displayedPage，紙滑到哪一頁、側欄就亮到哪一頁、並跟到哪一頁。
-    //    快滑時頁碼每 <150ms 變、動畫排不到落地，改瞬時 scrollToCenter；平滑滑動用動畫。
+    // ② 側欄跟隨（1.6.9 行為，2026-11-15 退回）：聽「已提交頁」，延遲 150ms 再回拉。
+    //    拖動／慣性整段不動側欄——1.6.9 時代的跟隨是 commit 後才跑，拖動中 displayedPage
+    //    在變但 currentPageIndex 不變，側欄完全自由。即時跟（key on displayedPage、0ms）
+    //    會讓紙每跨一頁就搶一次 MutatorMutex，使用者手指在拖、程式在拉，就是「卡住」。
+    //    isScrollingFast 分派移除：currentPageIndex 在停穩門後才變，不再有 <150ms 連跳需求。
     //    DB 在上面 ①；GRID 階段由 SidebarPageGrid 的 followPage 自己跟。
-    androidx.compose.runtime.LaunchedEffect(displayedPage, sidebarStage) {
+    androidx.compose.runtime.LaunchedEffect(currentPageIndex, sidebarStage) {
         if (sidebarStage == SidebarStage.GRID || !initialPageRestored) return@LaunchedEffect
         sidebarFollowActive = true
         try {
-            if (pdfViewModel.isScrollingFast.value) {
-                sidebarListState.scrollToCenter(displayedPage)
-            } else {
-                sidebarListState.animateScrollToCenter(displayedPage)
+            // 側欄自己帶的頭不抢回跑（1.6.9 同款 1000ms 門檻）。
+            if (SystemClock.uptimeMillis() - lastSidebarDriveMs < 1000) return@LaunchedEffect
+            kotlinx.coroutines.delay(150)
+            if (sidebarStage != SidebarStage.GRID) {
+                sidebarListState.animateScrollToCenter(currentPageIndex)
             }
         } finally {
             sidebarFollowActive = false
@@ -1851,6 +1855,17 @@ onToggleAiPanel = { showAiPanel = !showAiPanel },
                 exit = shrinkVertically()
             ) {
                 StrokeWidthSlider(
+                    viewModel = viewModel,
+                    hazeState = chromeHaze,
+                    isDarkTheme = isEditorDark,
+                )
+            }
+            AnimatedVisibility(
+                visible = showStrokeWidthSlider && activeTool == Tool.ERASER,
+                enter = expandVertically(),
+                exit = shrinkVertically()
+            ) {
+                EraserSizeSlider(
                     viewModel = viewModel,
                     hazeState = chromeHaze,
                     isDarkTheme = isEditorDark,

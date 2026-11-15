@@ -42,7 +42,8 @@ object ImageAnnotationCache {
     private const val TAG = "ImageAnnotationCache"
 
     private val maxKb: Int =
-        ((Runtime.getRuntime().maxMemory() / 1024) / 8).toInt().coerceAtLeast(16 * 1024)
+        (MemoryBudget.quotaBytes(MemoryBudget.Layer.IMAGE_ANNOTATION) / 1024).toInt()
+            .coerceAtLeast(1024)
 
     /**
      * 快取裡每張圖記住它是「針對多大的 maxSidePx 解出來的」——解碼不會放大：
@@ -156,11 +157,9 @@ object ImageAnnotationCache {
         failed.clear()
     }
 
-    /** 記憶體壓力降載（2026-11-15 M7）：RUNNING_LOW+ 時把可重新解碼的公式圖全丟掉。 */
+    /** 記憶體壓力降載（2026-11-15 M8）：交給總帳等比收縮，不再門檻式整批清空。 */
     init {
-        com.vic.inkflow.util.AppMemoryPressure.register { level ->
-            if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) clear()
-        }
+        MemoryBudget.register(MemoryBudget.Layer.IMAGE_ANNOTATION) { kb -> cache.trimToSize(kb) }
     }
 }
 

@@ -8,15 +8,19 @@ import java.io.File
 import java.io.FileOutputStream
 
 object ThumbnailCacheManager {
-    private val maxMemory = (Runtime.getRuntime().maxMemory() / 1024).toInt()
-    // Use 1/16th of the available memory for this document cover cache.
-    private val cacheSize = maxMemory / 16
-    
+    // 文件封面層的預算來自記憶體總帳（2026-11-15 M8），不再自己算 heap/16。
+    private val cacheSize =
+        (MemoryBudget.quotaBytes(MemoryBudget.Layer.DOC_COVER) / 1024).toInt()
+
     private val cache = object : LruCache<String, Bitmap>(cacheSize) {
         override fun sizeOf(key: String, bitmap: Bitmap): Int {
             // The cache size will be measured in kilobytes rather than number of items.
             return bitmap.byteCount / 1024
         }
+    }
+
+    init {
+        MemoryBudget.register(MemoryBudget.Layer.DOC_COVER) { kb -> cache.trimToSize(kb) }
     }
 
     private fun getDiskCacheDir(context: Context): File {

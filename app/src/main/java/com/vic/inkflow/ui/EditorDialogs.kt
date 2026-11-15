@@ -477,6 +477,49 @@ internal fun StrokeWidthSlider(
     }
 }
 
+/** 橡皮擦大小滑桿:全域偏好 default_eraser_radius(model 單位 4..24),與線寬滑桿同一語彙。 */
+@Composable
+internal fun EraserSizeSlider(
+    viewModel: EditorViewModel,
+    hazeState: dev.chrisbanes.haze.HazeState,
+    isDarkTheme: Boolean
+) {
+    val eraserRadius by viewModel.eraserRadius.collectAsState()
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .glassPanel(hazeState, isDarkTheme, shape = RoundedCornerShape(percent = 50), specular = false),
+        tonalElevation = 0.dp,
+        color = Color.Transparent,
+        contentColor = MaterialTheme.colorScheme.onSurface
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(42.dp)
+                .padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "橡皮",
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.width(28.dp)
+            )
+            Slider(
+                value = eraserRadius.coerceIn(4f, 24f),
+                onValueChange = { viewModel.onEraserRadiusChanged(it) },
+                valueRange = 4f..24f,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                text = "${eraserRadius.toInt()}",
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.width(24.dp)
+            )
+        }
+    }
+}
+
 /** 對話框淡入包裝：只播 fade（背底不再跟著縮放跳；卡片的 scale 由殼內自播） */
 @Composable
 internal fun AnimatedDialog(

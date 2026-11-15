@@ -70,7 +70,8 @@ class EditorViewModelInitTest {
                 strokeSpeedSensitivity = 2.5f,
                 touchCalEnabled = true,
                 touchCalDxDp = 3f,
-                touchCalDyDp = -4f
+                touchCalDyDp = -4f,
+                eraserRadius = 7f
             ),
             widthResponsiveness = 0.9f
         )
@@ -96,6 +97,7 @@ class EditorViewModelInitTest {
         assertEquals(PageBackground.GRID, vm.paperStyle.value.background)
         assertEquals(400f, vm.paperStyle.value.widthPt, 1e-4f)
         assertEquals(600f, vm.paperStyle.value.heightPt, 1e-4f)
+        assertEquals(7f, vm.eraserRadius.value, 1e-4f)
     }
 
     @Test

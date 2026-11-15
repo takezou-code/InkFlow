@@ -42,11 +42,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
@@ -120,6 +122,32 @@ import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.sin
+
+// ── 橡皮擦預覽配色(紙張橡皮:石灰階,不用警報紅)──────────────────────────────
+/** veil 的暖石色(alpha 在使用處指定,營造「擦掉、留白」的負空間感) */
+private val ERASER_VEIL = Color(0xFF7A7267)
+/** 頭環暗線+中心點(近黑暖灰),配合白暈,深淺紙面都看得到 */
+private val ERASER_RING = Color(0xFF3F3A33)
+private const val ERASER_VEIL_OUTER_ALPHA = 0.16f
+private const val ERASER_VEIL_INNER_ALPHA = 0.34f
+private const val ERASER_INNER_WIDTH_RATIO = 1.15f
+private const val DUST_DUR_MS = 550L
+private const val MAX_DUST = 180
+
+/**
+ * 向量層最多同時畫幾筆「位圖帳上還沒收錄」的筆。
+ *
+ * 正常情況只有 1–2 筆（剛提筆、等 swap）。上限只是防禦：若背景烘焙連續失敗，
+ * 位圖會一直停在舊版本，不設限的話向量層會膨脹成每幀掃全頁、重畫所有筆。
+ */
+private const val INK_OVERLAY_MAX = 32
+
+/** 一顆橡皮屑(canvas px) */
+private data class DustParticle(
+    val x: Float, val y: Float,
+    val vx: Float, val vy: Float,
+    val radius: Float, val t0Nanos: Long
+)
 
 // ── 輸入啟發式（快滑擦除/手掌日誌）見 InkCanvasInput.kt ──────────────────────
 
@@ -259,6 +287,14 @@ fun InkCanvas(
     // 重點色：跟全域主題同一變數（primary），畫布裡不再寫死靛紫
     val accentColor = MaterialTheme.colorScheme.primary
     val strokeWidth by viewModel.strokeWidth.collectAsState()
+    val eraserRadiusModel by viewModel.eraserRadius.collectAsState()
+    // ── 橡皮擦特效狀態(橡皮屑灰石粒 + 快滑擦除視覺接管)──────────────────
+    val dustFx = remember { mutableStateListOf<DustParticle>() }
+    // 快滑擦除觸發後＝這個手勢就是橡皮擦:視覺、dust、鄰頁共享預覽全部走橡皮擦管線
+    var eraseVisualActive by remember { mutableStateOf(false) }
+    // draw-phase 訂閱的時間戳:只有特效活著時有人寫它,畫布才逐幀重繪
+    var fxTickNanos by remember { mutableLongStateOf(System.nanoTime()) }
+    val fxActive = dustFx.isNotEmpty()
     val selectedShapeSubType by viewModel.selectedShapeSubType.collectAsState()
     val selectedLassoSubType by viewModel.selectedLassoSubType.collectAsState()
     val selectionFramePolygon by viewModel.selectionFramePolygon.collectAsState()
@@ -335,6 +371,18 @@ fun InkCanvas(
     // 提筆那一刻從「活的向量」換成「糊的位圖」＝肉眼看到的閃一下／微微位移。
     // 只保最後一筆：下一筆提交時它自然被增量髒區烙進位圖，成本＝一筆的 bounds。
     var hotStrokeId by remember { mutableStateOf<String?>(null) }
+    /**
+     * 目前這張墨跡位圖**真的裝了哪些筆**（不含高亮、預覽、樂觀層、熱筆）。
+     *
+     * 為什麼需要這本帳（2026-11-15，實機 53ms 閃爍）：熱筆刻意不烙進位圖（螢光筆 alpha
+     * 疊兩層會偏暗、位圖封頂會糊一級），所以「熱筆換人」時舊熱筆只能等下一次烘焙 swap
+     * 才回到位圖。舊寫法在熱筆換人的那一幀就把它從向量層放掉 → 位圖裡沒有、向量層也沒有，
+     * 中間 30–60ms 那筆是空的＝使用者看到的「上一個筆畫閃一下」。
+     *
+     * 不變式：**不在 [bakedIds] 裡的筆一律用向量層畫**。它只在位圖真的換上時更新，
+     * 所以「舊熱筆退出向量層」與「含它的位圖換上」是同一瞬間，不存在空窗。
+     */
+    var bakedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     val committedIds = remember(committedStrokes) { committedStrokes.map { it.stroke.id }.toSet() }
     LaunchedEffect(bridgingIds, committedStrokes) {
         val ids = bridgingIds ?: return@LaunchedEffect
@@ -692,9 +740,15 @@ fun InkCanvas(
             // 以「這次派發的快照」算 order——stroke 在烘焙期間落筆的情況由 order 檢測收斂（再烘一次）
             pinchReuse.bmp = bitmap.asImageBitmap()
             lastInkScale.contentKey = req.contentKey
+            // 帳與圖同一瞬間更新：向量層只畫「不在帳上」的筆，所以舊熱筆會在這一刻
+            // 從向量層退場，而含它的位圖正好同時換上（見 bakedIds 的說明）。
+            bakedIds = req.includedIds
             inkBakeVersion.intValue += 1
             inkBakeInFlight.set(false)
-            android.util.Log.w("InkFlowDiag", "INKBG swap p=$pageIndex ${req.targetWidth}x${req.targetHeight}")
+            android.util.Log.w(
+                "InkFlowDiag",
+                "INKBG swap p=$pageIndex ${req.targetWidth}x${req.targetHeight} baked=${req.includedIds.size}"
+            )
         }
     }
     val drawModifier = Modifier.fillMaxSize()
@@ -1703,6 +1757,8 @@ fun InkCanvas(
                 viewModel.setPageLock(true)
                 // R1：橡皮擦手勢開門（累積器；畫筆/quick-swipe 不開，各自成格）
                 if (activeTool == Tool.ERASER) viewModel.beginEraseGesture()
+                // 新手勢開始：清掉上一個手勢殘留的視覺接管（正常情況手勢結尾也會清）
+                eraseVisualActive = false
                 // F3：上一筆交接中途又落筆——沿用舊行為清活路徑（提交段已在資料流，不閃），交接作廢。
                 // 注意 reset 後必須補 moveTo，否則後續 quadraticTo 以原點起筆＝左上角怪線。
                 // 世代號先跳：交接 effect 若已經跑過 suspension，醒來只會看到「不是我的世代」而放手。
@@ -1878,10 +1934,11 @@ fun InkCanvas(
                                 density = density
                             )
                             if (quickSwipeTriggered) {
+                                eraseVisualActive = true
                                 activePath.reset()
                                 activeEnvelopePath.reset()
                                 // reset 後補 moveTo，否則後續筆段以原點起筆（同左上角怪線）。
-                                activePath.moveTo(drag.position.x, drag.position.y)
+                                activePath.moveTo(newPoint.x, newPoint.y)
                                 // R1：快滑擦除走跟橡皮擦同一條管線。此刻才開累積器，
                                 // 整段快滑（live 批次＋final）才會合併成「一格」undo。
                                 // 舊碼沒開 → 每個 24ms 批次各推一格 RemoveStrokes，
@@ -1908,7 +1965,8 @@ fun InkCanvas(
 
                         // F1：跨頁共享預覽（src 紙除外，走直接路徑）。點數不變不重發。
                         if ((activeTool == Tool.PEN || activeTool == Tool.HIGHLIGHTER ||
-                                activeTool == Tool.LASSO || activeTool == Tool.ERASER) &&
+                                activeTool == Tool.LASSO || activeTool == Tool.ERASER ||
+                                eraseVisualActive) &&
                             currentPathPoints.size != lastPublishedSize
                         ) {
                             lastPublishedSize = currentPathPoints.size
@@ -1926,7 +1984,7 @@ fun InkCanvas(
                             viewModel.publishInFlight(
                                 if (segs.isEmpty()) null
                                 else EditorViewModel.InFlightPreview(
-                                    tool = activeTool,
+                                    tool = if (eraseVisualActive) Tool.ERASER else activeTool,
                                     segments = segs.toMap(),
                                     colorArgb = selectedColor.toArgb()
                                 )
@@ -1935,6 +1993,26 @@ fun InkCanvas(
 
                         activePathVersion++
                         drag.consume()
+
+                        if (activeTool == Tool.ERASER || quickSwipeTriggered) {
+                            // 橡皮屑(灰石粒):從橡皮擦圓環頭左右寬扇形噴出、重力往下落;每個 drag 事件 2 顆 + 25% 機率第三顆
+                            val hp = calPos(drag.position)
+                            repeat(if (kotlin.random.Random.nextFloat() < 0.25f) 3 else 2) {
+                                if (dustFx.size >= MAX_DUST) dustFx.removeAt(0)
+                                // 水平扇形 ±160px/s(左右噴),垂直只小上踢/小下墜,重力接管往下
+                                val vx = (kotlin.random.Random.nextFloat() * 2f - 1f) * 160f
+                                val vy = -25f + kotlin.random.Random.nextFloat() * 55f
+                                dustFx.add(
+                                    DustParticle(
+                                        x = hp.x, y = hp.y,
+                                        vx = vx,
+                                        vy = vy,
+                                        radius = 2f + kotlin.random.Random.nextFloat() * 2.8f,
+                                        t0Nanos = System.nanoTime()
+                                    )
+                                )
+                            }
+                        }
 
                         if (activeTool == Tool.ERASER || quickSwipeTriggered) {
                             // Live erase: send only a recent window and throttle dispatches.
@@ -1993,6 +2071,7 @@ fun InkCanvas(
                     // R1：手勢作廢＝結算累積器（已提交的墓碑仍要能 undo，見 discardEraseGesture），
                     // 快滑擦除同樣走這裡（它的門在觸發那一刻開）。
                     if (eraseGestureBegan) viewModel.discardEraseGesture()
+                    eraseVisualActive = false
                     viewModel.setPageLock(false)
                     return@awaitEachGesture
                 }
@@ -2010,37 +2089,44 @@ fun InkCanvas(
                     // R1：手勢作廢＝結算累積器（已提交的墓碑仍要能 undo，見 discardEraseGesture），
                     // 快滑擦除同樣走這裡（它的門在觸發那一刻開）。
                     if (eraseGestureBegan) viewModel.discardEraseGesture()
+                    eraseVisualActive = false
                     viewModel.setPageLock(false)
                     return@awaitEachGesture
                 }
 
+                // 統一的「擦除手勢收尾」：一般橡皮擦與快滑擦除走完全相同的管線。
+                // R1：live 批次＋final 都進手勢累積器（快滑在觸發那一刻才開門），整段合併成一格 undo。
+                // quick-swipe 本來就是筆：不記旗不切筆；橡皮擦手勢結尾可觸發自動切回畫筆。
+                fun finishErase() {
+                    val points = if (currentPathPoints.size == 1) {
+                        val pt = currentPathPoints.first()
+                        listOf(Offset(pt.x, pt.y), Offset(pt.x + 0.01f, pt.y))
+                    } else {
+                        currentPathPoints.map { Offset(it.x, it.y) }
+                    }
+                    viewModel.deleteStrokesIntersectingAcrossPages(
+                        eraserPointsCanvas = points,
+                        srcPage = pageIndexRef.value,
+                        canvasH = canvasPixelSizeState.value.height,
+                        gapPx = pageGapPxRef.value,
+                        pageCount = pageCountRef.value,
+                        markEraseHit = activeTool == Tool.ERASER,
+                        switchToPenAfterEraseHit = activeTool == Tool.ERASER,
+                        accumulateToGesture = eraseGestureBegan
+                    )
+                }
                 when (activeTool) {
                     Tool.PEN, Tool.HIGHLIGHTER -> {
                         if (quickSwipeTriggered) {
-                            val points = if (currentPathPoints.size == 1) {
-                                val pt = currentPathPoints.first()
-                                listOf(Offset(pt.x, pt.y), Offset(pt.x + 0.01f, pt.y))
-                            } else {
-                                currentPathPoints.map { Offset(it.x, it.y) }
-                            }
                             TouchEventLogger.logOutcome(
                                 sessionId       = sessionId,
                                 outcome         = "QUICK_SWIPE_ERASE",
-                                pointCount      = points.size,
+                                pointCount      = currentPathPoints.size,
                                 maxPressure     = maxPressureDuring,
                                 maxSizeWidthPx  = maxSizeWidthDuring,
                                 maxSizeHeightPx = maxSizeHeightDuring
                             )
-                            viewModel.deleteStrokesIntersectingAcrossPages(
-                                eraserPointsCanvas = points,
-                                srcPage = pageIndexRef.value,
-                                canvasH = canvasPixelSizeState.value.height,
-                                gapPx = pageGapPxRef.value,
-                                pageCount = pageCountRef.value,
-                                markEraseHit = false,
-                                // R1：快滑擦除的 final 也進累積器（跟 live 批次合併成一格）。
-                                accumulateToGesture = eraseGestureBegan
-                            )
+                            finishErase()
                         } else {
                             // A single-point tap produces no drag points; duplicate it so
                             // saveStroke receives ≥2 points and StrokeCap.Round renders a dot.
@@ -2114,6 +2200,7 @@ fun InkCanvas(
                                     atMs = android.os.SystemClock.uptimeMillis()
                                 )
                             } ?: run { liftedSnapshot = null }
+                            eraseVisualActive = false
                             viewModel.setPageLock(false)
                             // M1 全活頁：目標紙本來就活著，無需激活（提筆零跳轉）
                         }
@@ -2145,26 +2232,7 @@ fun InkCanvas(
                             canvasH = canvasH
                         )
                     }
-                    Tool.ERASER -> {
-                        // Fire one final erasure at end of the gesture so that:
-                        //  (a) pure taps (no drag) can erase a stroke under the finger, and
-                        //  (b) the tail end of a drag that ran asynchronously is not missed.
-                        val points = if (currentPathPoints.size == 1) {
-                            val pt = currentPathPoints.first()
-                            listOf(Offset(pt.x, pt.y), Offset(pt.x + 0.01f, pt.y))
-                        } else {
-                            currentPathPoints.map { Offset(it.x, it.y) }
-                        }
-                        viewModel.deleteStrokesIntersectingAcrossPages(
-                            eraserPointsCanvas = points,
-                            srcPage = pageIndexRef.value,
-                            canvasH = canvasPixelSizeState.value.height,
-                            gapPx = pageGapPxRef.value,
-                            pageCount = pageCountRef.value,
-                            switchToPenAfterEraseHit = true,
-                            accumulateToGesture = true
-                        )
-                    }
+                    Tool.ERASER -> finishErase()
                     else -> { }
                 }
                 if (activeTool == Tool.PEN || activeTool == Tool.HIGHLIGHTER) {
@@ -2188,6 +2256,7 @@ fun InkCanvas(
                 // R1：擦除手勢關門（合併推一格）。橡皮擦與「已觸發的快滑擦除」都開過門，
                 // 所以這裡看旗標而不是看工具——看工具的話快滑那條永遠關不了門。
                 if (eraseGestureBegan) viewModel.endEraseGesture()
+                eraseVisualActive = false
                 // 兜底：自由筆各提交路徑在此統一清鎖（PEN/HL 已在分支內清過，重複無害）
                 viewModel.setPageLock(false)
             }
@@ -2228,43 +2297,22 @@ fun InkCanvas(
             }
             val preview = commitPreview
             val previewIds = preview?.map { it.stroke.id }?.toHashSet() ?: emptySet()
-            // ── 向量層：樂觀筆（DB 未回報）＋ 最後一筆熱筆 ──
-            // 這一層不烙進位圖快取，直接以向量畫在快取圖之上。理由：位圖快取封頂
-            // 3072px，比平板畫布還小 → 縮小再放大，提筆瞬間從「活的向量」換成
-            // 「糊的位圖」就是使用者回報的閃一下／微微位移。
+            // ── 這一輪「一定不能烙進位圖」的集合 ──
+            // 提交預覽、樂觀層（DB 未回報）、現任熱筆。熱筆留向量層是刻意的：螢光筆 alpha
+            // 疊兩層會偏暗，位圖封頂也會糊一級。
+            // 注意：**舊熱筆刻意不在這裡**——它們要靠這次烘焙回到位圖，向量層才會放掉它們
+            //（見 bakedIds 的不變式）。把它們排除掉就等於把閃爍寫進設計。
             val hotId = hotStrokeId?.takeIf { it !in previewIds }
-            val overlayIds: Set<String> = if (pendingIds.isEmpty() && hotId == null) {
-                emptySet()
-            } else {
-                HashSet<String>(pendingIds.size + 1).apply {
-                    addAll(pendingIds)
-                    if (hotId != null) add(hotId)
+            val bakeExcludeIds: Set<String> =
+                if (previewIds.isEmpty() && pendingIds.isEmpty() && hotId == null) {
+                    emptySet()
+                } else {
+                    HashSet<String>(previewIds.size + pendingIds.size + 1).apply {
+                        addAll(previewIds)
+                        addAll(pendingIds)
+                        if (hotId != null) add(hotId)
+                    }
                 }
-            }
-            // 向量層要畫的清單在快取階段就算好：onDrawBehind 每幀都跑，不要在裡面掃全頁。
-            val overlayStrokes = if (overlayIds.isEmpty()) {
-                emptyList()
-            } else {
-                strokes.filter { it.stroke.id in overlayIds && it.stroke.shapeType == null }
-            }
-            // 交接中的活路徑若「向量層真的已經畫到它」就不再疊一層（高亮筆 alpha×2 會偏暗）。
-            // 注意不能只看 id 在 overlayIds：提筆當下 id 已記住、頁流那一幀還沒到，
-            // 這時兩邊都沒有筆 → 會空一幀（正是要修的閃）。所以要確認 strokes 裡真的有它。
-            val bridgedDrawn = bridgingIds?.let { ids -> overlayStrokes.any { it.stroke.id in ids } } == true
-
-            // 真正「空窗」的判定：交接還在等、向量層沒有它、活路徑也已經空了 →
-            // 這一幀這筆墨三層都沒畫（畫面真的會缺一筆）。正常交接不會落在這裡：
-            // 資料流到之前活路徑還在，資料流到了 overlay 就有它。
-            if (bridgingIds != null && !bridgedDrawn && overlayStrokes.isEmpty() && activePath.isEmpty
-                && liftedSnapshot == null
-            ) {
-                android.util.Log.w(
-                    "InkFlowDiag",
-                    "GAP p=$pageIndex seq=$strokeGestureSeq bseq=$bridgingSeq" +
-                        " bridge=${bridgingIds?.joinToString(",") { it.take(8) }}" +
-                        " snap=null"
-                )
-            }
 
             val bmpWidth = size.width.toInt().coerceAtLeast(1)
             val bmpHeight = size.height.toInt().coerceAtLeast(1)
@@ -2283,6 +2331,11 @@ fun InkCanvas(
             // P0-A：尺寸變了（縮放後）沿用舊位圖拉伸繪製，不在主執行緒配置新位圖或全頁重烘；
             // 一律派發到 inkBakeRequests 背景重烘，swap 後由 inkBakeVersion 通知換圖。
             var cachedImage = reuseBmp
+            // 診斷用（CACHE 那行 log 在烘焙之後才印，需要跨出 if 區塊）
+            var fullRebuild = false
+            var bakedFresh = true
+            var dirty: Rect? = null
+            var boundsBroken = false
 
             // 凍結中連畫都跳過：整塊重建是捏合卡頓的最大頭
             if (!frozen) {
@@ -2295,14 +2348,12 @@ fun InkCanvas(
                 // 只清髒區、只重畫相交的筆：重繪成本跟著變化量走。髒區過大／新圖／
                 // 尺寸變 → 走全量（舊行為原樣保留當 fallback）。
                 val contentKey = inkContentKey(sx, sy, strokes)
-                val bakedFresh = lastInkScale.contentKey == contentKey && cachedImage != null
+                bakedFresh = lastInkScale.contentKey == contentKey && cachedImage != null
                 val pageRect = Rect(0f, 0f, modelW, modelH)
                 fun strokeRect(swp: StrokeWithSamples) = Rect(
                     swp.stroke.boundsLeft, swp.stroke.boundsTop,
                     swp.stroke.boundsRight, swp.stroke.boundsBottom
                 )
-                var dirty: Rect? = null
-                var boundsBroken = false
                 // 刪筆的髒：淘汰前先把舊 bounds 留下來（淘汰後就問不到了）
                 val keepIds = HashSet<String>(strokes.size + 16)
                 strokes.forEach {
@@ -2324,7 +2375,7 @@ fun InkCanvas(
                     if (swp.stroke.shapeType != null) return@forEach
                     if (swp.stroke.id in previewIds) return@forEach
                     // 向量層（樂觀筆／熱筆）不進位圖，也就不產生髒區——它每幀重畫。
-                    if (swp.stroke.id in overlayIds) return@forEach
+                    if (swp.stroke.id in bakeExcludeIds) return@forEach
                     val cached = committedPathCache[swp.stroke.id]
                     if (cached == null || !swp.matches(cached)) {
                         if (cached != null) {
@@ -2369,8 +2420,18 @@ fun InkCanvas(
                 // 每次提筆都會有一幀「只有向量層變、位圖完全沒變」，那時 dirty 就是 null。
                 // 舊語義會在那裡全頁重畫（實測 17.6ms/幀）＝修閃爍反而多一次卡頓。
                 // 真正的「一定要全量」是：比例變、bounds 壞掉、這張圖是剛配置的。
-                val fullRebuild = !bakedFresh
+                fullRebuild = !bakedFresh
                 val canBackgroundBake = fullRebuild && cachedImage != null
+                // 這張位圖「會裝進去」哪些筆：非高亮、且不在排除清單。
+                // swap 時原封不動寫進 bakedIds——向量層靠它決定哪幾筆可以退場。
+                val includedIds: Set<String> =
+                    if (strokes.isEmpty()) emptySet() else HashSet<String>(strokes.size).apply {
+                        for (swp in strokes) {
+                            if (swp.stroke.isHighlighter) continue
+                            if (swp.stroke.id in bakeExcludeIds) continue
+                            add(swp.stroke.id)
+                        }
+                    }
                 if (canBackgroundBake && inkBakeInFlight.compareAndSet(false, true)) {
                     inkBakeRequests.trySend(
                         InkBakeRequest(
@@ -2380,20 +2441,12 @@ fun InkCanvas(
                             scaleX = sx * cacheScale,
                             scaleY = sy * cacheScale,
                             strokes = ArrayList(strokes),
-                            excludeIds = previewIds + overlayIds,
+                            excludeIds = bakeExcludeIds,
+                            includedIds = includedIds,
                             contentKey = contentKey
                         )
                     )
                 }
-                android.util.Log.w(
-                    "InkFlowDiag",
-                    "CACHE p=$pageIndex canvas=${bmpWidth}x${bmpHeight} " +
-                        "scale=${"%.3f".format(cacheScale)} cache=${cacheW}x${cacheH} " +
-                        "overlay=${overlayStrokes.size} hot=${hotStrokeId?.take(8) ?: "-"} " +
-                        "bridge=${bridgingIds?.size ?: 0} drawn=$bridgedDrawn " +
-                        "dirty=${dirty != null} full=$fullRebuild fresh=$bakedFresh broken=$boundsBroken " +
-                        "seq=$strokeGestureSeq bseq=$bridgingSeq"
-                )
                 if (cachedImage == null) {
                     // P0-A 冷啟動：沒有 stale 可沿用，主執行緒配置並全烘，保底首幀有圖
                     cachedImage = ImageBitmap(cacheW, cacheH, ImageBitmapConfig.Argb8888).also { pinchReuse.bmp = it }
@@ -2401,8 +2454,7 @@ fun InkCanvas(
                     c0.scale(sx * cacheScale, sy * cacheScale)
                     strokes.forEach { swp ->
                         if (swp.stroke.isHighlighter) return@forEach
-                        if (swp.stroke.id in previewIds) return@forEach
-                        if (swp.stroke.id in overlayIds) return@forEach
+                        if (swp.stroke.id in bakeExcludeIds) return@forEach
                         if (swp.stroke.shapeType != null) {
                             drawShapeOnCanvas(c0, swp.stroke, swp.points)
                         } else {
@@ -2426,6 +2478,9 @@ fun InkCanvas(
                         }
                     }
                     lastInkScale.contentKey = contentKey
+                    // 帳與圖同一瞬間補上：否則這一輪算向量層時會把整頁的筆再畫一遍
+                    // （pen 疊兩層邊緣會略深，而且白做一次全頁路徑）。
+                    bakedIds = includedIds
                 } else if (!fullRebuild && dirty != null) {
                     val zone = dirty.inflate(INK_DIRTY_INFLATE_PX).intersect(pageRect)
                     // c0 內已 scale(sx*cacheScale)，clip/clear 都在 model 座標
@@ -2437,11 +2492,13 @@ fun InkCanvas(
                         zone.left, zone.top, zone.right, zone.bottom,
                         Paint().apply { blendMode = BlendMode.Clear }
                     )
+                    // 髒區內重畫過的筆現在確定在位圖裡——補進帳，向量層才不會重疊畫一次。
+                    val repaintedIds = HashSet<String>(8)
                     strokes.forEach { swp ->
                         if (swp.stroke.isHighlighter) return@forEach
-                        if (swp.stroke.id in previewIds) return@forEach
-                        if (swp.stroke.id in overlayIds) return@forEach
+                        if (swp.stroke.id in bakeExcludeIds) return@forEach
                         if (!strokeRect(swp).inflate(INK_DIRTY_INFLATE_PX).overlaps(zone)) return@forEach
+                        repaintedIds.add(swp.stroke.id)
                         if (swp.stroke.shapeType != null) {
                             drawShapeOnCanvas(c0, swp.stroke, swp.points)
                         } else {
@@ -2465,7 +2522,56 @@ fun InkCanvas(
                         }
                     }
                     c0.restore()
+                    if (repaintedIds.isNotEmpty()) bakedIds = bakedIds + repaintedIds
                 }
+            }
+
+            // ── 向量層：位圖帳上還沒有的筆 ──
+            // 不變式：不在 [bakedIds] 裡的筆一律用向量畫。bakedIds 只在位圖真的換上時更新，
+            // 所以「舊熱筆退出向量層」與「含它的位圖換上」是同一瞬間——中間不會有一幀
+            // 兩邊都沒有（那就是使用者回報的「上一個筆畫閃一下」，實測 53ms 空窗）。
+            // 必須在烘焙之後算：冷啟動那一輪烘完會立刻把帳補上。
+            // 不做「size 比對就跳過」的捷徑：bakedIds 可能含舊 id（被刪的筆），
+            // size 相同不代表「所有現存筆都在帳上」——那個誤判會重演閃爍。
+            val overlayIds = HashSet<String>()
+            for (i in strokes.indices.reversed()) {
+                val st = strokes[i].stroke
+                if (st.shapeType != null || st.isHighlighter) continue
+                if (st.id in bakedIds) continue
+                overlayIds.add(st.id)
+                if (overlayIds.size >= INK_OVERLAY_MAX) break
+            }
+            // 向量層要畫的清單在快取階段就算好：onDrawBehind 每幀都跑，不要在裡面掃全頁。
+            val overlayStrokes = if (overlayIds.isEmpty()) {
+                emptyList()
+            } else {
+                strokes.filter { it.stroke.id in overlayIds && it.stroke.shapeType == null }
+            }
+            // 交接中的活路徑若「向量層真的已經畫到它」就不再疊一層（高亮筆 alpha×2 會偏暗）。
+            val bridgedDrawn = bridgingIds?.let { ids -> overlayStrokes.any { it.stroke.id in ids } } == true
+            android.util.Log.w(
+                "InkFlowDiag",
+                "CACHE p=$pageIndex canvas=${bmpWidth}x${bmpHeight} " +
+                    "scale=${"%.3f".format(cacheScale)} cache=${cacheW}x${cacheH} " +
+                    "overlay=${overlayStrokes.size} baked=${bakedIds.size} " +
+                    "hot=${hotStrokeId?.take(8) ?: "-"} " +
+                    "bridge=${bridgingIds?.size ?: 0} drawn=$bridgedDrawn " +
+                    "dirty=${dirty != null} full=$fullRebuild fresh=$bakedFresh broken=$boundsBroken " +
+                    "seq=$strokeGestureSeq bseq=$bridgingSeq"
+            )
+
+            // 真正「空窗」的判定：交接還在等、向量層沒有它、活路徑也已經空了 →
+            // 這一幀這筆墨三層都沒畫（畫面真的會缺一筆）。正常交接不會落在這裡：
+            // 資料流到之前活路徑還在，資料流到了 overlay 就有它。
+            if (bridgingIds != null && !bridgedDrawn && overlayStrokes.isEmpty() && activePath.isEmpty
+                && liftedSnapshot == null
+            ) {
+                android.util.Log.w(
+                    "InkFlowDiag",
+                    "GAP p=$pageIndex seq=$strokeGestureSeq bseq=$bridgingSeq" +
+                        " bridge=${bridgingIds?.joinToString(",") { it.take(8) }}" +
+                        " snap=null"
+                )
             }
 
             onDrawBehind {
@@ -3009,45 +3115,64 @@ fun InkCanvas(
                     )
                 }
 
+                // ── 橡皮擦特效:橡皮屑灰石粒(畫在墨水之上、手勢預覽之下)──
+                if (dustFx.isNotEmpty()) {
+                    val tick = fxTickNanos
+                    dustFx.forEach { p ->
+                        val t = (tick - p.t0Nanos).toFloat() / 1_000_000f / DUST_DUR_MS
+                        if (t >= 0f && t < 1f) {
+                            val secs = t * (DUST_DUR_MS / 1000f)
+                            val x = p.x + p.vx * secs
+                            val y = p.y + p.vy * secs + 900f * t * t / 2f
+                            drawCircle(
+                                Color(0xFF8A8276),
+                                radius = p.radius * (1f - 0.6f * t),
+                                center = Offset(x, y),
+                                alpha = 0.85f * (1f - t)
+                            )
+                        }
+                    }
+                }
+
                 // Active freehand / eraser / lasso path
                 // 交接中的活路徑：若向量層已接手同一筆就不再疊一層
                 //（高亮筆 alpha×2 會偏暗，提筆瞬間反而更明顯）。
-                if (!bridgedDrawn) when (activeTool) {
-                    Tool.PEN -> drawPath(activeEnvelopePath, selectedColor) // Uses default Fill style
-                    Tool.HIGHLIGHTER -> drawIntoCanvas { cvs ->
-                        hlPreviewPaint.color = selectedColor.copy(alpha = HIGHLIGHTER_ALPHA)
-                        cvs.drawPath(activeEnvelopePath, hlPreviewPaint)
-                    }
-                    Tool.LASSO  -> drawPath(activePath, Color.DarkGray, style = DrawStroke(width = 2f, pathEffect = dashPreview))
-                    Tool.ERASER -> {
-                        // 橡皮擦視覺：半透明暖紅寬帶（實際擦除寬度）+ 實線中心 + 頭部游標環。
-                        // 之前是 2px 灰線，擦到哪裡完全看不出來。
-                        // 擦除半徑與命中判定一致：model 10f → 換算成 canvas px。
+                if (!bridgedDrawn) when {
+                    activeTool == Tool.ERASER || eraseVisualActive -> {
+                        // 紙張橡皮:暖石灰雙層 veil(外淡內濃,半透明負空間,無實線)
+                        // + 頭部游標環(白暈+暗環+中心點,深淺紙面都看得到)。
+                        // 擦除半徑與命中判定一致:model → canvas px。
                         val modelW = viewModel.modelWidth
-                        val eraserRpx = if (modelW > 0f) 10f * (size.width / modelW) else 24f
-                        val eraserColor = Color(0xFFFF5A5A)
+                        val eraserRpx = if (modelW > 0f) eraserRadiusModel * (size.width / modelW) else 24f
                         drawPath(
-                            activePath, eraserColor.copy(alpha = 0.28f),
+                            activePath, ERASER_VEIL.copy(alpha = ERASER_VEIL_OUTER_ALPHA),
                             style = DrawStroke(width = eraserRpx * 2f, cap = StrokeCap.Round, join = StrokeJoin.Round)
                         )
                         drawPath(
-                            activePath, eraserColor,
-                            style = DrawStroke(width = 2.5f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                            activePath, ERASER_VEIL.copy(alpha = ERASER_VEIL_INNER_ALPHA),
+                            style = DrawStroke(width = eraserRpx * ERASER_INNER_WIDTH_RATIO, cap = StrokeCap.Round, join = StrokeJoin.Round)
                         )
-                        // 頭部游標環：顯示實際擦除範圍，手指/筆尖擋住時也看得到邊緣
+                        // 頭部游標環:白暈(0.85)讓深色紙面也浮得出來,暗環給淺色紙面對比
                         currentPathPoints.lastOrNull()?.let { head ->
                             val c = Offset(head.x, head.y)
                             drawCircle(
-                                color = Color.White.copy(alpha = 0.30f),
-                                radius = eraserRpx, center = c
+                                color = Color.White.copy(alpha = 0.85f),
+                                radius = eraserRpx, center = c,
+                                style = DrawStroke(width = 4.5f)
                             )
                             drawCircle(
-                                color = eraserColor, radius = eraserRpx, center = c,
-                                style = DrawStroke(width = 2.5f)
+                                color = ERASER_RING, radius = eraserRpx, center = c,
+                                style = DrawStroke(width = 2f)
                             )
-                            drawCircle(color = eraserColor, radius = 3f, center = c)
+                            drawCircle(color = ERASER_RING, radius = 3f, center = c)
                         }
                     }
+                    activeTool == Tool.PEN -> drawPath(activeEnvelopePath, selectedColor) // Uses default Fill style
+                    activeTool == Tool.HIGHLIGHTER -> drawIntoCanvas { cvs ->
+                        hlPreviewPaint.color = selectedColor.copy(alpha = HIGHLIGHTER_ALPHA)
+                        cvs.drawPath(activeEnvelopePath, hlPreviewPaint)
+                    }
+                    activeTool == Tool.LASSO  -> drawPath(activePath, Color.DarkGray, style = DrawStroke(width = 2f, pathEffect = dashPreview))
                     else -> { }
                 }
                 // F1：鄰頁共享預覽（點段已是本頁頁內座標，直接畫；寬已 ×docZoom，與提交同管線）。
@@ -3068,16 +3193,15 @@ fun InkCanvas(
                                 if (i == 0) epath.moveTo(sp.x, sp.y) else epath.lineTo(sp.x, sp.y)
                             }
                             val sharedErRpx = if (viewModel.modelWidth > 0f) {
-                                10f * (size.width / viewModel.modelWidth)
+                                eraserRadiusModel * (size.width / viewModel.modelWidth)
                             } else 24f
                             drawPath(
-                                epath, Color(0xFFFF5A5A).copy(alpha = 0.28f),
+                                epath, ERASER_VEIL.copy(alpha = ERASER_VEIL_OUTER_ALPHA),
                                 style = DrawStroke(width = sharedErRpx * 2f, cap = StrokeCap.Round, join = StrokeJoin.Round)
                             )
-                            // 中線：與本紙一致，跨頁不斷（之前鄰頁只有寬帶沒有線）。
                             drawPath(
-                                epath, Color(0xFFFF5A5A),
-                                style = DrawStroke(width = 2.5f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                                epath, ERASER_VEIL.copy(alpha = ERASER_VEIL_INNER_ALPHA),
+                                style = DrawStroke(width = sharedErRpx * ERASER_INNER_WIDTH_RATIO, cap = StrokeCap.Round, join = StrokeJoin.Round)
                             )
                         }
                         Tool.LASSO -> {
@@ -3099,6 +3223,17 @@ fun InkCanvas(
             inlineFocusRequester.requestFocus()
             delay(100)
             keyboardRef.value?.show()
+        }
+    }
+
+    // 特效活著就每幀 tick + 順手清過期(只寫 draw-phase 訂閱的 state,不觸發整個樹重組)
+    LaunchedEffect(fxActive) {
+        if (!fxActive) return@LaunchedEffect
+        while (dustFx.isNotEmpty()) {
+            withFrameNanos { tick ->
+                fxTickNanos = tick
+                dustFx.removeAll { tick - it.t0Nanos > DUST_DUR_MS * 1_000_000L + 30_000_000L }
+            }
         }
     }
 

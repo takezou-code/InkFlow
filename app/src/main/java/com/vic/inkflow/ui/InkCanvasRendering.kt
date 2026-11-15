@@ -163,7 +163,19 @@ internal data class InkBakeRequest(
     /** 這次烘焙對應的墨跡內容指紋（inkContentKey）：swap 時回寫 lastInkScale */
     val contentKey: Long,
     val strokes: List<StrokeWithSamples>,
-    val excludeIds: Set<String>
+    val excludeIds: Set<String>,
+    /**
+     * 這張位圖**實際裝了哪些筆**（非高亮、且不在 [excludeIds] 裡的全部）。
+     *
+     * 為什麼要帶這份清單：熱筆（最後提筆那筆）刻意不烙進位圖、改用向量層畫，
+     * 所以「熱筆換人」時舊熱筆必須等下一次 swap 才回到位圖。若向量層一換人就
+     * 放掉舊熱筆，中間會有一段「位圖裡沒有、向量層也沒有」的空窗（實測 53ms）
+     * ——那就是使用者回報的「上一個筆畫閃一下」。
+     *
+     * swap 時把這份清單寫進 InkCanvas 的 `bakedIds`，向量層只畫「不在帳上」的筆，
+     * 於是「舊熱筆退場」與「含它的位圖換上」變成同一瞬間。
+     */
+    val includedIds: Set<String>
 )
 
 private val bakeSlots = java.util.concurrent.Semaphore(2)

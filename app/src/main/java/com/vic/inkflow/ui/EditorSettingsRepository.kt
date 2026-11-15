@@ -23,7 +23,9 @@ data class DrawingPreferences(
     // 手指觸控落筆校正（副廠電容筆走 Touch 通道時的 XY 偏移，全域共用）
     val touchCalEnabled: Boolean,
     val touchCalDxDp: Float,
-    val touchCalDyDp: Float
+    val touchCalDyDp: Float,
+    /** 橡皮擦半徑(model 單位,全域偏好) */
+    val eraserRadius: Float
 )
 
 /**
@@ -48,6 +50,9 @@ interface EditorSettingsRepository {
 
     /** 粗細靈敏度是純全域偏好（不進 DB、不遷移），編輯器開啟時讀取。 */
     fun getWidthResponsiveness(): Float
+    /** 橡皮擦大小是純全域偏好(model 單位 4..24,不進 DB、不遷移),編輯器開啟時讀取。 */
+    fun getEraserRadius(): Float
+    suspend fun setEraserRadius(radius: Float)
 }
 
 class DefaultEditorSettingsRepository(
@@ -61,6 +66,7 @@ class DefaultEditorSettingsRepository(
         private const val DEFAULT_STROKE_SPEED_SENSITIVITY = 1f
         // 粗細靈敏度（全域，不進 DB）：0=鈍 → 1=靈
         private const val DEFAULT_WIDTH_RESPONSIVENESS = 0.33f
+        private const val DEFAULT_ERASER_RADIUS = 10f
         private const val DEFAULT_HIGHLIGHTER_COLOR_ARGB = 0xFFFFC700.toInt()
         private val DEFAULT_PALETTE = listOf(
             0xFF000000.toInt(),
@@ -109,6 +115,7 @@ class DefaultEditorSettingsRepository(
             paperHeightPt = local?.paperHeightPt,
             quickSwipeEraserEnabled = defaultQuickSwipe,
             autoSwitchToPenAfterErase = defaultAutoSwitchToPenAfterErase,
+            eraserRadius = prefs.getFloat("default_eraser_radius", DEFAULT_ERASER_RADIUS),
             strokeSpeedSensitivity = local?.strokeSpeedSensitivity ?: defaultStrokeSpeedSensitivity,
             touchCalEnabled = defaultTouchCalEnabled,
             touchCalDxDp = defaultTouchCalDxDp,
@@ -167,6 +174,12 @@ class DefaultEditorSettingsRepository(
     override fun getWidthResponsiveness(): Float =
         prefs.getFloat("default_width_responsiveness", DEFAULT_WIDTH_RESPONSIVENESS)
 
+    override fun getEraserRadius(): Float =
+        prefs.getFloat("default_eraser_radius", DEFAULT_ERASER_RADIUS)
+
+    override suspend fun setEraserRadius(radius: Float) {
+        prefs.edit().putFloat("default_eraser_radius", radius.coerceIn(4f, 24f)).apply()
+    }
     private suspend fun upsertDocument(
         documentUri: String,
         update: DocumentPreferenceEntity.() -> DocumentPreferenceEntity

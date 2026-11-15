@@ -96,15 +96,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
-/**
- * 一次 flick 的慣性距離上限＝幾頁。
- *
- * 舊制是「一個視窗高」：縮放 0.4 時一頁 1826px、視窗 2136px，預算剛好一頁，
- * 甩一下走到頁尾就歸零、紙直接停住——「滑一頁之後慣性消失」就是它。
- * 三頁＝用力 flick 約兩頁多，再用力也只到三頁（仍足以擋「意外飛過十頁」）。
- */
-private const val FLING_BUDGET_PAGES = 3f
-
 @Composable
 internal fun Workspace(
     pageIndex: Int,
@@ -221,21 +212,10 @@ internal fun Workspace(
     }
 
     // 原生 fling 行為（spline 衰減）：只驅動 dispatch，不經原生手勢，無打架。
-    // 外面再包一層距離上限（見 BoundedFlingBehavior），單位是**頁**，不是視窗。
-    //
-    // 舊制上限＝一個視窗高（2136px）。縮放 0.4 時一頁 1826px，於是預算剛好一頁：
-    // 甩一下走到頁尾就歸零、紙直接停住——使用者回報的「滑一頁之後慣性消失」就是它。
-    // 慣性的意義是「小力推、滑得遠」，上限只該擋「一次意外飛過十頁」，
-    // 不該擋正常的一兩頁。三頁＝用力 flick 約兩頁多，再用力也只到三頁。
-    val baseFlingBehavior = ScrollableDefaults.flingBehavior()
-    val flingBehavior = remember(baseFlingBehavior) {
-        BoundedFlingBehavior(baseFlingBehavior) {
-            val info = mainListState.layoutInfo
-            val pageFull = info.visibleItemsInfo.firstOrNull()?.size?.toFloat()
-                ?: paperHAtZoom(viewModel.docZoom.value)
-            pageFull * FLING_BUDGET_PAGES
-        }
-    }
+    // **無距離上限**——2026-11-15 使用者指定回到 1.6.9 的甩動手感。
+    // 歷史：一個視窗高 →「使用者滑一頁之後慣性消失」；改三頁仍砍到大 flick 的距離。
+    // BoundedFlingBehavior（含單測）留著備用，需要上限時再包回來。
+    val flingBehavior = ScrollableDefaults.flingBehavior()
 
     // 工作區層手掌辨識（touchMajor）：手掌和捏合錨定指在位移上長得一樣，
     // 唯一分得出來的是接觸面積。Compose 手勢層拿不到面積，所以跟 InkCanvas 一樣
@@ -549,7 +529,6 @@ val allowSinglePan = startedBlank || fingerPanOnPaperAllowed(
                                 ScrollWriters.log(
                                     "FLING-start",
                                     "vy=${vy.toInt()} clamp=${(-vy).coerceIn(-8000f, 8000f).toInt()}" +
-                                        " budget=${(full * FLING_BUDGET_PAGES).toInt()}" +
                                         " pts=$sPoints span=$span idx=$startIdx off=$startOff" +
                                         " full=${full.toInt()} viewport=${viewportPx.toInt()}" +
                                         " z=${viewModel.docZoom.value}"
