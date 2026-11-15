@@ -16,8 +16,8 @@ android {
         applicationId = "com.vic.inkflow"
         minSdk = 32
         targetSdk = 36
-        versionCode = 28
-        versionName = "1.6.22"
+        versionCode = 29
+        versionName = "1.6.23"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         manifestPlaceholders["appLabel"] = "InkFlow"
