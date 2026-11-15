@@ -14,7 +14,7 @@ interface StrokeDao {
     suspend fun insertStroke(stroke: StrokeEntity)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertPoints(points: List<PointEntity>)
+    suspend fun insertSamples(samples: List<StrokeSamplesEntity>)
 
     // ── 墓碑隔離（v6 §15.4）────────────────────────────────────────────────
     //
@@ -36,13 +36,58 @@ interface StrokeDao {
     // 反過來，下面三支「版本／仲裁」查詢（[getStrokeVersion]、[getStrokeVersions]、
     // [tombstoneStrokes]）**絕對不能**加這層過濾：仲裁必須看得見墓碑才知道對端刪過。
 
-    @Transaction
-    @Query("SELECT * FROM strokes WHERE documentUri = :documentUri AND pageIndex = :pageIndex AND deletedAt IS NULL")
-    fun getStrokesForPage(documentUri: String, pageIndex: Int): Flow<List<StrokeWithPoints>>
+    // ── 讀取（v34：不再用 @Relation）────────────────────────────────────────
+    //
+    // 舊碼是 `@Transaction @Query(...) fun getStrokesForPage(): List<StrokeWithPoints>`，
+    // Room 會為 `@Relation` 生成 `__fetchRelationshippoints…`：一頁 27k 個點就 27k 列
+    // ＋27k 個 strokeId String。捲動時並發重讀 → CursorWindow.nativeGetString OOM。
+    //
+    // 現在拆成兩支查詢：strokes（幾百列）＋ stroke_samples（同一個數量級，BLOB）。
+    // `LEFT JOIN stroke_samples` 是刻意的：Room 用查詢裡出現的表名做 invalidation，
+    // 少了它，只改點位（罕見，但同步套用會發生）不會觸發 UI 更新。
+    //
+    // 兩支查詢的結果由 repository 組回 `StrokeWithSamples`（見 RoomStrokeRepository）。
 
-    @Transaction
-    @Query("SELECT * FROM strokes WHERE documentUri = :documentUri AND pageIndex = :pageIndex AND deletedAt IS NULL")
-    suspend fun getStrokesForPageSync(documentUri: String, pageIndex: Int): List<StrokeWithPoints>
+    @Query(
+        "SELECT st.* FROM strokes st " +
+            "LEFT JOIN stroke_samples ss ON ss.strokeId = st.id " +
+            "WHERE st.documentUri = :documentUri AND st.pageIndex = :pageIndex AND st.deletedAt IS NULL"
+    )
+    fun getStrokeRowsForPage(documentUri: String, pageIndex: Int): Flow<List<StrokeEntity>>
+
+    @Query(
+        "SELECT st.* FROM strokes st " +
+            "LEFT JOIN stroke_samples ss ON ss.strokeId = st.id " +
+            "WHERE st.documentUri = :documentUri AND st.pageIndex = :pageIndex AND st.deletedAt IS NULL"
+    )
+    suspend fun getStrokeRowsForPageSync(documentUri: String, pageIndex: Int): List<StrokeEntity>
+
+    /** 這一頁的點位 BLOB（與 [getStrokeRowsForPage] 同一組條件，索引走 (documentUri, pageIndex)）。 */
+    @Query(
+        "SELECT ss.strokeId AS strokeId, ss.count AS count, ss.data AS data FROM stroke_samples ss " +
+            "INNER JOIN strokes st ON st.id = ss.strokeId " +
+            "WHERE st.documentUri = :documentUri AND st.pageIndex = :pageIndex AND st.deletedAt IS NULL"
+    )
+    suspend fun getSamplesForPage(documentUri: String, pageIndex: Int): List<StrokeSamplesEntity>
+
+    // ── v34 過渡期（背景搬遷完成前）────────────────────────────────────────
+    // 舊 `points` 表 fallback：只查單筆的 x/y/width，**不 select strokeId**——每列一個
+    // String 正是 CursorWindow OOM 的來源。搬遷完成後這條路徑自然不會再被走到。
+
+    @Query("SELECT x, y, width FROM points WHERE strokeId = :strokeId ORDER BY id")
+    suspend fun getLegacyPointRows(strokeId: String): List<LegacyPointRow>
+
+    /**
+     * 背景搬遷的待辦清單：還沒有 BLOB 的筆。
+     *
+     * 0 點的筆（墓碑）也會被選中一次，搬遷時寫入空 BLOB 後就不再出現——否則這份文件
+     * 有 1 萬多筆這種列，迴圈會永遠結束不了。
+     */
+    @Query(
+        "SELECT st.id FROM strokes st LEFT JOIN stroke_samples ss ON ss.strokeId = st.id " +
+            "WHERE ss.strokeId IS NULL LIMIT :limit"
+    )
+    suspend fun strokeIdsMissingSamples(limit: Int): List<String>
 
     /**
      * 這頁活著筆跡的最大 boundsBottom——純彙總，不碰 points 關係查詢。
@@ -55,9 +100,20 @@ interface StrokeDao {
     @Query("SELECT EXISTS(SELECT 1 FROM strokes WHERE documentUri = :documentUri AND pageIndex = :pageIndex AND deletedAt IS NULL)")
     suspend fun hasLiveStrokes(documentUri: String, pageIndex: Int): Boolean
 
-    @Transaction
-    @Query("SELECT * FROM strokes WHERE documentUri = :documentUri AND deletedAt IS NULL")
-    suspend fun getAllStrokesForDocument(documentUri: String): List<StrokeWithPoints>
+    @Query(
+        "SELECT st.* FROM strokes st " +
+            "LEFT JOIN stroke_samples ss ON ss.strokeId = st.id " +
+            "WHERE st.documentUri = :documentUri AND st.deletedAt IS NULL"
+    )
+    suspend fun getStrokeRowsForDocument(documentUri: String): List<StrokeEntity>
+
+    /** 整份文件的點位 BLOB。同步 DOCUMENT_DETAIL／備份／影子比對用（合法全量路徑）。 */
+    @Query(
+        "SELECT ss.strokeId AS strokeId, ss.count AS count, ss.data AS data FROM stroke_samples ss " +
+            "INNER JOIN strokes st ON st.id = ss.strokeId " +
+            "WHERE st.documentUri = :documentUri AND st.deletedAt IS NULL"
+    )
+    suspend fun getSamplesForDocument(documentUri: String): List<StrokeSamplesEntity>
 
     @Query("DELETE FROM strokes WHERE id IN (:strokeIds)")
     suspend fun deleteStrokesByIds(strokeIds: List<String>): Int
@@ -98,22 +154,33 @@ interface StrokeDao {
     @Query("DELETE FROM strokes WHERE documentUri = :documentUri")
     suspend fun deleteStrokesForDocument(documentUri: String)
 
-    @Query("DELETE FROM points WHERE strokeId = :strokeId")
-    suspend fun deletePointsForStroke(strokeId: String)
+    @Query("DELETE FROM stroke_samples WHERE strokeId = :strokeId")
+    suspend fun deleteSamplesForStroke(strokeId: String)
 
     // ── S1 單畫布：文件座標（docY = pageIndex × stride + boundsTop）─────────
     // S1 只寫不讀：回填＋新寫雙寫；範圍讀切換在 S2。
 
     /** 與 y 範圍相交的筆（S2 主查詢；S1 僅做一致性對帳）。 */
-    @Transaction
     @Query("""
-        SELECT * FROM strokes
-        WHERE documentUri = :documentUri
-          AND deletedAt IS NULL
-          AND docY IS NOT NULL AND docY <= :y1
-          AND (docY + (boundsBottom - boundsTop)) >= :y0
+        SELECT st.* FROM strokes st
+        LEFT JOIN stroke_samples ss ON ss.strokeId = st.id
+        WHERE st.documentUri = :documentUri
+          AND st.deletedAt IS NULL
+          AND st.docY IS NOT NULL AND st.docY <= :y1
+          AND (st.docY + (st.boundsBottom - st.boundsTop)) >= :y0
     """)
-    suspend fun getStrokesForRange(documentUri: String, y0: Float, y1: Float): List<StrokeWithPoints>
+    suspend fun getStrokeRowsForRange(documentUri: String, y0: Float, y1: Float): List<StrokeEntity>
+
+    /** 範圍查的點位 BLOB（條件與 [getStrokeRowsForRange] 完全一致）。 */
+    @Query("""
+        SELECT ss.strokeId AS strokeId, ss.count AS count, ss.data AS data FROM stroke_samples ss
+        INNER JOIN strokes st ON st.id = ss.strokeId
+        WHERE st.documentUri = :documentUri
+          AND st.deletedAt IS NULL
+          AND st.docY IS NOT NULL AND st.docY <= :y1
+          AND (st.docY + (st.boundsBottom - st.boundsTop)) >= :y0
+    """)
+    suspend fun getSamplesForRange(documentUri: String, y0: Float, y1: Float): List<StrokeSamplesEntity>
 
     /** 頁管理（S4 用）：把 y 閾值以下的墨整批平移。NULL 行不受影響。 */
     @Query("UPDATE strokes SET docY = docY + :dy WHERE documentUri = :documentUri AND docY IS NOT NULL AND docY >= :yThreshold")
@@ -162,8 +229,8 @@ interface StrokeDao {
      * `IN (:ids) AND deletedAt IS NOT NULL`：只在真的蓋上墓碑的那些筆跡上生效，
      * 就算呼叫端傳來一份沒被刪掉的 id 進來，也不會誤刪還活著的點。
      */
-    @Query("DELETE FROM points WHERE strokeId IN (SELECT id FROM strokes WHERE id IN (:strokeIds) AND deletedAt IS NOT NULL)")
-    suspend fun deletePointsForTombstoned(strokeIds: List<String>): Int
+    @Query("DELETE FROM stroke_samples WHERE strokeId IN (SELECT id FROM strokes WHERE id IN (:strokeIds) AND deletedAt IS NOT NULL)")
+    suspend fun deleteSamplesForTombstoned(strokeIds: List<String>): Int
 
     /**
      * 墓碑保留期：過了就把列真的刪掉。

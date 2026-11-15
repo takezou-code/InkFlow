@@ -44,11 +44,12 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 //   • 直接降到 v27 → 走 fallbackToDestructiveMigrationOnDowngrade，**整個資料庫被清空**。
 // 所以欄位留著、值留著（見 StrokeEntity.toolKind 註解）。
 @Database(
-    entities = [StrokeEntity::class, PointEntity::class, DocumentEntity::class, FolderEntity::class,
+    entities = [StrokeEntity::class, PointEntity::class, StrokeSamplesEntity::class,
+                DocumentEntity::class, FolderEntity::class,
                 TextAnnotationEntity::class, ImageAnnotationEntity::class,
                 DocumentPreferenceEntity::class, BookmarkEntity::class,
                 MathSourceEntity::class],
-    version = 33
+    version = 34
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun strokeDao(): StrokeDao
@@ -777,6 +778,39 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v34 — 點位從「一點一 row」改為「一筆一 BLOB」（`stroke_samples`）。
+         *
+         * 為什麼（2026-11-15 M1）：Room 的 `@Relation` 讀一頁要拉 27k 個 PointEntity，
+         * 每一列在 `CursorWindow.nativeGetString` 配置一個 strokeId String。140 萬點的
+         * 文件在捲動時並發重讀幾十次 → `OutOfMemoryError`（15+ 次閃退同一行）。
+         * 打包後一頁只讀幾百列、每點 12 bytes，`__fetchRelationshippoints…` 這段
+         * 程式碼不再被 Room 生成。
+         *
+         * **migration 刻意只建表、不搬資料**：
+         * 這份 DB 有 154 萬個點／55,413 筆，實測「一次搬完」要 18～39 秒（兩種寫法都試過：
+         * 逐筆查詢 18.5s、單次掃描 39s——Android 的 CursorWindow 分頁與 4.4 萬次 insert
+         * 是主因）。放在 migration 裡＝開檔凍結 18 秒，正是使用者最痛的那件事。
+         * 所以改由 [com.vic.inkflow.util.StrokeSamplesBackfill] 在背景分批搬；
+         * 搬完之前，讀取走舊 `points` 表 fallback（見 RoomStrokeRepository）。
+         *
+         * **`points` 表刻意不刪**：搬完後舊列留作安全網（同步／備份／降版都還看得到
+         * 原始資料），新寫入只走 BLOB。之後若要回收空間再開一個版本刪它。
+         */
+        private val MIGRATION_33_34 = object : Migration(33, 34) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `stroke_samples` (" +
+                        "`strokeId` TEXT NOT NULL, " +
+                        "`count` INTEGER NOT NULL, " +
+                        "`data` BLOB NOT NULL, " +
+                        "PRIMARY KEY(`strokeId`), " +
+                        "FOREIGN KEY(`strokeId`) REFERENCES `strokes`(`id`) " +
+                        "ON UPDATE NO ACTION ON DELETE CASCADE )"
+                )
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val appContext = context.applicationContext
@@ -819,7 +853,8 @@ abstract class AppDatabase : RoomDatabase() {
                     MIGRATION_29_30,
                     MIGRATION_30_31,
                     MIGRATION_31_32,
-                    MIGRATION_32_33
+                    MIGRATION_32_33,
+                    MIGRATION_33_34
                 )
                 // Only allow destructive migration on downgrade (e.g. user reverts to an
                 // older APK). Unknown *upgrade* paths surface as a hard crash rather than

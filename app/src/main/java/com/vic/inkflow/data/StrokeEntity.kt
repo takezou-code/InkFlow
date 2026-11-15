@@ -120,6 +120,13 @@ data class PointEntity(
 /**
  * [NEW] A data class for holding the result of a one-to-many query.
  * Room will automatically populate the 'stroke' and its related 'points'.
+ *
+ * ⚠️ 2026-11-15 起 **不要再把它當 DAO 回傳型別**。`@Relation` 會為每個點配置一個
+ * `PointEntity`＋一個 strokeId String（CursorWindow.nativeGetString），140 萬點的文件
+ * 捲動時直接把 heap 打穿（15+ 次閃退同一行）。讀取改走 `stroke_samples` BLOB
+ * （見 [StrokeSamplesEntity]、[StrokeSamplesCodec]）。
+ * 這個類別保留是因為 `ModelMapping` 的轉換與舊測試還引用它；它已不在任何 DAO 簽名上，
+ * 所以 Room 不會再生成 `__fetchRelationshippoints…`。
  */
 data class StrokeWithPoints(
     @Embedded val stroke: StrokeEntity,
@@ -128,4 +135,44 @@ data class StrokeWithPoints(
         entityColumn = "strokeId"
     )
     val points: List<PointEntity>
+)
+
+/**
+ * 點位的正式儲存形狀：**一筆筆跡一列 BLOB**（v34 起）。
+ *
+ * 為什麼不沿用 `points` 表（一點一 row）：
+ * - 讀一頁要 27k 列，每列一個 String＋物件裝箱 → 捲動時 OOM（見 [StrokeSamplesCodec]）。
+ * - BLOB 是 12 bytes/點，同一頁的資料量與 CursorWindow 壓力都小兩個數量級。
+ *
+ * `points` 表**沒有刪**：v33→v34 的 migration 會把既有資料打包過來，但舊列留著當
+ * 安全網（同步、備份、降版都還看得到原始資料）。新寫入只寫這裡。
+ * `strokeId` 是主鍵，同時就是 FK 的索引，不需要額外的 `Index`。
+ */
+@Entity(
+    tableName = "stroke_samples",
+    foreignKeys = [ForeignKey(
+        entity = StrokeEntity::class,
+        parentColumns = ["id"],
+        childColumns = ["strokeId"],
+        onDelete = ForeignKey.CASCADE
+    )]
+)
+data class StrokeSamplesEntity(
+    @PrimaryKey val strokeId: String,
+    /** 點數（= data.size / 12）。冗餘欄位，用於快速檢查與除錯。 */
+    val count: Int,
+    /** 打包後的點位，格式見 [StrokeSamplesCodec]。 */
+    val data: ByteArray
+)
+
+/**
+ * 舊 `points` 表的一列（v34 背景搬遷完成前的 fallback 讀取）。
+ *
+ * 刻意**不含 strokeId**：那會在 CursorWindow 為每一列配置一個 String，正是 OOM 的成因。
+ * 呼叫端已經知道自己在讀哪一筆，不需要每列再回傳一次。
+ */
+data class LegacyPointRow(
+    val x: Float,
+    val y: Float,
+    val width: Float
 )

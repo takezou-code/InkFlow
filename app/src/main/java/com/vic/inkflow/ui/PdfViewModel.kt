@@ -874,6 +874,17 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         thumbnailCache = object : LruCache<Int, Bitmap>(maxMemory / 20) {
             override fun sizeOf(key: Int, value: Bitmap): Int = value.byteCount / 1024
         }
+
+        // 記憶體壓力降載（2026-11-15 M7）：RUNNING_LOW+ 先丟縮圖；UI/MODERATE+ 連 hi 頁一起丟
+        // （BACKGROUND=40 以上）。寧可下一幀重渲染，也別被 lmkd 殺掉。
+        com.vic.inkflow.util.AppMemoryPressure.register { level ->
+            if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_BACKGROUND) {
+                bitmapCache.evictAll()
+            }
+            if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
+                thumbnailCache.evictAll()
+            }
+        }
     }
 
     /** Returns the aspect ratio (width/height) for [index], or [fallback] when unknown. */
@@ -1386,7 +1397,6 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
 
                 if (moved) {
                     PageOpJournal.markFileDone(getApplication(), entry)
-                    pageMoved = true
 
                     // 2. Transact DB index updates
                     val tDb0 = System.currentTimeMillis()
@@ -1398,7 +1408,13 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                 }
                     val tDbMs = System.currentTimeMillis() - tDb0
                     android.util.Log.d("PdfViewModel", "movePage perf: total=${System.currentTimeMillis() - tOp0}ms file=${tFileMs}ms db=${tDbMs}ms")
+                    // 兩邊都成立才算搬家：PDF 檔案已寫＋DB 索引也搬完。
+                    // （只搬檔案的中途失敗會被 getOrElse 還原備份，緩存縮圖若已搬
+                    //  到新索引，紙和筆跡/縮圖就對不上了——必須兩邊都過才換）
+                    pageMoved = true
                 } else {
+                    // moved==false 不是例外，以前連 log 都沒有：只能靠還原備份＋（現在有的）Toast 知道
+                    android.util.Log.w("PdfViewModel", "movePage not applied: from=$fromIndex to=$toIndex count=${_pageCount.value} uri=$fileUri")
                     PageOpJournal.restoreBackup(getApplication(), backup, targetFile)
                 }
                 true
@@ -1408,6 +1424,12 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                 false
             }
             PageOpJournal.clear(getApplication())
+
+            if (!pageMoved) {
+                // 失敗＝PDF 檔案與 DB 索引都還原：畫面上看到卡片滑回原位，
+                // 舊碼在這裡不給任何訊息，使用者只覺得「它又彈回去了」而不知道為什麼。
+                _pageOperationMessage.value = "頁面移動失敗，已復原原文件"
+            }
 
             // 3. Reopen PDF
             try {
@@ -1419,6 +1441,7 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                     PdfRenderer(fd)
                 } catch (e: Exception) {
                     fd.close()
+                    _pageOperationMessage.value = "頁面已移動，但重新開啟失敗，請重新開啟這個文件"
                     _isPageOperationInProgress.value = false
                     return@launch
                 }
@@ -1447,6 +1470,7 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                 _thumbnailVersion.value++ // ? UI ??渡?蝮桀?
             } catch (e: Exception) {
                 android.util.Log.e("PdfViewModel", "movePage reopen failed", e)
+                _pageOperationMessage.value = "頁面已移動，但重新開啟失敗，請重新開啟這個文件"
             } finally {
                 _isPageOperationInProgress.value = false
             }

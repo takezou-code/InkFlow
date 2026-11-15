@@ -9,6 +9,7 @@ import com.vic.inkflow.data.AppDatabase
 import com.vic.inkflow.ui.InkLayerApp
 import com.vic.inkflow.util.AutoBackupScheduler
 import com.vic.inkflow.util.TrashCleanupScheduler
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
@@ -42,6 +43,22 @@ PDFBoxResourceLoader.init(applicationContext)
         AutoBackupScheduler.ensureScheduled(this, quiet)
         // 垃圾桶清運：每天一次，保留天數由設定頁決定（見 TrashSettings）。
         TrashCleanupScheduler.ensureScheduled(this)
+        // 記憶體告急通知入口（2026-11-15 M7）：把系統 TRIM_MEMORY_* 轉進 AppMemoryPressure。
+        registerComponentCallbacks(object : android.content.ComponentCallbacks2 {
+            override fun onTrimMemory(level: Int) = com.vic.inkflow.util.AppMemoryPressure.notifyTrim(level)
+            override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {}
+            @Deprecated("deprecated in Java")
+            override fun onLowMemory() =
+                com.vic.inkflow.util.AppMemoryPressure.notifyTrim(android.content.ComponentCallbacks2.TRIM_MEMORY_COMPLETE)
+        })
+        // v34 點位 BLOB 的背景搬遷（2026-11-15 M1）：migration 只建表，
+        // 舊 `points` 表在背景分批打包；搬完之前讀取自動 fallback。
+        // 必須在 IO：這是 154 萬點的 IO 工作，放主執行緒就是另一種凍結。
+        // 用行程級 scope（不是 activity scope）：Activity 重建不該讓搬遷重來，
+        // 重複啟動由 StrokeSamplesBackfill 內部的 AtomicBoolean 擋掉。
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            com.vic.inkflow.util.StrokeSamplesBackfill.run(applicationContext)
+        }
         setContent {
             InkLayerApp(db = db)
         }

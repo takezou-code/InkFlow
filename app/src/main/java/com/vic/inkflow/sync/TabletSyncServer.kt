@@ -711,13 +711,13 @@ class TabletSyncServer(
             val sha = if (present) digests.sha256Hex(file!!) else null
             val size = file?.length()
             val strokeCount = strokeCounts.count(doc.uri) {
-                repos.strokes.getAllStrokesForDocument(doc.uri).size
+                repos.strokes.countLiveStrokes(doc.uri)
             }
             // v4：文字數與筆數走同一套快取與預熱。理由完全相同——這兩個數字遲早都要
             // 算，而算在請求路徑上會讓桌面端的第一次 manifest 卡到撞上 60 秒
             // soTimeout，算在背景裡則幾乎是即時的。
             val textCount = textCounts.count(doc.uri) {
-                repos.texts.getAllForDocument(doc.uri).size
+                repos.texts.countLiveTexts(doc.uri)
             }
             DocumentManifestEntry(
                 uri = doc.uri,
@@ -756,12 +756,12 @@ class TabletSyncServer(
             for (doc in docs) {
                 if (!scope.isActive) return
                 documentFile(doc.uri)?.takeIf { it.isFile }?.let { digests.sha256Hex(it) }
-                runCatching { repos.strokes.getAllStrokesForDocument(doc.uri) }
-                    .onSuccess { strokeCounts.record(doc.uri, it.size) }
-                    .onFailure { Log.d(TAG, "warm-up skipped ${doc.uri}: ${it.message}") }
+                runCatching { repos.strokes.countLiveStrokes(doc.uri) }
+                    .onSuccess { strokeCounts.record(doc.uri, it) }
+                    .onFailure { Log.d(TAG, "warm-up skipped strokes for ${doc.uri}: ${it.message}") }
                 // v4：文字數一併預熱，否則第一次 manifest 會在請求路徑上等它。
-                runCatching { repos.texts.getAllForDocument(doc.uri) }
-                    .onSuccess { textCounts.record(doc.uri, it.size) }
+                runCatching { repos.texts.countLiveTexts(doc.uri) }
+                    .onSuccess { textCounts.record(doc.uri, it) }
                     .onFailure { Log.d(TAG, "warm-up skipped texts for ${doc.uri}: ${it.message}") }
                 delay(WARMUP_GAP_MS)
             }

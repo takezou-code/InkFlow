@@ -103,6 +103,18 @@ private fun openDecodedStream(
         null
     }
 
+/**
+ * 顯示路徑專用解碼：像素直接進 GPU（AHardwareBuffer/DMABUF），CPU 側不留拷貝。
+ *
+ * 為什麼：ARGB_8888 解碼會在 CPU 側配置像素緩衝，HWUI 首次繪製時還要上傳 GPU 紋理，
+ * 同一張圖被配置兩份實體記憶體（2026-11-15 M5：每頁 30 張公式圖 ≈ 32MB/頁的 CPU 側陰影）。
+ * HARDWARE 位圖沒有 CPU 副本、也沒有上傳一步。
+ *
+ * 限制：HARDWARE 位圖不能被軟體 Canvas 繪製（`IllegalStateException: Software rendering
+ * doesn't support hardware bitmaps`）。本函數只給 ImageAnnotationCache 使用，而它
+ * 唯一的消費點都是 Compose `drawImage`——PDF 匯出走 PdfExporter 自己的
+ * decodeBoundedForExport（ARGB_8888）。新增任何軟體繪製消費點前先換路徑。
+ */
 internal fun decodeBoundedBitmap(
     context: android.content.Context,
     uri: android.net.Uri,
@@ -114,13 +126,18 @@ internal fun decodeBoundedBitmap(
         opts.outWidth to opts.outHeight
     } ?: return null
     if (w <= 0 || h <= 0) {
-        return openDecodedStream(context, uri)?.use { BitmapFactory.decodeStream(it) }
+        return openDecodedStream(context, uri)?.use {
+            BitmapFactory.decodeStream(it, null, hardwareOpts())
+        }
     }
     var sample = 1
     while (w / sample > maxSidePx || h / sample > maxSidePx) sample *= 2
-    val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+    val opts = hardwareOpts().apply { inSampleSize = sample }
     return openDecodedStream(context, uri)?.use { BitmapFactory.decodeStream(it, null, opts) }
 }
+
+private fun hardwareOpts(): BitmapFactory.Options =
+    BitmapFactory.Options().apply { inPreferredConfig = android.graphics.Bitmap.Config.HARDWARE }
 
 internal fun drawPathOnCanvas(
     canvas: Canvas,

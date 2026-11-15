@@ -155,6 +155,13 @@ object ImageAnnotationCache {
         states.clear()
         failed.clear()
     }
+
+    /** 記憶體壓力降載（2026-11-15 M7）：RUNNING_LOW+ 時把可重新解碼的公式圖全丟掉。 */
+    init {
+        com.vic.inkflow.util.AppMemoryPressure.register { level ->
+            if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) clear()
+        }
+    }
 }
 
 /**

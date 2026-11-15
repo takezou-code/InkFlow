@@ -61,6 +61,9 @@ class EditorViewModel(
         const val MODEL_H = 842f
         private const val DEFAULT_PEN_STROKE_WIDTH = 4f
         private const val DEFAULT_HIGHLIGHTER_STROKE_WIDTH = 8f
+        private const val DEFAULT_ERASER_RADIUS = 10f
+        const val ERASER_RADIUS_MIN = 4f
+        const val ERASER_RADIUS_MAX = 24f
     }
 
     // ── Paper Style ──────────────────────────────────────────────────────────────
@@ -187,6 +190,10 @@ class EditorViewModel(
     private val _strokeWidth = MutableStateFlow(DEFAULT_PEN_STROKE_WIDTH)
     val strokeWidth: StateFlow<Float> = _strokeWidth.asStateFlow()
 
+    private val _eraserRadius = MutableStateFlow(DEFAULT_ERASER_RADIUS)
+    /** 橡皮擦半徑(model 單位);全域偏好。命中判定與預覽渲染共用同一個值。 */
+    val eraserRadius: StateFlow<Float> = _eraserRadius.asStateFlow()
+
     private val _inputMode = MutableStateFlow(InputMode.FREE)
     val inputMode: StateFlow<InputMode> = _inputMode.asStateFlow()
 
@@ -298,6 +305,7 @@ class EditorViewModel(
                 }
                 _quickSwipeEraserEnabled.value = prefs.quickSwipeEraserEnabled
                 _autoSwitchToPenAfterErase.value = prefs.autoSwitchToPenAfterErase
+                _eraserRadius.value = prefs.eraserRadius
                 _strokeSpeedSensitivity.value = prefs.strokeSpeedSensitivity
                 _widthResponsiveness.value = settingsRepository.getWidthResponsiveness()
                 _touchCalEnabled.value = prefs.touchCalEnabled
@@ -560,15 +568,26 @@ class EditorViewModel(
     }
 
     private var prefetchGen = 0
+    private var prefetchJob: kotlinx.coroutines.Job? = null
+    private var lastPrefetchWindow: IntRange? = null
+
     fun prefetchPages(firstVisible: Int, lastVisible: Int) {
         // 窗口 ±2：慢速拖時，進視口的前一站已查好，快取當初始值第一幀即畫
         val lo = (minOf(firstVisible, lastVisible) - 2).coerceAtLeast(0)
         val hi = maxOf(firstVisible, lastVisible) + 2
         // 熱流只留可視附近 ±3：滑走的頁放掉引用（已組成的 item 手上引用不受影響），記憶體有界
         pageFlows.keys.retainAll { it in lo - 2..hi + 2 }
+        val window = lo..hi
+        // 視窗沒變就不重查。舊行為是每個捲動幀（collect，非 collectLatest）都 relaunch，
+        // 同一批 ±2 頁在 Dispatchers.IO 上排了幾十個完整 @Transaction 點位查詢，
+        // 堆積被 PointEntity→Model 裝箱物件灌爆直到 OOM（2026-11-15 所有閃退都同一個 stack）。
+        // 內容變更由 Room invalidation flows 傳遞，不靠這裡刷。
+        if (window == lastPrefetchWindow) return
+        // 視窗變了：取消上一次還沒跑完的預取，只要最新那批。舊的捨棄（gen 守門擋掉寫入）。
+        lastPrefetchWindow = window
+        prefetchJob?.cancel()
         val gen = ++prefetchGen
-        viewModelScope.launch(Dispatchers.IO) {
-            val window = (lo..hi).filter { it >= 0 }
+        prefetchJob = viewModelScope.launch(Dispatchers.IO) {
             val fresh = window.associateWith { p ->
                 NeighborPageData(
                     strokes = repos.strokes.getStrokesForPageSync(documentUri, p),
@@ -623,6 +642,13 @@ class EditorViewModel(
         }
         viewModelScope.launch(Dispatchers.IO) {
             settingsRepository.setStrokeWidth(documentUri, _selectedTool.value, width)
+        }
+    }
+
+    fun onEraserRadiusChanged(radius: Float) {
+        _eraserRadius.value = radius.coerceIn(ERASER_RADIUS_MIN, ERASER_RADIUS_MAX)
+        viewModelScope.launch(Dispatchers.IO) {
+            settingsRepository.setEraserRadius(_eraserRadius.value)
         }
     }
 
@@ -941,7 +967,8 @@ class EditorViewModel(
                     val modelEraserPoints = pointsCopy.map { Offset(it.x * scaleX, it.y * scaleY) }
                     val intersectingStrokes = IntersectionUtils.findIntersectingStrokes(
                         eraserPoints = modelEraserPoints,
-                        strokes = visibleStrokes
+                        strokes = visibleStrokes,
+                        eraserRadius = _eraserRadius.value
                     )
 
                     // Also erase text annotations whose box the path actually touches.
@@ -956,7 +983,7 @@ class EditorViewModel(
                             rectTop = b.top,
                             rectRight = b.right,
                             rectBottom = b.bottom,
-                            radius = 10f
+                            radius = _eraserRadius.value
                         )
                     }
 

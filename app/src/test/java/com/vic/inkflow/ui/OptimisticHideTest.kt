@@ -142,7 +142,10 @@ class OptimisticHideTest {
         val strokes = MutableStateFlow(listOf(swp("s1")))
         val vm = buildVm(strokes)
         vm.pageDataFlow(0).test {
-            awaitItem() // initial
+            // stateIn 的初值是空 NeighborPageData，上游 combine 緊接著發射真值。
+            // 不先吃掉空幀的話，下面的 expectNoEvents() 會把「真值那一幀」誤判成
+            // showIds 造成的發射——這是時序 flake，不是行為錯誤（同第一個測試的寫法）。
+            if (awaitItem().strokes.isEmpty()) awaitItem()
             // undo 恢復分支無條件 showIds：沒藏過的 id 必須不產生多餘發射
             //（StateFlow 對 equal 值不發射；若有多餘發射，這行直接失敗）。
             vm.showIds(listOf("ghost"))
