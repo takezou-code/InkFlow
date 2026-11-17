@@ -202,24 +202,18 @@ internal fun bitmapOrderChanged(prev: List<String>?, now: List<String>): Boolean
 }
 
 /**
- * 墨跡快取的「畫布內容指紋」（P0-A）：sx/sy（縮放後的實際解析度）＋ 每一筆已提交墨跡的
- * (id, version)。相同指紋 = 畫到的東西一模一樣 → 不需要重烘。順序敏感（疊圖順序影響像素）。
- *
- * 為什麼需要：bounds 殘缺的筆跡會讓「dirty != null」永遠成立，舊的 fullRebuild 於是
- * 每一幀都成立 → 主執行緒 60fps 全頁重畫 → GC 追不上、Java heap OOM（2026-11-14 實錄）。
- * 指紋與「這次烘焙是不是最新」解耦：烘一次、比一次、畫到一致就停手。
+ * 墨跡快取的「rebuild 觸發鍵」：**只認 sx/sy（縮放後的實際解析度）**。
+ * 墨跡內容本身不進鍵——增刪改/位移一律走 drawWithCache 內的 dirty-rect 增量擦除重畫，
+ * 並由 inkStamp（訂閱頁流重發）喚醒 factory。縮放改變才整頁重烤（髒區外像素會留舊比例）。
+ * version/nonce 只服務 fingerprint 重發與 collab 仲裁，不進位圖決策。
  */
-internal fun inkContentKey(sx: Float, sy: Float, strokes: List<StrokeWithSamples>): Long {
+internal fun inkScaleKey(sx: Float, sy: Float): Long {
     var h = -3750763034362895579L // FNV-1a offset basis
     fun mix(v: Long) {
         h = h xor v
         h *= 0x100000001b3L
     }
     mix((sx.toRawBits().toLong() shl 32) or (sy.toRawBits().toLong() and 0xffffffffL))
-    for (swp in strokes) {
-        mix(swp.stroke.id.hashCode().toLong() and 0xffffffffL)
-        mix(swp.stroke.version.toLong() and 0xffffffffL)
-    }
     return h
 }
 
@@ -229,6 +223,12 @@ internal fun inkContentKey(sx: Float, sy: Float, strokes: List<StrokeWithSamples
 // 變化量走——加筆只畫新增，刪筆只清髒區＋重畫相交的，髒區過大才全量。
 
 /** 髒區佔頁面積超過這個比例，全量重建反而划算（clip 來回不如一次清）。 */
+/**
+ * 選取 bake exclusion 過渡（leaving）且 DB 回寫還在途時打入 lastInkScale.contentKey 的 sentinel，
+ * 強制下一幀 full rebuild / 背景重烤，用 fresh strokes 整頁重畫蓋掉舊像素。
+ */
+internal const val BAKE_CONTENT_KEY_STALE: Long = Long.MIN_VALUE + 1L
+
 internal const val INK_FULL_REBUILD_COVERAGE = 0.5f
 
 /**

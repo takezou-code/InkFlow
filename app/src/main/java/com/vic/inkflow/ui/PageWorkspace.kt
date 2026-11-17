@@ -1,6 +1,7 @@
 package com.vic.inkflow.ui
 
 import com.vic.inkflow.ui.theme.ShapeSm
+import com.vic.inkflow.ui.selection.selectionFrameRectOnPage
 
 import android.content.Intent
 import android.provider.OpenableColumns
@@ -8,8 +9,6 @@ import android.view.MotionEvent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.Crossfade
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -21,6 +20,7 @@ import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.runtime.withFrameNanos
 import com.vic.inkflow.util.DocLayout
 import com.vic.inkflow.util.DocTransform
+import com.vic.inkflow.util.StrokeTransformUtils
 import com.vic.inkflow.util.GestureStateMachine
 import com.vic.inkflow.util.PalmRejectionFilter
 import com.vic.inkflow.util.Pt
@@ -116,17 +116,13 @@ internal fun Workspace(
     // 桌面全透明：底由 EditorScreen 根 Aurora 提供，紙直接浮在光斑上
     val paperColor = MaterialTheme.colorScheme.surface
     val activeTool by viewModel.selectedTool.collectAsState()
-    val lassoPolygon by viewModel.lassoPolygon.collectAsState()
-    val lastLassoPolygon by viewModel.lastLassoPolygon.collectAsState()
-    val selectedStrokes by viewModel.selectedStrokes.collectAsState()
-    val selectedImageAnnotationIds by viewModel.selectedImageAnnotationIds.collectAsState()
-    val selectedTextAnnotationIds by viewModel.selectedTextAnnotationIds.collectAsState()
-    val hasEditableSelection = selectedStrokes.isNotEmpty() || selectedImageAnnotationIds.isNotEmpty() ||
-        selectedTextAnnotationIds.isNotEmpty()
-    val hasPdfBaseSelection = lassoPolygon.isNotEmpty()
+    // 圈選唯一狀態（選取內容／區域／框全在同一份）。
+    val selectionState by viewModel.selectionState.collectAsState()
+    val hasEditableSelection = selectionState.hasItems
+    val hasPdfBaseSelection = selectionState.hasRegion
     val hasSelection = hasEditableSelection || hasPdfBaseSelection
-    val activeRegionPolygon = if (lassoPolygon.isNotEmpty()) lassoPolygon else lastLassoPolygon
-    val hasRegionSnapshot = activeRegionPolygon.isNotEmpty()
+    val activeRegionPolygon = selectionState.region?.srcPolygon.orEmpty()
+    val hasRegionSnapshot = selectionState.hasRegion
     var isExtracting by remember { mutableStateOf(false) }
 
     var bubbleWidthPx by remember { mutableIntStateOf(0) }
@@ -871,7 +867,7 @@ val allowSinglePan = startedBlank || fingerPanOnPaperAllowed(
             // （之前翻頁閃光的主因：分支內各自 remember，切換必重載 + Crossfade 重播）
             val bitmapFlow = remember(index, renderEpoch) { pdfViewModel.getPageBitmap(index) }
             val pageBitmap by bitmapFlow.collectAsState()
-            // P0 快滑 LOD：縮圖常駐訂閱，高清未到先頂著顯示，落定自動換上（同幀 Crossfade 接住）。
+            // P0 快滑 LOD：縮圖常駐訂閱，高清未到先頂著顯示，落定後直接換上（硬切，不做動畫）。
             val thumbFlow = remember(index) { pdfViewModel.getPageThumbnail(index) }
             val pageThumb by thumbFlow.collectAsState()
             val shownBitmap = pageBitmap ?: pageThumb
@@ -919,27 +915,28 @@ val allowSinglePan = startedBlank || fingerPanOnPaperAllowed(
                         color = paperColor
                     ) {
                         Box(modifier = Modifier.fillMaxSize()) {
-            // 白紙墊底：點陣圖還沒來/渲染失敗時顯示白紙，不露深色主題底（永久黑頁主因）
-            if (shownBitmap == null) {
-                Box(
-                    modifier = Modifier.fillMaxSize()
-                        .background(Color.White)
+            // 白紙墊底：點陣圖還沒來/渲染失敗時顯示白紙，不露深色主題底（永久黑頁主因）。
+            // 永遠畫在最底層（不是「沒圖才畫」）：換圖那一格若底色跟著消失，本身就是一次閃爍。
+            Box(
+                modifier = Modifier.fillMaxSize()
+                    .background(Color.White)
+            )
+            // PDF static layer (bottom) — **硬切換圖**，不做 Crossfade。
+            //
+            // 這裡原本是 `Crossfade(tween(200))`，而它就是「載入完成整頁閃一下」的來源：
+            //  1. 目標從 null 變成第一張圖時，新內容 alpha 從 0 開始 → 那 200ms 看到的是
+            //     底色（深色主題下就是一片暗），而白紙墊底又剛好在這一刻被移除。
+            //  2. 縮圖 → 高清的升級走同一條路徑：兩張不透明度相加雖然恆為 1、不會露底，
+            //     但 200ms 的「糊↔清」混色在眼裡就是閃一下（而且升級的人眼感受更明顯）。
+            // PDF 頁圖是同一頁、同一內容，只差解析度，**硬切看不出接縫**；
+            // 所以直上才是唯一零閃爍的做法（順便省掉一層 alpha 圖層與一次貼圖上傳）。
+            if (shownBitmap != null) {
+                androidx.compose.foundation.Image(
+                    bitmap = shownBitmap.asImageBitmap(),
+                    contentDescription = "PDF Page $pageIndex",
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = androidx.compose.ui.layout.ContentScale.Fit
                 )
-            }
-            // PDF static layer (bottom) — crossfade between page bitmaps
-            Crossfade(
-                targetState = shownBitmap,
-                animationSpec = tween(200),
-                label = "PageBitmapFade"
-            ) { bitmap ->
-                if (bitmap != null) {
-                    androidx.compose.foundation.Image(
-                        bitmap = bitmap.asImageBitmap(),
-                        contentDescription = "PDF Page $pageIndex",
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = androidx.compose.ui.layout.ContentScale.Fit
-                    )
-                }
             }
             // 背景紙紋（ruled / grid / dot）統一由 InkCanvas 的 onDrawBehind 繪製——
             // 這裡原本有一份一模一樣的 Canvas，雙重繪製（點格紙一幀 ×2 ≈ 3.4 萬次 drawCircle）。
@@ -1021,16 +1018,20 @@ private fun DragPreviewOverlay(
     pageIndex: Int,
     modifier: Modifier = Modifier
 ) {
-    val preview by viewModel.selectedStrokePreview.collectAsState()
+    val selection by viewModel.selectionState.collectAsState()
     // 重點色：跟全域主題同一變數（primary），不在這裡寫死靛紫
     val accentColor = MaterialTheme.colorScheme.primary
-    val selectedIds by viewModel.selectedImageAnnotationIds.collectAsState()
-    // 選中圖：與墨同待遇畫在紙上層（跨頁拖曳全程可見；之前 overlay 只畫墨，圖被留在紙內）。
-    val selImages = remember(selectedIds) { viewModel.selectedImagesNow() }
-    val selTextIds by viewModel.selectedTextAnnotationIds.collectAsState()
-    val selTexts = remember(selTextIds) { viewModel.selectedTextsNow() }
+    // 只畫歸屬本紙的選取（跨頁選取他紙由各自的 InkCanvas 畫，避免同像素雙畫）。
+    // key 用 items：拖曳每幀只改 transform，不重建包絡路徑。
+    val pageItems = remember(selection.items, pageIndex) {
+        selection.items.forPage(pageIndex)
+    }
+    val preview = pageItems.strokes
+    // 圈選中的圖片也要在這個 clip=false 的層畫：紙內 InkCanvas 會被紙界裁掉，
+    // 拖往別頁時整張圖會「消失、放手才回來」（實機 2026-11-16）。
+    val selectedImages = pageItems.images
     val dragImg by viewModel.imageDragPreview.collectAsState()
-    if (preview.isEmpty() && selImages.isEmpty() && selTexts.isEmpty() && dragImg == null) return
+    if (preview.isEmpty() && selectedImages.isEmpty() && dragImg == null) return
     val context = LocalContext.current
     // 把手尺寸（dp 基準，1 畫布 px 恆＝1 蟳幕 px，不做 docZoom 補償）。跟 InkCanvas 那層一致。
     // 必須在 Composable 層算：LocalDensity 不能在 drawWithCache 的繪製層取。
@@ -1041,61 +1042,47 @@ private fun DragPreviewOverlay(
     val overlayHandleHaloPx = with(overlayDensity) {
         com.vic.inkflow.ui.theme.Handles.HaloRadius.toPx()
     }
-    // 圖片走共享預算制快取（1024 封頂夠拖曳預覽用；與 InkCanvas/側欄同一份快取，不重複解碼）。
-    androidx.compose.runtime.LaunchedEffect(selImages, dragImg?.image?.uri) {
-        (selImages.map { it.uri } + listOfNotNull(dragImg?.image?.uri)).distinct().forEach { uri ->
+    // 圖片直接拖曳預覽走共享預算制快取（1024 封頂夠拖曳預覽用；與 InkCanvas/側欄同一份）。
+    androidx.compose.runtime.LaunchedEffect(dragImg?.image?.uri) {
+        dragImg?.image?.uri?.let { uri ->
             com.vic.inkflow.util.ImageAnnotationCache.getOrDecode(context, uri, 1024)
         }
     }
-    val moveOffset by viewModel.lassoMoveOffset.collectAsState()
-    val scale by viewModel.selectedStrokeScale.collectAsState()
-    val anchorState by viewModel.selectedStrokeResizeAnchor.collectAsState()
-    val bounds by viewModel.selectedStrokePreviewBounds.collectAsState()
-    val framePolygon by viewModel.selectionFramePolygon.collectAsState()
+    val moveOffset = selection.transform.translation
+    val scale = selection.transform.scale
+    val anchor = selection.anchorFor(pageIndex)
     val modelW = viewModel.modelWidth
     val modelH = viewModel.modelHeight
     if (modelW <= 0f || modelH <= 0f || paperWpx <= 0f) return
     val sx = DocTransform.scaleX(paperWpx, modelW)
     val paperHpx = paperWpx / aspect
     val sy = if (paperHpx > 0f) DocTransform.scaleY(paperHpx, modelH) else sx
-    val anchor = anchorState ?: bounds?.center ?: androidx.compose.ui.geometry.Offset.Zero
     // 路徑只隨選取內容重建，拖曳位移只走 draw（不重建包絡，不卡）
     val pathData = remember(preview) {
         preview.map { swp ->
             swp to if (swp.stroke.shapeType == null) swp.points.toComposePath() else null
         }
     }
-    // 字共用 Paint（拖曳 transient，逐字改字號顏色，與 InkCanvas 同模式）。
-    val textPaint = remember {
-        android.graphics.Paint().apply {
-            isAntiAlias = true
-            typeface = android.graphics.Typeface.DEFAULT_BOLD
+    // 圈選中的圖片：bucket 必須跟 InkCanvas 同一算式（見那里的註解），否則 miss 會多一次
+    // decode；先預解碼，拖曳第一幀就有圖（LaunchedEffect 的 key 是結構相等的「圖+bucket」，
+    // 縮放只在跨桶時才重跑）。
+    val imageScale = StrokeTransformUtils.clampUniformScale(scale)
+    val selectedImageRequests = remember(selectedImages, imageScale, sx, sy) {
+        selectedImages.map { ann ->
+            ann to com.vic.inkflow.util.ImageAnnotationCache.bucketPx(
+                maxOf(
+                    (ann.modelWidth * imageScale * sx).toInt(),
+                    (ann.modelHeight * imageScale * sy).toInt()
+                ).coerceAtLeast(1)
+            )
+        }
+    }
+    LaunchedEffect(selectedImageRequests) {
+        selectedImageRequests.forEach { (ann, px) ->
+            com.vic.inkflow.util.ImageAnnotationCache.getOrDecode(context, ann.uri, px)
         }
     }
     androidx.compose.foundation.Canvas(modifier = modifier) {
-        // 選中圖先畫（墊底）；只畫歸屬本紙的（跨紙選取各紙 overlay 畫各的，跟墨同規矩）。
-        selImages.forEach { ann ->
-            if (ann.pageIndex != pageIndex) return@forEach
-            val bmp = com.vic.inkflow.util.ImageAnnotationCache.getFor(ann.uri, 1024) ?: return@forEach
-            val r = modelTransformedImageRectToCanvasRect(
-                image = ann,
-                translation = moveOffset,
-                scale = scale,
-                anchor = anchor,
-                sx = sx,
-                sy = sy
-            )
-            rotate(ann.rotation, r.center) {
-                drawImage(
-                    image = bmp,
-                    dstOffset = IntOffset(r.left.toInt(), r.top.toInt()),
-                    dstSize = IntSize(
-                        r.width.toInt().coerceAtLeast(2),
-                        r.height.toInt().coerceAtLeast(2)
-                    )
-                )
-            }
-        }
         // F4 圖片直接拖：本頁窗口重疊段畫在紙上層（src 紙原本照畫，同像素複畫無感）。
         // 旋轉中心用整圖中心（與 InkCanvas 一致），映射到本頁座標。
         val dragLocal = dragImg?.let { d ->
@@ -1127,6 +1114,39 @@ private fun DragPreviewOverlay(
                 }
             }
         }
+        // 圈選中的圖片一律由這一層畫：InkCanvas 在紙內，會被紙界裁掉，
+        // 拖往別頁時整張圖「消失、放手才回來」（實機 2026-11-16）。
+        // 位置用與手勢同一份換算；旋轉中心取變換後矩形中心（與 InkCanvas 選取分支一致）。
+        selectedImageRequests.forEach { (ann, px) ->
+            val bmp = com.vic.inkflow.util.ImageAnnotationCache.getFor(ann.uri, px)
+            if (bmp != null) {
+                val rect = modelTransformedImageRectToCanvasRect(
+                    image = ann,
+                    translation = moveOffset,
+                    scale = scale,
+                    anchor = anchor,
+                    sx = sx,
+                    sy = sy
+                )
+                rotate(ann.rotation, rect.center) {
+                    drawImage(
+                        image = bmp,
+                        dstOffset = IntOffset(rect.left.toInt(), rect.top.toInt()),
+                        dstSize = IntSize(
+                            rect.width.toInt().coerceAtLeast(2),
+                            rect.height.toInt().coerceAtLeast(2)
+                        )
+                    )
+                    // 與 InkCanvas 同一標識：被選中的圖片畫 accent 框（無把手）。
+                    drawLiquidGlassSelectionFrame(
+                        rect = rect,
+                        accent = accentColor,
+                        handles = emptyList(),
+                        handleCenters = emptyList()
+                    )
+                }
+            }
+        }
         drawIntoCanvas { cvs ->
             cvs.save()
             cvs.scale(sx, sy)
@@ -1143,38 +1163,10 @@ private fun DragPreviewOverlay(
             }
             cvs.restore()
         }
-        // 選中字：跟墨同層序（字在墨上，與 InkCanvas 一致），跟隨移動變換，只畫歸屬本紙的。
-        selTexts.forEach { ann ->
-            if (ann.pageIndex != pageIndex) return@forEach
-            textPaint.textSize = ann.fontSize * sy
-            textPaint.color = ann.colorArgb
-            val boxW = ann.boxWidth?.takeIf { it > 0f }
-            val lines = if (boxW != null) wrapTextLines(ann.text, ann.fontSize, boxW)
-                        else ann.text.split("\n")
-            val lineHeight = with(textPaint.fontMetrics) { -ascent + descent + leading }
-            val dx = moveOffset.x * sx
-            val dy = moveOffset.y * sy
-            drawIntoCanvas { cvs ->
-                lines.forEachIndexed { i, line ->
-                    val off = if (boxW != null)
-                        textAlignOffsetModel(measureTextWidth(line, ann.fontSize), boxW, ann.alignment) * sx else 0f
-                    cvs.nativeCanvas.drawText(
-                        line,
-                        ann.modelX * sx + dx + off,
-                        ann.modelY * sy + dy + i * lineHeight,
-                        textPaint
-                    )
-                }
-            }
-        }
-        val rect = modelTransformedPolygonBoundsToCanvasRect(
-            polygon = framePolygon,
-            translation = moveOffset,
-            scale = scale,
-            anchor = anchor,
-            sx = sx,
-            sy = sy
-        )
+        // 文字不再由 overlay 重畫：InkCanvas 的 LASSO 分支已加選取變換跟手，
+        // overlay 再畫一份＝原文字＋幽靈文字疊兩層（更像「沒在動」）。
+        // 框與紙內、手勢共用同一份換算（SelectionOverlay），不再各算一次。
+        val rect = selectionFrameRectOnPage(selection, pageIndex, sx, sy)
         if (rect != null && !rect.isEmpty) {
             drawLassoSelectionFrame(
                 selectionRect = rect,

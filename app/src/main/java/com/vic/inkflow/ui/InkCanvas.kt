@@ -109,6 +109,11 @@ import com.vic.inkflow.util.DocLayout
 import com.vic.inkflow.util.DocTransform
 import androidx.compose.ui.graphics.FilterQuality
 import com.vic.inkflow.util.StrokeTransformUtils
+import com.vic.inkflow.ui.selection.LassoGeometry
+import com.vic.inkflow.ui.selection.SelectionGestureHost
+import com.vic.inkflow.ui.selection.drawSelectionFrameOnPage
+import com.vic.inkflow.ui.selection.handleSelectionDown
+import com.vic.inkflow.ui.selection.selectionFrameRectOnPage
 import java.util.UUID
 import android.view.MotionEvent
 import androidx.compose.ui.input.pointer.pointerInteropFilter
@@ -279,9 +284,9 @@ fun InkCanvas(
     val committedStrokes = strokes
     val textAnnotations = texts
     val imageAnnotations = images
-    val selectedStrokePreview by viewModel.selectedStrokePreview.collectAsState()
-    val selectedStrokePreviewBounds by viewModel.selectedStrokePreviewBounds.collectAsState()
-    val commitPreview by viewModel.commitPreview.collectAsState()
+    // 圈選只有一份狀態：選取內容、框、拖曳草稿、commit preview 全在這個物件裡。
+    val selectionState by viewModel.selectionState.collectAsState()
+    val commitPreview = selectionState.commitPreview
     val activeTool by viewModel.selectedTool.collectAsState()
     val selectedColor by viewModel.selectedColor.collectAsState()
     // 重點色：跟全域主題同一變數（primary），畫布裡不再寫死靛紫
@@ -297,10 +302,6 @@ fun InkCanvas(
     val fxActive = dustFx.isNotEmpty()
     val selectedShapeSubType by viewModel.selectedShapeSubType.collectAsState()
     val selectedLassoSubType by viewModel.selectedLassoSubType.collectAsState()
-    val selectionFramePolygon by viewModel.selectionFramePolygon.collectAsState()
-    val lassoMoveOffset by viewModel.lassoMoveOffset.collectAsState()
-    val selectedStrokeScale by viewModel.selectedStrokeScale.collectAsState()
-    val selectedStrokeResizeAnchor by viewModel.selectedStrokeResizeAnchor.collectAsState()
     val inputMode by viewModel.inputMode.collectAsState()
     val quickSwipeEraserEnabled by viewModel.quickSwipeEraserEnabled.collectAsState()
     val strokeSpeedSensitivity by viewModel.strokeSpeedSensitivity.collectAsState()
@@ -308,9 +309,10 @@ fun InkCanvas(
     val touchCalEnabled by viewModel.touchCalEnabled.collectAsState()
     val touchCalDxDp by viewModel.touchCalDxDp.collectAsState()
     val touchCalDyDp by viewModel.touchCalDyDp.collectAsState()
-    val selectedImageAnnotationIds by viewModel.selectedImageAnnotationIds.collectAsState()
-    // 套索選中的字（與墨圖同等待遇；TEXT 工具私選 selectedTextAnnotationId 是另一套，不管）。
-    val vmSelectedTextIds by viewModel.selectedTextAnnotationIds.collectAsState()
+    // 套索選中的圖／字（與墨同等待遇；TEXT／IMAGE 工具私選 id 是另一套，不管）。
+    // key 用 items（拖曳時不變）：只有選取內容真的換了才重算 id 集合。
+    val selectedImageAnnotationIds = remember(selectionState.items) { selectionState.items.imageIds }
+    val vmSelectedTextIds = remember(selectionState.items) { selectionState.items.textIds }
     val paperStyle by viewModel.paperStyle.collectAsState()
     // 雙指縮放進行中：各畫筆迴圈見此即棄筆（由 Workspace 仲裁器寫入）
     val pinchActive by viewModel.pinchActive.collectAsState()
@@ -325,10 +327,12 @@ fun InkCanvas(
     val pageGapPxRef = rememberUpdatedState(pageGapPx)
     val pageCountRef = rememberUpdatedState(pageCount)
     val onEdgeAutoScrollRef = rememberUpdatedState(onEdgeAutoScroll)
-    // 拖曳 overlay 接手時，紙內選取預覽讓位（同像素只畫一次，蟳光筆疊色會變深）
+    // 拖曳 overlay 接手時，紙內選取預覽讓位（同像素只畫一次，蟳光筆疊色會變深）。
+    // 只讓「歸屬紙」讓位：跨頁選取的其他紙仍要畫自己的那一段，否則拖曳中整段消失。
     val dragPreviewActive by viewModel.dragPreviewActive.collectAsState()
+    val ownDragOverlayActive = dragPreviewActive && selectionState.page == pageIndex
     // 套索虛線動畫按需組成：無選取時不跑 choreographer，省常駐喚醒；靜模式凍結
-    val needLassoAnim = activeTool == Tool.LASSO && selectedStrokePreview.isNotEmpty() && !LocalQuietMode.current
+    val needLassoAnim = activeTool == Tool.LASSO && selectionState.items.strokes.isNotEmpty() && !LocalQuietMode.current
     val lassoDashPhase = if (needLassoAnim) {
         val lassoFrameTransition = rememberInfiniteTransition(label = "lasso-frame")
         lassoFrameTransition.animateFloat(
@@ -383,6 +387,10 @@ fun InkCanvas(
      * 所以「舊熱筆退出向量層」與「含它的位圖換上」是同一瞬間，不存在空窗。
      */
     var bakedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    // LASSO ???????????????????????????????????????????????
+    // ??????????????????(entering / leaving)?????? bounds??? dirty???
+    // ????????????????????????????????????
+    var lastSelectionExclude by remember { mutableStateOf<Set<String>>(emptySet()) }
     val committedIds = remember(committedStrokes) { committedStrokes.map { it.stroke.id }.toSet() }
     LaunchedEffect(bridgingIds, committedStrokes) {
         val ids = bridgingIds ?: return@LaunchedEffect
@@ -544,53 +552,22 @@ fun InkCanvas(
     // Latest snapshot of image annotations for use inside pointer-input coroutines
     val imageAnnotationsRef    = rememberUpdatedState(imageAnnotations)
     val selectedImageIdRef     = rememberUpdatedState(selectedImageAnnotationId)
-    val selectedStrokePreviewBoundsRef = rememberUpdatedState(selectedStrokePreviewBounds)
-    val selectionFramePolygonRef = rememberUpdatedState(selectionFramePolygon)
-    val lassoMoveOffsetRef = rememberUpdatedState(lassoMoveOffset)
-    val selectedStrokeScaleRef = rememberUpdatedState(selectedStrokeScale)
-    val selectedStrokeResizeAnchorRef = rememberUpdatedState(selectedStrokeResizeAnchor)
-    val isSelectionTransforming = lassoMoveOffset != Offset.Zero || abs(selectedStrokeScale - 1f) > 0.001f
-    // 全活頁：每紙只畫歸屬本紙的選取（跨紙選取各紙畫各的；之前要求整包同頁，跨頁直接整片不畫＝框不出來）。
-    val ownSelectedStrokes = remember(selectedStrokePreview, pageIndex) {
-        selectedStrokePreview.filter { it.stroke.pageIndex == pageIndex }
+    val selectionStateRef = rememberUpdatedState(selectionState)
+    val isSelectionTransforming = selectionState.isTransforming
+    // 全活頁：每紙只畫歸屬本紙的選取（跨紙選取各紙畫各的）。
+    // key 用 items 而不是整個 state：拖曳時每幀只改 transform，路徑包絡不該跟著重建。
+    val ownPageSelection = remember(selectionState.items, pageIndex) {
+        selectionState.items.forPage(pageIndex)
     }
-    // 本紙子集的 bounds（框＋錨點用；混合頁全域 bounds 在此無意義）。
-    // 墨圖字一起算：純圖/純字選取也要出框（之前只有墨，圖字選了沒框）。
-    val ownSelectionBounds = remember(
-        ownSelectedStrokes, selectedImageAnnotationIds, vmSelectedTextIds,
-        imageAnnotations, textAnnotations
-    ) {
-        val rects = mutableListOf<androidx.compose.ui.geometry.Rect>()
-        ownSelectedStrokes.forEach { swp ->
-            val s = swp.stroke
-            rects += androidx.compose.ui.geometry.Rect(
-                s.boundsLeft, s.boundsTop, s.boundsRight, s.boundsBottom
-            )
-        }
-        imageAnnotations.forEach { ann ->
-            if (ann.id in selectedImageAnnotationIds) {
-                rects += androidx.compose.ui.geometry.Rect(
-                    ann.modelX, ann.modelY,
-                    ann.modelX + ann.modelWidth, ann.modelY + ann.modelHeight
-                )
-            }
-        }
-        textAnnotations.forEach { ann ->
-            if (ann.id in vmSelectedTextIds) {
-                val eb = textEstimatedBounds(ann)
-                rects += androidx.compose.ui.geometry.Rect(eb.left, eb.top, eb.right, eb.bottom)
-            }
-        }
-        if (rects.isEmpty()) null
-        else androidx.compose.ui.geometry.Rect(
-            rects.minOf { it.left }, rects.minOf { it.top },
-            rects.maxOf { it.right }, rects.maxOf { it.bottom }
-        )
+    val ownSelectedStrokes = ownPageSelection.strokes
+    // drawWithCache factory 的選取訂閱源：selection 任何變動（建立／commit／取消）→ 快照實例改變。
+    // 注意：選取狀態不進 inkStamp（純取消沒有 DB 寫入也沒有頁流重發），factory 不感知就永遠不重跑，
+    // 排除集合過渡的擦除／補回不會執行 → 墨跡不動／憑空消失（使用者實報「等下一筆才位移」）。
+    val selectionStampRef = rememberUpdatedState(ownSelectedStrokes)
+    // 本紙框與變換：渲染與手勢共用同一份換算（見 SelectionOverlay）。
+    val selectionTransformAnchor = remember(selectionState, pageIndex) {
+        selectionState.anchorFor(pageIndex)
     }
-    val selectionTransformAnchor = selectedStrokeResizeAnchor
-        ?: ownSelectionBounds?.center
-        ?: selectedStrokePreviewBounds?.center
-        ?: Offset.Zero
     val selectedPathData = remember(ownSelectedStrokes) {
         ownSelectedStrokes.map { swp ->
             SelectedStrokeRenderData(
@@ -598,6 +575,12 @@ fun InkCanvas(
                 path = if (swp.stroke.shapeType == null) swp.points.toComposePath() else null
             )
         }
+    }
+    // 圈選中的圖片：繪製一律吃選取快照（items），不讀 DB。
+    // 提交後 transform 先歸零、DB 才寫回來，那幾幀若讀 DB 就是「先縮回去、再跳回新尺寸」
+    // ＝使用者實測的縮放閃爍（2026-11-16）。快照在提交當下就已經是新位置／新尺寸。
+    val selectedImageSnapshots = remember(ownPageSelection.images) {
+        ownPageSelection.images.associateBy { it.id }
     }
 
     // 筆跡幾何快取：普通 Map，只在 drawWithCache 建構區讀寫。
@@ -714,12 +697,18 @@ fun InkCanvas(
     val inkBakeVersion = remember { mutableIntStateOf(0) }
     val inkBakeInFlight = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
     val inkBakeRequests = remember { kotlinx.coroutines.channels.Channel<InkBakeRequest>(capacity = kotlinx.coroutines.channels.Channel.CONFLATED) }
+    // 頁流重發（fingerprint 含 stroke.version）→ bump stamp：讓 drawWithCache factory 重跑、
+    // 由下方 dirty-rect 增量擦除重畫接手（位移不進 inkScaleKey，bake 不會自動被喚醒，這是唯一入口）。
+    val inkStamp = remember { mutableIntStateOf(0) }
+    LaunchedEffect(strokes) {
+        inkStamp.intValue += 1
+    }
     // P0-A 背景重烘收集器：conflated → 只保留最新請求；Default 執行緒 rasterize 後
     // swap 進 pinchReuse 並 bump inkBakeVersion。全局限 2 個並行（多頁同時 zoom 不互踩）。
     // 上次建墨跡快取用的比例（同上，普通物件不觸發重組）。比例一變就必須全量重建：
     // 增量只補髒區，髒區外的像素會留著舊比例＝紙面與墨跡對不上（縮放才自愈的那個病）。
     // order＝位圖內筆跡的有序簽名，只用來抓「同一個集合、換了順序」（見重建區說明）。
-    // 墨跡快取的內容指紋簿記：背景 swap／冷啟動烘時寫入（inkContentKey）；draw 比對不一致才重烘。
+    // 墨跡快取的 rebuild 簿記：背景 swap／冷啟動烘時寫入（inkScaleKey，只認 sx/sy）；不一致才重烘。
     val lastInkScale = remember { object { var contentKey: Long = 0L } }
     LaunchedEffect(pageIndex) {
         for (req in inkBakeRequests) {
@@ -1521,111 +1510,62 @@ fun InkCanvas(
                 }
 
                 if (activeTool == Tool.LASSO) {
-                    val selectionBounds = selectedStrokePreviewBoundsRef.value
-                    val hasLassoSelection = selectedStrokePreview.isNotEmpty() ||
-                        selectedImageAnnotationIds.isNotEmpty() ||
-                        selectionFramePolygonRef.value.isNotEmpty()
-                    val cs = canvasPixelSizeState.value
-                    val sx = DocTransform.scaleX(cs.width, viewModel.modelWidth)
-                    val sy = DocTransform.scaleY(cs.height, viewModel.modelHeight)
-                    val anchorModel = selectedStrokeResizeAnchorRef.value
-                        ?: selectionBounds?.center
-                        ?: Offset.Zero
-                    val selectionRect = modelTransformedPolygonBoundsToCanvasRect(
-                        polygon = selectionFramePolygonRef.value,
-                        translation = lassoMoveOffsetRef.value,
-                        scale = selectedStrokeScaleRef.value,
-                        anchor = anchorModel,
-                        sx = sx,
-                        sy = sy
+                    val rectLasso = selectedLassoSubType == LassoSubType.RECT
+                    val host = SelectionGestureHost(
+                        state = { selectionStateRef.value },
+                        canvasSize = {
+                            val cs = canvasPixelSizeState.value
+                            IntSize(cs.width.toInt(), cs.height.toInt())
+                        },
+                        page = { pageIndexRef.value },
+                        pageCount = { pageCountRef.value },
+                        modelWidth = { viewModel.modelWidth },
+                        modelHeight = { viewModel.modelHeight },
+                        pinchActive = { viewModel.pinchActive.value },
+                        onEdgeAutoScroll = { dy -> onEdgeAutoScrollRef.value(dy) },
+                        setPageLock = { viewModel.setPageLock(it) },
+                        setDragPreviewActive = { viewModel.setDragPreviewActive(it) },
+                        setPressedHandle = { pressedHandleCenter = it },
+                        handleHitRadiusPx = handleHitRadiusPx,
+                        beginMove = { viewModel.beginSelectionMove() },
+                        moveTo = { viewModel.moveSelectionTo(it) },
+                        commitMove = { maxPage -> viewModel.commitSelectionMove(maxPage) },
+                        beginResize = { viewModel.beginSelectionResize(it) },
+                        resizeTo = { viewModel.scaleSelectionTo(it) },
+                        commitResize = { viewModel.commitSelectionResize() },
+                        commitRect = { start, end ->
+                            val cw = canvasPixelSizeState.value.width
+                            val ch = canvasPixelSizeState.value.height
+                            LassoGeometry.fromRect(
+                                startCanvas = start,
+                                endCanvas = end,
+                                srcPage = pageIndexRef.value,
+                                pageCount = pageCountRef.value,
+                                gapPx = pageGapPxRef.value,
+                                canvasW = cw,
+                                canvasH = ch,
+                                modelW = viewModel.modelWidth,
+                                modelH = viewModel.modelHeight
+                            )?.let { viewModel.selectLassoRegion(it) }
+                        },
+                        clear = { viewModel.clearSelection() }
                     )
-                    if (selectionRect != null && !selectionRect.isEmpty) {
-                        val hitIdx = handleHit(startOffset, strokeSelectionHandleCenters(selectionRect))
-                        val hitHandle = if (hitIdx >= 0)
-                            StrokeSelectionHandle.entries.getOrNull(hitIdx) else null
-                        if (hitHandle != null) {
-                            down.consume()
-                            pressedHandleCenter = strokeSelectionHandleCenter(selectionRect, hitHandle)
-                            val handle = hitHandle
-                            val anchorCanvas = strokeSelectionResizeAnchor(selectionRect, handle)
-                            val initialHandle = strokeSelectionHandleCenter(selectionRect, handle)
-                            val baseDistance = hypot(
-                                (initialHandle.x - anchorCanvas.x).toDouble(),
-                                (initialHandle.y - anchorCanvas.y).toDouble()
-                            ).toFloat().coerceAtLeast(1f)
-                            viewModel.beginSelectedStrokeResize(anchorCanvas)
-                            var drag = awaitDragOrCancellation(down.id)
-                            while (drag != null && drag.pressed) {
-                                // 縮放介入：提交當前進度後退出（model-space 變換與縮放無關，可安全提交）
-                                if (pinchActive) {
-                                    viewModel.commitResizedStrokes()
-                                    pressedHandleCenter = null
-                                    return@awaitEachGesture
-                                }
-                                val currentDistance = hypot(
-                                    (drag.position.x - anchorCanvas.x).toDouble(),
-                                    (drag.position.y - anchorCanvas.y).toDouble()
-                                ).toFloat()
-                                viewModel.previewSelectedStrokeScale(currentDistance / baseDistance)
-                                drag.consume()
-                                drag = awaitDragOrCancellation(drag.id)
-                            }
-                            viewModel.commitResizedStrokes()
-                            pressedHandleCenter = null
-                            return@awaitEachGesture
+                    val consumed = handleSelectionDown(
+                        down = down,
+                        startOffset = startOffset,
+                        host = host,
+                        rectangular = rectLasso,
+                        onRectPreview = { s, e ->
+                            activeShapeStart = s
+                            activeShapeEnd = e
+                            activePathVersion++
                         }
-
-                        if (selectionRect.contains(startOffset)) {
-                            down.consume()
-                            viewModel.setPageLock(true)
-                            viewModel.setDragPreviewActive(true)
-                            // 跟手絕對式：指位相對起點，每幀重算不積差；
-                            // 自動捲量不加（見文字分支同註解），增量餵 VM 保持 telescoping 精確。
-                            var prevAbs = Offset.Zero
-                            var drag = awaitDragOrCancellation(down.id)
-                            while (drag != null && drag.pressed) {
-                                // 連貫畫布：拖出紙界自動捲（只捲視野，不進位移）
-                                val csH = canvasPixelSizeState.value.height
-                                val autoDy = edgeAutoScrollDy(drag.position.y, csH)
-                                if (autoDy != 0f) {
-                                    onEdgeAutoScrollRef.value(autoDy)
-                                }
-                                val abs = drag.position - startOffset
-                                val step = abs - prevAbs
-                                prevAbs = abs
-                                if (pinchActive) {
-                                    viewModel.commitMovedStrokes()
-                                    viewModel.setPageLock(false)
-                                    viewModel.setDragPreviewActive(false)
-                                    return@awaitEachGesture
-                                }
-                                if (step != Offset.Zero) viewModel.moveSelectedStrokes(step)
-                                drag.consume()
-                                drag = awaitDragOrCancellation(drag.id)
-                            }
-                            val maxPage = (pageCountRef.value - 1).coerceAtLeast(0)
-                            viewModel.commitMovedStrokes(maxPage)
-                            viewModel.setPageLock(false)
-                            viewModel.setDragPreviewActive(false)
-                            // 跨頁落地不清選（舊 workaround 已退役）：高亮和泡泡跟到新頁，
-                            // 選不到東西時點空白照常清（見下）。單頁本來就不清，現在一致。
-                            return@awaitEachGesture
-                        }
-
-                        down.consume()
-                        viewModel.clearSelection()
-                        return@awaitEachGesture
-                    }
-
-                    if (hasLassoSelection) {
-                        down.consume()
-                        viewModel.clearSelection()
-                        return@awaitEachGesture
-                    }
+                    )
+                    if (consumed) return@awaitEachGesture
                 }
 
-                // Shape and Rectangular Lasso tool: drag to define bounding box
-                if (activeTool == Tool.SHAPE || (activeTool == Tool.LASSO && selectedLassoSubType == LassoSubType.RECT)) {
+                // Shape tool: drag to define bounding box (rectangular lasso 已由上面接手)
+                if (activeTool == Tool.SHAPE) {
                     activeShapeStart = startOffset
                     activeShapeEnd   = startOffset
                     activePathVersion++
@@ -1677,27 +1617,6 @@ fun InkCanvas(
                                     targetPage = pageIndexRef.value
                                 )
                             }
-                        } else if (activeTool == Tool.LASSO) {
-                            // 矩形套索：按頁切子矩形（框跨頁不斷在起始頁；2 點碎段問題根治）。
-                            val canvasW = canvasPixelSizeState.value.width
-                            val canvasH = canvasPixelSizeState.value.height
-                            val quads = DocLayout.rectsByPage(
-                                left = minOf(startOffset.x, end.x),
-                                top = minOf(startOffset.y, end.y),
-                                right = maxOf(startOffset.x, end.x),
-                                bottom = maxOf(startOffset.y, end.y),
-                                canvasW = canvasW,
-                                canvasH = canvasH,
-                                gapPx = pageGapPxRef.value,
-                                srcPage = pageIndexRef.value,
-                                pageCount = pageCountRef.value
-                            ).mapValues { (_, quad) -> listOf(quad) }
-                            viewModel.selectStrokesInLassoAcross(
-                                polygonsByPage = quads,
-                                srcPage = pageIndexRef.value,
-                                canvasW = canvasW,
-                                canvasH = canvasH
-                            )
                         }
                     }
                     activeShapeStart = null
@@ -2212,25 +2131,16 @@ fun InkCanvas(
                         val lassoPts = currentPathPoints.map { Offset(it.x, it.y) }
                         val canvasW = canvasPixelSizeState.value.width
                         val canvasH = canvasPixelSizeState.value.height
-                        val byPage = LinkedHashMap<Int, MutableList<List<Offset>>>()
-                        DocLayout.splitByPage(
-                            items = lassoPts,
-                            yOf = { it.y },
-                            canvasH = canvasH,
-                            gapPx = pageGapPxRef.value,
+                        LassoGeometry.fromFreeform(
+                            pointsCanvas = lassoPts,
                             srcPage = pageIndexRef.value,
                             pageCount = pageCountRef.value,
-                            local = { p, ly -> Offset(p.x, ly) }
-                        ).forEach { (pg, seg) ->
-                            val clipped = clipPolygonToRect(seg, 0f, 0f, canvasW, canvasH)
-                            if (clipped.size >= 3) byPage.getOrPut(pg) { mutableListOf() }.add(clipped)
-                        }
-                        viewModel.selectStrokesInLassoAcross(
-                            polygonsByPage = byPage,
-                            srcPage = pageIndexRef.value,
+                            gapPx = pageGapPxRef.value,
                             canvasW = canvasW,
-                            canvasH = canvasH
-                        )
+                            canvasH = canvasH,
+                            modelW = viewModel.modelWidth,
+                            modelH = viewModel.modelHeight
+                        )?.let { viewModel.selectLassoRegion(it) }
                     }
                     Tool.ERASER -> finishErase()
                     else -> { }
@@ -2264,6 +2174,10 @@ fun InkCanvas(
         .drawWithCache {
             // P0-A：inkBakeVersion 換圖通知——swap 後 inkBakeVersion++ → 這個 draw block 重跑畫新位圖
             val bakedSwap = inkBakeVersion.intValue
+            // 頁流重發訂閱（位移不進 inkScaleKey）：stamp++ → factory 重跑 → dirty-rect 增量接手
+            val inkDataRev = inkStamp.intValue
+            // 選取訂閱：select/commit/deselect → factory 重跑 → 排除集合過渡擦除／補回會執行
+            val selRev = selectionStampRef.value
             // 過期快照兜底丟棄（2s 後一定不需要了；過期後至多多畫一個無害的 expired 檢查）。
             liftedSnapshot?.let { snap ->
                 if (android.os.SystemClock.uptimeMillis() - snap.atMs > 2000L) {
@@ -2303,13 +2217,19 @@ fun InkCanvas(
             // 注意：**舊熱筆刻意不在這裡**——它們要靠這次烘焙回到位圖，向量層才會放掉它們
             //（見 bakedIds 的不變式）。把它們排除掉就等於把閃爍寫進設計。
             val hotId = hotStrokeId?.takeIf { it !in previewIds }
+            // LASSO 選取的筆劃也要從 bake 排除（否則拖曳時原筆跡凍結在位圖上、
+            // 只有 overlay 的 accent 副本跟手 → 「感覺沒在動、放開才跳」）。
+            // 排除集合變化時在下方合併 dirty bounds，強制局部重烤才能真正抹掉舊像素。
+            val selectionExcludeIds: Set<String> =
+                if (ownSelectedStrokes.isEmpty()) emptySet() else ownSelectedStrokes.map { it.stroke.id }.toSet()
             val bakeExcludeIds: Set<String> =
-                if (previewIds.isEmpty() && pendingIds.isEmpty() && hotId == null) {
+                if (previewIds.isEmpty() && pendingIds.isEmpty() && hotId == null && selectionExcludeIds.isEmpty()) {
                     emptySet()
                 } else {
-                    HashSet<String>(previewIds.size + pendingIds.size + 1).apply {
+                    HashSet<String>(previewIds.size + pendingIds.size + selectionExcludeIds.size + 1).apply {
                         addAll(previewIds)
                         addAll(pendingIds)
+                        addAll(selectionExcludeIds)
                         if (hotId != null) add(hotId)
                     }
                 }
@@ -2347,8 +2267,8 @@ fun InkCanvas(
                 // 全量（清空整張＋重畫全筆）是擦除卡頓的最大頭（實測 draw 17.6ms/幀）。
                 // 只清髒區、只重畫相交的筆：重繪成本跟著變化量走。髒區過大／新圖／
                 // 尺寸變 → 走全量（舊行為原樣保留當 fallback）。
-                val contentKey = inkContentKey(sx, sy, strokes)
-                bakedFresh = lastInkScale.contentKey == contentKey && cachedImage != null
+                val scaleKey = inkScaleKey(sx, sy)
+                bakedFresh = lastInkScale.contentKey == scaleKey && cachedImage != null
                 val pageRect = Rect(0f, 0f, modelW, modelH)
                 fun strokeRect(swp: StrokeWithSamples) = Rect(
                     swp.stroke.boundsLeft, swp.stroke.boundsTop,
@@ -2411,6 +2331,24 @@ fun InkCanvas(
                     }
                 }
 
+                // LASSO 選取 bake exclusion 過渡：進入/離開排除集合的筆劃 bounds
+                // 合併進 dirty，讓重烤路徑真正擦掉舊像素（否則 cachedImage 會殘留原位墨跡）。
+                if (selectionExcludeIds != lastSelectionExclude) {
+                    val entering = selectionExcludeIds - lastSelectionExclude
+                    val leaving = lastSelectionExclude - selectionExcludeIds
+                    strokes.forEach { swp ->
+                        if (swp.stroke.id in entering || swp.stroke.id in leaving) {
+                            dirty = unionRect(dirty, strokeRect(swp))
+                        }
+                    }
+                    // M2.1：leaving 發生時 DB 回寫若還在途，dirty repaint 會用舊座標把墨畫回位圖。
+                    // 打 sentinel 強制下一幀 full rebuild/背景重烤，覆蓋該舊像素，消除「舊墨殘留」。
+                    if (leaving.isNotEmpty() && commitPreview != null) {
+                        lastInkScale.contentKey = BAKE_CONTENT_KEY_STALE
+                    }
+                    lastSelectionExclude = selectionExcludeIds
+                }
+
                 // 非有限 bounds 熔斷（在下面 keepIds/shape 兩輪遍歷里順手收集，
                 // 不另開一輪）：退化輸入的包絡數學可能產出 NaN/Inf；minOf/maxOf
                 // 會靜默吞掉 NaN，髒區算小、相交全 false，該畫的全被跳過
@@ -2420,6 +2358,11 @@ fun InkCanvas(
                 // 每次提筆都會有一幀「只有向量層變、位圖完全沒變」，那時 dirty 就是 null。
                 // 舊語義會在那裡全頁重畫（實測 17.6ms/幀）＝修閃爍反而多一次卡頓。
                 // 真正的「一定要全量」是：比例變、bounds 壞掉、這張圖是剛配置的。
+                // R2：不再有「內容指紋」全頁重烤——dirty-rect 增量接手增刪改位移；
+                // 整頁重烤只剩一種情形：解析度 key 不符／cachedImage==null。
+                // ⚠️ 不可讓 fullRebuild 依賴 boundsBroken 或 damageCoverage：
+                //    pitfalls.md（INKBG 無限重烘 OOM，2026-11-14）明文記載，
+                //    含不 finite bounds 的殘缺頁面每幀成立 → 60fps 背景重烘 → 512MB 爆。
                 fullRebuild = !bakedFresh
                 val canBackgroundBake = fullRebuild && cachedImage != null
                 // 這張位圖「會裝進去」哪些筆：非高亮、且不在排除清單。
@@ -2443,7 +2386,7 @@ fun InkCanvas(
                             strokes = ArrayList(strokes),
                             excludeIds = bakeExcludeIds,
                             includedIds = includedIds,
-                            contentKey = contentKey
+                            contentKey = scaleKey
                         )
                     )
                 }
@@ -2477,7 +2420,7 @@ fun InkCanvas(
                                 Color(swp.stroke.color), swp.stroke.strokeWidth, swp.stroke.isHighlighter)
                         }
                     }
-                    lastInkScale.contentKey = contentKey
+                    lastInkScale.contentKey = scaleKey
                     // 帳與圖同一瞬間補上：否則這一輪算向量層時會把整頁的筆再畫一遍
                     // （pen 疊兩層邊緣會略深，而且白做一次全頁路徑）。
                     bakedIds = includedIds
@@ -2547,8 +2490,11 @@ fun InkCanvas(
             } else {
                 strokes.filter { it.stroke.id in overlayIds && it.stroke.shapeType == null }
             }
-            // 交接中的活路徑若「向量層真的已經畫到它」就不再疊一層（高亮筆 alpha×2 會偏暗）。
-            val bridgedDrawn = bridgingIds?.let { ids -> overlayStrokes.any { it.stroke.id in ids } } == true
+            // 交接中「這筆已經被畫到了」的判定基準是頁流，不是 overlay——熒光筆不進 overlay，
+            // 問 overlay 會讓活筆（Multiply alpha 0.4）與 hlCommitted 疊兩層，
+            // 提筆後比拖曳預覽深一截。頁流有就一定能被某一層畫到（高亮＝hlCommitted、
+            // pen＝位圖或向量覆蓋），活筆就該讓位。
+            val bridgedDrawn = bridgingIds?.let { ids -> strokes.any { it.stroke.id in ids } } == true
             android.util.Log.w(
                 "InkFlowDiag",
                 "CACHE p=$pageIndex canvas=${bmpWidth}x${bmpHeight} " +
@@ -2557,7 +2503,7 @@ fun InkCanvas(
                     "hot=${hotStrokeId?.take(8) ?: "-"} " +
                     "bridge=${bridgingIds?.size ?: 0} drawn=$bridgedDrawn " +
                     "dirty=${dirty != null} full=$fullRebuild fresh=$bakedFresh broken=$boundsBroken " +
-                    "seq=$strokeGestureSeq bseq=$bridgingSeq"
+                    "seq=$strokeGestureSeq bseq=$bridgingSeq rev=$inkDataRev sel=${selRev.size}"
             )
 
             // 真正「空窗」的判定：交接還在等、向量層沒有它、活路徑也已經空了 →
@@ -2660,7 +2606,12 @@ fun InkCanvas(
             }
 
             // Image annotations — drawn BELOW strokes (above PDF layer which is a separate Composable)
-            currentImageAnns.forEach { ann ->
+            currentImageAnns.forEach { dbAnn ->
+                // 跨頁拖曳 overlay 期間，選取中的圖片由 PageWorkspace 那個 clip=false 的層統一畫：
+                // 紙內這層會被紙界裁掉（拖往別頁時整張圖消失），也避免同像素／同選取框畫兩次。
+                if (ownDragOverlayActive && dbAnn.id in selectedImageAnnotationIds) return@forEach
+                // 圈選中的圖片改讀選取快照（見 selectedImageSnapshots 的說明：避免縮放閃爍）
+                val ann = selectedImageSnapshots[dbAnn.id] ?: dbAnn
                 // P0-B：依顯示長邊（model 尺寸 × 當下縮放，忽略旋轉微差，bucket 是 2 倍步距）選桶；缺圖 → 派發 decode
                 val displayLongPx = maxOf((ann.modelWidth * sx).toInt(), (ann.modelHeight * sy).toInt()).coerceAtLeast(1)
                 val requestPx = com.vic.inkflow.util.ImageAnnotationCache.bucketPx(displayLongPx)
@@ -2682,8 +2633,8 @@ fun InkCanvas(
                     val canvasRect = when {
                         isSelectedInSelectionTool -> modelTransformedImageRectToCanvasRect(
                             image = ann,
-                            translation = lassoMoveOffset,
-                            scale = selectedStrokeScale,
+                            translation = selectionState.transform.translation,
+                            scale = selectionState.transform.scale,
                             anchor = selectionTransformAnchor,
                             sx = sx,
                             sy = sy
@@ -2724,6 +2675,16 @@ fun InkCanvas(
                             dstOffset = IntOffset(canvasRect.left.toInt(), canvasRect.top.toInt()),
                             dstSize   = IntSize(canvasRect.width.toInt().coerceAtLeast(2), canvasRect.height.toInt().coerceAtLeast(2))
                         )
+                        // LASSO 選取的圖片：畫 accent 選取框（無把手，純標識「這張有被選」），
+                        // 否則只選圖片時使用者完全看不出哪些圖片屬於選取範圍。
+                        if (isSelectedInSelectionTool) {
+                            drawLiquidGlassSelectionFrame(
+                                rect = canvasRect,
+                                accent = accentColor,
+                                handles = emptyList(),
+                                handleCenters = emptyList()
+                            )
+                        }
                     }
                 }
             }
@@ -2817,7 +2778,16 @@ fun InkCanvas(
             // 向量層畫得到（merged 頁流已到）就讓路；絕不疊兩層（高亮筆 Alpha×2 會偏暗）。
             liftedSnapshot?.let { snap ->
                 if (snap.ids.contains(hotStrokeId)) {
-                    val covered = overlayStrokes.any { it.stroke.id in snap.ids }
+                    // 判定基準是「頁流有沒有吐出這筆」，不是 overlay——熒光筆根本不進 overlay，
+                    // 問 overlay 會讓快照整段疊在 hlCommitted 上 Multiply 兩次（飽和×2）：
+                    // 提筆後的熒光筆比拖曳預覽明顯深一截，就是使用者回報的「預覽和實際上不一樣」。
+                    // 頁流有（含樂觀層）→ 它一定能被某一層畫到：高亮走 hlCommitted、
+                    // pen 走位圖或向量覆蓋；頁流沒有才輪到這張快照補上。
+                    // 覆蓋來源只有三種：頁流有這筆（pen 走位圖／向量覆蓋、高亮走 hlCommitted）；
+                    // 交接還在等（bridgingIds 有這批）→ 活筆路徑本身就在畫它（!bridgedDrawn 時）；
+                    // 都沒有（2s 逾時或新手勢已接走活筆）才輪到這張快照補上。
+                    val covered = snap.ids.any { it in committedIds } ||
+                        (bridgingIds?.any { it in snap.ids } == true)
                     if (!covered) {
                         if (snap.isHighlighter) {
                             drawIntoCanvas { cvs ->
@@ -2855,15 +2825,15 @@ fun InkCanvas(
             // Selected strokes (highlighted with current preview transform applied).
             // dragPreviewActive 時由 Workspace overlay 繪製（可溢出紙界、置頂），此處讓位。
             // 全活頁：每紙畫歸屬本紙的子集（ownSelectedStrokes），跨紙選取各紙出框。
-            if (selectedPathData.isNotEmpty() && !dragPreviewActive) {
+            if (selectedPathData.isNotEmpty() && !ownDragOverlayActive) {
                 drawIntoCanvas { cvs ->
                     cvs.save()
                     cvs.scale(sx, sy)
                     if (isSelectionTransforming) {
                         applySelectionTransform(
                             canvas = cvs,
-                            translation = lassoMoveOffset,
-                            scale = selectedStrokeScale,
+                            translation = selectionState.transform.translation,
+                            scale = selectionState.transform.scale,
                             anchor = selectionTransformAnchor
                         )
                     }
@@ -2879,35 +2849,26 @@ fun InkCanvas(
                     }
                     cvs.restore()
                 }
-                // 框：本紙子集 bounds 轉四角（與移動/縮放同一變換）；無子集不畫。
-                val ownCorners = ownSelectionBounds?.let { b ->
-                    listOf(
-                        Offset(b.left, b.top), Offset(b.right, b.top),
-                        Offset(b.right, b.bottom), Offset(b.left, b.bottom)
-                    )
-                }.orEmpty()
-                val selectionRect = if (ownCorners.size < 4) null
-                else modelTransformedPolygonBoundsToCanvasRect(
-                    polygon = ownCorners,
-                    translation = lassoMoveOffset,
-                    scale = selectedStrokeScale,
-                    anchor = selectionTransformAnchor,
-                    sx = sx,
-                    sy = sy
-                )
-                if (activeTool == Tool.LASSO && selectionRect != null && !selectionRect.isEmpty) {
-                    drawLassoSelectionFrame(
-                        selectionRect = selectionRect,
+            }
+            // 聯合選取框：只要「本頁有框」就畫（墨／圖／字都算，純文字選取也要看得見）。
+            // 框與手勢共用 selectionFrameRectOnPage／drawSelectionFrameOnPage，不再各自算一份。
+            if (!ownDragOverlayActive && activeTool == Tool.LASSO) {
+                val frameRect = selectionFrameRectOnPage(selectionState, pageIndex, sx, sy)
+                if (frameRect != null) {
+                    drawSelectionFrameOnPage(
+                        state = selectionState,
+                        page = pageIndex,
+                        sx = sx,
+                        sy = sy,
                         accent = accentColor,
                         // 把手只在墨/圖子集非空時出現：字不支援套索縮放，有把手沒功能更騙人。
-                        showHandles = ownSelectedStrokes.isNotEmpty() || selectedImageAnnotationIds.isNotEmpty(),
+                        showHandles = ownPageSelection.strokes.isNotEmpty() ||
+                            ownPageSelection.images.isNotEmpty(),
                         dashPhase = if (isSelectionTransforming) 0f else lassoDashPhase,
                         animateDash = !isSelectionTransforming,
                         visualRadiusPx = handleVisualRadiusPx,
                         haloRadiusPx = handleHaloRadiusPx,
-                        pressedHandleCenter = pressedHandleCenter,
-                        strokeScale = if (pressedHandleCenter != null)
-                            com.vic.inkflow.ui.theme.Handles.PressedStrokeScale else 1f
+                        pressedHandleCenter = pressedHandleCenter
                     )
                 }
             }
@@ -2989,16 +2950,30 @@ fun InkCanvas(
                             tSettle.id == ann.id && tSettle.matches(ann)
                         // 只有「移動」會帶動整條流；字級/框寬是單格的預覽。
                         val moves = (isSelected || inSelFlow) && !txtSettled
-                        val dx = if (moves) textMoveDelta.x else 0f
-                        val dy = if (moves) textMoveDelta.y else 0f
+                        // LASSO 選取的字也要跟手（平移＋等比縮放；model → px），
+                        // 否則圈選拖曳時原文字釘在原位、只有 overlay 的幽靈副本在動。
+                        val lassoSel = ann.id in vmSelectedTextIds
+                        val selT = selectionState.transform
+                        val lassoScale = if (lassoSel) selT.scale else 1f
+                        val lassoAnchor = selectionTransformAnchor
+                        val lassoDx = if (lassoSel)
+                            (lassoAnchor.x + (ann.modelX - lassoAnchor.x) * lassoScale +
+                                selT.translation.x - ann.modelX) * sx else 0f
+                        val lassoDy = if (lassoSel)
+                            (lassoAnchor.y + (ann.modelY - lassoAnchor.y) * lassoScale +
+                                selT.translation.y - ann.modelY) * sy else 0f
+                        val dx = (if (moves) textMoveDelta.x else 0f) + lassoDx
+                        val dy = (if (moves) textMoveDelta.y else 0f) + lassoDy
                         val fsDelta = if (isSelected && !txtSettled) textFontSizeDelta else 0f
                         val bwDelta = if (isSelected && !txtSettled) textBoxWidthDelta else 0f
-                        val effFont = (ann.fontSize + fsDelta).coerceAtLeast(4f)
+                        val effFont = ((ann.fontSize + fsDelta) * lassoScale).coerceAtLeast(4f)
                         textPaint.textSize = effFont * sy
                         textPaint.color = ann.colorArgb
                         // 文字框：框寬（＋拖曳預覽）決定折行與對齊；舊資料（boxWidth null）維持逐 `\n` 行。
-                        val boxW = ann.boxWidth?.takeIf { it > 0f }?.plus(bwDelta)
-                        val lines = if (boxW != null && (boxW != ann.boxWidth || fsDelta != 0f))
+                        val boxW = ann.boxWidth?.takeIf { it > 0f }?.plus(bwDelta)?.times(lassoScale)
+                        val lines = if (boxW != null &&
+                            (boxW != ann.boxWidth || fsDelta != 0f || lassoScale != 1f)
+                        )
                             wrapTextLines(ann.text, effFont, boxW)
                         else textLines[ann.id].orEmpty()
                         // Multiline: modelY is the first-line baseline (matches PDF export).
@@ -3014,23 +2989,8 @@ fun InkCanvas(
                     }
                 }
 
-                // 套索選中字：與 TEXT 工具打字態同一框（同函數、同把手；框由 ownSelectionBounds 統一出）。
-                if (activeTool == Tool.LASSO) {
-                    textAnnotations.forEach { ann ->
-                        if (ann.id in vmSelectedTextIds) {
-                            val r = textAnnotationHitRect(ann, sx, sy).translate(
-                                lassoMoveOffset.x * sx, lassoMoveOffset.y * sy
-                            )
-                            drawLiquidGlassSelectionFrame(
-                                rect = r,
-                                accent = accentColor,
-                                handleCenters = listOf(Offset(r.right, r.bottom)),
-                                visualRadiusPx = handleVisualRadiusPx,
-                                haloRadiusPx = handleHaloRadiusPx
-                            )
-                        }
-                    }
-                }
+                // 套索選中字不再逐字畫框：聯合選取框（上方 selectionFrameRectOnPage）已含文字包絡，
+                // 逐字框只會多出不能按的假把手。
 
                 // Selection handles for the currently selected text annotation.
                 // 打字中不畫選取框與把手：框是照「舊內容」的行數算的，而舊內容已經被藏起來，

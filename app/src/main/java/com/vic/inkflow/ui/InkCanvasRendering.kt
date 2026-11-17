@@ -160,7 +160,7 @@ internal data class InkBakeRequest(
     /** model px → bitmap px 的縮放（sx * cacheScale） */
     val scaleX: Float,
     val scaleY: Float,
-    /** 這次烘焙對應的墨跡內容指紋（inkContentKey）：swap 時回寫 lastInkScale */
+    /** 縮放/解析度 key（inkScaleKey，只認 sx/sy）：swap 時回寫 lastInkScale */
     val contentKey: Long,
     val strokes: List<StrokeWithSamples>,
     val excludeIds: Set<String>,

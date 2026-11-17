@@ -289,7 +289,7 @@ internal fun LassoBubble(
                             scope.launch {
                                 try {
                                     // 提取源 = 選取歸屬紙（全活頁下未必是作用頁）
-                                    val sourcePageIndex = viewModel.selectionPage()
+                                    val sourcePageIndex = viewModel.selectionRegionPage()
                                     val sourceBitmap = withTimeoutOrNull(1200) {
                                         pdfViewModel.getPageBitmap(sourcePageIndex)
                                             .filterNotNull()
@@ -347,7 +347,7 @@ internal fun LassoBubble(
                             sendRegionToAi(
                                 scope, pdfViewModel, viewModel, context, onAiFileReady,
                                 isExtracting, onExtractingChange, hasSelection, hasRegionSnapshot,
-                                null, viewModel.selectionPage()
+                                null, viewModel.selectionRegionPage()
                             )
                         }
                     )
@@ -402,7 +402,7 @@ internal fun LassoBubble(
                                 sendRegionToAi(
                                     scope, pdfViewModel, viewModel, context, onAiFileReady,
                                     isExtracting, onExtractingChange, hasSelection, hasRegionSnapshot,
-                                    AiQuickPrompt.EXPLAIN, viewModel.selectionPage()
+                                    AiQuickPrompt.EXPLAIN, viewModel.selectionRegionPage()
                                 )
                             }
                         )
@@ -415,7 +415,7 @@ internal fun LassoBubble(
                                 sendRegionToAi(
                                     scope, pdfViewModel, viewModel, context, onAiFileReady,
                                     isExtracting, onExtractingChange, hasSelection, hasRegionSnapshot,
-                                    AiQuickPrompt.SUMMARIZE, viewModel.selectionPage()
+                                    AiQuickPrompt.SUMMARIZE, viewModel.selectionRegionPage()
                                 )
                             }
                         )
@@ -428,7 +428,7 @@ internal fun LassoBubble(
                                 sendRegionToAi(
                                     scope, pdfViewModel, viewModel, context, onAiFileReady,
                                     isExtracting, onExtractingChange, hasSelection, hasRegionSnapshot,
-                                    AiQuickPrompt.TRANSLATE, viewModel.selectionPage()
+                                    AiQuickPrompt.TRANSLATE, viewModel.selectionRegionPage()
                                 )
                             }
                         )

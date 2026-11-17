@@ -14,7 +14,9 @@ import com.vic.inkflow.data.aiTextContentWidth
 import com.vic.inkflow.data.Point
 import com.vic.inkflow.data.repository.DocSpaceMigrator
 import com.vic.inkflow.ui.editor.ExportController
-import com.vic.inkflow.ui.editor.SelectionController
+import com.vic.inkflow.ui.selection.SelectionController
+import com.vic.inkflow.ui.selection.SelectionRegion
+import com.vic.inkflow.ui.selection.SelectionState
 import com.vic.inkflow.util.UndoStack
 import com.vic.inkflow.data.repository.InkFlowRepositories
 import com.vic.inkflow.data.Stroke
@@ -427,7 +429,7 @@ class EditorViewModel(
         val previousTool = _selectedTool.value
         _selectedTool.value = tool
         if (previousTool == Tool.LASSO && tool != Tool.LASSO) {
-            clearSelection(keepLastRegion = true)
+            clearSelection()
         }
         when (tool) {
             Tool.PEN -> {
@@ -1790,6 +1792,8 @@ class EditorViewModel(
     }
 
     fun undo() {
+        // 選取快照指向舊資料，undo 後一律作廢（不然框還在、內容已經回滾）。
+        invalidateSelection()
         val command = undoRedo.takeUndo() ?: return
         // R3：默認 redo 原樣奉還；提取守衛留頁時改記 pageKept 版（redo 不再建頁）。
         var redoCommand: DrawCommand = command
@@ -1946,6 +1950,7 @@ class EditorViewModel(
     }
 
     fun redo() {
+        invalidateSelection()
         val command = undoRedo.takeRedo() ?: return
         viewModelScope.launch(Dispatchers.IO) {
             when (command) {
@@ -2130,9 +2135,8 @@ class EditorViewModel(
         repos.strokes.replaceStrokeSnapshots(strokes.map { it.redocWith(docStride) })
     }
     // ── 套索選取 ──────────────────────────────────────────────────────────────
-    // 狀態與行為都在 [com.vic.inkflow.ui.editor.SelectionController]（套索多邊形、
-    // 選中集合、預覽快照、移動／縮放提交、刪除、複製、清除）。這裡只做接線：
-    // 對外 API 一個字沒變，所以呼叫點（EditorScreen、InkCanvas、PageWorkspace）零改動。
+    // 唯一狀態、純 reducer、管線執行端都在 [com.vic.inkflow.ui.selection]。
+    // 這裡只做接線：對外不暴露 13 條流，只暴露一個 SelectionState。
     private val selection = SelectionController(
         repos = repos,
         scope = viewModelScope,
@@ -2142,9 +2146,6 @@ class EditorViewModel(
         canvasH = { canvasH },
         docStride = { docStride },
         pageDataFlow = { page -> pageDataFlow(page) },
-        pageFlows = { pageFlows },
-        currentImageAnnotations = { currentImageAnnotations },
-        currentTextAnnotations = { currentTextAnnotations },
         pageIndex = { pageIndex.value },
         pushUndo = { command -> pushUndo(command) },
         replaceStrokeSnapshots = { strokes -> replaceStrokeSnapshots(strokes) },
@@ -2152,56 +2153,40 @@ class EditorViewModel(
         showIds = { ids -> showIds(ids) }
     )
 
-    val selectedStrokes: StateFlow<List<StrokeWithSamples>> get() = selection.selectedStrokes
-    val selectedImageAnnotationIds: StateFlow<Set<String>> get() = selection.selectedImageAnnotationIds
-    val selectedTextAnnotationIds: StateFlow<Set<String>> get() = selection.selectedTextAnnotationIds
-    val selectedStrokePreview: StateFlow<List<StrokeWithSamples>> get() = selection.selectedStrokePreview
-    val lassoPolygon: StateFlow<List<Offset>> get() = selection.lassoPolygon
-    val selectionFramePolygon: StateFlow<List<Offset>> get() = selection.selectionFramePolygon
-    val lastLassoPolygon: StateFlow<List<Offset>> get() = selection.lastLassoPolygon
-    val lassoPage: StateFlow<Int> get() = selection.lassoPage
-    val lassoMoveOffset: StateFlow<Offset> get() = selection.lassoMoveOffset
-    val selectedStrokeScale: StateFlow<Float> get() = selection.selectedStrokeScale
-    val selectedStrokePreviewBounds: StateFlow<androidx.compose.ui.geometry.Rect?> get() = selection.selectedStrokePreviewBounds
-    val selectedStrokeResizeAnchor: StateFlow<Offset?> get() = selection.selectedStrokeResizeAnchor
+    /** 圈選唯一狀態：選取內容、區域、框、拖曳草稿、commit preview 全在這裡。 */
+    val selectionState: StateFlow<SelectionState> get() = selection.state
 
-    /**
-     * Holds the fully transformed stroke snapshots during the window between a selection commit
-     * and Room emitting the updated rows. The canvas draws these transformed strokes directly so
-     * there is no flicker back to the pre-transform position.
-     */
-    val commitPreview: StateFlow<List<StrokeWithSamples>?> get() = selection.commitPreview
+    fun selectLassoRegion(region: SelectionRegion) = selection.select(region)
 
-    fun selectStrokesInLassoAcross(
-        polygonsByPage: Map<Int, List<List<Offset>>>,
-        srcPage: Int,
-        canvasW: Float,
-        canvasH: Float,
-    ) = selection.selectStrokesInLassoAcross(polygonsByPage, srcPage, canvasW, canvasH)
+    fun beginSelectionMove() = selection.beginMove()
 
-    fun moveSelectedStrokes(delta: Offset) = selection.moveSelectedStrokes(delta)
+    fun moveSelectionTo(totalCanvasDelta: Offset) = selection.moveTo(totalCanvasDelta)
 
-    fun beginSelectedStrokeResize(anchorCanvas: Offset) = selection.beginSelectedStrokeResize(anchorCanvas)
+    fun beginSelectionResize(anchorCanvas: Offset) = selection.beginResize(anchorCanvas)
 
-    fun previewSelectedStrokeScale(scale: Float) = selection.previewSelectedStrokeScale(scale)
+    fun scaleSelectionTo(scale: Float) = selection.resizeTo(scale)
 
-    fun commitMovedStrokes(maxPageIndex: Int = Int.MAX_VALUE): Int? =
-        selection.commitMovedStrokes(maxPageIndex)
+    fun commitSelectionMove(maxPageIndex: Int = Int.MAX_VALUE): Int? =
+        selection.commitMove(maxPageIndex)
 
-    fun commitResizedStrokes() = selection.commitResizedStrokes()
+    fun commitSelectionResize() = selection.commitResize()
 
     fun selectionPage(): Int = selection.selectionPage()
 
-    fun selectedImagesNow(): List<ImageAnnotation> = selection.selectedImagesNow()
+    /** 提取／AI 的來源頁：圈選區域的起手頁。 */
+    fun selectionRegionPage(): Int = selection.regionPage()
 
-    /** 同上，給 overlay 畫選中字（拖曳跨頁全程可見）。 */
-    fun selectedTextsNow(): List<TextAnnotation> = selection.selectedTextsNow()
+    /** 提取遮罩：目前圈選區域（model／頁內座標）。 */
+    fun selectionRegionPolygon(): List<Offset> = selection.regionPolygon()
 
-    fun deleteSelection() = selection.deleteSelection()
+    fun deleteSelection() = selection.deleteSelected()
 
-    fun copySelectionInPlace() = selection.copySelectionInPlace()
+    fun copySelectionInPlace() = selection.copySelected()
 
-    fun clearSelection(keepLastRegion: Boolean = false) = selection.clearSelection(keepLastRegion)
+    fun clearSelection() = selection.clear()
+
+    /** undo／redo／外部改頁後：選取快照已不可信，直接作廢。 */
+    fun invalidateSelection() = selection.invalidate()
 
 
     /**
@@ -2234,7 +2219,7 @@ class EditorViewModel(
         documentUri = documentUri,
         modelWidth = { modelWidth },
         modelHeight = { modelHeight },
-        lassoPolygon = { selection.lassoPolygon.value.ifEmpty { selection.lastLassoPolygon.value } },
+        lassoPolygon = { selection.regionPolygon() },
         // R3：整組記一格（圖＋新建頁），復原整組撤銷。
         onRegionExtracted = { image, pageIndex ->
             pushUndo(DrawCommand.ExtractToNewPage(pageIndex, image))
