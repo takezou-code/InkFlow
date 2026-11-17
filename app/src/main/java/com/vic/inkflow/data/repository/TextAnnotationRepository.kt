@@ -71,14 +71,21 @@ class RoomTextAnnotationRepository(
     /**
      * 改寫＋序號前進（文字修改的寫入漏斗）。
      *
-     * 與筆跡的 [StrokeRepository.replaceStrokeSnapshots] 同一套理由：呼叫端傳進來的
-     * entity 帶舊 version，直接 update 會讓序號停在原地，仲裁看不出改過。
-     * update 與 bump 必須在同一交易里（update 先、bump 後）。
+     * 與筆跡的 [StrokeRepository.replaceStrokeSnapshots] 同一套理由、同一個坑：
+     * 呼叫端傳進來的 entity 帶的是**讀取當下**的 version。圈選連續移動兩次，
+     * 第二次的快照還是同一個舊版號，寫回去再 +1 等於沒有前進 → 頁流指紋不變，
+     * 畫面上的文字就停在第一次的位置。所以這裡直接以 DB 當下的值 +1 落庫。
      */
     override suspend fun updateAndBump(annotation: TextAnnotation) {
         db.withTransaction {
-            dao.update(annotation.toRow())
-            dao.bumpTextVersion(annotation.id, MergeVersion.nextNonce())
+            val row = annotation.toRow()
+            val currentVersion = dao.getTextVersion(annotation.id)?.version ?: row.version
+            dao.update(
+                row.copy(
+                    version = currentVersion + 1,
+                    versionNonce = MergeVersion.nextNonce()
+                )
+            )
         }
     }
 

@@ -204,10 +204,20 @@ class RoomStrokeRepository(
     override suspend fun replaceStrokeSnapshots(snapshots: List<StrokeWithSamples>) {
         db.withTransaction {
             snapshots.forEach { swp ->
+                // 序號要從**資料庫當下的值** +1，不能靠快照裡帶的版號。
+                // 快照是圈選當下讀出來的：同一組選取連續移動第二次，快照還是同一個舊版號，
+                // REPLACE 先把序號蓋回舊值、再 +1 又回到上一個寫入的數字——本機看是「沒改過」，
+                // 頁流指紋（id + version）不變 → distinctUntilChanged 把這次移動整筆吃掉，
+                // 畫面停在第一次的位置（實機 2026-11-16：第 1 次會動，第 2 次以後不動）。
+                val currentVersion = dao.getStrokeVersion(swp.stroke.id)?.version ?: swp.stroke.version
                 dao.deleteSamplesForStroke(swp.stroke.id)
-                dao.insertStroke(swp.stroke.toRow())
+                dao.insertStroke(
+                    swp.stroke.toRow().copy(
+                        version = currentVersion + 1,
+                        versionNonce = MergeVersion.nextNonce()
+                    )
+                )
                 insertPoints(swp.points)
-                dao.bumpStrokeVersion(swp.stroke.id, MergeVersion.nextNonce())
             }
         }
     }
