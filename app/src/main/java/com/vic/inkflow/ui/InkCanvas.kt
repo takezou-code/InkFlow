@@ -119,6 +119,7 @@ import android.view.MotionEvent
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
@@ -128,15 +129,12 @@ import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.sin
 
-// ── 橡皮擦預覽配色(紙張橡皮:石灰階,不用警報紅)──────────────────────────────
-/** veil 的暖石色(alpha 在使用處指定,營造「擦掉、留白」的負空間感) */
-private val ERASER_VEIL = Color(0xFF7A7267)
+// ── 橡皮擦配色(石灰階,不用警報紅)──────────────────────────────────────
 /** 頭環暗線+中心點(近黑暖灰),配合白暈,深淺紙面都看得到 */
 private val ERASER_RING = Color(0xFF3F3A33)
-private const val ERASER_VEIL_OUTER_ALPHA = 0.16f
-private const val ERASER_VEIL_INNER_ALPHA = 0.34f
-private const val ERASER_INNER_WIDTH_RATIO = 1.15f
-private const val DUST_DUR_MS = 550L
+/** 橡皮屑色(暖石灰),每顆粒子再乘自己的亮度權重 */
+private val DUST_COLOR = Color(0xFF8A8276)
+private const val DUST_DUR_MS = 650L
 private const val MAX_DUST = 180
 
 /**
@@ -151,7 +149,9 @@ private const val INK_OVERLAY_MAX = 32
 private data class DustParticle(
     val x: Float, val y: Float,
     val vx: Float, val vy: Float,
-    val radius: Float, val t0Nanos: Long
+    val radius: Float, val t0Nanos: Long,
+    /** 每顆粒子的亮度權重 0.65..1.0,製造顆粒感 */
+    val alphaScale: Float
 )
 
 // ── 輸入啟發式（快滑擦除/手掌日誌）見 InkCanvasInput.kt ──────────────────────
@@ -276,7 +276,11 @@ fun InkCanvas(
     images: List<ImageAnnotation> = emptyList(),
     /** 頁間隙 px（Workspace 的 Arrangement.spacedBy，需與列表一致）。 */
     pageGapPx: Float = 0f,
-    /** 邊緣自動捲：手指拖出紙上下界時回傳期望捲動量 px（正=往後頁）；回傳實際捲動量。 */
+    /**
+     * 邊緣自動捲（全手勢共用一份）：輸入手指在紙內的 y（canvas px，紙外也照收），
+     * 回傳**實際**捲動量 px（正=往後頁）。手勢自己跑幀迴圈持續呼叫，
+     * 手指停在邊緣不動也會捲；貼到文件頭尾時回傳值會變小，手勢用它校正拖曳預覽。
+     */
     onEdgeAutoScroll: (Float) -> Float = { _ -> 0f }
 ) {
     // 全活頁：筆/字/圖吃傳入的本頁資料（Workspace 熱流），不再訂閱作用頁流；
@@ -1177,30 +1181,51 @@ fun InkCanvas(
                             down.consume()
                             viewModel.setPageLock(true)
                             var totalDelta = Offset.Zero
-                            // 跟手絕對式：指位相對起點，每幀重算不積差。
-                            // 注意自動捲量「不可」加進來：觸控座標是紙座標，紙被捲動時
-                            // 座標跟著 shift（Compose 機制），再加 autoY 就是雙倍——
-                            // 跨頁漂移的真正根因。自動捲只負責把路讓出來（捲視野）。
-                            var drag = awaitDragOrCancellation(down.id)
-                            while (drag != null && drag.pressed) {
-                                // 連貫畫布：拖出紙界自動捲（只捲視野，不進位移）
-                                val csH = canvasPixelSizeState.value.height
-                                val autoDy = edgeAutoScrollDy(drag.position.y, csH)
-                                if (autoDy != 0f) {
-                                    onEdgeAutoScrollRef.value(autoDy)
+                            // 跟手絕對式 + 邊緣自捲（全手勢共用一套）：
+                            // 位移一律由「當下事件」絕對算；紙被捲動時觸控座標也會跟著 shift，
+                            // 所以「上次事件之後自捲了多少」要補回預覽，否則手指停在邊緣時
+                            // 物件會被頁面捲走。補的是**實際**捲動量（貼到頭尾時列表會吃掉一部分）。
+                            val firstDrag = awaitDragOrCancellation(down.id)
+                            if (firstDrag != null) {
+                                var pointer = firstDrag.position
+                                var scrolled = 0f
+                                var scrolledAtEvent = 0f
+                                var ev: PointerInputChange? = firstDrag
+                                // 幀迴圈跑在組合 scope（pointer scope 禁止自建協程）；
+                                // 手勢結束時 finally 取消，不會外溢。
+                                val autoScroll = scope.launch {
+                                    while (isActive) {
+                                        delay(EDGE_SCROLL_TICK_MS)
+                                        val applied = onEdgeAutoScrollRef.value(pointer.y)
+                                        if (applied != 0f) {
+                                            scrolled += applied
+                                            totalDelta = (pointer - startOffset) +
+                                                Offset(0f, scrolled - scrolledAtEvent)
+                                            textMoveDelta = totalDelta
+                                            activePathVersion++
+                                        }
+                                    }
                                 }
-                                totalDelta = drag.position - startOffset
-                                textMoveDelta = totalDelta
-                                if (pinchActive) {
-                                    viewModel.commitTextAnnotationMove(selAnn.id, totalDelta.x, totalDelta.y)
-                                    textMoveDelta = Offset.Zero
-                                    activePathVersion++
-                                    viewModel.setPageLock(false)
-                                    return@awaitEachGesture
+                                try {
+                                    while (ev != null && ev.pressed) {
+                                        pointer = ev.position
+                                        scrolledAtEvent = scrolled
+                                        totalDelta = pointer - startOffset
+                                        textMoveDelta = totalDelta
+                                        if (pinchActive) {
+                                            viewModel.commitTextAnnotationMove(selAnn.id, totalDelta.x, totalDelta.y)
+                                            textMoveDelta = Offset.Zero
+                                            activePathVersion++
+                                            viewModel.setPageLock(false)
+                                            return@awaitEachGesture
+                                        }
+                                        activePathVersion++
+                                        ev.consume()
+                                        ev = awaitDragOrCancellation(ev.id)
+                                    }
+                                } finally {
+                                    autoScroll.cancel()
                                 }
-                                activePathVersion++
-                                drag.consume()
-                                drag = awaitDragOrCancellation(drag.id)
                             }
                             if (totalDelta == Offset.Zero) {
                                 inlineTextEditId = selAnn.id
@@ -1412,40 +1437,62 @@ fun InkCanvas(
                             down.consume()
                             viewModel.setPageLock(true)
                             var totalDelta = Offset.Zero
-                            // 跟手絕對式：指位相對起點；自動捲量不加（見文字分支同註解）。
-                            var drag = awaitDragOrCancellation(down.id)
-                            while (drag != null && drag.pressed) {
-                                // 連貫畫布：拖出紙界自動捲（只捲視野，不進位移）
-                                val csH = canvasPixelSizeState.value.height
-                                val autoDy = edgeAutoScrollDy(drag.position.y, csH)
-                                if (autoDy != 0f) {
-                                    onEdgeAutoScrollRef.value(autoDy)
-                                }
-                                totalDelta = drag.position - startOffset
+                            // 跟手絕對式 + 邊緣自捲（與文字分支同一套，見該處註解）
+                            fun pushImagePreview() {
                                 imageMovePreview = totalDelta
                                 // F4：發布拖曳態給 overlay 跨頁畫（model 位移，與提交同公式）。
-                                run {
-                                    val csw = canvasPixelSizeState.value.width.coerceAtLeast(1f)
-                                    val csh = canvasPixelSizeState.value.height.coerceAtLeast(1f)
-                                    viewModel.publishImageDragPreview(
-                                        EditorViewModel.ImageDragPreview(
-                                            image = selAnn,
-                                            dxModel = totalDelta.x * viewModel.modelWidth / csw,
-                                            dyModel = totalDelta.y * viewModel.modelHeight / csh
-                                        )
+                                val csw = canvasPixelSizeState.value.width.coerceAtLeast(1f)
+                                val csh = canvasPixelSizeState.value.height.coerceAtLeast(1f)
+                                viewModel.publishImageDragPreview(
+                                    EditorViewModel.ImageDragPreview(
+                                        image = selAnn,
+                                        dxModel = totalDelta.x * viewModel.modelWidth / csw,
+                                        dyModel = totalDelta.y * viewModel.modelHeight / csh
                                     )
+                                )
+                            }
+                            val firstDrag = awaitDragOrCancellation(down.id)
+                            if (firstDrag != null) {
+                                var pointer = firstDrag.position
+                                var scrolled = 0f
+                                var scrolledAtEvent = 0f
+                                var ev: PointerInputChange? = firstDrag
+                                // 幀迴圈跑在組合 scope（pointer scope 禁止自建協程）；
+                                // 手勢結束時 finally 取消，不會外溢。
+                                val autoScroll = scope.launch {
+                                    while (isActive) {
+                                        delay(EDGE_SCROLL_TICK_MS)
+                                        val applied = onEdgeAutoScrollRef.value(pointer.y)
+                                        if (applied != 0f) {
+                                            scrolled += applied
+                                            totalDelta = (pointer - startOffset) +
+                                                Offset(0f, scrolled - scrolledAtEvent)
+                                            pushImagePreview()
+                                            activePathVersion++
+                                        }
+                                    }
                                 }
-                                if (pinchActive) {
-                                    viewModel.commitImageAnnotationMove(selAnn.id, totalDelta.x, totalDelta.y)
-                                    imageMovePreview = Offset.Zero
-                                    activePathVersion++
-                                    viewModel.publishImageDragPreview(null)
-                                    viewModel.setPageLock(false)
-                                    return@awaitEachGesture
+                                try {
+                                    while (ev != null && ev.pressed) {
+                                        pointer = ev.position
+                                        scrolledAtEvent = scrolled
+                                        totalDelta = pointer - startOffset
+                                        pushImagePreview()
+                                        if (pinchActive) {
+                                            viewModel.commitImageAnnotationMove(selAnn.id, totalDelta.x, totalDelta.y)
+                                            imageMovePreview = Offset.Zero
+                                            activePathVersion++
+                                            viewModel.publishImageDragPreview(null)
+                                            viewModel.setPageLock(false)
+                                            return@awaitEachGesture
+                                        }
+                                        activePathVersion++
+                                        ev.consume()
+                                        ev = awaitDragOrCancellation(ev.id)
+                                    }
+                                } finally {
+                                    autoScroll.cancel()
                                 }
-                                activePathVersion++
-                                drag.consume()
-                                drag = awaitDragOrCancellation(drag.id)
                             }
                             // 跨頁：推出本頁 → 整顆換頁（旋轉角保留）；否則舊提交
                             val cs = canvasPixelSizeState.value
@@ -1522,7 +1569,8 @@ fun InkCanvas(
                         modelWidth = { viewModel.modelWidth },
                         modelHeight = { viewModel.modelHeight },
                         pinchActive = { viewModel.pinchActive.value },
-                        onEdgeAutoScroll = { dy -> onEdgeAutoScrollRef.value(dy) },
+                        onEdgeAutoScroll = { localY -> onEdgeAutoScrollRef.value(localY) },
+                        tickerScope = scope,
                         setPageLock = { viewModel.setPageLock(it) },
                         setDragPreviewActive = { viewModel.setDragPreviewActive(it) },
                         setPressedHandle = { pressedHandleCenter = it },
@@ -1883,9 +1931,9 @@ fun InkCanvas(
                         }
 
                         // F1：跨頁共享預覽（src 紙除外，走直接路徑）。點數不變不重發。
+                        // 橡皮擦不發：全圓圈在 src 紙即時回饋，鄰頁沒有東西可畫（省一次傳輸＋鄰頁重繪）。
                         if ((activeTool == Tool.PEN || activeTool == Tool.HIGHLIGHTER ||
-                                activeTool == Tool.LASSO || activeTool == Tool.ERASER ||
-                                eraseVisualActive) &&
+                                activeTool == Tool.LASSO) &&
                             currentPathPoints.size != lastPublishedSize
                         ) {
                             lastPublishedSize = currentPathPoints.size
@@ -1903,7 +1951,7 @@ fun InkCanvas(
                             viewModel.publishInFlight(
                                 if (segs.isEmpty()) null
                                 else EditorViewModel.InFlightPreview(
-                                    tool = if (eraseVisualActive) Tool.ERASER else activeTool,
+                                    tool = activeTool,
                                     segments = segs.toMap(),
                                     colorArgb = selectedColor.toArgb()
                                 )
@@ -1914,20 +1962,23 @@ fun InkCanvas(
                         drag.consume()
 
                         if (activeTool == Tool.ERASER || quickSwipeTriggered) {
-                            // 橡皮屑(灰石粒):從橡皮擦圓環頭左右寬扇形噴出、重力往下落;每個 drag 事件 2 顆 + 25% 機率第三顆
+                            // 橡皮屑(灰石粒):從橡皮擦圓環頭左右寬扇形噴出、重力往下落
+                            // 「大而少」而不是「多而密」——更明顯、每幀畫的顆數少、不吃效能
                             val hp = calPos(drag.position)
-                            repeat(if (kotlin.random.Random.nextFloat() < 0.25f) 3 else 2) {
+                            val drnd = kotlin.random.Random.Default
+                            repeat(if (drnd.nextFloat() < 0.25f) 3 else 2) {
                                 if (dustFx.size >= MAX_DUST) dustFx.removeAt(0)
-                                // 水平扇形 ±160px/s(左右噴),垂直只小上踢/小下墜,重力接管往下
-                                val vx = (kotlin.random.Random.nextFloat() * 2f - 1f) * 160f
-                                val vy = -25f + kotlin.random.Random.nextFloat() * 55f
+                                // 水平扇形 ±175px/s,垂直只有小上踢/小下墜,重力接管往下
+                                val vx = (drnd.nextFloat() * 2f - 1f) * 175f
+                                val vy = -30f + drnd.nextFloat() * 60f
                                 dustFx.add(
                                     DustParticle(
                                         x = hp.x, y = hp.y,
                                         vx = vx,
                                         vy = vy,
-                                        radius = 2f + kotlin.random.Random.nextFloat() * 2.8f,
-                                        t0Nanos = System.nanoTime()
+                                        radius = 3f + drnd.nextFloat() * 3.5f,
+                                        t0Nanos = System.nanoTime(),
+                                        alphaScale = 0.65f + drnd.nextFloat() * 0.35f
                                     )
                                 )
                             }
@@ -3083,12 +3134,12 @@ fun InkCanvas(
                         if (t >= 0f && t < 1f) {
                             val secs = t * (DUST_DUR_MS / 1000f)
                             val x = p.x + p.vx * secs
-                            val y = p.y + p.vy * secs + 900f * t * t / 2f
+                            val y = p.y + p.vy * secs + 650f * t * t / 2f
                             drawCircle(
-                                Color(0xFF8A8276),
-                                radius = p.radius * (1f - 0.6f * t),
+                                DUST_COLOR,
+                                radius = p.radius * (1f - 0.5f * t),
                                 center = Offset(x, y),
-                                alpha = 0.85f * (1f - t)
+                                alpha = 0.95f * p.alphaScale * (1f - t)
                             )
                         }
                     }
@@ -3099,19 +3150,10 @@ fun InkCanvas(
                 //（高亮筆 alpha×2 會偏暗，提筆瞬間反而更明顯）。
                 if (!bridgedDrawn) when {
                     activeTool == Tool.ERASER || eraseVisualActive -> {
-                        // 紙張橡皮:暖石灰雙層 veil(外淡內濃,半透明負空間,無實線)
-                        // + 頭部游標環(白暈+暗環+中心點,深淺紙面都看得到)。
+                        // 橡皮擦 = 一個全圓圈 + 灰石屑噴灑,不畫任何擦除路徑。
                         // 擦除半徑與命中判定一致:model → canvas px。
                         val modelW = viewModel.modelWidth
                         val eraserRpx = if (modelW > 0f) eraserRadiusModel * (size.width / modelW) else 24f
-                        drawPath(
-                            activePath, ERASER_VEIL.copy(alpha = ERASER_VEIL_OUTER_ALPHA),
-                            style = DrawStroke(width = eraserRpx * 2f, cap = StrokeCap.Round, join = StrokeJoin.Round)
-                        )
-                        drawPath(
-                            activePath, ERASER_VEIL.copy(alpha = ERASER_VEIL_INNER_ALPHA),
-                            style = DrawStroke(width = eraserRpx * ERASER_INNER_WIDTH_RATIO, cap = StrokeCap.Round, join = StrokeJoin.Round)
-                        )
                         // 頭部游標環:白暈(0.85)讓深色紙面也浮得出來,暗環給淺色紙面對比
                         currentPathPoints.lastOrNull()?.let { head ->
                             val c = Offset(head.x, head.y)
@@ -3147,23 +3189,7 @@ fun InkCanvas(
                                 Color(sharedPreview?.colorArgb ?: 0xFF000000.toInt()).copy(alpha = HIGHLIGHTER_ALPHA)
                             cvs.drawPath(EnvelopeUtils.generateEnvelopePath(sharedSegs), hlPreviewPaint)
                         }
-                        Tool.ERASER -> {
-                            val epath = Path()
-                            sharedSegs.forEachIndexed { i, sp ->
-                                if (i == 0) epath.moveTo(sp.x, sp.y) else epath.lineTo(sp.x, sp.y)
-                            }
-                            val sharedErRpx = if (viewModel.modelWidth > 0f) {
-                                eraserRadiusModel * (size.width / viewModel.modelWidth)
-                            } else 24f
-                            drawPath(
-                                epath, ERASER_VEIL.copy(alpha = ERASER_VEIL_OUTER_ALPHA),
-                                style = DrawStroke(width = sharedErRpx * 2f, cap = StrokeCap.Round, join = StrokeJoin.Round)
-                            )
-                            drawPath(
-                                epath, ERASER_VEIL.copy(alpha = ERASER_VEIL_INNER_ALPHA),
-                                style = DrawStroke(width = sharedErRpx * ERASER_INNER_WIDTH_RATIO, cap = StrokeCap.Round, join = StrokeJoin.Round)
-                            )
-                        }
+                        // Tool.ERASER:橡皮擦不畫任何擦除路徑(全圓圈在 src 紙即時回饋,鄰頁無需預覽)
                         Tool.LASSO -> {
                             val lpath = Path()
                             sharedSegs.forEachIndexed { i, sp ->

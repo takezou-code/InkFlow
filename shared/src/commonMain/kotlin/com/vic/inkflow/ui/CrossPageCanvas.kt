@@ -7,23 +7,47 @@ import com.vic.inkflow.util.StrokePoint
 // 全文件 model 空間統一（見 EditorViewModel.MODEL_W/H），各頁同尺寸，
 // 跨頁 = 同一座標系往上下頁平移 modelHeight（筆）或整顆換頁（圖/字/套索）。
 
-/** 邊緣自動捲（拖曳專用極慢速）：手指拖出紙上下界才捲，死區內不動，比例極小好微控。 */
-fun edgeAutoScrollDy(y: Float, canvasH: Float): Float {
-    if (canvasH <= 0f) return 0f
-    val overshoot = when {
-        y > canvasH -> y - canvasH
-        y < 0f -> y // 負值=往上捲
-        else -> return 0f
+/**
+ * 拖曳邊緣自動捲（**唯一一份**）：座標一律用「視窗座標」，手指進入上下邊緣感應區就捲，
+ * 越靠邊越快，離開感應區立刻停。
+ *
+ * 為什麼不再用「紙界」判定：紙在 1x 幾乎貼滿視窗，手指能衝出紙界的距離只有幾 px，
+ * 舊公式（0.05 增益、8px 上限）等於幾乎不捲；縮小後紙變小，同一個手指位置又會在
+ * 「有反應／沒反應」之間跳——這正是拖文字、拖圖片、拖圈選手感不一致的來源。
+ *
+ * 回傳值是**每一幀**的期望捲動量（px，正=往後頁）。呼叫端跑幀迴圈持續送，
+ * 手指停在邊緣不動也照捲（寫在 pointer-move 裡就停了＝手指不動不回調，常見 bug）。
+ */
+fun dragEdgeScrollDy(pointerViewportY: Float, viewportHeight: Float): Float {
+    if (viewportHeight <= 0f) return 0f
+    val zone = (viewportHeight * EDGE_SCROLL_ZONE_FRACTION)
+        .coerceAtLeast(EDGE_SCROLL_MIN_ZONE_PX)
+    return when {
+        pointerViewportY < zone -> -edgeScrollSpeed(zone - pointerViewportY, zone)
+        pointerViewportY > viewportHeight - zone ->
+            edgeScrollSpeed(pointerViewportY - (viewportHeight - zone), zone)
+        else -> 0f
     }
-    // 死區：紙界外 8px 內不捲，手指搭邊不飄移
-    val dead = 8f
-    val eff = when {
-        overshoot > dead -> overshoot - dead
-        overshoot < -dead -> overshoot + dead
-        else -> return 0f
-    }
-    return (eff * 0.05f).coerceIn(-8f, 8f)
 }
+
+/** 越靠邊越快（t^1.5）：剛進感應區就有感，貼邊才全速。 */
+private fun edgeScrollSpeed(depth: Float, zone: Float): Float {
+    if (depth <= 0f) return 0f
+    val t = (depth / zone).coerceAtMost(1f)
+    return EDGE_SCROLL_MAX_PX_PER_FRAME * t * kotlin.math.sqrt(t)
+}
+
+/** 幀迴圈間隔：手指停在邊緣不動也要繼續捲（約 60Hz）。 */
+const val EDGE_SCROLL_TICK_MS = 16L
+
+/** 感應區高度＝視窗高度的這個比例（上下各一份）。 */
+const val EDGE_SCROLL_ZONE_FRACTION = 0.16f
+
+/** 視窗太矮時的比例下限，保證小視窗也有可用的感應區。 */
+const val EDGE_SCROLL_MIN_ZONE_PX = 96f
+
+/** 貼邊全速：每幀最多捲多少 px（60fps 約 0.9 頁/秒）。 */
+const val EDGE_SCROLL_MAX_PX_PER_FRAME = 32f
 
 /**
  * model-space Y 越界換頁：逐頁繞回，回傳 (目標頁, 繞回後Y)。未越界回傳 null。

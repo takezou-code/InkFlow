@@ -1507,14 +1507,19 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
             val density0 = LocalDensity.current
             val sidebarWpx = sidebarVisualWpx
             val aiAvailW = (contentW - sidebarWpx).coerceAtLeast(320f)
-            val panelW = (aiAvailW * aiPanelWeight).coerceAtLeast(260f)
-                .coerceAtMost(aiAvailW)
+            // 卡片（玻璃框）寬度＝拖曳目標值 → 跟手連續改變；
+            // WebView 用 committedWPx（提交值）→ 放開前維持原寬、不 reflow，放開提交才補上新寬。
+            val committedWPx = (aiAvailW * aiPanelWeight).coerceAtLeast(260f).coerceAtMost(aiAvailW)
+            val cardWPx = (aiAvailW * (aiDragTargetWeight ?: aiPanelWeight))
+                .coerceAtLeast(260f).coerceAtMost(aiAvailW)
             val density = LocalDensity.current
             // AI 抽屜寬度基準＝側欄右緣到蟳幕右緣（不是整屏 contentW）。
             // 整屏底層重構後 contentW 變成整屏 3200px，panelW 撐到 1280px，
             // 閉合時那塊「透明擋板」就蓋住 x=389..1251，把側欄觸控全吃掉
             // （實測 AI_BLOCKER 73 次、SIDEBAR_ITEM 0 次）。舊基準是內容區寬度所以沒事。
-            val panelWdp = with(density) { panelW.toDp() }
+            val cardWdp = with(density) { cardWPx.toDp() }
+            // WebView 寬度＝提交值：放開前恆定 → 拖曳中不 reflow、放開提交才補上新寬。
+            val webWdp = with(density) { committedWPx.toDp() }
             LaunchedEffect(showAiPanel) {
                 if (showAiPanel) {
                     aiPanelLive = true
@@ -1541,14 +1546,14 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                         // 兩者整塊重疊。那張卡片 alpha 0 看不見，但 consume() 照跑，
                         // 於是整條頁碼欄的觸控全被吃掉（實測 SIDEBAR_ITEM 0 次）。
                         // 握把已搬進卡片內側（疊層），外部沒有握把寬度可滑。
-                        translationX = -(sidebarWpx + panelW) * (1f - p)
+                        translationX = -(sidebarWpx + cardWPx) * (1f - p)
                         alpha = p
                     }
             ) {
                 // 卡片本體：真玻璃＋圓角，內縮 5dp 留一圈玻璃邊
                 Box(
                     modifier = Modifier
-                        .width(panelWdp)
+                        .width(cardWdp)
                         .fillMaxHeight()
                         // 四邊等距內縮：舊碼只有 start=8 沒有 end，右邊完全不內縮，
                         // 網頁因此沒填滿、跟 26dp 圓角容器對不齊（四角切出缺口＝你看到的縫隙）。
@@ -1582,7 +1587,13 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                         )
                         .glassPanel(chromeHaze, isEditorDark, RoundedCornerShape(26.dp))
                 ) {
-                    AiWebPanel(
+                    // WebView 固定成「提交寬度」：拖曳中框不動、網頁不 reflow；
+                    // 放開提交後 webWdp 才變 → WebView 恰好 reflow 一次；框則拖曳中一直跟手。
+                    // Box 結構恆定 → WebView 不會被 dispose 重建。
+                    Box(
+                        modifier = Modifier.width(webWdp).fillMaxHeight()
+                    ) {
+                        AiWebPanel(
                         request = aiRequest,
                         // 提示詞已投遞就清掉，避免重組時重複注入同一段字。
                         onPromptConsumed = { aiRequest = aiRequest?.copy(prompt = null) },
@@ -1631,7 +1642,8 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                             aiRequest = null
                             aiPickMode = false
                         }
-                    )
+                        )
+                    }
                     // 拉桿：從「卡片的 sibling」改成「卡片內側右緣的疊層」。
                     // 舊做法 [卡片 panelWdp][拉桿 28dp] 並排在抽屜 Row 裡 → 抽屜總寬
                     // 比卡片多 28dp，那 28dp 就是你看到的「多占的位置」。疊進卡片後
@@ -1650,17 +1662,19 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                                 detectHorizontalDragGestures(
                                     onDragStart = { aiDragTargetWeight = aiPanelWeight },
                                     onDragEnd = {
-                                        // 放開才提交：WebView 只 reflow 一次
+                                        // 放開才改提交值：框拖曳中已跟手，WebView 此刻 reflow 一次補滿。
                                         aiDragTargetWeight?.let { aiPanelWeight = it }
                                         aiDragTargetWeight = null
                                     },
                                     onDragCancel = { aiDragTargetWeight = null },
                                 ) { change, dragAmount ->
                                     change.consume()
-                                    // 分母用 aiAvailW：panelW 的基準就是它，用 contentW 會拖不準
+                                    // 分母用 aiAvailW：卡片寬度的基準就是它，用 contentW 會拖不準。
+                                    // 下限對齊 260px 像素鉗制，讓預覽線與放開後的卡片寬一致。
+                                    val minW = (260f / aiAvailW.coerceAtLeast(1f)).coerceIn(0.2f, 0.8f)
                                     val base = aiDragTargetWeight ?: aiPanelWeight
                                     aiDragTargetWeight = (base + dragAmount / aiAvailW.coerceAtLeast(1f))
-                                        .coerceIn(0.2f, 0.8f)
+                                        .coerceIn(minW, 0.8f)
                                 }
                             },
                         horizontalAlignment = Alignment.CenterHorizontally
@@ -1718,39 +1732,6 @@ Box(Modifier.weight(1f).fillMaxHeight()) {
                         )
                     }
                 }
-            }
-            // 拖曳調寬預覽線：拖把手時卡片與 WebView 原地不動（見上方 onDragStart／onDragEnd），
-            // 只讓這條線跟手。一定在最上層（之後畫的蓋住之前的），比照把手的樣子畫藥丸。
-            // graphicsLayer 在 layer 階段讀 aiDragTargetWeight，拖曳中不重組、不 measure。
-            Box(
-                modifier = Modifier
-                    .fillMaxHeight()
-                    .width(44.dp)
-                    .graphicsLayer {
-                        val t = aiDragTargetWeight
-                        alpha = if (t == null) 0f else 1f
-                        translationX = if (t == null) {
-                            -100f
-                        } else {
-                            // 線心對齊 panel 右緣目標位置；本 Box 以 fillMaxHeight 佔滿、靠左起算
-                            aiAvailW * t - 22.dp.toPx()
-                        }
-                    },
-                contentAlignment = Alignment.Center
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxHeight()
-                        .width(2.dp)
-                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.55f))
-                )
-                Box(
-                    modifier = Modifier
-                        .width(5.dp)
-                        .height(44.dp)
-                        .clip(RoundedCornerShape(2.5.dp))
-                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.8f))
-                )
             }
         } // Box(內容區：Workspace ＋ AI 抽屜)
         } // Row（側欄＋AI 抽屜，疊在紙上）

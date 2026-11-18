@@ -954,9 +954,24 @@ val allowSinglePan = startedBlank || fingerPanOnPaperAllowed(
                 texts = pageTexts,
                 images = pageImages,
                 pageGapPx = pageGapPx,
-                onEdgeAutoScroll = { dy ->
-                    // 同步施加：寫筆中邊緣捲不斷流，提筆即停（不經協程排隊）
-                    mainListState.dispatchRawDelta(dy)
+                onEdgeAutoScroll = { localY ->
+                    // 統一邊緣自捲：手勢給「紙內 y」，這裡換成視窗座標（頁面會隨列表捲動，
+                    // 頁面自己的 offset 才是畫面位置），再交給唯一一份速度公式。
+                    val info = mainListState.layoutInfo
+                    val item = info.visibleItemsInfo.firstOrNull { it.index == index }
+                    if (item == null) {
+                        0f
+                    } else {
+                        val viewportTop = info.viewportStartOffset
+                        val viewportH = (info.viewportEndOffset - viewportTop).toFloat()
+                        val dy = dragEdgeScrollDy(
+                            pointerViewportY = (item.offset - viewportTop) + localY,
+                            viewportHeight = viewportH
+                        )
+                        // 回傳「實際」捲動量：貼到文件頭尾時列表會吃掉一部分，
+                        // 手勢端要用實際值補拖曳預覽，不能用期望值（否則物件會漂）。
+                        if (dy == 0f) 0f else mainListState.dispatchRawDelta(dy)
+                    }
                 }
             )
                         } // 頁內容 Box

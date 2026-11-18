@@ -5,10 +5,14 @@ import androidx.compose.foundation.gestures.awaitDragOrCancellation
 import androidx.compose.ui.input.pointer.AwaitPointerEventScope
 import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.unit.IntSize
-import com.vic.inkflow.ui.edgeAutoScrollDy
+import com.vic.inkflow.ui.EDGE_SCROLL_TICK_MS
 import com.vic.inkflow.ui.strokeSelectionHandleCenter
 import com.vic.inkflow.ui.strokeSelectionResizeAnchor
 import com.vic.inkflow.util.DocTransform
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlin.math.hypot
 
 /**
@@ -26,7 +30,10 @@ internal class SelectionGestureHost(
     val modelWidth: () -> Float,
     val modelHeight: () -> Float,
     val pinchActive: () -> Boolean,
-    val onEdgeAutoScroll: (Float) -> Unit,
+    /** 邊緣自捲：輸入手指在紙內的 y，回傳實際捲動量（正=往後頁）。 */
+    val onEdgeAutoScroll: (Float) -> Float,
+    /** 幀迴圈用的組合 scope（pointer scope 內不可自建協程）。 */
+    val tickerScope: CoroutineScope,
     val setPageLock: (Boolean) -> Unit,
     val setDragPreviewActive: (Boolean) -> Unit,
     /** 回報目前按住的把手中心（null＝放開），供框把手放大回饋。 */
@@ -101,20 +108,45 @@ internal suspend fun AwaitPointerEventScope.handleSelectionDown(
 
         // 2) 框內 → 移動。絕對式：每一幀都送「從起點到現在的位移」，
         //    事件合併、掉幀、畫布尺寸中途改變都不會漂；放手只提交一次。
+        //    邊緣自捲跑獨立幀迴圈（手指停在邊緣不動也照捲），捲動造成的座標 shift
+        //    用「上次事件後實際捲了多少」補回，物件才會一直貼著手指。
         if (frameRect.contains(startOffset)) {
             down.consume()
             host.beginMove()
             host.setPageLock(true)
             host.setDragPreviewActive(true)
             try {
-                var drag = awaitDragOrCancellation(down.id)
-                while (drag != null && drag.pressed) {
-                    if (host.pinchActive()) break
-                    val autoDy = edgeAutoScrollDy(drag.position.y, cs.height.toFloat())
-                    if (autoDy != 0f) host.onEdgeAutoScroll(autoDy)
-                    host.moveTo(drag.position - startOffset)
-                    drag.consume()
-                    drag = awaitDragOrCancellation(drag.id)
+                val first = awaitDragOrCancellation(down.id)
+                if (first != null) {
+                    var pointer = first.position
+                    var scrolled = 0f
+                    var scrolledAtEvent = 0f
+                    var ev: PointerInputChange? = first
+                    val autoScroll = host.tickerScope.launch {
+                        while (isActive) {
+                            delay(EDGE_SCROLL_TICK_MS)
+                            val applied = host.onEdgeAutoScroll(pointer.y)
+                            if (applied != 0f) {
+                                scrolled += applied
+                                host.moveTo(
+                                    (pointer - startOffset) +
+                                        Offset(0f, scrolled - scrolledAtEvent)
+                                )
+                            }
+                        }
+                    }
+                    try {
+                        while (ev != null && ev.pressed) {
+                            if (host.pinchActive()) break
+                            pointer = ev.position
+                            scrolledAtEvent = scrolled
+                            host.moveTo(pointer - startOffset)
+                            ev.consume()
+                            ev = awaitDragOrCancellation(ev.id)
+                        }
+                    } finally {
+                        autoScroll.cancel()
+                    }
                 }
             } finally {
                 host.commitMove((host.pageCount() - 1).coerceAtLeast(0))
