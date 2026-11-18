@@ -81,12 +81,18 @@ object AutoBackupScheduler {
     fun setEnabled(context: Context, enabled: Boolean) {
         BackupManager.backupPrefs(context).edit().putBoolean(KEY_ENABLED, enabled).apply()
         val wm = WorkManager.getInstance(context)
-        if (enabled) ensureScheduled(context)
+        // 靜模式中把「自動備份」打開也不該立刻排程（否則靜模式的暫停被繞過）；
+        // 等回流光時 setQuiet(false) 會補排。
+        if (enabled) ensureScheduled(context, quiet = isQuietMode(context))
         else {
             wm.cancelUniqueWork(PRIVATE_WORK_NAME)
             wm.cancelUniqueWork(PUBLIC_WORK_NAME)
         }
     }
+
+    /** 靜模式目前是否生效：與 AppNav／MainActivity 讀同一把 key（預設 true＝靜）。 */
+    private fun isQuietMode(context: Context): Boolean =
+        context.getSharedPreferences("inkflow_settings", 0).getBoolean("power_saver", true)
 
     fun isEnabled(context: Context): Boolean =
         BackupManager.backupPrefs(context).getBoolean(KEY_ENABLED, true)

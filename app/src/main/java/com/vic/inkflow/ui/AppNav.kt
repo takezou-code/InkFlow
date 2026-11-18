@@ -195,6 +195,7 @@ import androidx.navigation.NavController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.vic.inkflow.R
@@ -264,41 +265,51 @@ fun InkLayerApp(db: AppDatabase) {
         prefs.edit().putInt("theme_accent", accentArgb).apply()
     }
 
-    // 流光／靜總開關：關＝流光（預設），開＝靜。往下透 isPowerSaver，各層內部分支。
+    // 流光／輕量渲染總開關：關＝流光（預設），開＝靜。往下透 isPowerSaver，各層內部分支。
     // 預設靜態：backdrop aurora 是解場用的裝飾，不值得用常駐 45fps 渲染去換（見 2026-11-15 閃退調查）。
-    // 想要流光的人可在設定裡關掉「省電」隨時打開；KEY_POWER_SAVER_MANUAL 不受影響。
+    // 使用者可在設定裡打開「流光效果」隨時換回來；KEY_POWER_SAVER_MANUAL 不受影響。
     var powerSaver by rememberSaveable(prefs) { mutableStateOf(prefs.getBoolean(KEY_POWER_SAVER, true)) }
     // byUser＝使用者自己按的（記住就不被低電量自動切覆蓋）；自動切不記。
+    // 手動改過就順手清掉 auto：否則「低電量自動切進來」的旗標會留著干擾下一次判斷。
     fun setPowerSaver(v: Boolean, byUser: Boolean = true, from: String = "unknown") {
         powerSaver = v
         prefs.edit().putBoolean(KEY_POWER_SAVER, v).apply()
-        if (byUser) prefs.edit().putBoolean(KEY_POWER_SAVER_MANUAL, true).apply()
+        if (byUser) {
+            prefs.edit()
+                .putBoolean(KEY_POWER_SAVER_MANUAL, true)
+                .putBoolean(KEY_POWER_SAVER_AUTO, false)
+                .apply()
+        }
         com.vic.inkflow.util.AutoBackupScheduler.setQuiet(context, v)
     }
 
     // 低電量自動切靜：非充電且 <20% 進靜、充電或 >30% 回流光（遲滯不來回跳）。
     // 使用者手動切過就不再自動接管。
     DisposableEffect(Unit) {
-        fun batteryPercent(): Int {
+        // 電量與充電狀態一律從同一顆 sticky ACTION_BATTERY_CHANGED 讀。
+        // 舊碼用 `registerReceiver(null, ACTION_POWER_CONNECTED)` 當充電偵測，
+        // 但那個 action 不是 sticky → 幾乎永遠回 null，等於充電永遠不算數。
+        fun batteryState(): Pair<Int, Boolean> {
             val i = context.registerReceiver(
                 null, android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED)
-            ) ?: return -1
+            ) ?: return -1 to false
             val lv = i.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1)
             val sc = i.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, -1)
-            return if (lv >= 0 && sc > 0) lv * 100 / sc else -1
+            val pct = if (lv >= 0 && sc > 0) lv * 100 / sc else -1
+            val plugged = i.getIntExtra(android.os.BatteryManager.EXTRA_PLUGGED, 0) != 0
+            val status = i.getIntExtra(android.os.BatteryManager.EXTRA_STATUS, -1)
+            val charging = plugged ||
+                status == android.os.BatteryManager.BATTERY_STATUS_CHARGING ||
+                status == android.os.BatteryManager.BATTERY_STATUS_FULL
+            return pct to charging
         }
-        fun isCharging(): Boolean =
-            context.registerReceiver(
-                null, android.content.IntentFilter(android.content.Intent.ACTION_POWER_CONNECTED)
-            ) != null
         fun toast(msg: String) {
             android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
         }
         val receiver = object : android.content.BroadcastReceiver() {
             override fun onReceive(c: android.content.Context?, intent: android.content.Intent?) {
-                val pct = batteryPercent()
+                val (pct, chg) = batteryState()
                 if (pct < 0) return
-                val chg = isCharging()
                 val auto = prefs.getBoolean(KEY_POWER_SAVER_AUTO, false)
                 val manual = prefs.getBoolean(KEY_POWER_SAVER_MANUAL, false)
                 // 20% 以下進靜、30% 以上或充電回流（20–30% 是遲滯區間，不動作）
@@ -369,22 +380,29 @@ fun InkLayerApp(db: AppDatabase) {
 
     InkFlowTheme(darkTheme = isDarkTheme, accent = accentColor) {
         val navController = rememberNavController()
-    // 幀率：流光鎖 144（面板上限，要絲滑就認了）；靜模式降到 60  省電大戶。
-    // 靜模式旗標由這裡單一提供，全 App（玻璃/動畫/幀率）都讀這一份。
+    // 靜模式（輕量渲染）旗標由這裡單一提供，全 App（玻璃/動畫/幀率）都讀這一份。
+    // 編輯器沒有「流光」這個選項：寫字畫面一律走輕量渲染，否則 PDF 上寫字會被
+    // 真折射玻璃＋動態背景拖慢（2026-11 使用者回報）。首頁/設定才跟使用者開關。
+    val navBackStackEntry by navController.currentBackStackEntryAsState()
+    val onEditorScreen = navBackStackEntry?.destination?.route?.startsWith("editor") == true
+    val renderQuiet = powerSaver || onEditorScreen
+    // 幀率：流光鎖 144（面板上限，要絲滑就認了）；輕量模式降到 60。
+    // 注意：MainActivity 另有視窗級 144 偏好，這裡的 modifier 只是第二票；
+    // 實際是否採納要在平板量（設定頁也不再拿幀率當賣點）。
     // 啟動進場：冷啟動時整棵樹淡入＋微升（一次，600ms）。靜模式直接現身不播。
     // 用 remember 而非 rememberSaveable：旋轉/回來不重播。
-    var launched by remember { mutableStateOf(powerSaver) }
+    var launched by remember { mutableStateOf(renderQuiet) }
     LaunchedEffect(Unit) { if (!launched) launched = true }
     val introT by animateFloatAsState(
         targetValue = if (launched) 1f else 0f,
         animationSpec = tween(600, easing = androidx.compose.animation.core.FastOutSlowInEasing),
         label = "LaunchIntro"
     )
-    CompositionLocalProvider(LocalQuietMode provides powerSaver) {
+    CompositionLocalProvider(LocalQuietMode provides renderQuiet) {
     Box(
         Modifier
             .fillMaxSize()
-            .preferredFrameRate(if (powerSaver) 60f else 144f)
+            .preferredFrameRate(if (renderQuiet) 60f else 144f)
             .graphicsLayer {
                 alpha = introT
                 scaleX = 0.985f + 0.015f * introT
@@ -429,6 +447,7 @@ fun InkLayerApp(db: AppDatabase) {
                 currentThemeMode = themeMode,
                 onThemeModeChanged = { themeModeStr = it.name },
                 onPowerSaverChanged = { setPowerSaver(it, from = "settings") },
+                currentPowerSaver = powerSaver,
                 backdropTheme = backdropTheme,
                 onBackdropThemeChanged = { setBackdropTheme(it) },
                 backdropKind = backdropKind,
@@ -453,8 +472,8 @@ fun InkLayerApp(db: AppDatabase) {
                     navController = navController,
                     uri = pdfUri,
                     db = db,
-                    // 2026-11-15：背影靜態化（覆寫 isPowerSaver 預設）——使用者已同意；
-                    // prefs 裡存的 false 會讓之前的「預設靜態」全部失效，這裡直接斷開。
+                    // 編輯器一律走輕量渲染：背景凍結＋玻璃不折射（LocalQuietMode 由外層
+                    // 依 route 強制 true）。這裡的參數只負責 backdrop 的 static。
                     isPowerSaver = true,
                     backdropTheme = backdropTheme,
                     backdropKind = backdropKind,

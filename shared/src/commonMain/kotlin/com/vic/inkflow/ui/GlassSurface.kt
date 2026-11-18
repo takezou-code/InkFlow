@@ -101,10 +101,11 @@ fun glassContentColor(isDark: Boolean): Color =
     if (isDark) Color.White else com.vic.inkflow.ui.theme.PaperInkColor
 
 /**
- * 靜模式旗標，全 App 唯一來源（AppNav 提供）。開＝靜時：
+ * 輕量渲染旗標（原「靜模式」），全 App 唯一來源（AppNav 提供）。開＝輕量時：
  *  - 玻璃走 [hazeBlur]（保留 veil ＋ rim ＋ 模糊，只拿掉真折射與色散）
  *  - 背景凍結在首幀
  *  - 幀率降 60、自動備份暫停
+ * 編輯器（寫字畫面）一律為 true；首頁／設定才跟使用者的「流光效果」開關。
  * 呼叫端禁自己再存一份。
  */
 val LocalQuietMode = androidx.compose.runtime.staticCompositionLocalOf { false }

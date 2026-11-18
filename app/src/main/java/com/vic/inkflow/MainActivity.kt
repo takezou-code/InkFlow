@@ -39,7 +39,8 @@ PDFBoxResourceLoader.init(applicationContext)
         // 含憑證的一律刪，記錯站的也刪（照著它改選擇器只會愈改愈歪）。
         runCatching { com.vic.inkflow.ui.sanitizeAiDiagnostics(settings) }
         // 靜模式不回來排備份（開機時就已經在靜，排了等於白排）
-        val quiet = settings.getBoolean("power_saver", false)
+        // 預設值必須跟 AppNav 一致（true＝靜）：三處預設曾經不一致，開關顯示關、實際卻是靜。
+        val quiet = settings.getBoolean("power_saver", true)
         AutoBackupScheduler.ensureScheduled(this, quiet)
         // 垃圾桶清運：每天一次，保留天數由設定頁決定（見 TrashSettings）。
         TrashCleanupScheduler.ensureScheduled(this)

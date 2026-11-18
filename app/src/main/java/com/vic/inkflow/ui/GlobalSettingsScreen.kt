@@ -107,6 +107,11 @@ fun GlobalSettingsScreen(
     currentThemeMode: ThemeMode,
     onThemeModeChanged: (ThemeMode) -> Unit,
     onPowerSaverChanged: (Boolean) -> Unit = {},
+    /**
+     * 目前實際生效的靜模式旗標。AppNav 是唯一來源；設定頁只鏡像顯示，
+     * 否則低電量自動切換時這裡的開關會停在舊值。
+     */
+    currentPowerSaver: Boolean = true,
     backdropTheme: BackdropTheme = BackdropTheme.SOFT,
     onBackdropThemeChanged: (BackdropTheme) -> Unit = {},
     backdropKind: BackdropKind = BackdropKind.ORB,
@@ -209,7 +214,9 @@ fun GlobalSettingsScreen(
     var showAccentPicker by remember { mutableStateOf(false) }
 
     // --- 外觀：靜模式／背景 ---------------------------------------------------
-    var powerSaver by remember { mutableStateOf(prefs.getBoolean(KEY_POWER_SAVER, false)) }
+    // 值只從 AppNav 來；prefs 只負責持久化，不在這裡當真相來源（預設值曾因此三處不一致）。
+    var powerSaver by remember { mutableStateOf(currentPowerSaver) }
+    LaunchedEffect(currentPowerSaver) { powerSaver = currentPowerSaver }
     var backdropKindState by remember { mutableStateOf(backdropKind) }
     var backdropThemeState by remember { mutableStateOf(backdropTheme) }
     var backdropSceneState by remember { mutableStateOf(backdropScene) }
@@ -355,29 +362,27 @@ fun GlobalSettingsScreen(
                         onCustom = { showAccentPicker = true }
                     )
 
-                    // 流光／靜總開關：靜＝玻璃降假、動畫凍結、幀率 60、暫停自動備份，功能不變
+                    // 流光效果（原本的「靜模式」反向表述）：開＝真折射玻璃＋動態背景＋觸覺，
+                    // 關＝輕量渲染。編輯器一律輕量，不受這個開關影響。
                     SettingsSwitchRow(
-                        title = "靜模式",
-                        subtitle = "玻璃降假、動畫凍結、幀率降 60、暫停自動備份；電量低於 20% 會自動切進來（手動改過就不再自動接管）",
-                        checked = powerSaver,
-                        onCheckedChange = {
-                            powerSaver = it
-                            prefs.edit()
-                                .putBoolean(KEY_POWER_SAVER, it)
-                                .putBoolean("power_saver_manual", true)
-                                .putBoolean("power_saver_auto", false)
-                                .apply()
-                            onPowerSaverChanged(it)
+                        title = "流光效果",
+                        subtitle = "開啟：真折射玻璃、動態背景、觸覺回饋。關閉：模糊玻璃、背景凍結、暫停自動備份，寫字更穩更省電。編輯器一律使用輕量渲染。",
+                        checked = !powerSaver,
+                        onCheckedChange = { flow ->
+                            val quiet = !flow
+                            powerSaver = quiet
+                            // prefs／manual／auto／備份排程由 AppNav 的 setPowerSaver 單一寫入
+                            onPowerSaverChanged(quiet)
                         }
                     )
 
-                    // 背景三類：泡泡／特效／圖片；靜模式下動的全凍結首幀
+                    // 背景三類：泡泡／特效／圖片；流光效果關閉時動的全凍結首幀
                     SettingsChoiceBlock(
                         title = "背景",
                         options = BackdropKind.values().map { it.label },
                         selectedIndex = BackdropKind.values().indexOf(backdropKindState).coerceAtLeast(0),
                         isDark = isDarkSettings,
-                        hint = "泡泡與特效是動態背景，靜模式會停在第一幀。"
+                        hint = "泡泡與特效是動態背景，流光效果關閉時會停在第一幀。"
                     ) { idx ->
                         val k = BackdropKind.values()[idx]
                         backdropKindState = k
