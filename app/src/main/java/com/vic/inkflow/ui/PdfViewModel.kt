@@ -115,6 +115,35 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
             return scale.toFloat().coerceIn(CHEAP_MIN_SCALE, MIN_RENDER_SCALE)
         }
 
+        /** 預取深度上限（頁）。再多就是白吃記憶體——使用者一次只會前進一兩頁。 */
+        internal const val MAX_PREFETCH_DEPTH = 3
+
+        /** 快滑時往「前方」預熱的縮圖頁數（240px 封頂、單張約 0.3MB，便宜到可以多做）。 */
+        internal const val FAST_THUMB_PREFETCH_DEPTH = 3
+
+        /**
+         * 往前預取幾頁 hi 倍率（純函式，可單測）。
+         *
+         * 預算要**先扣掉可見頁**：可見頁是必定要清楚的，預取只能在餘裕裡做，
+         * 否則預取頁會在 [selectColdEvictions] 裡跟可見頁搶位子——搶輸就白渲。
+         *
+         * 為什麼有下限 1：連一頁餘裕都沒有時（小 heap、放大到 4x 的 A4 單頁 40MB+），
+         * 預取一頁仍然值得——它是新頁、年齡最新，回收時砍的是更舊的冷頁，
+         * 而少了這一頁的話，使用者每次翻頁都要等一次完整的 hi 渲染。
+         */
+        internal fun prefetchDepthFor(
+            quotaBytes: Long,
+            pageBytes: Long,
+            visiblePages: Int,
+            maxDepth: Int = MAX_PREFETCH_DEPTH
+        ): Int {
+            if (maxDepth <= 0) return 0
+            if (pageBytes <= 0L) return maxDepth.coerceAtMost(1)
+            val spare = quotaBytes - pageBytes * visiblePages.coerceAtLeast(1)
+            val byBudget = (spare / pageBytes).toInt()
+            return byBudget.coerceIn(1, maxDepth)
+        }
+
         /**
          * 自上次 GC 以來產生多少位元組的頁面圖，超過這條線就收一次垃圾。
          *
@@ -642,6 +671,9 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         appliedLoScale = -1f
         appliedRange = IntRange.EMPTY
         appliedScrolling = false
+        // 方向與中心也要歸零：換文件後沿用上一份的方向會預取錯邊。
+        lastRangeCenter = -1f
+        lastScrollDirection = 0
     }
 
     /**
@@ -713,11 +745,25 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
     /** 最近一次捲動方向（+1 向後／-1 向前／0＝未知）；方向感知預取用。 */
     @Volatile private var lastScrollDirection: Int = 0
 
+    /**
+     * 上一次可見範圍的**中心**（頁，可為半頁）。
+     *
+     * 為什麼不用 `range.first` 判方向：頁面進場是從**邊緣**開始的，
+     * 一頁半露時 `first` 還是舊值（0..0 → 0..1 都是 first=0）——
+     * 那正是「下一頁正要進來」的時刻，卻判不出方向，預取就整個不啟動。
+     * 中心點一變（0.0 → 0.5）方向就有了，預取等於提前半頁開跑。
+     */
+    private var lastRangeCenter: Float = -1f
+
     fun setVisiblePageRange(range: IntRange) {
         lastVisibleChangeMs = SystemClock.uptimeMillis()
         scheduleSettledUpgrade()
-        val delta = range.first - hiTierRange.first
-        if (delta != 0) lastScrollDirection = if (delta > 0) 1 else -1
+        val center = (range.first + range.last) / 2f
+        if (lastRangeCenter >= 0f) {
+            val delta = center - lastRangeCenter
+            if (delta != 0f) lastScrollDirection = if (delta > 0f) 1 else -1
+        }
+        lastRangeCenter = center
         if (range == hiTierRange) return
         hiTierRange = range
         applyRenderPlan()
@@ -725,22 +771,62 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * 方向感知預取：非快滑時，往「將捲到」的方向把 D+1、D+2 頁以紙寬 hi 預渲進
-     * bitmapCache。到時頁組成（getPageBitmap）直接命中快取 → 第一幀就是清楚的，
-     * 不必經過「便宜檔 → 落定升級」那個糊窗口。
+     * 方向感知預取：把「將捲到」的頁面以**紙寬 hi 倍率**預渲進 bitmapCache。
      *
-     * 快滑時不預取（PDF 鎖排隊只留給正在看的頁）；預取頁沒人訂閱、年齡最新，
-     * 回收順序上天然是最後被砍的對象（[evictColdLayer] 砍最舊的無訂閱頁）。
+     * 到那時頁面被組成（[getPageBitmap]）直接命中快取 → 第一幀就是清楚的，
+     * 不必經過「便宜檔 → 落定升級」那個糊窗口。這正是「滑到那頁之前就先清楚」。
+     *
+     * 三個決策：
+     *
+     *  1. **倍率必須是 hi，不能問 [scaleForPage]。** 預取目標在可見範圍外，
+     *     `scaleForPage` 會回 lo——舊碼就是這樣：名為高清預取，實際渲的是便宜檔，
+     *     還要等落定再重渲一次 hi（白渲一次 + 使用者仍看到糊）。現在直接指定 hi 倍率。
+     *  2. **深度問預算**（[prefetchDepthFor]）：餘裕多就 D+1..D+3，放大到單頁 40MB 時只留 D+1。
+     *  3. **快滑只預熱縮圖。** 高速掠過時 hi 反正會被 renderHold 擋掉，排進去只是延後
+     *     真正要看的那頁；但縮圖便宜，先把前方 3 頁的縮圖排好，停下來至少不是白紙。
      */
     private fun prefetchAhead() {
         val dir = lastScrollDirection
         if (dir == 0) return
-        if (_isScrollingFast.value || renderHold.get()) return
         val edge = if (dir > 0) hiTierRange.last else hiTierRange.first
-        for (k in 1..2) {
+        if (edge < 0) return
+
+        if (_isScrollingFast.value || renderHold.get()) {
+            for (k in 1..FAST_THUMB_PREFETCH_DEPTH) {
+                val target = edge + dir * k
+                if (target in 0 until pageCount.value) prefetchThumbnail(target)
+            }
+            return
+        }
+
+        val visiblePages = (hiTierRange.last - hiTierRange.first + 1).coerceAtLeast(1)
+        val depth = prefetchDepthFor(
+            quotaBytes = com.vic.inkflow.util.MemoryBudget.quotaBytes(
+                com.vic.inkflow.util.MemoryBudget.Layer.PDF_PAGE
+            ),
+            pageBytes = estimateHiPageBytes(),
+            visiblePages = visiblePages
+        )
+        for (k in 1..depth) {
             val target = edge + dir * k
             if (target in 0 until pageCount.value) prefetchPage(target)
         }
+        // 反向一頁：往回滑是僅次於往下讀的常見動作，已經在快取裡就不用再渲（見 prefetchPage）。
+        val back = edge - dir
+        if (back in 0 until pageCount.value) prefetchPage(back)
+        com.vic.inkflow.util.DevLog.d("InkFlowDbg") {
+            "prefetch dir=$dir edge=$edge depth=$depth hi=$hiRenderScale " +
+                "pageMb=${estimateHiPageBytes() / 1048576} range=$hiTierRange"
+        }
+    }
+
+    /** 一頁以 [hiRenderScale] 渲出來大約幾位元組（估計值，只當預算守門）。 */
+    private fun estimateHiPageBytes(): Long {
+        val size = pageSizesMap[hiTierRange.first] ?: _firstPageSize.value ?: return 0L
+        val scale = hiRenderScale
+        val w = (size.first * scale).coerceAtLeast(1f)
+        val h = (size.second * scale).coerceAtLeast(1f)
+        return (w * h * 4f).toLong()
     }
 
     /**
@@ -1823,16 +1909,33 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
 
     private val prefetchInFlight = java.util.Collections.synchronizedSet(mutableSetOf<Int>())
 
-    /** 預取高清頁面（requireInterest=false）；同頁不重複併發渲染。 */
+    /**
+     * 預取一頁**清晰版**（requireInterest=false；同頁不重複併發渲染）。
+     *
+     * 倍率一律指定 [hiRenderScale]：預取頁現在不在可見範圍，交給 [scaleForPage]
+     * 只會得到便宜檔，那就等於沒有預取（舊碼的實際行為）。
+     * 渲好之後 `bitmapScale` 一起記成 hi，[applyRenderPlan] 看到「已經是 hi」就不會再渲一次。
+     */
     fun prefetchPage(pageIndex: Int) {
         if (pageIndex < 0 || pageIndex >= pageCount.value) return
-        if (bitmapCache[pageIndex] != null) return
+        val hi = hiRenderScale
+        // 已經有「夠清楚」的圖就不用再渲；只有便宜檔（lo）才值得補一張 hi。
+        if (bitmapCache[pageIndex] != null && bitmapScale[pageIndex] == hi) return
+        // 有人正在看（已組成的 item）→ 那頁歸 applyRenderPlan / launchBitmapRender 管，
+        // 這裡再渲一次只會多畫一張、而且快取項馬上會被 applyRenderPlan 移除（白渲）。
+        val displayed = bitmapFlowCache[pageIndex]
+        if (displayed != null && displayed.subscriptionCount.value > 0) return
         if (!prefetchInFlight.add(pageIndex)) return
         val ticket = scrollGen
         renderScope.launch {
             try {
-                renderPage(pageIndex, highQuality = true, ticket = ticket, requireInterest = false)
-                    ?.let { stampAge(bitmapAge, pageIndex) }
+                renderPage(
+                    pageIndex,
+                    highQuality = true,
+                    ticket = ticket,
+                    requireInterest = false,
+                    scaleOverride = hi
+                )?.let { stampAge(bitmapAge, pageIndex) }
             } finally {
                 prefetchInFlight.remove(pageIndex)
             }
@@ -1857,6 +1960,10 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
      *（例：當前 3 → 3,4,2,5,1）。只發這 5 頁（flow 存在但空、且快取也空才發；
      * compose 中的 getPageBitmap 會兜底剩餘，雙發時第二個命中快取直接返回）。
      * mutex 串行，發射順序即渲染順序。越界下標此處擋掉。
+     *
+     * 尾巴再補一次**預測**：使用者停在這裡之後，下一步九成是往下讀。
+     * 沒有訂閱者的頁（= 還沒被組成、也還沒露臉）正是「提前弄清晰」的對象，
+     * 所以那一頁交給 [prefetchPage]（指定 hi 倍率），不走需要訂閱的 [launchBitmapRender]。
      */
     fun ensureHighQualityAround(center: Int, radius: Int = 2) {
         if (center < 0 || center >= pageCount.value) return
@@ -1875,6 +1982,11 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
             if (flow.subscriptionCount.value == 0) return@forEach
             if (flow.value == null) launchBitmapRender(flow, index)
         }
+        // 預測：使用者停在這一頁之後，下一步多半是往下讀（或沿著原本的方向）。
+        // 這兩行就是「在他滑到之前就先清楚」——預取頁沒有 flow、也沒有訂閱者，
+        // 所以它只能走 prefetchPage，而不是上面那條需要訂閱的路。
+        prefetchPage(center + 1)
+        prefetchAhead()
     }
 
     /**
@@ -1926,12 +2038,18 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
         pageIndex: Int,
         highQuality: Boolean,
         ticket: Long? = null,
-        requireInterest: Boolean = true
+        requireInterest: Boolean = true,
+        scaleOverride: Float? = null
     ): Bitmap? {
         if (pageIndex < 0 || pageIndex >= _pageCount.value) return null
 
         val cache = if (highQuality) bitmapCache else thumbnailCache
-        cache[pageIndex]?.let { return it }
+        cache[pageIndex]?.let { cached ->
+            if (scaleOverride == null) return cached
+            // 預取要求指定倍率時，快取裡那張若「已經不比要求低」，就不用再渲一次。
+            val already = bitmapScale[pageIndex]
+            if (already != null && already >= scaleOverride) return cached
+        }
 
         return withContext(Dispatchers.IO) {
             val gen = renderGen
@@ -1950,7 +2068,11 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                         val page = renderer.openPage(pageIndex)
                         // v6：可見頁吃滿倍率、窗外頁低清（見 setRenderPlan）。
                         // 這裡是唯一決定「這一頁畫多大」的地方。
-                        val scale = if (highQuality) scaleForPage(pageIndex) else 0.4f
+                        // [scaleOverride] 是預取專用：預取目標在可見範圍外，
+                        // 交給 scaleForPage 只會得到便宜檔（就等於沒有預取），
+                        // 所以由呼叫端指定「被看到時需要的倍率」。
+                        val scale = scaleOverride
+                            ?: if (highQuality) scaleForPage(pageIndex) else 0.4f
                         // For thumbnails, cap width at 240 px to keep memory reasonable
                         val rawW = (page.width * scale).toInt()
                         val rawH = (page.height * scale).toInt()
